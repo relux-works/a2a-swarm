@@ -35,4 +35,4 @@ Each lands through a reviewed PR in the slot agreed with the board's primary orc
 | to | condition | payload | agreed in | expires |
 | --- | --- | --- | --- | --- |
 | skill-project-management-e7 | my PR is reviewed and green (ready for the slot) | PR URL + head OID + validation summary | MSG-0003 | landing |
-| semantic-cores-15 | remote Codex worker usable for semantic-cores | how to point a tracked run at it (--executable + flags) + inherited limits | semantic-cores/welcome MSG-0002/0003 | delivered |
+| ~~semantic-cores-15~~ | ~~remote Codex worker usable for semantic-cores~~ | fulfilled 2026-09-29 in #remote-worker-harness/requirements (main c42f5d58) | semantic-cores/welcome MSG-0002/0003 | done |
