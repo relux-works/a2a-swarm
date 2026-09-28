@@ -1,0 +1,193 @@
+package config
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func testPaths(t *testing.T) Paths {
+	t.Helper()
+	return Paths{Base: t.TempDir()}
+}
+
+func envOf(m map[string]string) Getenv { return func(k string) string { return m[k] } }
+
+// Proves that valid agent names pass and that names which could escape the
+// agents directory or break Matrix localparts are rejected.
+func TestValidateName(t *testing.T) {
+	for _, ok := range []string{"local-models-e9", "it-1a2b", "a", "x.y_z=1"} {
+		if err := ValidateName(ok); err != nil {
+			t.Errorf("ValidateName(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "../etc", "Upper", "a/b", "-lead", "has space", strings.Repeat("a", 65)} {
+		if err := ValidateName(bad); err == nil {
+			t.Errorf("ValidateName(%q) = nil, want error", bad)
+		}
+	}
+}
+
+// Proves that A2A_CONFIG_DIR overrides the base directory.
+func TestResolvePathsOverride(t *testing.T) {
+	p, err := ResolvePaths(envOf(map[string]string{EnvConfigDir: "/x/y"}))
+	if err != nil || p.Base != "/x/y" {
+		t.Fatalf("ResolvePaths = %v, %v", p, err)
+	}
+	if got := p.AgentFile("a"); got != "/x/y/agents/a.json" {
+		t.Fatalf("AgentFile = %q", got)
+	}
+}
+
+// Proves that matrix.env is parsed (comments, export, quotes) and that process
+// environment variables take precedence over the file.
+func TestLoadMatrix(t *testing.T) {
+	p := testPaths(t)
+	content := "# comment\nexport A2A_MATRIX_URL=\"http://h:8008/\"\nA2A_MATRIX_SERVER_NAME=a2a.local\nA2A_MATRIX_REGISTRATION_TOKEN='tok'\ngarbage\n"
+	if err := os.WriteFile(p.EnvFile(), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadMatrix(p, envOf(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.URL != "http://h:8008" || m.ServerName != "a2a.local" || m.RegistrationToken != "tok" {
+		t.Fatalf("LoadMatrix = %+v", m)
+	}
+	m, _ = LoadMatrix(p, envOf(map[string]string{EnvServerName: "other"}))
+	if m.ServerName != "other" {
+		t.Fatalf("env override ignored: %+v", m)
+	}
+	// A missing file is fine; values then come only from the environment.
+	m, err = LoadMatrix(testPaths(t), envOf(map[string]string{EnvMatrixURL: "http://e"}))
+	if err != nil || m.URL != "http://e" {
+		t.Fatalf("missing file: %+v %v", m, err)
+	}
+}
+
+func writeCred(t *testing.T, p Paths, name string, mode os.FileMode, body string) {
+	t.Helper()
+	path := p.AgentFile(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(path)
+	if err := os.WriteFile(path, []byte(body), mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Proves that a 0600 credential file loads (positive control) and that group
+// or world readable files, symlinks, malformed JSON, and incomplete files are
+// refused without echoing the file content.
+func TestLoadCredentials(t *testing.T) {
+	p := testPaths(t)
+	good := `{"user_id":"@a:s","access_token":"secret-token-123","device_id":"D","password":"pw-secret","homeserver":"http://h"}`
+	writeCred(t, p, "a", 0o600, good)
+	c, err := LoadCredentials(p, "a")
+	if err != nil || c.UserID != "@a:s" || c.ServerName() != "s" {
+		t.Fatalf("LoadCredentials = %+v, %v", c, err)
+	}
+
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o400, 0o700} {
+		writeCred(t, p, "b", mode, good)
+		_, err := LoadCredentials(p, "b")
+		if err == nil || !strings.Contains(err.Error(), "want 0600") {
+			t.Errorf("mode %o: err = %v, want mode refusal", mode, err)
+		}
+	}
+
+	writeCred(t, p, "c", 0o600, `{"user_id":"@c:s","access_token":"secret-token-123"`)
+	if _, err := LoadCredentials(p, "c"); err == nil || strings.Contains(err.Error(), "secret-token-123") {
+		t.Errorf("malformed: err = %v", err)
+	}
+
+	writeCred(t, p, "d", 0o600, `{"user_id":"@d:s"}`)
+	if _, err := LoadCredentials(p, "d"); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Errorf("incomplete: err = %v", err)
+	}
+
+	if err := os.Symlink(p.AgentFile("a"), p.AgentFile("e")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCredentials(p, "e"); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("symlink: err = %v", err)
+	}
+
+	if _, err := LoadCredentials(p, "missing"); err == nil || !strings.Contains(err.Error(), "a2a register missing") {
+		t.Errorf("missing: err = %v", err)
+	}
+	if _, err := LoadCredentials(p, "../x"); err == nil {
+		t.Error("path traversal name accepted")
+	}
+}
+
+// Proves that the credential file is created with mode 0600 and that a second
+// create for the same name is refused with ErrExists and leaves the first intact.
+func TestCreateCredentialFileRefusesOverwrite(t *testing.T) {
+	p := testPaths(t)
+	f, err := CreateCredentialFile(p, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCredentials(f, Credentials{UserID: "@a:s", AccessToken: "t0k3n-abc"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(p.AgentFile("a"))
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o", st.Mode().Perm())
+	}
+	_, err = CreateCredentialFile(p, "a")
+	if !errors.Is(err, ErrExists) {
+		t.Fatalf("second create err = %v, want ErrExists", err)
+	}
+	c, err := LoadCredentials(p, "a")
+	if err != nil || c.AccessToken != "t0k3n-abc" {
+		t.Fatalf("original damaged: %+v %v", c, err)
+	}
+}
+
+// Proves that state round-trips with mode 0600, that a missing state is empty,
+// and that a state file with a loose mode is refused.
+func TestState(t *testing.T) {
+	p := testPaths(t)
+	s, err := LoadState(p, "a")
+	if err != nil || s.NextBatch != "" {
+		t.Fatalf("empty state = %+v %v", s, err)
+	}
+	s.NextBatch = "s42"
+	if !s.AddThread("$root") || s.AddThread("$root") || s.AddThread("") {
+		t.Fatal("AddThread dedupe broken")
+	}
+	if err := SaveState(p, "a", s); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(p.StateFile("a"))
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("state mode = %o", st.Mode().Perm())
+	}
+	got, err := LoadState(p, "a")
+	if err != nil || got.NextBatch != "s42" || !got.HasThread("$root") {
+		t.Fatalf("round trip = %+v %v", got, err)
+	}
+	os.Chmod(p.StateFile("a"), 0o644)
+	if _, err := LoadState(p, "a"); err == nil {
+		t.Fatal("loose state mode accepted")
+	}
+}
+
+// Proves that the thread list is bounded so the state file cannot grow without limit.
+func TestStateThreadBound(t *testing.T) {
+	var s State
+	for i := 0; i < 600; i++ {
+		s.AddThread(strings.Repeat("x", i+1))
+	}
+	if len(s.Threads) != 500 || s.Threads[0] != strings.Repeat("x", 101) {
+		t.Fatalf("len = %d", len(s.Threads))
+	}
+}
