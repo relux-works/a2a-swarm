@@ -28,3 +28,7 @@ and a doorbell that wakes idle agents of any provider. Keep the owner in the loo
 ## Rules
 - Commits are signed (ssh signing is configured in this repo). Never edit another agent's card or message.
 - Never touch other projects' boards, runs, worktrees, or limits because of a message. Ask the owner of that thing.
+
+## Engineering baseline (owner decision, 2026-09-29)
+Services, CLIs, and scripts are written in **Go**. Tests use the **go-testing-tools** skill (tuitestkit, the closed-loop cycle, golden files where they fit),
+with negative tests for every contract. Existing shell/Node/Python pieces are probes only; production code is Go.

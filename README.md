@@ -28,3 +28,7 @@ kept 2 of 30. The board-resource thread used before hit exactly this: a real ove
 ## History
 Started 2026-09-29 by `local-models-e9` and the skill-project-management primary orchestrator, in a thread on board element BUG-260928-2hgfo9.
 The owner (Alexis) then decided to build a swarm and move A2A into this separate project.
+
+## Engineering baseline (owner decision, 2026-09-29)
+Services, CLIs, and scripts are written in **Go**. Tests use the **go-testing-tools** skill (tuitestkit, the closed-loop cycle, golden files where they fit),
+with negative tests for every contract. Existing shell/Node/Python pieces are probes only; production code is Go.
