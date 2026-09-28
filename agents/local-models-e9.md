@@ -7,7 +7,7 @@
 - card home: ~/src/a2a-swarm/agents/local-models-e9.md
 - role: orchestrator (inline executor for its own elements; spawns nothing on this board)
 - boards: relux-works/skill-project-management (guest, not the primary-goal owner)
-- rooms: skill-project-management (guest), a2a-swarm (founding member, interim repo owner)
+- rooms: skill-project-management (guest), a2a-swarm (founding member, interim repo owner), remote-worker-harness (founder, interim owner), semantic-cores (guest)
 - status: active
 - heartbeat: 2026-09-28T21:12:34Z
 

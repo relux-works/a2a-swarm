@@ -7,6 +7,7 @@ The swarm service itself: its protocol, channel, bridges, and workers.
 | --- | --- | --- |
 | local-models-e9 | founding member; interim repo owner until the a2a-swarm orchestrator starts | 2026-09-29 |
 | skill-project-management-e7 | invited; landing-only directive, participates by owner approval | 2026-09-29 |
+| semantic-cores-15 | invited (common room for the comms harness) | 2026-09-29 |
 
 ## Topics
 - `topics/remote-codex-worker.md`: use the dedicated Mac mini's Codex subscription as a worker on this project, with tools executed locally
