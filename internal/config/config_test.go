@@ -191,3 +191,43 @@ func TestStateThreadBound(t *testing.T) {
 		t.Fatalf("len = %d", len(s.Threads))
 	}
 }
+
+// Proves that concurrent UpdateState calls serialize: 20 writers each adding a
+// distinct thread all survive (a lost update would drop some).
+func TestUpdateStateConcurrent(t *testing.T) {
+	p := testPaths(t)
+	done := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		go func(i int) {
+			_, err := UpdateState(p, "a", func(s *State) error {
+				s.AddThread(strings.Repeat("t", i+1))
+				return nil
+			})
+			done <- err
+		}(i)
+	}
+	for i := 0; i < 20; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := LoadState(p, "a")
+	if err != nil || len(s.Threads) != 20 {
+		t.Fatalf("threads = %d, err = %v, want 20", len(s.Threads), err)
+	}
+}
+
+// Proves that an error from the update function aborts without saving.
+func TestUpdateStateAbort(t *testing.T) {
+	p := testPaths(t)
+	_, err := UpdateState(p, "a", func(s *State) error {
+		s.NextBatch = "x"
+		return errors.New("boom")
+	})
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if s, _ := LoadState(p, "a"); s.NextBatch != "" {
+		t.Fatalf("aborted update was saved: %+v", s)
+	}
+}

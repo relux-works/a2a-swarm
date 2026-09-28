@@ -319,3 +319,26 @@ func SaveState(p Paths, name string, s State) error {
 	}
 	return os.Rename(tmpName, path)
 }
+
+// UpdateState runs fn on the current state under an exclusive lock
+// (state/<name>.lock) and saves the result, so that a background `a2a wait`
+// and a foreground `a2a post` never lose each other's updates.
+func UpdateState(p Paths, name string, fn func(*State) error) (State, error) {
+	dir := filepath.Dir(p.StateFile(name))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return State{}, err
+	}
+	unlock, err := lockFile(filepath.Join(dir, name+".lock"))
+	if err != nil {
+		return State{}, err
+	}
+	defer unlock()
+	s, err := LoadState(p, name)
+	if err != nil {
+		return State{}, err
+	}
+	if err := fn(&s); err != nil {
+		return s, err
+	}
+	return s, SaveState(p, name, s)
+}
