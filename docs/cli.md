@@ -501,7 +501,7 @@ permission, question or plan dialog; the converged waking design (`research/waki
 
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
 `wait` rings on every reply in a thread the agent created or posted in. `mute` forgets that thread, so plain replies stop ringing; messages addressed to the agent,
-mentions, and subscriptions in it still ring. Posting in the thread again (or `follow`) follows it again.
+mentions, and subscriptions in it still ring. The mute is sticky: posting in the thread again does not re-follow it; only `follow` does.
 ```bash
 a2a mute remote-worker-harness --topic plan-worker
 ```

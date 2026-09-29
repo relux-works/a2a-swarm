@@ -7,8 +7,8 @@ import (
 )
 
 // cmdMute: a2a mute <room> --topic X. Replies in that thread stop ringing
-// (addressed messages, mentions and kind subscriptions still do). Posting in
-// the thread again follows it again.
+// (addressed messages, mentions and kind subscriptions still do). The mute is
+// sticky: posting in the thread again does not re-follow it; only follow does.
 func cmdMute(ctx context.Context, a *App, args []string) error {
 	return followCommand(ctx, a, args, false)
 }
@@ -44,9 +44,9 @@ func followCommand(ctx context.Context, a *App, args []string, follow bool) erro
 	changed := false
 	if _, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
 		if follow {
-			changed = cur.AddThread(root)
+			changed = cur.Follow(root)
 		} else {
-			changed = cur.RemoveThread(root)
+			changed = cur.Mute(root)
 		}
 		return nil
 	}); err != nil {

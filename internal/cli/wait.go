@@ -90,7 +90,7 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 	if len(matched) > 0 {
 		return relSub, "", matched
 	}
-	if root != "" && st.HasThread(root) {
+	if root != "" && st.HasThread(root) && !st.IsMuted(root) {
 		return relThread, "", nil
 	}
 	return "", "", nil

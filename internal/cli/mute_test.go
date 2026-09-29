@@ -38,3 +38,23 @@ func TestMuteNegative(t *testing.T) {
 	e.as("alice", "mute", "proj", "--topic", "nosuch").failsWith(t, ExitError, "not found")
 	e.as("carol", "follow", "proj", "--topic", "alpha").failsWith(t, ExitError, "")
 }
+
+// Proves the mute is sticky (regression for skill-project-management-e7's
+// report): after muting, the agent's own post in the thread does not re-follow
+// it, so a peer's plain reply stays silent; follow lifts the mute and the next
+// plain reply rings again (positive control).
+func TestMuteStickyAcrossOwnPosts(t *testing.T) {
+	e, room := world(t)
+	root := strings.TrimSpace(e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
+	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "mute", "proj", "--topic", "alpha").ok(t)
+	e.as("alice", "post", "proj", "--topic", "alpha", "my own reply after muting").ok(t)
+	threadReply := map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}
+	e.hs.inject(room, "@bob:test.local", msg("plain reply", threadReply))
+	if r := e.as("alice", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
+		t.Fatalf("muted thread rang after own post: %q", r.stdout)
+	}
+	e.as("alice", "follow", "proj", "--topic", "alpha").ok(t)
+	id := e.hs.inject(room, "@bob:test.local", msg("plain again", threadReply))
+	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "thread #proj "+id)
+}

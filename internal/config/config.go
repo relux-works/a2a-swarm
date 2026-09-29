@@ -304,6 +304,9 @@ type State struct {
 	LegacyAcked []string `json:"acked,omitempty"`
 	// Threads holds thread root event ids where this agent posted or which it created.
 	Threads []string `json:"threads,omitempty"`
+	// Muted holds thread roots the agent muted explicitly; posting in them or
+	// seeing its own events there never re-follows them (only Follow does).
+	Muted []string `json:"muted,omitempty"`
 	// LegacySubscriptions is the pre-v2 kind subscription map (room id or "*"
 	// to kinds). Subscriptions now live in the agent's Matrix account data; the
 	// first command that touches them moves this map there and drops it.
@@ -406,9 +409,48 @@ func (s *State) RemoveThread(root string) bool {
 	return false
 }
 
-// AddThread records root; it reports whether the state changed.
+// IsMuted reports whether root was muted explicitly.
+func (s State) IsMuted(root string) bool {
+	for _, t := range s.Muted {
+		if t == root {
+			return true
+		}
+	}
+	return false
+}
+
+// Mute forgets root and keeps it muted until Follow; it reports whether the
+// state changed.
+func (s *State) Mute(root string) bool {
+	changed := s.RemoveThread(root)
+	if root != "" && !s.IsMuted(root) {
+		s.Muted = append(s.Muted, root)
+		const max = 500
+		if len(s.Muted) > max {
+			s.Muted = s.Muted[len(s.Muted)-max:]
+		}
+		changed = true
+	}
+	return changed
+}
+
+// Follow lifts a mute and follows root again; it reports whether the state changed.
+func (s *State) Follow(root string) bool {
+	changed := false
+	for i, t := range s.Muted {
+		if t == root {
+			s.Muted = append(s.Muted[:i], s.Muted[i+1:]...)
+			changed = true
+			break
+		}
+	}
+	return s.AddThread(root) || changed
+}
+
+// AddThread records root (learned from the agent's own posts or topics); it
+// never re-follows an explicitly muted thread. It reports whether the state changed.
 func (s *State) AddThread(root string) bool {
-	if root == "" || s.HasThread(root) {
+	if root == "" || s.HasThread(root) || s.IsMuted(root) {
 		return false
 	}
 	s.Threads = append(s.Threads, root)
