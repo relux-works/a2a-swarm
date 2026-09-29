@@ -252,6 +252,12 @@ func writeArchiveBlock(b *strings.Builder, ev matrix.Event, server string) {
 		if h.Trunk != "" {
 			meta = append(meta, "trunk="+h.Trunk)
 		}
+		if h.Subtype != "" {
+			meta = append(meta, "subtype="+h.Subtype)
+		}
+		if h.Subject != "" {
+			meta = append(meta, "subject="+h.Subject)
+		}
 	}
 	b.WriteString("- " + sanitizeLine(strings.Join(meta, " ")) + "\n")
 	if at := h.Attachment; hok && at != nil && !redacted {

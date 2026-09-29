@@ -27,6 +27,8 @@ type Projection struct {
 	To          []string `json:"to,omitempty"`
 	At          string   `json:"at"`
 	Slug        string   `json:"slug,omitempty"`
+	Subtype     string   `json:"subtype,omitempty"`
+	Subject     string   `json:"subject,omitempty"`
 	OriginRoom  string   `json:"origin_room"`
 	OriginAlias string   `json:"origin_alias,omitempty"`
 	OriginEvent string   `json:"origin_event"`
@@ -57,7 +59,14 @@ func projection(ev matrix.Event, h Header, roomID, roomLabel, server string) map
 	text := stripHeaderBody(ev.Message().Body)
 	at := time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339)
 	var b strings.Builder
-	fmt.Fprintf(&b, "[%s] %s from %s", h.Kind, roomLabel, from)
+	kind := h.Kind
+	if h.Subtype != "" {
+		kind += "/" + h.Subtype
+	}
+	fmt.Fprintf(&b, "[%s] %s from %s", kind, roomLabel, from)
+	if h.Subject != "" {
+		fmt.Fprintf(&b, " subject %s", h.Subject)
+	}
 	if h.Slug != "" {
 		fmt.Fprintf(&b, " (topic %s)", h.Slug)
 	}
@@ -68,7 +77,7 @@ func projection(ev matrix.Event, h Header, roomID, roomLabel, server string) map
 		// Projections never ping anyone: subscribers watch the room.
 		"m.mentions": map[string]any{},
 		ContentKey: Projection{V: 1, Type: "projection", Kind: h.Kind, From: from, To: h.To, At: at, Slug: h.Slug,
-			OriginRoom: roomID, OriginAlias: roomLabel, OriginEvent: ev.EventID},
+			Subtype: h.Subtype, Subject: h.Subject, OriginRoom: roomID, OriginAlias: roomLabel, OriginEvent: ev.EventID},
 	}
 }
 

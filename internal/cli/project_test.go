@@ -146,6 +146,9 @@ func TestProjectAcceptsInvites(t *testing.T) {
 // subscribers a second time; only `wait --all` on the projection room sees it.
 func TestProjectionDoesNotRingTwice(t *testing.T) {
 	e, room, system := projWorld(t)
+	e.hs.mu.Lock()
+	e.hs.liveClock = true
+	e.hs.mu.Unlock()
 	e.project().ok(t)
 	e.as("alice", "subscribe", "--kind", "system").ok(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)

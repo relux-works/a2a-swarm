@@ -213,7 +213,7 @@ func TestWaitSnippetBounded(t *testing.T) {
 // promptly with an error instead of hanging.
 func TestWaitNegative(t *testing.T) {
 	e, _ := world(t)
-	e.as("alice", "wait", "--timeout", "0s").failsWith(t, ExitUsage, "--timeout must be positive")
+	e.as("alice", "wait", "--timeout", "-1s").failsWith(t, ExitUsage, "--timeout must not be negative")
 	e.as("alice", "wait", "--timeout", "soon").failsWith(t, ExitUsage, "invalid value")
 	e.as("alice", "wait", "extra").failsWith(t, ExitUsage, "usage")
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -260,7 +260,7 @@ func TestClassify(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rel, learned := classify(tc.ev, "!r", me, "alice", st)
+			rel, learned, _ := classify(tc.ev, "!r", me, "alice", st, nil)
 			if rel != tc.rel || learned != tc.learned {
 				t.Fatalf("classify = (%q, %q), want (%q, %q)", rel, learned, tc.rel, tc.learned)
 			}

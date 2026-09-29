@@ -281,3 +281,62 @@ func TestPostOwnerNeededAndSystemKinds(t *testing.T) {
 	}
 	e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "owner", "x").failsWith(t, ExitUsage, "invalid --kind")
 }
+
+// Proves post --subtype/--subject store the structured subtype and subject in
+// the header, add them to the header lines of the body, and surface them in
+// read meta, read --json, the wait line and record, and the projection.
+func TestPostSubtypeSubject(t *testing.T) {
+	e, room, system := projWorld(t)
+	e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t)
+	e.project().ok(t)
+	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	subject := "relux-works/skill-project-management@main"
+	id := strings.TrimSpace(e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "system", "--subtype", "landing",
+		"--subject", subject, "--to", "alice", "PR #12 landed").ok(t).stdout)
+	ev, _ := e.hs.eventByID(id)
+	h, _ := decodeHeader(ev.Message().A2A)
+	if h.Subtype != "landing" || h.Subject != subject {
+		t.Fatalf("header = %+v", h)
+	}
+	tuitestkit.ContainsStr(t, ev.Message().Body, "- kind: system\n- subtype: landing\n- subject: "+subject+"\n\nPR #12 landed")
+	tuitestkit.ContainsStr(t, e.as("alice", "read", "proj", "--event", id).ok(t).stdout, "kind=system to=alice subtype=landing subject="+subject)
+	rec := decodeRecords(t, e.as("alice", "read", "proj", "--event", id, "--json").ok(t).stdout)[0]
+	if rec.Subtype != "landing" || rec.Subject != subject {
+		t.Fatalf("read record = %+v", rec)
+	}
+	line := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout
+	tuitestkit.ContainsStr(t, line, "to #proj "+id+" from=bob kind=system subtype=landing subject="+subject+" topic=alpha")
+	e.project().ok(t)
+	got := e.projections(system)
+	if len(got) != 1 {
+		t.Fatalf("projections = %d", len(got))
+	}
+	if p := projectionOf(t, got[0]); p.Subtype != "landing" || p.Subject != subject {
+		t.Fatalf("projection = %+v", p)
+	}
+	tuitestkit.ContainsStr(t, got[0].Message().Body, "[system/landing] #proj from bob subject "+subject+" (topic alpha):")
+	_ = room
+}
+
+// Proves --subtype needs --kind system and a known subtype, --subject must be
+// 1..128 token characters, and refused posts send nothing; a plain --subject
+// on another kind is accepted (positive control).
+func TestPostSubtypeSubjectNegative(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t)
+	before := e.hs.CallCount(sendRoute)
+	e.as("bob", "post", "proj", "--topic", "alpha", "--subtype", "landing", "x").failsWith(t, ExitUsage, "--subtype needs --kind system")
+	e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "notice", "--subtype", "landing", "x").failsWith(t, ExitUsage, "--subtype needs --kind system")
+	e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "system", "--subtype", "party", "x").failsWith(t, ExitUsage, "invalid --subtype")
+	e.as("bob", "post", "proj", "--topic", "alpha", "--subject", "has space", "x").failsWith(t, ExitUsage, "invalid --subject")
+	e.as("bob", "post", "proj", "--topic", "alpha", "--subject", strings.Repeat("a", 129), "x").failsWith(t, ExitUsage, "invalid --subject")
+	e.as("bob", "post", "proj", "--topic", "alpha", "--subject", "a\x1bb", "x").failsWith(t, ExitUsage, "invalid --subject")
+	if n := e.hs.CallCount(sendRoute); n != before {
+		t.Fatalf("refused posts sent %d", n-before)
+	}
+	id := strings.TrimSpace(e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "decision", "--subject", "BUG-260928-2qon2t", "x").ok(t).stdout)
+	ev, _ := e.hs.eventByID(id)
+	if h, _ := decodeHeader(ev.Message().A2A); h.Subject != "BUG-260928-2qon2t" || h.Subtype != "" {
+		t.Fatalf("header = %+v", h)
+	}
+}

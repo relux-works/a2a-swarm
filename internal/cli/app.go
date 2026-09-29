@@ -43,6 +43,10 @@ type App struct {
 	// opened); served counts its requests that may have been executed (see relogin.go).
 	sess   *session
 	served atomic.Int64
+
+	// afterPrint, when set (tests only), runs after `wait` printed a batch and
+	// before it saves the pending batch: an error simulates a crash there.
+	afterPrint func() error
 }
 
 // NewApp returns an App bound to the real process environment.
@@ -88,12 +92,17 @@ func commands() []command {
 		{"unpin", "unpin <room> <$event>                unpin an event", cmdUnpin},
 		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json]   print messages, oldest first", cmdRead},
 		{"archive", "archive <room|all> [--dir archive] [--json-index]   deterministic markdown export of room history", cmdArchive},
-		{"wait", "wait [--room R ...] [--all] [--timeout 25m] [--json]   block until something is addressed to me or subscribed", cmdWait},
+		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until something is addressed to me or subscribed (acks the previous batch)", cmdWait},
+		{"watch", "watch [--room R ...] [--all] [--json]   stream deliveries until interrupted, committing after each batch", cmdWatch},
+		{"ack", "ack [all]                            acknowledge the pending batch of the last wait", cmdAck},
 		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},
-		{"subscribe", "subscribe --kind k1,k2 [--room R|all]   wake on these message kinds without being addressed", cmdSubscribe},
-		{"unsubscribe", "unsubscribe [--kind k1,k2] [--room R|all]   drop kind subscriptions (all kinds without --kind)", cmdUnsubscribe},
-		{"subscriptions", "subscriptions [--json]               list kind subscriptions", cmdSubscriptions},
+		{"subscribe", "subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]   add a runtime subscription", cmdSubscribe},
+		{"unsubscribe", "unsubscribe <sub-id>|--all             remove subscriptions", cmdUnsubscribe},
+		{"subs", "subs [--json]                        list live subscriptions with ids", cmdSubs},
+		{"subscriptions", "subscriptions [--json]               alias of subs", cmdSubs},
+		{"sub-request", "sub-request <agent> --room R --topic T <selector flags> [--note text]   ask an agent to subscribe (rule 10)", cmdSubRequest},
+		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},
 		{"project", "project [--system R] [--kind k1,k2] [--once]   run the #system projector (rule 24) as this identity", cmdProject},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status set <active|idle|away> [\"text\"] | status get [name]", cmdStatus},

@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -39,53 +37,63 @@ const (
 )
 
 // classify decides whether a timeline event concerns this agent. It is pure:
-// the caller updates the thread list from the returned learnedRoot.
-func classify(ev matrix.Event, roomID, me, myName string, st config.State) (rel relevance, learnedRoot string) {
+// the caller updates the thread list from the returned learnedRoot. matched
+// lists the subscriptions that deliver the event, whatever its relevance, so
+// that the caller can close --until-kind subscriptions.
+func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub) (rel relevance, learnedRoot string, matched []string) {
 	if ev.Type != "m.room.message" {
-		return "", ""
+		return "", "", nil
 	}
 	m := ev.Message()
 	root := ev.ThreadRoot()
 	if ev.Sender == me {
 		// My own message: a reply joins me to its thread; a topic root I sent is a thread I own.
 		if root != "" {
-			return "", root
+			return "", root, nil
 		}
 		if strings.HasPrefix(m.Body, TopicPrefix) {
-			return "", ev.EventID
+			return "", ev.EventID, nil
 		}
-		return "", ""
+		return "", "", nil
 	}
 	h, hasHeader := decodeHeader(m.A2A)
+	for _, sub := range subs {
+		if sub.matches(ev, roomID, h, hasHeader) {
+			matched = append(matched, sub.ID)
+		}
+	}
 	if hasHeader && h.Type == "projection" {
 		// A projector's mirror of an event that already rang in its own room:
-		// only `wait --all` on the projection room reports it.
-		return "", ""
+		// only `wait --all` or an --all-events subscription on the projection room reports it.
+		if len(matched) > 0 {
+			return relSub, "", matched
+		}
+		return "", "", nil
 	}
 	if hasHeader {
 		for _, t := range h.To {
 			if t == myName || t == me {
-				return relTo, ""
+				return relTo, "", matched
 			}
 		}
 	}
 	if m.Mentions != nil {
 		for _, u := range m.Mentions.UserIDs {
 			if u == me {
-				return relMention, ""
+				return relMention, "", matched
 			}
 		}
 	}
 	if mentionsUser(m.Body, me) {
-		return relMention, ""
+		return relMention, "", matched
 	}
-	if hasHeader && st.Subscribed(roomID, h.Kind) {
-		return relSub, ""
+	if len(matched) > 0 {
+		return relSub, "", matched
 	}
 	if root != "" && st.HasThread(root) {
-		return relThread, ""
+		return relThread, "", nil
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // mentionsUser reports whether body contains userID as a whole token, so that
@@ -122,13 +130,22 @@ func continuesServerName(rest string) bool {
 
 // eventLine renders one doorbell line. The body excerpt is sanitized and
 // never longer than SnippetMax characters.
-func eventLine(rel relevance, room string, ev matrix.Event, server string) string {
+func eventLine(rel relevance, room string, ev matrix.Event, server, subID string) string {
 	m := ev.Message()
 	parts := []string{string(rel), room, ev.EventID, "from=" + localpartIfLocal(ev.Sender, server)}
+	if subID != "" {
+		parts = append(parts, "sub="+subID)
+	}
 	text := m.Body
 	if h, ok := decodeHeader(m.A2A); ok {
 		if h.Kind != "" {
 			parts = append(parts, "kind="+h.Kind)
+		}
+		if h.Subtype != "" {
+			parts = append(parts, "subtype="+h.Subtype)
+		}
+		if h.Subject != "" {
+			parts = append(parts, "subject="+h.Subject)
 		}
 		if h.Slug != "" {
 			parts = append(parts, "topic="+h.Slug)
@@ -170,166 +187,4 @@ func inviteLine(roomID string, state []matrix.Event, me, server string) string {
 		line += " from=" + inviter
 	}
 	return snippet(line, 400)
-}
-
-// cmdWait: a2a wait [--room R ...] [--timeout 25m]
-func cmdWait(ctx context.Context, a *App, args []string) error {
-	fs := newFlagSet("wait")
-	var rooms stringList
-	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
-	timeout := fs.Duration("timeout", DefaultWaitTimeout, "how long to wait")
-	asJSON := fs.Bool("json", false, "one JSON object per event")
-	all := fs.Bool("all", false, "wake on every new message in the --room rooms, not only on relevant ones")
-	pos, err := parseInterspersed(fs, args)
-	if err != nil {
-		return err
-	}
-	if len(pos) != 0 {
-		return usagef("usage: a2a wait [--room R ...] [--all] [--timeout 25m] [--json]")
-	}
-	if *all && len(rooms) == 0 {
-		return usagef("--all needs at least one --room")
-	}
-	if *timeout <= 0 {
-		return usagef("--timeout must be positive")
-	}
-	s, err := a.session()
-	if err != nil {
-		return err
-	}
-	filter := map[string]bool{}
-	for _, r := range rooms {
-		id, _, err := s.resolveRoom(ctx, r)
-		if err != nil {
-			return err
-		}
-		filter[id] = true
-	}
-	me := s.creds.UserID
-	labels := map[string]string{}
-	deadline := a.Now().Add(*timeout)
-
-	st, err := config.LoadState(s.paths, s.name)
-	if err != nil {
-		return err
-	}
-	if st.NextBatch == "" {
-		// First run: take a position without replaying history, but report pending invites.
-		resp, err := s.client.Sync(ctx, "", 0, initialFilter)
-		if err != nil {
-			return err
-		}
-		var lines []waitItem
-		for roomID, inv := range resp.Rooms.Invite {
-			lines = append(lines, inviteItem(roomID, inv.InviteState.Events, me, s.server))
-		}
-		if _, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-			cur.NextBatch = resp.NextBatch
-			return nil
-		}); err != nil {
-			return err
-		}
-		st.NextBatch = resp.NextBatch
-		if len(lines) > 0 {
-			return a.printWaitItems(lines, *asJSON)
-		}
-	}
-
-	for {
-		remaining := deadline.Sub(a.Now())
-		if remaining <= 0 {
-			if *asJSON {
-				return a.printJSON(map[string]string{"type": "timeout"})
-			}
-			a.printf("timeout\n")
-			return nil
-		}
-		poll := remaining
-		if poll > maxPoll {
-			poll = maxPoll
-		}
-		resp, err := s.client.Sync(ctx, st.NextBatch, poll, syncFilter)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return err
-		}
-		var lines []waitItem
-		var learned []string
-		for roomID, inv := range resp.Rooms.Invite {
-			lines = append(lines, inviteItem(roomID, inv.InviteState.Events, me, s.server))
-		}
-		// Iterate rooms in a stable order so output is deterministic.
-		for _, roomID := range sortedKeys(resp.Rooms.Join) {
-			jr := resp.Rooms.Join[roomID]
-			events, gap, err := s.timelineEvents(ctx, roomID, st.NextBatch, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch)
-			if err != nil {
-				return fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
-			}
-			if gap {
-				fmt.Fprintf(a.Stderr, "a2a: %s: more than %d events since the last wait; older ones were not checked\n", s.roomLabel(ctx, roomID, labels), maxBackfill)
-			}
-			for _, ev := range events {
-				rel, root := classify(ev, roomID, me, s.name, st)
-				if root != "" {
-					learned = append(learned, root)
-					st.AddThread(root)
-				}
-				if rel == "" && *all && filter[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
-					rel = relAll
-				}
-				if rel == "" || (len(filter) > 0 && !filter[roomID]) {
-					continue
-				}
-				label := s.roomLabel(ctx, roomID, labels)
-				lines = append(lines, waitItem{
-					line: eventLine(rel, label, ev, s.server),
-					rec:  eventRecord(string(rel), label, roomID, ev, s.server, true),
-				})
-			}
-		}
-		// Persist the position before printing, so a restart never re-emits these events.
-		st, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-			cur.NextBatch = resp.NextBatch
-			for _, r := range learned {
-				cur.AddThread(r)
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("save wait state: %w", err)
-		}
-		if len(lines) > 0 {
-			return a.printWaitItems(lines, *asJSON)
-		}
-	}
-}
-
-// waitItem is one doorbell event in both output forms.
-type waitItem struct {
-	line string
-	rec  EventRecord
-}
-
-func inviteItem(roomID string, state []matrix.Event, me, server string) waitItem {
-	room, inviter := inviteInfo(roomID, state, me, server)
-	rec := EventRecord{Type: "invite", RoomID: sanitizeLine(roomID), Sender: sanitizeLine(inviter)}
-	if room != roomID {
-		rec.Room = sanitizeLine(room)
-	}
-	return waitItem{line: inviteLine(roomID, state, me, server), rec: rec}
-}
-
-func (a *App) printWaitItems(items []waitItem, asJSON bool) error {
-	for _, it := range items {
-		if !asJSON {
-			a.printf("%s\n", it.line)
-			continue
-		}
-		if err := a.printJSON(it.rec); err != nil {
-			return err
-		}
-	}
-	return nil
 }

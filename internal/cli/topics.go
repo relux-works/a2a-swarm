@@ -29,7 +29,21 @@ const DefaultReplyBy = 12 * time.Hour
 var (
 	slugRE  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	trunkRE = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	// subjectRE bounds a structured subject: a repo@branch, a board id, PR#12, ...
+	subjectRE = regexp.MustCompile(`^[A-Za-z0-9#._/:@-]{1,128}$`)
 )
+
+// Subtypes are the structured subtypes of kind=system (protocol rule 24).
+var Subtypes = []string{"landing", "window", "incident", "blocker", "ownership", "budget"}
+
+func validSubtype(s string) bool {
+	for _, x := range Subtypes {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
 
 // Header is the structured a2a header stored under ContentKey.
 type Header struct {
@@ -45,6 +59,12 @@ type Header struct {
 	Kind    string   `json:"kind,omitempty"`
 	ReplyBy string   `json:"reply_by,omitempty"`
 	Trunk   string   `json:"trunk,omitempty"`
+	// Subtype refines kind=system (landing, window, incident, blocker, ownership, budget).
+	Subtype string `json:"subtype,omitempty"`
+	// Subject is what the message is about (repo@branch, board id, PR#12), for subscriptions.
+	Subject string `json:"subject,omitempty"`
+	// SubRequest is the requested selector of a kind=subscribe request (a2a sub-request).
+	SubRequest *SubSelector `json:"sub_request,omitempty"`
 	// Attachment is set on file messages sent by `a2a attach`.
 	Attachment *Attachment `json:"attachment,omitempty"`
 }
@@ -345,9 +365,9 @@ func validKind(k string) bool {
 	return false
 }
 
-// cmdPost: a2a post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] <text|@file|->
+// cmdPost: a2a post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
 func cmdPost(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] <text|@file|->"
+	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] <text|@file|->"
 	fs := newFlagSet("post")
 	topic := fs.String("topic", "", "topic slug or root event id")
 	kind := fs.String("kind", "notice", "message kind")
@@ -355,6 +375,8 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	to := fs.String("to", "all", "comma-separated addressees")
 	replyBy := fs.String("reply-by", "", "reply deadline (RFC3339)")
 	trunk := fs.String("trunk", "", "repo OID the message talks about")
+	subtype := fs.String("subtype", "", "system subtype (only with --kind system)")
+	subject := fs.String("subject", "", "structured subject (repo@branch, board id, PR#12)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -376,6 +398,15 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	}
 	if *trunk != "" && !trunkRE.MatchString(*trunk) {
 		return usagef("invalid --trunk %q: must be a hex git object id (7-64 chars)", *trunk)
+	}
+	if *subtype != "" && *kind != "system" {
+		return usagef("--subtype needs --kind system")
+	}
+	if *subtype != "" && !validSubtype(*subtype) {
+		return usagef("invalid --subtype %q (one of: %s)", sanitizeLine(*subtype), strings.Join(Subtypes, ", "))
+	}
+	if *subject != "" && !subjectRE.MatchString(*subject) {
+		return usagef("invalid --subject %q: 1-128 chars of A-Z a-z 0-9 # . _ / : @ -", sanitizeLine(*subject))
 	}
 	now := a.Now().UTC()
 	rb := ""
@@ -415,19 +446,30 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	}
 
 	h := Header{V: 1, Type: "message", Slug: slug, Topic: root, From: s.name, To: toNames,
-		At: now.Format(time.RFC3339), Re: *re, Kind: *kind, ReplyBy: rb, Trunk: *trunk}
+		At: now.Format(time.RFC3339), Re: *re, Kind: *kind, ReplyBy: rb, Trunk: *trunk,
+		Subtype: *subtype, Subject: *subject}
+	id, err := s.sendThreadMessage(ctx, roomID, label, h, text, mentions)
+	if err != nil {
+		return err
+	}
+	a.printf("%s\n", id)
+	return nil
+}
+
+// sendThreadMessage sends h plus text as a thread reply to h.Topic and records
+// the thread in the local state; it returns the event id.
+func (s *session) sendThreadMessage(ctx context.Context, roomID, label string, h Header, text string, mentions []string) (string, error) {
 	content := threadReply(h, mentions)
 	content["msgtype"] = "m.text"
 	content["body"] = formatHeaderBody(h, text)
 	id, err := s.client.SendMessage(ctx, roomID, content)
 	if err != nil {
-		return fmt.Errorf("post to %s: %w", label, err)
+		return "", fmt.Errorf("post to %s: %w", label, err)
 	}
-	if err := s.rememberThread(root); err != nil {
-		fmt.Fprintf(a.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
+	if err := s.rememberThread(h.Topic); err != nil {
+		fmt.Fprintf(s.app.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}
-	a.printf("%s\n", id)
-	return nil
+	return id, nil
 }
 
 // addressees turns --to into header names and m.mentions user ids.
@@ -479,6 +521,12 @@ func formatHeaderBody(h Header, text string) string {
 	}
 	if h.Trunk != "" {
 		fmt.Fprintf(&b, "- trunk: %s\n", h.Trunk)
+	}
+	if h.Subtype != "" {
+		fmt.Fprintf(&b, "- subtype: %s\n", h.Subtype)
+	}
+	if h.Subject != "" {
+		fmt.Fprintf(&b, "- subject: %s\n", h.Subject)
 	}
 	b.WriteString("\n")
 	b.WriteString(text)
@@ -652,6 +700,12 @@ func (a *App) printEvent(ev matrix.Event, server string) {
 		}
 		if h.Trunk != "" {
 			meta = append(meta, "trunk="+h.Trunk)
+		}
+		if h.Subtype != "" {
+			meta = append(meta, "subtype="+h.Subtype)
+		}
+		if h.Subject != "" {
+			meta = append(meta, "subject="+h.Subject)
 		}
 		if h.Attachment != nil {
 			meta = append(meta, "file="+h.Attachment.Name, fmt.Sprintf("size=%d", h.Attachment.Size))

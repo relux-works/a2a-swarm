@@ -11,7 +11,7 @@ import (
 // object per line by `read --json` and `wait --json`. Text fields are
 // sanitized exactly like the human-readable output.
 type EventRecord struct {
-	Type    string   `json:"type"` // read: "topic" or "message"; wait: "to", "mention", "thread" or "invite"
+	Type    string   `json:"type"` // read: "topic" or "message"; wait/watch: "to", "mention", "sub", "thread", "all" or "invite"
 	Room    string   `json:"room,omitempty"`
 	RoomID  string   `json:"room_id"`
 	EventID string   `json:"event_id,omitempty"`
@@ -25,8 +25,14 @@ type EventRecord struct {
 	Re      string   `json:"re,omitempty"`
 	ReplyBy string   `json:"reply_by,omitempty"`
 	Trunk   string   `json:"trunk,omitempty"`
-	Excerpt string   `json:"excerpt,omitempty"` // wait: at most SnippetMax characters
-	Body    string   `json:"body,omitempty"`    // read: the full text without the header lines
+	Subtype string   `json:"subtype,omitempty"`
+	Subject string   `json:"subject,omitempty"`
+	// Sub names the subscription that delivered the event (wait/watch type "sub").
+	Sub string `json:"sub,omitempty"`
+	// SubRequest is the requested selector of a kind=subscribe request.
+	SubRequest *SubSelector `json:"sub_request,omitempty"`
+	Excerpt    string       `json:"excerpt,omitempty"` // wait: at most SnippetMax characters
+	Body       string       `json:"body,omitempty"`    // read: the full text without the header lines
 	// Attachment is set for file messages (a2a attach).
 	Attachment *Attachment `json:"attachment,omitempty"`
 }
@@ -47,6 +53,11 @@ func eventRecord(typ, room, roomID string, ev matrix.Event, server string, excer
 	text := m.Body
 	if h, ok := decodeHeader(m.A2A); ok {
 		r.Kind, r.Topic, r.To, r.Re, r.ReplyBy, r.Trunk = h.Kind, h.Slug, h.To, h.Re, h.ReplyBy, h.Trunk
+		r.Subtype, r.Subject = sanitizeLine(h.Subtype), sanitizeLine(h.Subject)
+		if h.SubRequest != nil {
+			sel := h.SubRequest.sanitized()
+			r.SubRequest = &sel
+		}
 		if at := h.Attachment; at != nil {
 			r.Attachment = &Attachment{Name: sanitizeLine(at.Name), Size: at.Size, SHA256: sanitizeLine(at.SHA256),
 				MXC: sanitizeLine(at.MXC), MimeType: sanitizeLine(at.MimeType)}

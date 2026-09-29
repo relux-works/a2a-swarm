@@ -50,6 +50,13 @@ type fakeHS struct {
 	seq        int
 	txns       map[string]string // user|room|txn -> event id (send idempotency)
 	syncLimit  int               // per-room timeline limit in /sync (0 = 100, like the real filter)
+	// accountData is global account data: user id -> type -> content.
+	accountData map[string]map[string]json.RawMessage
+	// liveClock stamps events with the wall clock (strictly increasing ms)
+	// instead of the fixed 2026-09-29T10:00:00Z + seq seconds, so that
+	// subscription creation times (taken from App.Now) compare with them.
+	liveClock bool
+	lastTS    int64
 	// media repository
 	media     map[string]fakeMedia // media id -> stored upload
 	serveAs   map[string][]byte    // media id -> bytes served instead (a lying server)
@@ -147,6 +154,8 @@ func newFakeHS(t *testing.T) *fakeHS {
 	route("GET "+v1+"/rooms/{room}/threads", true, hs.threads)
 	route("GET "+v1+"/rooms/{room}/relations/{event}/m.thread", true, hs.relations)
 	route("GET "+v3+"/sync", true, hs.sync)
+	route("GET "+v3+"/user/{user}/account_data/{type}", true, hs.getAccountData)
+	route("PUT "+v3+"/user/{user}/account_data/{type}", true, hs.putAccountData)
 	route("PUT "+v3+"/presence/{user}/status", true, hs.putPresence)
 	route("GET "+v3+"/presence/{user}/status", true, hs.getPresence)
 	route("POST /_matrix/media/v3/upload", true, hs.upload)
@@ -230,9 +239,17 @@ func (hs *fakeHS) appendLocked(roomID, sender, typ string, content any) string {
 	hs.seq++
 	id := fmt.Sprintf("$ev%03d", hs.seq)
 	raw, _ := json.Marshal(content)
+	ts := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC).UnixMilli() + int64(hs.seq)*1000
+	if hs.liveClock {
+		ts = time.Now().UnixMilli()
+		if ts <= hs.lastTS {
+			ts = hs.lastTS + 1
+		}
+		hs.lastTS = ts
+	}
 	hs.events = append(hs.events, matrix.Event{
 		EventID: id, Type: typ, Sender: sender, RoomID: roomID,
-		OriginServerTS: time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC).UnixMilli() + int64(hs.seq)*1000,
+		OriginServerTS: ts,
 		Content:        raw,
 	})
 	close(hs.wake)
@@ -761,6 +778,54 @@ func (hs *fakeHS) sync(w http.ResponseWriter, r *http.Request, u string) {
 			return
 		}
 	}
+}
+
+// setAccountData stores account data directly (test setup, not over HTTP).
+func (hs *fakeHS) setAccountData(user, typ string, content any) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	if hs.accountData == nil {
+		hs.accountData = map[string]map[string]json.RawMessage{}
+	}
+	if hs.accountData[user] == nil {
+		hs.accountData[user] = map[string]json.RawMessage{}
+	}
+	hs.accountData[user][typ], _ = json.Marshal(content)
+}
+
+// accountDataOf returns the stored content (nil when never set).
+func (hs *fakeHS) accountDataOf(user, typ string) json.RawMessage {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	return hs.accountData[user][typ]
+}
+
+func (hs *fakeHS) getAccountData(w http.ResponseWriter, r *http.Request, u string) {
+	if r.PathValue("user") != u {
+		writeErr(w, 403, "M_FORBIDDEN", "Cannot get account data for other users.")
+		return
+	}
+	raw := hs.accountDataOf(u, r.PathValue("type"))
+	if raw == nil {
+		writeErr(w, 404, "M_NOT_FOUND", "Account data not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(raw)
+}
+
+func (hs *fakeHS) putAccountData(w http.ResponseWriter, r *http.Request, u string) {
+	var content json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&content); err != nil {
+		writeErr(w, 400, "M_NOT_JSON", "bad json")
+		return
+	}
+	if r.PathValue("user") != u {
+		writeErr(w, 403, "M_FORBIDDEN", "Cannot add account data for other users.")
+		return
+	}
+	hs.setAccountData(u, r.PathValue("type"), content)
+	writeJSON(w, 200, map[string]any{})
 }
 
 func (hs *fakeHS) putPresence(w http.ResponseWriter, r *http.Request, u string) {

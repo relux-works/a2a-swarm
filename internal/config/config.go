@@ -5,7 +5,7 @@
 //
 //	matrix.env              A2A_MATRIX_URL, A2A_MATRIX_SERVER_NAME, A2A_MATRIX_REGISTRATION_TOKEN
 //	agents/<name>.json      credentials, mode 0600
-//	state/<name>.json       wait state (next_batch, threads), mode 0600
+//	state/<name>.json       delivery state (cursor, pending batch, acked ring, threads), mode 0600
 package config
 
 import (
@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -234,88 +233,78 @@ func WriteCredentials(f *os.File, c Credentials) error {
 	return f.Close()
 }
 
-// State is the per-agent wait state.
+// State is the per-agent delivery state.
 type State struct {
+	// NextBatch is the committed delivery cursor: `a2a wait` syncs from it, and
+	// it moves past delivered events only when their batch is acknowledged.
 	NextBatch string `json:"next_batch,omitempty"`
+	// Pending is the batch the last `a2a wait` printed but nobody acknowledged yet.
+	Pending *Pending `json:"pending,omitempty"`
+	// Acked is a bounded ring of the last AckedMax acknowledged event ids; an
+	// event in it is never delivered again.
+	Acked []string `json:"acked,omitempty"`
 	// Threads holds thread root event ids where this agent posted or which it created.
 	Threads []string `json:"threads,omitempty"`
-	// Subscriptions maps a room id, or AllRooms, to the message kinds that wake
-	// this agent in that room even when not addressed (typed pub/sub, protocol rule 24).
-	Subscriptions map[string][]string `json:"subscriptions,omitempty"`
+	// LegacySubscriptions is the pre-v2 kind subscription map (room id or "*"
+	// to kinds). Subscriptions now live in the agent's Matrix account data; the
+	// first command that touches them moves this map there and drops it.
+	LegacySubscriptions map[string][]string `json:"subscriptions,omitempty"`
 }
 
-// AllRooms is the Subscriptions key that matches every joined room.
-const AllRooms = "*"
-
-// Subscribe adds kinds for room (a room id or AllRooms), keeping each list sorted and unique.
-func (s *State) Subscribe(room string, kinds []string) {
-	if s.Subscriptions == nil {
-		s.Subscriptions = map[string][]string{}
-	}
-	set := map[string]bool{}
-	for _, k := range s.Subscriptions[room] {
-		set[k] = true
-	}
-	for _, k := range kinds {
-		set[k] = true
-	}
-	s.Subscriptions[room] = sortedSet(set)
+// Pending is a printed but unacknowledged delivery batch.
+type Pending struct {
+	// NextBatch is where the cursor moves when the batch is acknowledged.
+	NextBatch string `json:"next_batch"`
+	// Events are the delivered event ids, added to Acked on acknowledgement.
+	Events []string `json:"events,omitempty"`
+	// CloseSubs are subscriptions whose closing event (until_kind) is in the
+	// batch; they are removed on acknowledgement.
+	CloseSubs []string `json:"close_subs,omitempty"`
 }
 
-// Unsubscribe removes kinds for room; with no kinds it removes the room entirely.
-// It reports whether anything changed.
-func (s *State) Unsubscribe(room string, kinds []string) bool {
-	cur, ok := s.Subscriptions[room]
-	if !ok {
-		return false
-	}
-	if len(kinds) == 0 {
-		delete(s.Subscriptions, room)
-		return true
-	}
-	drop := map[string]bool{}
-	for _, k := range kinds {
-		drop[k] = true
-	}
-	set := map[string]bool{}
-	for _, k := range cur {
-		if !drop[k] {
-			set[k] = true
-		}
-	}
-	if len(set) == len(cur) {
-		return false
-	}
-	if len(set) == 0 {
-		delete(s.Subscriptions, room)
-	} else {
-		s.Subscriptions[room] = sortedSet(set)
-	}
-	return true
-}
+// LegacyAllRooms is the LegacySubscriptions key that matched every joined room.
+const LegacyAllRooms = "*"
 
-// Subscribed reports whether a message of kind in roomID matches a subscription.
-func (s State) Subscribed(roomID, kind string) bool {
-	if kind == "" {
-		return false
-	}
-	for _, room := range []string{roomID, AllRooms} {
-		for _, k := range s.Subscriptions[room] {
-			if k == kind {
-				return true
-			}
+// AckedMax bounds the acknowledged-id ring.
+const AckedMax = 1000
+
+// IsAcked reports whether id was acknowledged recently (it is in the ring).
+func (s State) IsAcked(id string) bool {
+	for _, a := range s.Acked {
+		if a == id {
+			return true
 		}
 	}
 	return false
 }
 
-func sortedSet(set map[string]bool) []string {
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
+// AddAcked appends ids to the acknowledged ring, keeping the last AckedMax.
+func (s *State) AddAcked(ids ...string) {
+	for _, id := range ids {
+		if id == "" || s.IsAcked(id) {
+			continue
+		}
+		s.Acked = append(s.Acked, id)
 	}
-	sort.Strings(out)
-	return out
+	if len(s.Acked) > AckedMax {
+		s.Acked = append([]string(nil), s.Acked[len(s.Acked)-AckedMax:]...)
+	}
+}
+
+// Ack commits the pending batch: the cursor moves to its next_batch and its
+// events join the acknowledged ring. It returns the committed batch (nil when
+// nothing was pending).
+func (s *State) Ack() *Pending {
+	p := s.Pending
+	if p == nil {
+		return nil
+	}
+	if p.NextBatch != "" {
+		s.NextBatch = p.NextBatch
+	}
+	s.AddAcked(p.Events...)
+	s.Pending = nil
+	return p
 }
 
 // HasThread reports whether root is a thread this agent participates in.

@@ -23,6 +23,9 @@ type env struct {
 	stdin  string
 	tokens map[string]string // agent name -> access token (for leak checks)
 	extra  map[string]string // extra environment variables
+	// configure, when set, adjusts each App before it runs (replace Stdout,
+	// install the afterPrint crash hook).
+	configure func(*App)
 }
 
 type result struct {
@@ -85,6 +88,9 @@ func (e *env) runCtx(ctx context.Context, args ...string) result {
 		},
 		HTTP: e.hs.srv.Client(),
 		Now:  time.Now,
+	}
+	if e.configure != nil {
+		e.configure(a)
 	}
 	code := a.Run(ctx, args)
 	r := result{code: code, stdout: out.String(), stderr: errb.String()}
