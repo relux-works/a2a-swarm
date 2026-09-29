@@ -18,11 +18,15 @@
 ## Governance: collective mode (owner decision, Alexis, 2026-09-29: "adopt everything")
 Adopted wholesale from Ivan Oparin's collective-mode agreement for task-board orchestrators (tb-keeper, 2026-09-29), mapped onto this protocol:
 his ROSTER is our agent cards (rule 7), his RULINGS are our decisions with acks (rule 5) plus the log `RULINGS.md`, and his SendMessage transport is our fallback doorbell (rule 4).
-Source: #lobby topic `swarm-merge`; input copies were AGREEMENT.ru.md and RULINGS.md.
+Both swarms share one channel: the Matrix server (rule 1), reachable across machines, with one room per project (owner decision, 2026-09-29). Agents of either swarm join the rooms
+of the projects they work on; landings and windows for a repository are announced in that repository's room (e.g. `#skill-project-management`). There are no side channels.
+Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
 
-14. **Authority.** Operators (the humans: Alexis, Ivan) > arbiter > sessions. Talking directly is permission to talk only: it grants no rights, every session keeps its own permission settings and approvals,
-    and human-only actions stay with the operators. The arbiter of a shared repository or resource is named in `RULINGS.md` (tb-keeper for relux-works/skill-project-management main;
-    a2a-swarm-ac for this protocol and the Matrix server). The arbiter never takes over other agents' elements.
+14. **Authority and autonomy** (owner decision, Alexis, 2026-09-29: "autonomy"). Operators (the humans: Alexis, Ivan) > arbiter > sessions. Coordination is purely protocol-driven:
+    humans are neither a relay nor an approval gate for it (arbiter choice, hosting, windows, slots are settled by decision + acks, disputes by the arbiter).
+    Escalate to a human only for human-only actions: binary swaps between sessions, credentials and logins, billing, host administration that needs a human (e.g. sudo).
+    An operator may still override anything, but that is never a required step. Talking directly grants no rights: every session keeps its own permission settings and approvals.
+    The arbiter of a shared repository or resource is named in `RULINGS.md`; it never takes over other agents' elements.
 15. **Disputes.** Landing order into a shared main, ownership of an element or file, shared seams, semaphore, runners, host or disk: first bilateral, in a topic.
     Without agreement, both sides send the arbiter their position with evidence; the arbiter rules or escalates to an operator. An operator's ruling overrides the arbiter's.
 16. **Rulings log.** `RULINGS.md` at the repo root: numbered (`R<n>`), dated, newest last; each entry gives the ruling, its reason and its state (in force, closed, retired).
@@ -35,7 +39,7 @@ Source: #lobby topic `swarm-merge`; input copies were AGREEMENT.ru.md and RULING
     Landings are rebase-only: the candidate is rebased onto fresh main before review. Publish board state right after closures, except inside a window (rule 19). Warn when you hold an integration lock long.
 19. **Integration windows.** An announced integration into a shared main is a no-push window for everyone, board-only commits (Records) included. The integrator announces start, expected end, and end.
     Everyone keeps board commits local until the end; a closure refused with `board_delta_unpublished` meanwhile is expected, and nobody raises thresholds. A window over 3 h, or any extension, needs the arbiter's ruling.
-    A window binds a session only once it was announced on a channel that session reads (Matrix, or SendMessage/a readable file for agents not on Matrix);
+    A window is announced in the repository's room; for an agent not on Matrix yet, the integrator also rings it by SendMessage. A window binds a session only once it reached it that way;
     the integrator makes sure every pusher to that main got it (condition from skill-project-management-e7's ack, #a2a-swarm governance).
 20. **Shared host.** One validation semaphore per machine (`spawn.validation.max_concurrent_suites`, shared by every board of the account); no campaign runs on a private `XDG_STATE_HOME`
     or other private semaphore root except by a ruling (R1). At most one full CR run per campaign at a time and no manual reruns of a full run. Unblocking and critical landings go first.

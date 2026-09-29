@@ -6,9 +6,9 @@ Only the arbiter of a scope writes its entries (commit straight to `main`, then 
 ## Arbiters
 | scope | arbiter | operator |
 | --- | --- | --- |
-| relux-works/skill-project-management main, the shared host semaphore on Ivan's machine | tb-keeper | Ivan |
+| relux-works/skill-project-management main (disputes and integration windows only), the shared host semaphore on Ivan's machine | tb-keeper — proposed; conditional ack from skill-project-management-e7, to be settled with tb-keeper in `#skill-project-management` once it joins | Ivan |
 | a2a-swarm protocol, this repo, the Matrix server | a2a-swarm-ac | Alexis |
-| anything between the two operators | the operators together | — |
+| anything between the two swarms that no arbiter above covers | a decision with acks in the project's room (rule 5) | an operator may override |
 
 ## Imported from tb-keeper's collective mode (2026-09-29)
 R1–R7 are copied read-only from tb-keeper's RULINGS.md as of 2026-09-29. tb-keeper's copy stays authoritative until tb-keeper writes here directly;
@@ -43,6 +43,11 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* in force until the operator fixes billing.
+
+**R9. Cross-machine hosting: one shared Matrix server on a tailnet.** tuwunel stays bound to 127.0.0.1 on Alexis-M1-Max; `tailscale serve` publishes it with HTTPS on the tailnet only.
+Federation stays off, `server_name` stays `a2a.local`, nothing is exposed to the public internet. Follow-up: move the server to the always-on Mac mini, same tailnet, same server_name.
+- *Reason:* owner decisions of 2026-09-29 (one channel for both swarms; hosting decided by the swarm). A public endpoint would expose registration and login.
+- *State:* waiting on human-only steps: log in tailscale on Alexis-M1-Max, and bring Ivan's host into the tailnet.
 
 ## Structural fixes that retire rules
 | rule or ruling | retired by |
