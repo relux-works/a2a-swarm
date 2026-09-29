@@ -263,6 +263,86 @@ func nextStage(u uiaResponse) (string, bool) {
 	return "", false
 }
 
+// --- login, deactivation ----------------------------------------------------------
+
+// LoginResponse is the successful /login response.
+type LoginResponse struct {
+	UserID      string `json:"user_id"`
+	AccessToken string `json:"access_token"`
+	DeviceID    string `json:"device_id"`
+}
+
+// userIdentifier is the m.id.user identifier used by password login and UIA.
+func userIdentifier(userID string) map[string]string {
+	return map[string]string{"type": "m.id.user", "user": userID}
+}
+
+// Login performs m.login.password for userID. A non-empty deviceID asks the
+// server to reuse that device, so the device (and its display name) is kept.
+func (c *Client) Login(ctx context.Context, userID, password, deviceID string) (LoginResponse, error) {
+	req := map[string]any{
+		"type":       "m.login.password",
+		"identifier": userIdentifier(userID),
+		"password":   password,
+	}
+	if deviceID != "" {
+		req["device_id"] = deviceID
+	}
+	var out LoginResponse
+	err := c.call(ctx, http.MethodPost, v3+"/login", nil, req, &out)
+	return out, err
+}
+
+// Deactivate permanently deactivates the authenticated account with
+// user-interactive auth: the first request learns the UIA session, the second
+// completes the m.login.password stage with userID and password.
+func (c *Client) Deactivate(ctx context.Context, userID, password string) error {
+	path := v3 + "/account/deactivate"
+	err := c.call(ctx, http.MethodPost, path, nil, map[string]any{}, nil)
+	if err == nil {
+		return nil // the server asked for no authentication
+	}
+	var me *Error
+	if !errors.As(err, &me) || me.Status != http.StatusUnauthorized {
+		return fmt.Errorf("deactivate: %w", err)
+	}
+	var uia uiaResponse
+	if json.Unmarshal(me.Raw, &uia) != nil || uia.Session == "" {
+		return fmt.Errorf("deactivate: %w", err)
+	}
+	if !hasFlow(uia, "m.login.password") {
+		return fmt.Errorf("deactivate: the homeserver offers no m.login.password flow")
+	}
+	req := map[string]any{"auth": map[string]any{
+		"type":       "m.login.password",
+		"identifier": userIdentifier(userID),
+		"password":   password,
+		"session":    uia.Session,
+	}}
+	err = c.call(ctx, http.MethodPost, path, nil, req, nil)
+	if IsStatus(err, http.StatusUnauthorized) {
+		var code string
+		if errors.As(err, &me) {
+			code = me.ErrCode
+		}
+		return fmt.Errorf("deactivate: password rejected by the homeserver (%s)", code)
+	}
+	if err != nil {
+		return fmt.Errorf("deactivate: %w", err)
+	}
+	return nil
+}
+
+// hasFlow reports whether u offers a single-stage flow of stage.
+func hasFlow(u uiaResponse, stage string) bool {
+	for _, f := range u.Flows {
+		if len(f.Stages) == 1 && f.Stages[0] == stage {
+			return true
+		}
+	}
+	return false
+}
+
 // --- account, rooms ------------------------------------------------------------
 
 // WhoamiResponse is GET /account/whoami.

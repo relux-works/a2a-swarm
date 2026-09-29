@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -37,6 +38,11 @@ type App struct {
 	// as is the identity from --as (overrides A2A_AGENT).
 	as      string
 	secrets redact.Set
+
+	// sess is the last session opened by the running command (nil before one is
+	// opened); served counts its requests that may have been executed (see relogin.go).
+	sess   *session
+	served atomic.Int64
 }
 
 // NewApp returns an App bound to the real process environment.
@@ -70,6 +76,7 @@ func commands() []command {
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
 		{"join", "join <room>                          join a room", cmdJoin},
+		{"leave", "leave <room> [--force]               leave a room (#lobby only with --force)", cmdLeave},
 		{"invite", "invite <room> <@user|name>           invite someone to a room", cmdInvite},
 		{"topic", "topic new <room> <slug> \"<title>\" [--body -|@file|text]   start a topic thread", cmdTopic},
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
@@ -127,7 +134,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
-			return a.fail(c.run(ctx, a, rest[1:]))
+			return a.fail(a.runWithRelogin(ctx, c, rest[1:]))
 		}
 	}
 	return a.fail(usagef("unknown command %q (see: a2a help)", rest[0]))
@@ -292,8 +299,10 @@ func (a *App) session() (*session, error) {
 		server = mx.ServerName
 	}
 	c := matrix.New(base, creds.AccessToken)
-	c.HTTP = a.HTTP
-	return &session{app: a, paths: p, mx: mx, name: name, creds: creds, client: c, server: server}, nil
+	c.HTTP = a.probedHTTP()
+	s := &session{app: a, paths: p, mx: mx, name: name, creds: creds, client: c, server: server}
+	a.sess = s
+	return s, nil
 }
 
 func (a *App) printf(format string, args ...any) {

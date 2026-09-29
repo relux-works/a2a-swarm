@@ -75,7 +75,8 @@ func copySecretFile(t *testing.T, src, dst string) {
 // topic creation, a question addressed to the new agent that wakes its wait,
 // an answer that wakes the operator, threaded read, no re-emit after restart,
 // and presence. It writes only to #a2a-swarm (plus the new account's presence)
-// and leaves the room at the end. Gated by A2A_MATRIX_IT=1.
+// and at the end leaves the room, deactivates the throwaway account, and deletes
+// its credential file. Gated by A2A_MATRIX_IT=1.
 func TestIntegrationRealHomeserver(t *testing.T) {
 	if os.Getenv("A2A_MATRIX_IT") != "1" {
 		t.Skip("set A2A_MATRIX_IT=1 to run against the local homeserver")
@@ -107,6 +108,23 @@ func TestIntegrationRealHomeserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.secrets = append(e.secrets, creds.AccessToken, creds.Password)
+	// Runs last (defers are LIFO, the room leave below runs first): deactivate the
+	// throwaway account and delete its credential file, so no account is left behind.
+	defer func() {
+		cur, err := config.LoadCredentials(dst, name) // a relogin may have replaced the token
+		if err != nil {
+			cur = creds
+		}
+		c := matrix.New(cur.Homeserver, cur.AccessToken)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := c.Deactivate(ctx, cur.UserID, cur.Password); err != nil {
+			t.Errorf("cleanup: deactivate %s: %v", cur.UserID, err)
+		}
+		if err := os.Remove(dst.AgentFile(name)); err != nil {
+			t.Errorf("cleanup: remove credential file: %v", err)
+		}
+	}()
 	e.run("register", name).failsWith(t, ExitError, "refusing to overwrite")
 	tuitestkit.ContainsStr(t, e.run("--as", name, "whoami").ok(t).stdout, "@"+name+":")
 

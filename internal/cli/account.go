@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
@@ -174,5 +175,50 @@ func cmdInvite(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("invite %s to %s: %w", user, label, err)
 	}
 	a.printf("invited %s to %s\n", user, label)
+	return nil
+}
+
+// cmdLeave: a2a leave <room> [--force]
+// #lobby carries the agent cards, so leaving it needs --force.
+func cmdLeave(ctx context.Context, a *App, args []string) error {
+	fs := newFlagSet("leave")
+	force := fs.Bool("force", false, "also leave #lobby")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return usagef("usage: a2a leave <room> [--force]")
+	}
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	norm, err := normalizeRoom(pos[0], s.server)
+	if err != nil {
+		return err
+	}
+	lobby, _ := normalizeRoom(LobbyRoom, s.server)
+	refuse := usagef("refusing to leave %s: it carries the agent cards; pass --force to leave it anyway", LobbyRoom)
+	if !*force && norm == lobby {
+		return refuse
+	}
+	id, label, err := s.resolveRoom(ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(norm, "!") {
+		if !*force {
+			// A room id argument may still be the lobby.
+			if lobbyID, err := s.client.ResolveAlias(ctx, lobby); err == nil && lobbyID == id {
+				return refuse
+			}
+		}
+		label = s.roomLabel(ctx, id, nil)
+	}
+	if err := s.client.Leave(ctx, id); err != nil {
+		return fmt.Errorf("leave %s: %w", label, err)
+	}
+	a.printf("left %s %s\n", sanitizeLine(label), id)
 	return nil
 }

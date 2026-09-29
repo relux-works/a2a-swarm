@@ -152,6 +152,67 @@ func TestCreateCredentialFileRefusesOverwrite(t *testing.T) {
 	}
 }
 
+func writeTestCreds(t *testing.T, p Paths, name string, c Credentials) {
+	t.Helper()
+	f, err := CreateCredentialFile(p, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCredentials(f, c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Proves UpdateCredentials rewrites the file at the same path as a regular
+// 0600 file, keeps the other fields, and leaves no temp file.
+func TestUpdateCredentials(t *testing.T) {
+	p := testPaths(t)
+	writeTestCreds(t, p, "a", Credentials{UserID: "@a:s", AccessToken: "old-token-1", DeviceID: "D", Password: "pw-123456"})
+	got, err := UpdateCredentials(p, "a", func(c *Credentials) error { c.AccessToken = "new-token-2"; return nil })
+	if err != nil || got.AccessToken != "new-token-2" {
+		t.Fatalf("UpdateCredentials = %+v, %v", got, err)
+	}
+	c, err := LoadCredentials(p, "a")
+	if err != nil || c.AccessToken != "new-token-2" || c.DeviceID != "D" || c.Password != "pw-123456" {
+		t.Fatalf("on disk = %+v, %v", c, err)
+	}
+	if st, _ := os.Lstat(p.AgentFile("a")); st.Mode().Perm() != 0o600 || !st.Mode().IsRegular() {
+		t.Fatalf("mode = %v", st.Mode())
+	}
+	entries, _ := os.ReadDir(filepath.Dir(p.AgentFile("a")))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("temp file left: %s", e.Name())
+		}
+	}
+}
+
+// Proves UpdateCredentials never writes when the callback fails or reports
+// ErrUnchanged, and refuses a file whose mode is not 0600 without touching it.
+func TestUpdateCredentialsNoWrite(t *testing.T) {
+	p := testPaths(t)
+	writeTestCreds(t, p, "a", Credentials{UserID: "@a:s", AccessToken: "old-token-1"})
+	before, _ := os.ReadFile(p.AgentFile("a"))
+	boom := errors.New("boom")
+	if _, err := UpdateCredentials(p, "a", func(c *Credentials) error { c.AccessToken = "x-token-9"; return boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	if _, err := UpdateCredentials(p, "a", func(c *Credentials) error { c.AccessToken = "x-token-9"; return ErrUnchanged }); err != nil {
+		t.Fatalf("ErrUnchanged: err = %v", err)
+	}
+	if after, _ := os.ReadFile(p.AgentFile("a")); string(after) != string(before) {
+		t.Fatal("file written despite a failed or unchanged callback")
+	}
+	os.Chmod(p.AgentFile("a"), 0o644)
+	called := false
+	if _, err := UpdateCredentials(p, "a", func(*Credentials) error { called = true; return nil }); err == nil || !strings.Contains(err.Error(), "want 0600") || called {
+		t.Fatalf("loose mode: err = %v called = %v", err, called)
+	}
+	if st, _ := os.Stat(p.AgentFile("a")); st.Mode().Perm() != 0o644 {
+		t.Fatalf("mode changed to %o", st.Mode().Perm())
+	}
+}
+
 // Proves that state round-trips with mode 0600, that a missing state is empty,
 // and that a state file with a loose mode is refused.
 func TestState(t *testing.T) {

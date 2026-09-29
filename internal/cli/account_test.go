@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -8,6 +10,7 @@ import (
 	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
 // Proves the two-step UIA registration works end to end: the credential file is
@@ -199,4 +202,75 @@ func TestUsage(t *testing.T) {
 	tuitestkit.ContainsStr(t, r.stdout, "wait [--room R ...]")
 	e.run("--as").failsWith(t, ExitUsage, "--as needs a name")
 	e.run("--as", "../x", "whoami").failsWith(t, ExitUsage, "invalid agent name")
+}
+
+// Proves leave removes the room from rooms and cuts read access (M_FORBIDDEN),
+// while another member (positive control) still reads the room.
+func TestLeave(t *testing.T) {
+	e, _ := world(t)
+	r := e.as("alice", "leave", "proj").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "left #proj !projRoomID")
+	tuitestkit.NotContainsStr(t, e.as("alice", "rooms").ok(t).stdout, "#proj")
+	e.as("alice", "read", "proj").failsWith(t, ExitError, "M_FORBIDDEN")
+	e.as("bob", "read", "proj").ok(t)
+	// A room id argument is labelled with its canonical alias.
+	r = e.as("bob", "leave", "!projRoomID").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "left #proj !projRoomID")
+}
+
+// Proves leaving #lobby (by any room form) is a usage error without --force and
+// never reaches the leave route; with --force it leaves.
+func TestLeaveLobbyNeedsForce(t *testing.T) {
+	e, _ := world(t)
+	for _, arg := range []string{"lobby", "#lobby", "#lobby:test.local", "!lobbyRoomID"} {
+		e.as("alice", "leave", arg).failsWith(t, ExitUsage, "pass --force")
+	}
+	tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, "POST /_matrix/client/v3/rooms/{room}/leave")
+	tuitestkit.ContainsStr(t, e.as("alice", "rooms").ok(t).stdout, "#lobby")
+	r := e.as("alice", "leave", "lobby", "--force").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "left #lobby !lobbyRoomID")
+	tuitestkit.NotContainsStr(t, e.as("alice", "rooms").ok(t).stdout, "#lobby")
+}
+
+// Proves leave reports unknown rooms and rejects bad arguments before any leave request.
+func TestLeaveNegative(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "leave", "nowhere").failsWith(t, ExitError, "unknown room alias #nowhere:test.local")
+	e.as("alice", "leave", "!missingRoomID").failsWith(t, ExitError, "M_NOT_FOUND")
+	e.as("alice", "leave").failsWith(t, ExitUsage, "usage: a2a leave")
+	e.as("alice", "leave", "a", "b").failsWith(t, ExitUsage, "usage: a2a leave")
+	e.as("alice", "leave", "#bad alias!").failsWith(t, ExitUsage, "invalid room")
+	tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, "POST /_matrix/client/v3/rooms/{room}/leave", 1)
+}
+
+// Proves Deactivate completes the two-step m.login.password UIA against the
+// fake homeserver: after it the account's token is rejected.
+func TestDeactivate(t *testing.T) {
+	e := newEnv(t)
+	uid, tok := e.hs.addUser("gone")
+	c := matrix.New(e.hs.srv.URL, tok)
+	c.HTTP = e.hs.srv.Client()
+	if err := c.Deactivate(context.Background(), uid, "pw-gone-secret"); err != nil {
+		t.Fatal(err)
+	}
+	tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, "POST /_matrix/client/v3/account/deactivate", 2)
+	if _, err := c.Whoami(context.Background()); !errors.Is(err, matrix.ErrAuth) {
+		t.Fatalf("whoami after deactivate: %v, want ErrAuth", err)
+	}
+}
+
+// Proves Deactivate with a wrong password is refused with a clear error that
+// does not echo the password, and the account keeps working.
+func TestDeactivateWrongPassword(t *testing.T) {
+	e := newEnv(t)
+	uid, tok := e.hs.addUser("kept")
+	c := matrix.New(e.hs.srv.URL, tok)
+	c.HTTP = e.hs.srv.Client()
+	err := c.Deactivate(context.Background(), uid, "wrong-password-value")
+	if err == nil || !strings.Contains(err.Error(), "password rejected") || strings.Contains(err.Error(), "wrong-password-value") {
+		t.Fatalf("err = %v", err)
+	}
+	if w, err := c.Whoami(context.Background()); err != nil || w.UserID != uid {
+		t.Fatalf("account broken after refused deactivation: %+v %v", w, err)
+	}
 }

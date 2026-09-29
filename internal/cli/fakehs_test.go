@@ -35,6 +35,8 @@ type fakeHS struct {
 	regToken   string
 	tokens     map[string]string // token -> user id
 	users      map[string]bool
+	passwords  map[string]string // user id -> password (for login and deactivation UIA)
+	logins     []string          // device ids requested by successful logins
 	aliases    map[string]string
 	rooms      map[string]*fakeRoom
 	events     []matrix.Event // stream position = index + 1
@@ -87,6 +89,7 @@ func newFakeHS(t *testing.T) *fakeHS {
 		regToken:   "reg-token-SECRET-1234",
 		tokens:     map[string]string{},
 		users:      map[string]bool{},
+		passwords:  map[string]string{},
 		aliases:    map[string]string{},
 		rooms:      map[string]*fakeRoom{},
 		presence:   map[string]matrix.Presence{},
@@ -126,6 +129,8 @@ func newFakeHS(t *testing.T) *fakeHS {
 	}
 	const v3, v1 = "/_matrix/client/v3", "/_matrix/client/v1"
 	route("POST "+v3+"/register", false, hs.register)
+	route("POST "+v3+"/login", false, hs.login)
+	route("POST "+v3+"/account/deactivate", true, hs.deactivate)
 	route("GET "+v3+"/account/whoami", true, func(w http.ResponseWriter, r *http.Request, u string) {
 		writeJSON(w, 200, map[string]string{"user_id": u, "device_id": "DEV" + localpart(u)})
 	})
@@ -176,7 +181,25 @@ func (hs *fakeHS) addUser(name string) (string, string) {
 	tok := "syt_" + name + "_tok_" + strconv.Itoa(len(hs.tokens)+1) + "xyz"
 	hs.users[uid] = true
 	hs.tokens[tok] = uid
+	hs.passwords[uid] = "pw-" + name + "-secret" // what env.writeCred stores
 	return uid, tok
+}
+
+// revoke invalidates every access token of userID (as a logout or admin reset does).
+func (hs *fakeHS) revoke(userID string) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	for tok, u := range hs.tokens {
+		if u == userID {
+			delete(hs.tokens, tok)
+		}
+	}
+}
+
+func (hs *fakeHS) loginDevices() []string {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	return append([]string(nil), hs.logins...)
 }
 
 // addRoom creates a room with an alias and joined members.
@@ -306,8 +329,82 @@ func (hs *fakeHS) register(w http.ResponseWriter, r *http.Request, _ string) {
 	}
 	tok := "syt_" + req.Username + "_newtoken_abcdef"
 	hs.users[uid] = true
+	hs.passwords[uid] = req.Password
 	hs.tokens[tok] = uid
 	writeJSON(w, 200, map[string]string{"user_id": uid, "access_token": tok, "device_id": "NEWDEV"})
+}
+
+type fakeIdentifier struct {
+	Type string `json:"type"`
+	User string `json:"user"`
+}
+
+// passwordOK checks an m.id.user identifier and password (callers hold hs.mu).
+func (hs *fakeHS) passwordOK(id fakeIdentifier, password string) (string, bool) {
+	uid := id.User
+	if !strings.HasPrefix(uid, "@") {
+		uid = "@" + uid + ":" + hs.server
+	}
+	return uid, id.Type == "m.id.user" && hs.users[uid] && hs.passwords[uid] != "" && hs.passwords[uid] == password
+}
+
+func (hs *fakeHS) login(w http.ResponseWriter, r *http.Request, _ string) {
+	var req struct {
+		Type       string         `json:"type"`
+		Identifier fakeIdentifier `json:"identifier"`
+		Password   string         `json:"password"`
+		DeviceID   string         `json:"device_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	uid, ok := hs.passwordOK(req.Identifier, req.Password)
+	if req.Type != "m.login.password" || !ok {
+		writeErr(w, 403, "M_FORBIDDEN", "Invalid username or password")
+		return
+	}
+	device := req.DeviceID
+	if device == "" {
+		device = "LOGINDEV"
+	}
+	hs.logins = append(hs.logins, device)
+	tok := "syt_" + localpart(uid) + "_relogin_" + strconv.Itoa(len(hs.logins)) + "xyz"
+	hs.tokens[tok] = uid
+	writeJSON(w, 200, map[string]string{"user_id": uid, "access_token": tok, "device_id": device})
+}
+
+// deactivate implements UIA with a single m.login.password stage.
+func (hs *fakeHS) deactivate(w http.ResponseWriter, r *http.Request, u string) {
+	var req struct {
+		Auth *struct {
+			Type       string         `json:"type"`
+			Identifier fakeIdentifier `json:"identifier"`
+			Password   string         `json:"password"`
+			Session    string         `json:"session"`
+		} `json:"auth"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	uia := map[string]any{"session": "deact-1", "flows": []any{map[string]any{"stages": []string{"m.login.password"}}}, "params": map[string]any{}}
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	if req.Auth == nil {
+		writeJSON(w, 401, uia)
+		return
+	}
+	uid, ok := hs.passwordOK(req.Auth.Identifier, req.Auth.Password)
+	if req.Auth.Type != "m.login.password" || req.Auth.Session != "deact-1" || !ok || uid != u {
+		uia["errcode"], uia["error"] = "M_FORBIDDEN", "Invalid password"
+		uia["completed"] = []string{}
+		writeJSON(w, 401, uia)
+		return
+	}
+	for tok, owner := range hs.tokens {
+		if owner == u {
+			delete(hs.tokens, tok)
+		}
+	}
+	delete(hs.users, u)
+	writeJSON(w, 200, map[string]string{"id_server_unbind_result": "no-support"})
 }
 
 func (hs *fakeHS) joinedRooms(w http.ResponseWriter, _ *http.Request, u string) {

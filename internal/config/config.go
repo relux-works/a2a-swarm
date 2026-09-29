@@ -376,15 +376,21 @@ func LoadState(p Paths, name string) (State, error) {
 // SaveState writes state/<name>.json atomically (temp file + rename) with mode 0600.
 func SaveState(p Paths, name string, s State) error {
 	path := p.StateFile(name)
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, "."+name+".*.tmp")
+	return writeSecretAtomic(path, name, append(data, '\n'))
+}
+
+// writeSecretAtomic replaces path with data: a temporary file in the same
+// directory, forced to mode 0600, synced, then renamed over path. A reader sees
+// either the old or the new content, never a partial file, and the mode is never wider than 0600.
+func writeSecretAtomic(path, name string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+name+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -394,7 +400,7 @@ func SaveState(p Paths, name string, s State) error {
 		cleanup()
 		return err
 	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		cleanup()
 		return err
 	}
@@ -406,7 +412,50 @@ func SaveState(p Paths, name string, s State) error {
 		os.Remove(tmpName)
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// ErrUnchanged is returned by an UpdateCredentials callback to skip the write.
+var ErrUnchanged = errors.New("credentials unchanged")
+
+// UpdateCredentials runs fn on the current agents/<name>.json under an
+// exclusive lock (agents/.<name>.lock) and, unless fn returns ErrUnchanged,
+// atomically rewrites the file with the result (temp file + rename in the same
+// directory, mode 0600). The existing file must already pass the 0600
+// regular-file check; its path never changes. It returns the credentials now on disk.
+func UpdateCredentials(p Paths, name string, fn func(*Credentials) error) (Credentials, error) {
+	if err := ValidateName(name); err != nil {
+		return Credentials{}, err
+	}
+	path := p.AgentFile(name)
+	unlock, err := lockFile(filepath.Join(filepath.Dir(path), "."+name+".lock"))
+	if err != nil {
+		return Credentials{}, err
+	}
+	defer unlock()
+	c, err := LoadCredentials(p, name)
+	if err != nil {
+		return Credentials{}, err
+	}
+	next := c
+	if err := fn(&next); err != nil {
+		if errors.Is(err, ErrUnchanged) {
+			return c, nil
+		}
+		return c, err
+	}
+	data, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return c, err
+	}
+	if err := writeSecretAtomic(path, name, append(data, '\n')); err != nil {
+		return c, fmt.Errorf("rewrite %s: %w", path, err)
+	}
+	return next, nil
 }
 
 // UpdateState runs fn on the current state under an exclusive lock

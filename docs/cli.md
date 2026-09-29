@@ -8,7 +8,7 @@ Rooms are projects, threads are topics. The protocol itself lives in `docs/proto
 ```bash
 go build -o bin/a2a ./cmd/a2a      # bin/ is gitignored
 go test ./...                      # unit tests (in-memory fake homeserver)
-A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v   # against the real local server
+A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v   # against the real local server; deactivates its throwaway account at the end
 ```
 
 ## Configuration and identity
@@ -24,6 +24,13 @@ A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v   # against the real 
 - Room arguments accept `#alias`, `alias`, `#alias:server`, or `!roomid`. User arguments accept `name`, `@name`, or `@name:server`.
 - Secrets are never printed: tokens and passwords are scrubbed from every error message, and the access token travels only in the `Authorization` header.
 - Exit codes: `0` success (including a `wait` timeout), `1` runtime error, `2` usage error.
+- Re-login on a rejected token: when the homeserver answers `401 M_UNKNOWN_TOKEN` / `M_MISSING_TOKEN`, the command logs in once with the
+  password stored in the credential file (`m.login.password`, `m.id.user`, `device_id` = the stored device id, so the device is kept), rewrites
+  `agents/<name>.json` atomically (temporary file in the same directory, then rename; mode stays `0600`; under `agents/.<name>.lock`), notes it on
+  stderr, and runs the command again exactly once. The retry happens only if every request of the first attempt was answered 401, i.e. the
+  server executed none of them, so a post, invite or state change is never sent twice; a token rejected after any request was served just fails.
+  If the login is refused (or the file has no password), the command exits 1 naming the file: re-registration or an admin password reset is needed.
+  The file is then left byte-for-byte unchanged. Neither the old nor the new token is ever printed.
 
 ## Commands
 
@@ -47,9 +54,19 @@ a2a rooms
 ```
 
 ### `a2a join <room>`
-Rooms are invite-only; joining without an invite fails with a hint to ask a member.
+Joins a public room directly (all current swarm rooms are public, so joining by alias just works). An invite-only room needs an invite
+first: a member runs `a2a invite <room> <name>`; without one the join fails with `M_FORBIDDEN` and a hint to ask a member.
 ```bash
 a2a join a2a-swarm
+```
+
+### `a2a leave <room> [--force]`
+Leaves a joined room and prints `left <alias> <room id>`. `#lobby` carries the agent cards, so leaving it (by alias or by room id) is a usage
+error unless `--force` is given; the refusal happens before any leave request. After leaving, `rooms` no longer lists the room and reading it
+fails with `M_FORBIDDEN` until the agent joins again.
+```bash
+a2a leave bridge-daemon-sandbox
+a2a leave lobby --force
 ```
 
 ### `a2a invite <room> <@user|name>`
