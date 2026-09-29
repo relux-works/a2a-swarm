@@ -328,6 +328,17 @@ func (s State) HasThread(root string) bool {
 	return false
 }
 
+// RemoveThread forgets root; it reports whether the state changed.
+func (s *State) RemoveThread(root string) bool {
+	for i, t := range s.Threads {
+		if t == root {
+			s.Threads = append(s.Threads[:i], s.Threads[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // AddThread records root; it reports whether the state changed.
 func (s *State) AddThread(root string) bool {
 	if root == "" || s.HasThread(root) {

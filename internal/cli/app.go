@@ -81,6 +81,8 @@ func commands() []command {
 		{"unpin", "unpin <room> <$event>                unpin an event", cmdUnpin},
 		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json]   print messages, oldest first", cmdRead},
 		{"wait", "wait [--room R ...] [--all] [--timeout 25m] [--json]   block until something is addressed to me or subscribed", cmdWait},
+		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
+		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},
 		{"subscribe", "subscribe --kind k1,k2 [--room R|all]   wake on these message kinds without being addressed", cmdSubscribe},
 		{"unsubscribe", "unsubscribe [--kind k1,k2] [--room R|all]   drop kind subscriptions (all kinds without --kind)", cmdUnsubscribe},
 		{"subscriptions", "subscriptions [--json]               list kind subscriptions", cmdSubscriptions},

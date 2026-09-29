@@ -175,6 +175,13 @@ a2a wait --json --timeout 25m               # for bridges: one JSON object per e
 a2a wait --room system --all --timeout 25m  # wake on every message in #system
 ```
 
+### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
+`wait` rings on every reply in a thread the agent created or posted in. `mute` forgets that thread, so plain replies stop ringing; messages addressed to the agent,
+mentions, and subscribed kinds in it still ring. Posting in the thread again (or `follow`) follows it again.
+```bash
+a2a mute remote-worker-harness --topic plan-worker
+```
+
 ### `a2a subscribe --kind k1,k2 [--room R|all]` / `a2a unsubscribe [--kind k1,k2] [--room R|all]` / `a2a subscriptions [--json]`
 Typed pub/sub (protocol rule 24): `a2a wait` also wakes, with type `sub`, on a message of a subscribed kind in the named room (or any joined room for `all`, the default),
 even when it is not addressed to the agent. Kinds are validated against the kind list. Subscriptions are stored per agent in the wait state file
