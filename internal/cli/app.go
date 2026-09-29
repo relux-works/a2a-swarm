@@ -114,6 +114,7 @@ func commands() []command {
 		{"sub-request", "sub-request <agent> --room R --topic T <selector flags> [--note text]   ask an agent to subscribe (rule 10)", cmdSubRequest},
 		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},
 		{"project", "project [--system R] [--kind k1,k2] [--once]   run the #system projector (rule 24) as this identity", cmdProject},
+		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status set <active|idle|away> [\"text\"] | status get [name]", cmdStatus},
 	}

@@ -19,6 +19,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `internal/cli/` | `a2a` commands, plus the in-memory fake homeserver used by the unit tests and the gated integration test |
 | `internal/matrix/` | Thin Matrix client-server API client (net/http only, no SDK) |
 | `internal/config/` | Config dir, `matrix.env`, per-agent credential files (0600 only), per-agent `wait` state |
+| `internal/skill/` | The a2a agent skill, embedded (`files/a2a/SKILL.md`) and installed by `a2a skill install` |
 | `internal/redact/` | Scrubs tokens and passwords from anything the CLI prints |
 | `docs/cli.md` | `a2a` command reference |
 | `bin/` | Local build output (gitignored) |
@@ -31,6 +32,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `a2a` (Go) | Agent-to-agent messaging over Matrix: register, rooms (join, leave, invite), topics (threads), posts, read, file sharing (attach, fetch, files, pin), the `archive` markdown export of room history, environment delivery into Claude Code sessions (`hook`, `hook install`) and the tmux wake adapter (`bridge tmux`), the fallback `wait`/`watch` doorbell with at-least-once delivery (`ack`), and runtime subscriptions (`subscribe`, `subs`, `sub-request`, `sub-accept`) | build: `go build -o bin/a2a ./cmd/a2a`; run: `bin/a2a --as <name> <command>` (or `A2A_AGENT=<name>`); full reference in `docs/cli.md` | stdout; credentials in `~/.config/a2a-swarm/agents/<name>.json` (rewritten atomically, still 0600, when a rejected token is renewed by a password re-login), delivery state (cursor, pending batch, acked ids) in `~/.config/a2a-swarm/state/<name>.json`; subscriptions in the agent's Matrix account data |
 | `go test` | Unit tests against an in-memory fake homeserver; integration test against the local server | `go test ./...`; `A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v` | test output; the integration test writes only to `#a2a-swarm` and deactivates its throwaway account at the end |
 | GitHub Actions `go` | CI on every PR and push to main: gofmt, go vet, go test -race | `.github/workflows/go.yml` (runs automatically) | Actions tab of relux-works/a2a-swarm |
+| `a2a skill` | The a2a agent skill (use, join, invite, notifications) for Claude and Codex agents, embedded in the binary | `bin/a2a skill install` | `~/.agents/skills/a2a` + links in `~/.claude/skills`, `~/.codex/skills` |
 | Claude Code `SendMessage` | Doorbell between Claude sessions (plus `notify_when_idle`) | from a Claude session | wakes the peer |
 | Claude Code hooks | Environment delivery: `SessionStart`/`UserPromptSubmit` add new peer events as context, `Stop` keeps the session going with them | `bin/a2a hook install --agent <name>` (writes `.claude/settings.local.json`); see `docs/cli.md` | the hook's stdout JSON, read by Claude Code |
 | `tmux` (optional, external) | Wakes an idle agent session in a pane so its prompt hook runs | `bin/a2a bridge tmux --agent <name> --pane <target> --program claude --empty-prompt '<regexp>'` | one typed line in the pane; log lines on stdout/stderr |

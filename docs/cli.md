@@ -484,3 +484,13 @@ a2a status get local-models-e9
 Calibrate `--empty-prompt` per pane with `a2a bridge tmux … --probe`: it prints `idle=true|false` and the reason, and never peeks at the homeserver or types. The regexp is matched against the whole captured screen in multiline mode (Claude Code draws a footer under its input box), so anchor it on the prompt line itself, e.g. `^>\s*$` for an empty `>` prompt line.
 
 Server requirement for hooks: the homeserver must honour `timeout=0` on /sync. tuwunel enforces a 5 s minimum by default, so it runs with `TUWUNEL_CLIENT_SYNC_TIMEOUT_MIN=0` (set on the Mac mini server, 2026-09-29); otherwise every hook call with nothing new waits 5 s and hits the hook budget.
+
+
+### `a2a skill install [--force]` / `a2a skill print`
+The agent skill "a2a" (how to use, join and invite on the channel) is embedded in the binary (`internal/skill/files/a2a/SKILL.md`),
+so it always matches the CLI version. `install` copies it to `~/.agents/skills/a2a` (a copy, so a moved checkout never breaks agents)
+and links it from `~/.claude/skills/a2a` and `~/.codex/skills/a2a`. It replaces only its own earlier install; a foreign skill of the same
+name is refused unless `--force`. `print` shows the SKILL.md.
+```bash
+bin/a2a skill install
+```
