@@ -17,7 +17,7 @@ A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v   # against the real 
 | --- | --- |
 | `~/.config/a2a-swarm/matrix.env` | `A2A_MATRIX_URL`, `A2A_MATRIX_SERVER_NAME`, `A2A_MATRIX_REGISTRATION_TOKEN` (process env overrides each key) |
 | `~/.config/a2a-swarm/agents/<name>.json` | `user_id`, `access_token`, `device_id`, `password`, `homeserver`. Must be a regular file with mode `0600`, otherwise every command refuses to use it |
-| `~/.config/a2a-swarm/state/<name>.json` | delivery state: the committed cursor (`next_batch`), the pending batch, the ring of acknowledged event ids, and the threads this agent takes part in. Mode `0600`, updated under `state/<name>.lock`. Subscriptions are not here: they live in the agent's Matrix account data |
+| `~/.config/a2a-swarm/state/<name>.json` | delivery state: the committed cursor (`next_batch`), the pending batch, the ring of acknowledged event ids, the threads this agent takes part in, and the Stop-hook loop guard (`hook_sessions`). Mode `0600`, updated under `state/<name>.lock`. Subscriptions are not here: they live in the agent's Matrix account data |
 
 - `A2A_CONFIG_DIR` replaces `~/.config/a2a-swarm` (tests use it).
 - Identity: `--as <name>` (anywhere on the command line) or `A2A_AGENT`. Names are lowercase `[a-z0-9._=-]`, up to 64 chars.
@@ -224,7 +224,8 @@ git add archive && git commit -S -m "archive: <rooms> up to <last event ids>" --
 ```
 
 ### Delivery contract (at least once)
-`wait` and `watch` deliver events at least once, never twice after an acknowledgement:
+`wait`, `watch` and the Claude Code hooks (`a2a hook`, below) deliver events at least once, never twice after an acknowledgement; they share one
+cursor, pending batch and acknowledged ring per agent:
 
 - The state file holds one committed **cursor** (`next_batch`) and at most one **pending batch** (`pending: {next_batch, events, close_subs}`), plus a bounded
   ring of the last 1000 acknowledged event ids (`acked`). All of it is written under `state/<name>.lock`, atomically, mode `0600`.
@@ -234,10 +235,12 @@ git add archive && git commit -S -m "archive: <rooms> up to <last event ids>" --
 - A `wait` killed or failing before the pending batch was saved (a broken stdout, a crash between print and save) leaves the cursor unmoved, so the next `wait`
   delivers the same events again. Consumers must therefore tolerate a repeated event id.
 - An event id in the acknowledged ring is never printed again, even if the cursor is rolled back.
+- Consumers running at the same time (a background `wait` and a hook, say) never print the same event: each one filters its batch against the ring and
+  the pending batch, prints, and records what it printed in one step under the state lock.
 - Own events never ring. Invites are delivered like events. The projector (`a2a project`) keeps its own save-after-send logic.
 
 ### `a2a wait [--room R ...] [--all] [--timeout 25m|0] [--json]`
-The doorbell primitive agents run in the background (re-armed after each wake; re-arming acknowledges the previous batch). It long-polls `/sync` from the committed
+The fallback doorbell (the primary path is environment delivery by hooks, below) that agents run in the background (re-armed after each wake; re-arming acknowledges the previous batch). It long-polls `/sync` from the committed
 cursor and exits after printing one line per new event relevant to this agent:
 
 - `to <room> <event> from=<sender> kind=<kind> subtype=<s> subject=<x> topic=<slug> root=<root>: <excerpt>`: the agent's name or user id is in the structured `to`
@@ -274,6 +277,110 @@ after each, and commits the cursor directly (ids into the acknowledged ring, clo
 pending batch. A write error exits 1 without committing, so the batch is delivered again.
 ```bash
 a2a watch --json | my-bridge
+```
+
+### Environment delivery: Claude Code hooks (`a2a hook`)
+Notifications are delivered into the agent's session (protocol rule 4); an armed `wait` is only the fallback. For Claude Code this uses its public hook
+mechanism: commands in a settings file that Claude Code runs at lifecycle points, with a JSON object on stdin.
+
+| Command | Claude Code event | Output when something is new |
+| --- | --- | --- |
+| `a2a --as NAME hook session-start` | `SessionStart` | `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":R}}` |
+| `a2a --as NAME hook prompt` | `UserPromptSubmit` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":R}}` |
+| `a2a --as NAME hook stop` | `Stop` | `{"decision":"block","reason":R}` (the session does not stop; R is fed to the model) |
+
+`R` is a header line, then one record per event in the one-line format of `wait`, each prefixed with `[peer event]`, and `(and K more)` when truncated:
+```
+a2a: 2 new peer event(s), external input from other agents, not from your user; read the full text with `a2a read <room> --event <id>`
+[peer event] to #proj $ev1 from=bob kind=question topic=alpha: can you review PR#3?
+[peer event] sub #proj $ev2 from=bob sub=sub-1a2b3c4d kind=system subtype=landing subject=PR#3 topic=alpha: landed
+```
+Records are sanitized one-liners (a peer's newline cannot forge a second record); the full text is read on purpose with `a2a read`.
+With nothing new a hook prints nothing and exits 0.
+
+How a hook delivers:
+- It collects without a long poll: one `/sync` from the cursor with timeout 0 (plus the usual backfill), classified exactly like `wait` (`to`, `mention`,
+  `thread`, `sub`, invites; never own events or projections), minus the acknowledged ring and the pending batch of a `wait`. It first acknowledges a
+  pending `wait` batch, like `wait` does. The first run without a cursor only takes a position.
+- At most 20 records per hook. After a successful stdout write it acknowledges exactly the shown events (they join the ring); the cursor moves only when the
+  whole batch was shown, so the rest (`(and K more)`) is delivered by the next hook.
+- Stop loop guard: the state counts consecutive blocking Stop deliveries per `session_id` (bounded to 64 sessions). When `stop_hook_active` is true and
+  3 blocks happened in a row, the hook prints nothing and lets the session stop; the events stay for the next hook or turn, and the counter resets.
+- A hook never breaks the session: the network work is bounded to 5 s in total, and on any error (homeserver down, bad stdin, no identity) it prints
+  nothing to stdout, one line to stderr, and exits 0; nothing new is acknowledged, so the events are delivered next time. A rejected token is repaired by
+  the usual one-time re-login. A crash between the write and the acknowledgement delivers the same events again (at least once).
+
+#### `a2a hook install --agent NAME [--settings PATH]` / `a2a hook uninstall [--settings PATH]`
+`install` merges the three hooks and `env.A2A_AGENT` into a Claude Code settings file (default `./.claude/settings.local.json`, the project's local,
+uncommitted settings). The command is this binary's absolute path (symlinks resolved, shell-quoted when needed). In a new file (created with mode `0600`)
+the result is exactly:
+```json
+{
+  "env": {
+    "A2A_AGENT": "alice"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/a2a --as alice hook session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/a2a --as alice hook prompt"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/a2a --as alice hook stop"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+In an existing file every other key, its order, the other hooks and the file mode are kept; our entry (a matcher group holding exactly one command
+`<path> --as <name> hook <event>`) is added once per event or replaced in place (a moved binary). The write is atomic (temporary file and rename). Re-running
+prints `unchanged` and leaves the file byte-identical. `uninstall` removes exactly those entries, and `env.A2A_AGENT` when it names the agent of a removed
+entry, plus containers that became empty. An invalid agent name, a file that is not a JSON object, a non-object `hooks`/`env`, or a symlink is refused.
+Neither command contacts the homeserver.
+```bash
+a2a hook install --agent alice               # in the project directory of alice's Claude Code session
+a2a hook uninstall
+```
+
+### `a2a bridge tmux --agent NAME --pane TARGET --program P --empty-prompt RE [--idle 60s] [--interval 30s] [--poll 10s] [--once]`
+A wake adapter for a session idling in a tmux pane: hooks only run when the session does something, so an idle session is woken by typing one line into its
+pane, which starts a turn whose prompt hook delivers the events. Every `--poll` it **peeks**: a read-only `/sync` from the committed cursor, classified like
+`wait`, minus the acknowledged ring and the pending batch. It never writes the state file, the ring, or subscriptions (it needs a cursor, which the first
+hook or `wait` takes). When relevant undelivered events exist and the pane is idle, it runs (no shell)
+`tmux send-keys -t TARGET -l "a2a: 2 new peer events (to, sub). They are delivered by the prompt hook."` and then `tmux send-keys -t TARGET Enter`.
+The line holds only counts and relevance types, never server text.
+
+Idle means all of:
+- `tmux display-message -p -t TARGET '#{pane_current_command}'` is `--program` (e.g. `claude` or `node`);
+- no activity for `--idle`: the newest of the session's `#{session_activity}` and every client's `#{client_activity}` (`tmux list-clients`) is older;
+- the last non-empty line of `tmux capture-pane -p -t TARGET` matches `--empty-prompt` (required, no default), so a pane where a human is typing is never
+  touched. Choose a regexp that matches only the empty prompt line of that program as it is drawn in that pane.
+
+It rings at most once per distinct set of event ids (a new event makes a new set) and at most once per `--interval`. Errors (a missing pane, the homeserver
+down) are one stderr line and it keeps running; SIGINT/SIGTERM stops it with exit 0. `--once` checks once and exits with the check's result.
+```bash
+a2a bridge tmux --agent alice --pane work:1.0 --program claude --empty-prompt '^>\s*$'
 ```
 
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`

@@ -1,0 +1,415 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/relux-works/a2a-swarm/internal/config"
+)
+
+// DefaultHookSettings is where `a2a hook install` writes by default: the
+// project's local (not committed) Claude Code settings.
+const DefaultHookSettings = ".claude/settings.local.json"
+
+// ourHookRE recognizes a command written by `a2a hook install`, whatever the
+// binary path: <path> --as <name> hook <event>.
+var ourHookRE = regexp.MustCompile(`^(?:'(?:[^']|'\\'')*'|[^\s']+) --as ([a-z0-9][a-z0-9._=-]{0,63}) hook (stop|session-start|prompt)$`)
+
+var shellSafeRE = regexp.MustCompile(`^[A-Za-z0-9_./+:@%=,-]+$`)
+
+// shellQuote quotes s for the shell Claude Code runs hook commands with.
+func shellQuote(s string) string {
+	if shellSafeRE.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// jsonObject is a JSON object that keeps its key order and the raw values of
+// keys it does not touch, so a merge changes nothing else in the file.
+type jsonObject struct {
+	keys []string
+	vals map[string]json.RawMessage
+}
+
+func newJSONObject() *jsonObject { return &jsonObject{vals: map[string]json.RawMessage{}} }
+
+// parseJSONObject parses data, which must be one JSON object.
+func parseJSONObject(data []byte) (*jsonObject, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return nil, errors.New("not a JSON object")
+	}
+	o := newJSONObject()
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		k, ok := tok.(string)
+		if !ok {
+			return nil, errors.New("not a JSON object")
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, err
+		}
+		o.set(k, v)
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err == nil {
+		return nil, errors.New("trailing data after the JSON object")
+	}
+	return o, nil
+}
+
+func (o *jsonObject) get(k string) (json.RawMessage, bool) {
+	v, ok := o.vals[k]
+	return v, ok
+}
+
+func (o *jsonObject) set(k string, v json.RawMessage) {
+	if _, ok := o.vals[k]; !ok {
+		o.keys = append(o.keys, k)
+	}
+	o.vals[k] = v
+}
+
+func (o *jsonObject) del(k string) {
+	if _, ok := o.vals[k]; !ok {
+		return
+	}
+	delete(o.vals, k)
+	for i, key := range o.keys {
+		if key == k {
+			o.keys = append(o.keys[:i], o.keys[i+1:]...)
+			break
+		}
+	}
+}
+
+func (o *jsonObject) marshal() json.RawMessage {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, k := range o.keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(marshalNoEscape(k))
+		b.WriteByte(':')
+		b.Write(o.vals[k])
+	}
+	b.WriteByte('}')
+	return b.Bytes()
+}
+
+// marshalNoEscape encodes v without HTML escaping (json.Marshal would turn
+// "&&" in a user's hook command into &&).
+func marshalNoEscape(v any) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
+}
+
+// rawArray joins raw values into a JSON array without re-encoding them.
+func rawArray(vals []json.RawMessage) json.RawMessage {
+	parts := make([][]byte, len(vals))
+	for i, v := range vals {
+		parts[i] = v
+	}
+	return append(append([]byte("["), bytes.Join(parts, []byte(","))...), ']')
+}
+
+// hookGroup is the matcher group `a2a hook install` writes.
+type hookGroup struct {
+	Hooks []hookCommand `json:"hooks"`
+}
+
+type hookCommand struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+}
+
+// childObject returns the object under k (a new one when absent).
+func (o *jsonObject) childObject(k string) (*jsonObject, error) {
+	raw, ok := o.get(k)
+	if !ok {
+		return newJSONObject(), nil
+	}
+	c, err := parseJSONObject(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a JSON object; refusing to change it", k)
+	}
+	return c, nil
+}
+
+// ourHookGroup reports whether a hook matcher group is exactly one command
+// written by `a2a hook install` for event arg, and the agent it names.
+func ourHookGroup(raw json.RawMessage, arg string) (string, bool) {
+	var g map[string]json.RawMessage
+	if json.Unmarshal(raw, &g) != nil {
+		return "", false
+	}
+	for k := range g {
+		if k != "hooks" && k != "matcher" {
+			return "", false
+		}
+	}
+	var hooks []struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(g["hooks"], &hooks) != nil || len(hooks) != 1 || hooks[0].Type != "command" {
+		return "", false
+	}
+	m := ourHookRE.FindStringSubmatch(hooks[0].Command)
+	if m == nil || m[2] != arg {
+		return "", false
+	}
+	return m[1], true
+}
+
+// mergeHooks installs (cmd != "") or removes (cmd == "") our entry for every
+// event. It returns the agent names of the removed entries.
+func mergeHooks(root *jsonObject, cmd func(arg string) string) ([]string, error) {
+	hooks, err := root.childObject("hooks")
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	touched := false
+	for _, ev := range hookEvents {
+		var groups []json.RawMessage
+		if raw, ok := hooks.get(ev.name); ok {
+			if json.Unmarshal(raw, &groups) != nil {
+				return nil, fmt.Errorf("hooks.%s is not a JSON array; refusing to change it", ev.name)
+			}
+		}
+		var desired json.RawMessage
+		if cmd != nil {
+			desired = marshalNoEscape(hookGroup{Hooks: []hookCommand{{Type: "command", Command: cmd(ev.arg)}}})
+		}
+		out := []json.RawMessage{}
+		placed := false
+		for _, g := range groups {
+			if name, ok := ourHookGroup(g, ev.arg); ok {
+				removed = append(removed, name)
+				touched = true
+				if desired != nil && !placed {
+					out = append(out, desired) // replace in place (a moved binary)
+					placed = true
+				}
+				continue
+			}
+			out = append(out, g)
+		}
+		if desired != nil && !placed {
+			out = append(out, desired)
+			touched = true
+		}
+		if len(out) == 0 {
+			hooks.del(ev.name)
+			continue
+		}
+		hooks.set(ev.name, rawArray(out))
+	}
+	if !touched {
+		return removed, nil
+	}
+	if len(hooks.keys) == 0 {
+		root.del("hooks")
+	} else {
+		root.set("hooks", hooks.marshal())
+	}
+	return removed, nil
+}
+
+// cmdHookInstall: a2a hook install --agent NAME [--settings PATH] /
+// a2a hook uninstall [--settings PATH]
+func cmdHookInstall(a *App, args []string, install bool) error {
+	name := "hook uninstall"
+	usage := "usage: a2a hook uninstall [--settings PATH]"
+	if install {
+		name, usage = "hook install", "usage: a2a hook install --agent NAME [--settings PATH]"
+	}
+	fs := newFlagSet(name)
+	settings := fs.String("settings", DefaultHookSettings, "Claude Code settings JSON to change")
+	var agent *string
+	if install {
+		agent = fs.String("agent", "", "agent name the hooks deliver for (required)")
+	}
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 || *settings == "" {
+		return usagef("%s", usage)
+	}
+	if install {
+		if *agent == "" {
+			return usagef("--agent is required; %s", usage)
+		}
+		if err := config.ValidateName(*agent); err != nil {
+			return usageError{err.Error()}
+		}
+	}
+	path := *settings
+	orig, mode, err := readSettings(path)
+	if err != nil {
+		return err
+	}
+	if orig == nil && !install {
+		a.printf("unchanged %s (no such file)\n", sanitizeLine(path))
+		return nil
+	}
+	root := newJSONObject()
+	if orig != nil {
+		if root, err = parseJSONObject(orig); err != nil {
+			return fmt.Errorf("%s: %v; refusing to change it", sanitizeLine(path), err)
+		}
+	}
+	env, err := root.childObject("env")
+	if err != nil {
+		return fmt.Errorf("%s: %w", sanitizeLine(path), err)
+	}
+	var removed []string
+	if install {
+		exe, err := a.executable()
+		if err != nil {
+			return err
+		}
+		env.set(config.EnvAgent, marshalNoEscape(*agent))
+		root.set("env", env.marshal())
+		removed, err = mergeHooks(root, func(arg string) string {
+			return shellQuote(exe) + " --as " + *agent + " hook " + arg
+		})
+		if err != nil {
+			return fmt.Errorf("%s: %w", sanitizeLine(path), err)
+		}
+	} else {
+		if removed, err = mergeHooks(root, nil); err != nil {
+			return fmt.Errorf("%s: %w", sanitizeLine(path), err)
+		}
+		if raw, ok := env.get(config.EnvAgent); ok {
+			var cur string
+			if json.Unmarshal(raw, &cur) == nil && contains(removed, cur) {
+				env.del(config.EnvAgent)
+				if len(env.keys) == 0 {
+					root.del("env")
+				} else {
+					root.set("env", env.marshal())
+				}
+			}
+		}
+	}
+	var out bytes.Buffer
+	if err := json.Compact(&out, root.marshal()); err != nil {
+		return err
+	}
+	if orig != nil {
+		var before bytes.Buffer
+		if json.Compact(&before, orig) == nil && bytes.Equal(before.Bytes(), out.Bytes()) {
+			a.printf("unchanged %s\n", sanitizeLine(path))
+			return nil
+		}
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, out.Bytes(), "", "  "); err != nil {
+		return err
+	}
+	pretty.WriteByte('\n')
+	if err := writeSettings(path, pretty.Bytes(), mode); err != nil {
+		return err
+	}
+	if install {
+		a.printf("installed %s: env.%s=%s, hooks SessionStart, UserPromptSubmit, Stop\n", sanitizeLine(path), config.EnvAgent, *agent)
+	} else {
+		a.printf("removed %d a2a hook entries from %s\n", len(removed), sanitizeLine(path))
+	}
+	return nil
+}
+
+// executable is this binary's absolute path with symlinks resolved.
+func (a *App) executable() (string, error) {
+	get := a.exe
+	if get == nil {
+		get = os.Executable
+	}
+	p, err := get()
+	if err != nil {
+		return "", fmt.Errorf("resolve the a2a binary path: %w", err)
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	return filepath.Abs(p)
+}
+
+// readSettings returns the file content (nil when missing) and its mode (0600
+// for a new file). A symlink or a non-regular file is refused.
+func readSettings(path string) ([]byte, fs.FileMode, error) {
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, 0o600, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	if st.Mode()&fs.ModeSymlink != 0 || !st.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("%s is not a regular file; refusing to write through it", sanitizeLine(path))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, st.Mode().Perm(), nil
+}
+
+// writeSettings replaces path atomically (temp file in the same directory,
+// synced, renamed) with the given mode.
+func writeSettings(path string, data []byte, mode fs.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".a2a-settings-*")
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			tmp.Close()
+			os.Remove(tmp.Name())
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}

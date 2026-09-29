@@ -47,6 +47,14 @@ type App struct {
 	// afterPrint, when set (tests only), runs after `wait` printed a batch and
 	// before it saves the pending batch: an error simulates a crash there.
 	afterPrint func() error
+	// beforeDeliver, when set (tests only), runs after a wait or hook collected
+	// its batch and before it takes the state lock to deliver it: tests use it
+	// to let a concurrent consumer win the race.
+	beforeDeliver func()
+	// exe resolves this binary's path for `hook install` (nil: os.Executable).
+	exe func() (string, error)
+	// tmux runs tmux for `bridge tmux` (nil: the real tmux binary).
+	tmux tmuxRunner
 }
 
 // NewApp returns an App bound to the real process environment.
@@ -94,7 +102,9 @@ func commands() []command {
 		{"archive", "archive <room|all> [--dir archive] [--json-index]   deterministic markdown export of room history", cmdArchive},
 		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until something is addressed to me or subscribed (acks the previous batch)", cmdWait},
 		{"watch", "watch [--room R ...] [--all] [--json]   stream deliveries until interrupted, committing after each batch", cmdWatch},
-		{"ack", "ack [all]                            acknowledge the pending batch of the last wait", cmdAck},
+		{"hook", "hook stop|session-start|prompt | hook install --agent NAME [--settings PATH] | hook uninstall [--settings PATH]   Claude Code hooks: deliver into the session", cmdHook},
+		{"bridge", "bridge tmux --agent NAME --pane T --program P --empty-prompt RE [--idle 60s] [--interval 30s] [--poll 10s] [--once]   wake an idle tmux pane", cmdBridge},
+		{"ack", "ack [all]                           acknowledge the pending batch of the last wait", cmdAck},
 		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},
 		{"subscribe", "subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]   add a runtime subscription", cmdSubscribe},

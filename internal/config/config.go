@@ -249,6 +249,50 @@ type State struct {
 	// to kinds). Subscriptions now live in the agent's Matrix account data; the
 	// first command that touches them moves this map there and drops it.
 	LegacySubscriptions map[string][]string `json:"subscriptions,omitempty"`
+	// HookSessions is the loop guard of the Claude Code Stop hook: consecutive
+	// blocking deliveries per session id, bounded to HookSessionsMax entries.
+	HookSessions []HookSession `json:"hook_sessions,omitempty"`
+}
+
+// HookSession counts consecutive blocking Stop-hook deliveries of one session.
+type HookSession struct {
+	ID     string `json:"id"`
+	Blocks int    `json:"blocks"`
+}
+
+// HookSessionsMax bounds the loop-guard map; the least recently updated
+// session is dropped first.
+const HookSessionsMax = 64
+
+// HookBlocks returns the consecutive blocking deliveries recorded for id.
+func (s State) HookBlocks(id string) int {
+	for _, h := range s.HookSessions {
+		if h.ID == id {
+			return h.Blocks
+		}
+	}
+	return 0
+}
+
+// SetHookBlocks records n for id (0 forgets it). The entry becomes the most
+// recent one; beyond HookSessionsMax the oldest entries are dropped.
+func (s *State) SetHookBlocks(id string, n int) {
+	kept := s.HookSessions[:0:0]
+	for _, h := range s.HookSessions {
+		if h.ID != id {
+			kept = append(kept, h)
+		}
+	}
+	if n > 0 {
+		kept = append(kept, HookSession{ID: id, Blocks: n})
+	}
+	if len(kept) > HookSessionsMax {
+		kept = kept[len(kept)-HookSessionsMax:]
+	}
+	if len(kept) == 0 {
+		kept = nil
+	}
+	s.HookSessions = kept
 }
 
 // Pending is a printed but unacknowledged delivery batch.

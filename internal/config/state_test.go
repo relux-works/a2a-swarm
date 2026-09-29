@@ -56,3 +56,30 @@ func TestStatePendingRoundTrip(t *testing.T) {
 		t.Fatalf("round trip = %+v, %v", got, err)
 	}
 }
+
+// Proves the Stop-hook loop guard map counts per session, forgets a session
+// set to 0 (the other one stays), and keeps only the HookSessionsMax most
+// recently updated sessions.
+func TestStateHookSessions(t *testing.T) {
+	var s State
+	s.SetHookBlocks("a", 1)
+	s.SetHookBlocks("b", 2)
+	s.SetHookBlocks("a", 3)
+	if s.HookBlocks("a") != 3 || s.HookBlocks("b") != 2 || s.HookBlocks("c") != 0 {
+		t.Fatalf("counts = %+v", s.HookSessions)
+	}
+	s.SetHookBlocks("a", 0)
+	if s.HookBlocks("a") != 0 || s.HookBlocks("b") != 2 || len(s.HookSessions) != 1 {
+		t.Fatalf("after reset = %+v", s.HookSessions)
+	}
+	s.SetHookBlocks("b", 0)
+	if s.HookSessions != nil {
+		t.Fatalf("empty guard map not dropped: %+v", s.HookSessions)
+	}
+	for i := 0; i < HookSessionsMax+3; i++ {
+		s.SetHookBlocks("s"+strconv.Itoa(i), 1)
+	}
+	if len(s.HookSessions) != HookSessionsMax || s.HookBlocks("s2") != 0 || s.HookBlocks("s3") != 1 {
+		t.Fatalf("bound not kept: %d entries", len(s.HookSessions))
+	}
+}

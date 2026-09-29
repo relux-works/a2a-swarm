@@ -19,10 +19,12 @@ import (
 // batch is delivered again. Acknowledged event ids go into a bounded ring and
 // are never delivered twice.
 
-// waitItem is one doorbell event in both output forms.
+// waitItem is one doorbell event in both output forms. id is the event id
+// ("" for an invite, which has none and cannot be acknowledged by id).
 type waitItem struct {
 	line string
 	rec  EventRecord
+	id   string
 }
 
 func inviteItem(roomID string, state []matrix.Event, me, server string) waitItem {
@@ -61,9 +63,78 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 // batch is what one /sync response delivers.
 type batch struct {
 	items   []waitItem
-	events  []string // delivered event ids
-	learned []string // thread roots learned from my own events
-	close   []string // --until-kind subscriptions closed by a delivered event
+	events  []string          // delivered event ids
+	learned []string          // thread roots learned from my own events
+	close   []string          // --until-kind subscriptions closed by a delivered event
+	closeBy map[string]string // subscription id -> the event that closes it
+}
+
+// keep returns the batch restricted to the items for which keep is true;
+// events and closed subscriptions follow the kept items.
+func (b batch) keep(keep func(i int, it waitItem) bool) batch {
+	out := batch{learned: b.learned}
+	kept := map[string]bool{}
+	for i, it := range b.items {
+		if !keep(i, it) {
+			continue
+		}
+		out.items = append(out.items, it)
+		if it.id != "" {
+			out.events = append(out.events, it.id)
+			kept[it.id] = true
+		}
+	}
+	for _, id := range b.close {
+		if kept[b.closeBy[id]] {
+			if out.closeBy == nil {
+				out.closeBy = map[string]string{}
+			}
+			out.close = append(out.close, id)
+			out.closeBy[id] = b.closeBy[id]
+		}
+	}
+	return out
+}
+
+// undelivered drops what another consumer (a concurrent wait, watch or hook)
+// delivered since the batch was collected: ids in the acknowledged ring or in
+// the pending batch of cur. Callers hold the state lock, so the check and the
+// following write and acknowledgement are one step and no event is delivered twice.
+func (b batch) undelivered(cur config.State) batch {
+	pending := map[string]bool{}
+	if cur.Pending != nil {
+		for _, id := range cur.Pending.Events {
+			pending[id] = true
+		}
+	}
+	return b.keep(func(_ int, it waitItem) bool {
+		return it.id == "" || (!pending[it.id] && !cur.IsAcked(it.id))
+	})
+}
+
+// head returns the first n items of the batch.
+func (b batch) head(n int) batch {
+	return b.keep(func(i int, _ waitItem) bool { return i < n })
+}
+
+// mergePending records d as printed but unacknowledged. A pending batch that
+// a concurrent consumer saved meanwhile is kept: its events stay pending too.
+func mergePending(p *config.Pending, next string, d batch) *config.Pending {
+	if p == nil {
+		return &config.Pending{NextBatch: next, Events: d.events, CloseSubs: d.close}
+	}
+	out := &config.Pending{NextBatch: next, Events: append([]string(nil), p.Events...), CloseSubs: append([]string(nil), p.CloseSubs...)}
+	for _, id := range d.events {
+		if !contains(out.Events, id) {
+			out.Events = append(out.Events, id)
+		}
+	}
+	for _, id := range d.close {
+		if !contains(out.CloseSubs, id) {
+			out.CloseSubs = append(out.CloseSubs, id)
+		}
+	}
+	return out
 }
 
 // deliveryFilter is the --room/--all selection of wait and watch.
@@ -137,6 +208,10 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 				if sub := byID[id]; sub.UntilKind != "" && sub.UntilKind == h.Kind && !closed[id] {
 					closed[id] = true
 					b.close = append(b.close, id)
+					if b.closeBy == nil {
+						b.closeBy = map[string]string{}
+					}
+					b.closeBy[id] = ev.EventID
 				}
 			}
 			subID := ""
@@ -146,7 +221,7 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			label := s.roomLabel(ctx, roomID, labels)
 			rec := eventRecord(string(rel), label, roomID, ev, s.server, true)
 			rec.Sub = sanitizeLine(subID)
-			b.items = append(b.items, waitItem{line: eventLine(rel, label, ev, s.server, sanitizeLine(subID)), rec: rec})
+			b.items = append(b.items, waitItem{line: eventLine(rel, label, ev, s.server, sanitizeLine(subID)), rec: rec, id: ev.EventID})
 			b.events = append(b.events, ev.EventID)
 		}
 	}
@@ -154,9 +229,10 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 }
 
 // startDelivery acknowledges any pending batch, removes the subscriptions it
-// closed and the expired ones, and returns the state to deliver from.
-func (s *session) startDelivery(ctx context.Context, now time.Time) (config.State, error) {
-	st, _, err := s.updateSubs(ctx, func(st *config.State, list *SubList) (bool, error) {
+// closed and the expired ones, and returns the state to deliver from and the
+// live subscriptions.
+func (s *session) startDelivery(ctx context.Context, now time.Time) (config.State, SubList, error) {
+	return s.updateSubs(ctx, func(st *config.State, list *SubList) (bool, error) {
 		changed := false
 		if p := st.Ack(); p != nil && list.remove(p.CloseSubs...) {
 			changed = true
@@ -165,6 +241,55 @@ func (s *session) startDelivery(ctx context.Context, now time.Time) (config.Stat
 			changed = true
 		}
 		return changed, nil
+	})
+}
+
+// collectNow is the shared "what is pending for me right now" step of the
+// Claude Code hooks and the tmux bridge: one /sync from the committed cursor
+// with timeout 0 (no long poll), backfilled and classified exactly like wait
+// (collectBatch), minus what was already delivered (the acknowledged ring and
+// the pending batch). It writes nothing; st only gains learned threads in
+// memory. next is where the cursor moves once the whole batch was delivered.
+// Without a cursor it takes a position instead: the batch then holds only the
+// pending invites.
+func (s *session) collectNow(ctx context.Context, st *config.State, subs []Sub) (b batch, next string, err error) {
+	if st.NextBatch == "" {
+		resp, err := s.client.Sync(ctx, "", 0, initialFilter)
+		if err != nil {
+			return b, "", err
+		}
+		for _, roomID := range sortedKeys(resp.Rooms.Invite) {
+			b.items = append(b.items, inviteItem(roomID, resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
+		}
+		return b, resp.NextBatch, nil
+	}
+	resp, err := s.client.Sync(ctx, st.NextBatch, 0, syncFilter)
+	if err != nil {
+		return b, "", err
+	}
+	b, err = s.collectBatch(ctx, resp, st.NextBatch, st, subs, deliveryFilter{rooms: map[string]bool{}}, map[string]string{})
+	if err != nil {
+		return b, "", err
+	}
+	return b.undelivered(*st), resp.NextBatch, nil
+}
+
+// lockedDeliver runs fn under the state lock and saves the state only when fn
+// succeeds. When withSubs is set the subscription list is held as well and the
+// ids fn returns are removed from it (account data is written before the state).
+func (s *session) lockedDeliver(ctx context.Context, withSubs bool, fn func(cur *config.State) (closeSubs []string, err error)) (config.State, error) {
+	if !withSubs {
+		return config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+			_, err := fn(cur)
+			return err
+		})
+	}
+	st, _, err := s.updateSubs(ctx, func(cur *config.State, list *SubList) (bool, error) {
+		ids, err := fn(cur)
+		if err != nil {
+			return false, err
+		}
+		return list.remove(ids...), nil
 	})
 	return st, err
 }
@@ -227,7 +352,7 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	if *timeout > 0 {
 		deadline = a.Now().Add(*timeout)
 	}
-	st, err := s.startDelivery(ctx, a.Now())
+	st, _, err := s.startDelivery(ctx, a.Now())
 	if err != nil {
 		return err
 	}
@@ -267,39 +392,47 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		if len(b.items) == 0 {
-			// Nothing to deliver: the cursor may move directly.
-			if st, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-				cur.NextBatch = resp.NextBatch
-				for _, r := range b.learned {
-					cur.AddThread(r)
-				}
-				return nil
-			}); err != nil {
-				return fmt.Errorf("save wait state: %w", err)
-			}
-			continue
+		if a.beforeDeliver != nil {
+			a.beforeDeliver()
 		}
-		if err := a.emit(b.items, *asJSON); err != nil {
-			return fmt.Errorf("%w; nothing was acknowledged, the next wait delivers this batch again", err)
-		}
-		if a.afterPrint != nil {
-			if err := a.afterPrint(); err != nil {
-				return err
-			}
-		}
-		// Only now, after a successful write, is the batch pending; the cursor
-		// moves past it when it is acknowledged.
-		if _, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-			cur.Pending = &config.Pending{NextBatch: resp.NextBatch, Events: b.events, CloseSubs: b.close}
+		// Under the state lock: drop what a concurrent hook or watch delivered
+		// meanwhile, print, and only after a successful write record the batch
+		// as pending; the cursor moves past it when it is acknowledged.
+		printed, failed := false, false
+		next, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
 			for _, r := range b.learned {
 				cur.AddThread(r)
 			}
+			d := b.undelivered(*cur)
+			if len(d.items) == 0 {
+				cur.NextBatch = resp.NextBatch // nothing to deliver: the cursor may move directly
+				return nil
+			}
+			failed = true
+			if err := a.emit(d.items, *asJSON); err != nil {
+				return fmt.Errorf("%w; nothing was acknowledged, the next wait delivers this batch again", err)
+			}
+			printed = true
+			if a.afterPrint != nil {
+				if err := a.afterPrint(); err != nil {
+					return err
+				}
+			}
+			failed = false
+			cur.Pending = mergePending(cur.Pending, resp.NextBatch, d)
 			return nil
-		}); err != nil {
+		})
+		switch {
+		case err != nil && printed && !failed:
 			return fmt.Errorf("save pending batch: %w (it will be delivered again)", err)
+		case err != nil && !printed && !failed:
+			return fmt.Errorf("save wait state: %w", err)
+		case err != nil:
+			return err
+		case printed:
+			return nil
 		}
-		return nil
+		st = next
 	}
 }
 
@@ -361,7 +494,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	labels := map[string]string{}
-	st, err := s.startDelivery(ctx, a.Now())
+	st, _, err := s.startDelivery(ctx, a.Now())
 	if err != nil {
 		return stopped(err)
 	}
@@ -383,30 +516,28 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return stopped(err)
 		}
-		for _, it := range b.items {
-			if err := a.emit([]waitItem{it}, *asJSON); err != nil {
-				return fmt.Errorf("%w; the batch was not committed and will be delivered again", err)
+		// Under the state lock: skip what a concurrent consumer delivered, print
+		// each item, then commit the cursor and the delivered ids.
+		written := true
+		st, err = s.lockedDeliver(ctx, len(b.close) > 0, func(cur *config.State) ([]string, error) {
+			d := b.undelivered(*cur)
+			for _, it := range d.items {
+				if err := a.emit([]waitItem{it}, *asJSON); err != nil {
+					written = false
+					return nil, fmt.Errorf("%w; the batch was not committed and will be delivered again", err)
+				}
 			}
-		}
-		commit := func(cur *config.State) {
 			cur.NextBatch = resp.NextBatch
-			cur.AddAcked(b.events...)
+			cur.AddAcked(d.events...)
 			for _, r := range b.learned {
 				cur.AddThread(r)
 			}
-		}
-		if len(b.close) > 0 {
-			st, _, err = s.updateSubs(ctx, func(cur *config.State, list *SubList) (bool, error) {
-				commit(cur)
-				return list.remove(b.close...), nil
-			})
-		} else {
-			st, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-				commit(cur)
-				return nil
-			})
-		}
+			return d.close, nil
+		})
 		if err != nil {
+			if !written {
+				return err
+			}
 			return stopped(fmt.Errorf("commit watch cursor: %w", err))
 		}
 	}
