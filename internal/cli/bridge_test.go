@@ -146,6 +146,10 @@ func TestBridgeSkipsBusyPane(t *testing.T) {
 		{"recent client", func(f *fakeTmux) { f.clientActivity = []int64{now - 300, now - 5} }, false},
 		{"recent session", func(f *fakeTmux) { f.sessionActivity = now - 1 }, false},
 		{"typing", func(f *fakeTmux) { f.screen = "answer\n\n> half a sentence\n\n" }, false},
+		// Claude Code draws a footer under the input box: the prompt check
+		// must look at the prompt line, not the last line.
+		{"typing, footer below", func(f *fakeTmux) { f.screen = "answer\n> half a sentence\n  ? for shortcuts\n" }, false},
+		{"idle, footer below", func(f *fakeTmux) { f.screen = "answer\n>\n  ? for shortcuts\n" }, true},
 		{"idle", func(*fakeTmux) {}, true},
 	} {
 		ft := idleTmux()
@@ -208,4 +212,27 @@ func TestBridgeNegative(t *testing.T) {
 		t.Fatal("the bridge wrote state or rang without a cursor")
 	}
 	e.configure = nil
+}
+
+// Proves --probe reports the idle checks and their reason without peeking at
+// the homeserver or typing anything, for calibrating --empty-prompt.
+func TestBridgeProbe(t *testing.T) {
+	e, _ := world(t)
+	for _, c := range []struct {
+		screen, want string
+	}{
+		{"answer\n>\n  ? for shortcuts\n", "idle=true"},
+		{"answer\n> typed\n  ? for shortcuts\n", "does not match the screen"},
+	} {
+		ft := idleTmux()
+		ft.set(func(f *fakeTmux) { f.screen = c.screen })
+		e.configure = func(a *App) { a.tmux = ft }
+		syncs := e.hs.CallCount("GET /_matrix/client/v3/sync")
+		r := e.run(bridgeArgs("--probe")...).ok(t)
+		e.configure = nil
+		tuitestkit.ContainsStr(t, r.stdout, c.want)
+		if len(ft.sentKeys()) != 0 || e.hs.CallCount("GET /_matrix/client/v3/sync") != syncs {
+			t.Fatalf("probe typed or synced: %q", ft.sentKeys())
+		}
+	}
 }

@@ -78,7 +78,8 @@ func cmdBridge(ctx context.Context, a *App, args []string) error {
 	agent := fs.String("agent", "", "agent whose deliveries ring the pane (required)")
 	pane := fs.String("pane", "", "tmux target pane, e.g. work:1.0 (required)")
 	program := fs.String("program", "", "expected #{pane_current_command}, e.g. claude or node (required)")
-	emptyPrompt := fs.String("empty-prompt", "", "regexp the last non-empty pane line matches when the prompt is empty (required)")
+	emptyPrompt := fs.String("empty-prompt", "", "multiline regexp over the whole captured pane that matches only when the input prompt is empty (required; calibrate with --probe)")
+	probe := fs.Bool("probe", false, "print the idle checks for the pane and exit, without peeking or ringing")
 	idle := fs.Duration("idle", 60*time.Second, "no tmux client activity on the session for this long")
 	interval := fs.Duration("interval", 30*time.Second, "at most one ring per interval")
 	poll := fs.Duration("poll", 10*time.Second, "how often to check")
@@ -101,9 +102,18 @@ func cmdBridge(ctx context.Context, a *App, args []string) error {
 	if a.as != "" && a.as != *agent {
 		return usagef("--as %s and --agent %s disagree", a.as, *agent)
 	}
-	re, err := regexp.Compile(*emptyPrompt)
+	re, err := regexp.Compile("(?m)" + *emptyPrompt)
 	if err != nil {
 		return usagef("--empty-prompt: %v", err)
+	}
+	if *probe {
+		br := &tmuxBridge{a: a, tmux: a.tmuxRunner(), pane: *pane, program: *program, prompt: re, idle: *idle, interval: *interval}
+		idleNow, why, err := br.paneState(ctx, a.Now())
+		if err != nil {
+			return err
+		}
+		a.printf("pane %s: idle=%t (%s)\n", sanitizeLine(*pane), idleNow, why)
+		return nil
 	}
 	a.as = *agent
 	s, err := a.session()
@@ -198,45 +208,54 @@ func ringLine(n int, types []string) string {
 }
 
 // paneIdle: the expected program runs in the pane, no tmux client touched the
-// session for br.idle, and the last non-empty line is an empty prompt, so a
-// pane where a human is typing is never touched.
+// session for br.idle, and the empty-prompt regexp matches the captured screen
+// (multiline, trailing blanks trimmed per line), so a pane where a human is
+// typing is never touched. The regexp is matched against the whole screen
+// because Claude Code draws a footer under its input box.
 func (br *tmuxBridge) paneIdle(ctx context.Context, now time.Time) (bool, error) {
+	idle, _, err := br.paneState(ctx, now)
+	return idle, err
+}
+
+// paneState is paneIdle plus the reason, for --probe.
+func (br *tmuxBridge) paneState(ctx context.Context, now time.Time) (bool, string, error) {
 	out, err := br.tmux.run(ctx, "display-message", "-p", "-t", br.pane, "#{pane_current_command}\t#{session_activity}\t#{session_name}")
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	f := strings.Split(strings.TrimRight(out, "\r\n"), "\t")
 	if len(f) != 3 {
-		return false, fmt.Errorf("tmux display-message: unexpected output %q", snippet(out, 80))
+		return false, "", fmt.Errorf("tmux display-message: unexpected output %q", snippet(out, 80))
 	}
 	if f[0] != br.program {
-		return false, nil
+		return false, "program is " + sanitizeLine(f[0]) + ", not " + br.program, nil
 	}
 	latest, err := strconv.ParseInt(f[1], 10, 64)
 	if err != nil {
-		return false, fmt.Errorf("tmux session_activity %q is not a unix time", snippet(f[1], 40))
+		return false, "", fmt.Errorf("tmux session_activity %q is not a unix time", snippet(f[1], 40))
 	}
 	clients, err := br.tmux.run(ctx, "list-clients", "-t", f[2], "-F", "#{client_activity}")
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	for _, l := range strings.Fields(clients) {
 		if t, err := strconv.ParseInt(l, 10, 64); err == nil && t > latest {
 			latest = t
 		}
 	}
-	if now.Sub(time.Unix(latest, 0)) < br.idle {
-		return false, nil
+	if age := now.Sub(time.Unix(latest, 0)); age < br.idle {
+		return false, fmt.Sprintf("last activity %s ago < %s", age.Round(time.Second), br.idle), nil
 	}
 	screen, err := br.tmux.run(ctx, "capture-pane", "-p", "-t", br.pane)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	last := ""
-	for _, l := range strings.Split(screen, "\n") {
-		if l = strings.TrimRight(l, " \t\r"); strings.TrimSpace(l) != "" {
-			last = l
-		}
+	lines := strings.Split(screen, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " \t\r")
 	}
-	return br.prompt.MatchString(last), nil
+	if !br.prompt.MatchString(strings.Join(lines, "\n")) {
+		return false, "empty-prompt regexp does not match the screen (prompt not empty, or regexp needs calibration)", nil
+	}
+	return true, "program, activity and empty prompt all match", nil
 }

@@ -374,7 +374,7 @@ The line holds only counts and relevance types, never server text.
 Idle means all of:
 - `tmux display-message -p -t TARGET '#{pane_current_command}'` is `--program` (e.g. `claude` or `node`);
 - no activity for `--idle`: the newest of the session's `#{session_activity}` and every client's `#{client_activity}` (`tmux list-clients`) is older;
-- the last non-empty line of `tmux capture-pane -p -t TARGET` matches `--empty-prompt` (required, no default), so a pane where a human is typing is never
+- the captured screen (multiline regexp) of `tmux capture-pane -p -t TARGET` matches `--empty-prompt` (required, no default), so a pane where a human is typing is never
   touched. Choose a regexp that matches only the empty prompt line of that program as it is drawn in that pane.
 
 It rings at most once per distinct set of event ids (a new event makes a new set) and at most once per `--interval`. Errors (a missing pane, the homeserver
@@ -479,3 +479,6 @@ Matrix presence: `active` maps to `online`, `idle` and `away` to `unavailable`. 
 a2a status set idle "waiting for review"
 a2a status get local-models-e9
 ```
+
+
+Calibrate `--empty-prompt` per pane with `a2a bridge tmux … --probe`: it prints `idle=true|false` and the reason, and never peeks at the homeserver or types. The regexp is matched against the whole captured screen in multiline mode (Claude Code draws a footer under its input box), so anchor it on the prompt line itself, e.g. `^>\s*$` for an empty `>` prompt line.
