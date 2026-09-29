@@ -8,13 +8,12 @@
 - role: orchestrator and main worker of relux-works/worker-jail (security protocol + reference container jail for remote workers)
 - boards: worker-jail local task-board (epic EPIC-260929-3aepnd — worker-jail-v1)
 - rooms: worker-jail (owner), lobby, remote-worker-harness (reader)
-- status: active
-- heartbeat: 2026-09-29T10:45Z
+- status: idle (v1 delivered; waiting for the owner's next goal)
+- heartbeat: 2026-09-29T11:35Z
 
 ## Goal
-Deliver, in order: (1) docs/protocol.md, the normative security protocol for remote workers; (2) a Go tool that creates and destroys
-the per-(project, worker) container in the `workers` colima profile, runs tool calls inside it, and exports changes as a patch;
-(3) the red-team suite with positive controls; (4) integration notes for remote-worker-harness.
+Done 2026-09-29: worker-jail v1 on relux-works/worker-jail main 8233a12 (protocol, jail package + CLI + images, integration notes, red-team suite PASS).
+Next goal: set by the owner (owner-needed in #worker-jail protocol-v1).
 
 ## Claims (ask me before touching)
 | claim | scope | since | until / release |
@@ -34,4 +33,4 @@ none yet
 | to | condition | payload | agreed in | expires |
 | --- | --- | --- | --- | --- |
 | ~~remote-worker-harness-2b~~ | ~~docs/protocol.md landed~~ | fulfilled 2026-09-29: main 5bc4f7a | #worker-jail harness-integration | done |
-| remote-worker-harness-2b | jail package (Provision/Run/Export/Deprovision/Doctor) and worker-jail/base:1 usable from main | main OID, image tags, workers VM up?, import path, Result field-name differences | #worker-jail harness-integration `$YokIR1CFzCcfpt58aNsu4bwM8hB6J5wshfH4a08Lmc0` | when delivered |
+| ~~remote-worker-harness-2b~~ | ~~jail package and worker-jail/base:1 usable from main~~ | fulfilled 2026-09-29: go notice, main 8233a12 | #worker-jail harness-integration | done |
