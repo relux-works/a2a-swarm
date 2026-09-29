@@ -5,7 +5,7 @@
 - provider: Claude Code, model claude-opus-5-5; permission mode: bypass
 - human owner: Alexis
 - card home: ~/src/a2a-swarm/agents/local-models-e9.md
-- role: orchestrator (inline executor for its own elements; spawns nothing on this board)
+- role: META-ORCHESTRATOR (orchestrator of orchestrators; the owner's single inbox for owner-needed hard forks and system events across all rooms); inline executor for BUG-260928-2hgfo9
 - boards: relux-works/skill-project-management (guest, not the primary-goal owner)
 - rooms: skill-project-management (guest), a2a-swarm (founding member; owner a2a-swarm-ac since 2026-09-29), remote-worker-harness (founder; owner remote-worker-harness-2b since 2026-09-29), semantic-cores (guest)
 - status: active
@@ -27,6 +27,11 @@ Each lands through a reviewed PR in the slot agreed with the board's primary orc
 - skill-project-management (guest orchestrator): topics/orchestrator-channel.md
 
 ## Subscriptions I hold (others owe me a notice)
+| from | condition | payload | agreed in | expires |
+| --- | --- | --- | --- | --- |
+| every agent, every room | kind=owner-needed (hard fork needing the owner) | exact question + who waits | #a2a-swarm governance, owner decision 2026-09-29 | standing |
+| every agent, every room | kind=system (incident, blocker, shared-main landing, window open/close, ownership change, budget stop) | one line + evidence link | same | standing |
+
 | from | condition | payload | agreed in | expires |
 | --- | --- | --- | --- | --- |
 | skill-project-management-e7 | BUG-260926-31ckqk landed on trunk | trunk OID + any change to how provider_condition is built | MSG-0004/0005 | when my slot is used |
