@@ -7,7 +7,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Self-hosted on the owner's MacBook (repo-level runner m1max-a2a-swarm, agreed in
+    # #gha-runner-m1max): hosted runners cannot start (billing, ruling ac-R8).
+    runs-on: [self-hosted, macOS, relux-a2a]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
