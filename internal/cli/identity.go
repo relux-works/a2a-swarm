@@ -284,15 +284,13 @@ func (a *App) leaseHolder(p config.Paths, sessionID string) string {
 	if id := hookSessionKey(a.Getenv(EnvSessionID)); a.Getenv(EnvSessionID) != "" && id != "-" {
 		return id
 	}
-	return "pid:" + strconv.Itoa(os.Getpid()) + "@" + hostLabel(p)
+	return "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel()
 }
 
-// hostLabel is the host slug, or the OS hostname when none is set (a label
-// only: identities never default to the OS hostname).
-func hostLabel(p config.Paths) string {
-	if h, err := config.LoadHost(p); err == nil {
-		return h
-	}
+// machineLabel names this machine for the lease: the OS hostname, which does
+// not change when the naming slug is set later ('a2a host init' mid-session
+// must not make the same machine look like two hosts).
+func machineLabel() string {
 	h, _ := os.Hostname()
 	if h = sanitizeLine(h); h == "" {
 		h = "unknown"
@@ -310,7 +308,7 @@ func (a *App) leaseDead(p config.Paths) func(string) bool {
 		}
 		pidText, host, ok := strings.Cut(rest, "@")
 		pid, err := strconv.Atoi(pidText)
-		if !ok || err != nil || pid <= 0 || host != hostLabel(p) {
+		if !ok || err != nil || pid <= 0 || host != machineLabel() {
 			return false
 		}
 		return processGone(pid)
@@ -337,7 +335,7 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 		ttl = a.leaseTTL
 	}
 	_, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
-		return cur.Acquire(s.name, holder, hostLabel(s.paths), os.Getpid(), a.Now(), ttl, a.leaseDead(s.paths))
+		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDead(s.paths))
 	})
 	return err
 }

@@ -249,13 +249,14 @@ func TestLeaseTakeoverAfterExpiry(t *testing.T) {
 // Proves a "pid:" holder on this host whose process has exited is taken over
 // at once, while one whose process runs is refused (positive control of the
 // liveness check).
+// (Leases written before the Host field, as here, still rely on the liveness check.)
 func TestLeaseDeadPidTakenOver(t *testing.T) {
 	e, _ := world(t)
 	dead := exec.Command("true")
 	if err := dead.Run(); err != nil {
 		t.Skip("cannot run true:", err)
 	}
-	host := hostLabel(e.paths())
+	host := machineLabel()
 	put := func(pid int) {
 		if _, err := config.UpdateState(e.paths(), "alice", func(s *config.State) error {
 			s.Lease = &config.Lease{Holder: "pid:" + strconv.Itoa(pid) + "@" + host, PID: pid, Expires: time.Now().Add(time.Hour)}
@@ -335,4 +336,23 @@ func TestHookExportsSessionID(t *testing.T) {
 	delete(e.extra, envClaudeEnvFile)
 	e.extra[EnvSessionID] = "abc-123"
 	e.as("alice", "inbox").ok(t)
+}
+
+// Proves the lease host does not change with the naming slug (regression from
+// the self-migration of a2a-swarm-ac): a session holds the lease, then
+// 'a2a host init' sets the slug mid-session, and a session-less process on the
+// same machine is still compatible; a second known session is still refused.
+func TestLeaseHostStableAcrossHostInit(t *testing.T) {
+	e, _ := world(t)
+	e.clock()
+	e.extra[EnvSessionID] = "s1"
+	e.as("alice", "inbox").ok(t)
+	e.run("host", "init", "renamedslug").ok(t)
+	delete(e.extra, EnvSessionID)
+	e.as("alice", "inbox").ok(t)
+	if l := e.lease("alice"); l.Holder != "s1" {
+		t.Fatalf("a session-less process replaced the session's lease: %+v", l)
+	}
+	e.extra[EnvSessionID] = "s2"
+	e.as("alice", "inbox").failsWith(t, ExitError, "is held by s1")
 }
