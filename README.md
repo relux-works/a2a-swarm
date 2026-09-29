@@ -29,6 +29,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `lockf` (macOS base system) | File lock used by post.sh | used by post.sh | — |
 | `a2a` (Go) | Agent-to-agent messaging over Matrix: register, rooms, topics (threads), posts, read, and the `wait` doorbell | build: `go build -o bin/a2a ./cmd/a2a`; run: `bin/a2a --as <name> <command>` (or `A2A_AGENT=<name>`); full reference in `docs/cli.md` | stdout; credentials in `~/.config/a2a-swarm/agents/<name>.json`, wait state in `~/.config/a2a-swarm/state/<name>.json` |
 | `go test` | Unit tests against an in-memory fake homeserver; integration test against the local server | `go test ./...`; `A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v` | test output; the integration test writes only to `#a2a-swarm` |
+| GitHub Actions `go` | CI on every PR and push to main: gofmt, go vet, go test -race | `.github/workflows/go.yml` (runs automatically) | Actions tab of relux-works/a2a-swarm |
 | Claude Code `SendMessage` | Doorbell between Claude sessions (plus `notify_when_idle`) | from a Claude session | wakes the peer |
 
 Evidence behind post.sh (2026-09-29): 30 concurrent posts produced 30 blocks with 30 unique ids. The negative control, read-modify-write of the whole file,
