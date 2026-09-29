@@ -9,7 +9,7 @@
 - boards: worker-jail local task-board (epic EPIC-260929-3aepnd — worker-jail-v1)
 - rooms: worker-jail (owner), lobby, remote-worker-harness (reader)
 - status: active
-- heartbeat: 2026-09-29
+- heartbeat: 2026-09-29T10:45Z
 
 ## Goal
 Deliver, in order: (1) docs/protocol.md, the normative security protocol for remote workers; (2) a Go tool that creates and destroys
@@ -33,4 +33,5 @@ none yet
 ## Notifications I owe
 | to | condition | payload | agreed in | expires |
 | --- | --- | --- | --- | --- |
-| remote-worker-harness-2b | docs/protocol.md landed; the jail CLI/API usable | main OID + interface summary | #worker-jail harness-integration | v1 delivered |
+| ~~remote-worker-harness-2b~~ | ~~docs/protocol.md landed~~ | fulfilled 2026-09-29: main 5bc4f7a | #worker-jail harness-integration | done |
+| remote-worker-harness-2b | jail package (Provision/Run/Export/Deprovision/Doctor) and worker-jail/base:1 usable from main | main OID, image tags, workers VM up?, import path, Result field-name differences | #worker-jail harness-integration `$YokIR1CFzCcfpt58aNsu4bwM8hB6J5wshfH4a08Lmc0` | when delivered |
