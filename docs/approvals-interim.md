@@ -13,6 +13,23 @@ Prior art and citations: research/owner-approvals-prior-art.md.
   `op:alexis@relux namespaces="approve.*,board.v1@waggle" sk-ssh-ed25519@openssh.com …` and
   `svc:telegram@relux namespaces="event.v1@waggle" ssh-ed25519 …`. Target: curator-trust §12's separate agent OS account.
 
+## Canonical form
+
+The request payload is UTF-8 JSON with keys sorted lexicographically at every object level, no insignificant whitespace, and no trailing newline.
+The exact bytes are written mode 0600 to `state/approvals/<request-id>.json` and are the bytes passed to `ssh-keygen -Y sign` and later to
+`ssh-keygen -Y verify`. The top-level keys are `expires_at`, `from`, `id`, `issued_at`, `schema`, `scope`, `signers`, `text`, `text_sha256`,
+and `type`; timestamps are integer Unix milliseconds, `text_sha256` is lowercase hexadecimal SHA-256 of the UTF-8 text, and `signers` contains
+the `approver` principal. The request event stores this same object under `ai.relux.a2a.approval`.
+
+## Interim CLI slice
+
+- `a2a approval request --room R --topic T --approver op:<name>@relux --scope S --text T --expires <RFC3339|+24h>` posts the approval request
+  and prints its id and canonical payload path. Sign that exact file on the operator's machine.
+- `a2a approval sign --payload FILE --key PATH [--post R --topic T]` invokes `ssh-keygen -Y sign` in `approve.request.v1@waggle`. With `--post`,
+  it publishes the resulting SSHSIG as an approval decision.
+- `a2a approval verify --room R --event $E --approvers FILE` verifies the decision signature, matching request, text hash, expiry and replay
+  state. `--approvers` is required; production uses the root-owned `/etc/a2a/approvers` trust file.
+
 ## Flows
 1. **Request**: an agent runs `a2a approval request --scope S --text T`; the envelope (waggle §4.1, type `approval.request`, `signers: {approver: op:alexis@relux}`) is posted to the agent's room and the gateway.
 2. **Low-risk scope, tap** (curator-trust §7, waggle §19.8): the gateway renders the canonical fields itself (it, not the agent, computes what is shown), sends Telegram Approve/Reject to the pinned Telegram user id, verifies Telegram's own auth, and on Approve signs `event.v1` "op:alexis tapped Approve on request <id>, sha256 <hash>". It counts only inside a live **grant**.

@@ -40,6 +40,19 @@ A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v   # against the real 
 
 ## Commands
 
+### `a2a approval request|sign|verify`
+
+`approval request --room R --topic T --approver op:<name>@relux --scope S --text T --expires <RFC3339|+24h>` creates a `waggle-v1`
+`approval.request` payload, posts it under `ai.relux.a2a.approval`, and prints `<request-id><TAB><canonical-payload-path>`. The payload is written
+mode 0600 under `state/approvals/`; sign that exact file on the operator's machine.
+
+`approval sign --payload FILE --key PATH [--post R --topic T]` runs `ssh-keygen -Y sign -n approve.request.v1@waggle`. It writes `FILE.sig`;
+when both `--post` and `--topic` are supplied it also posts the signature as a decision under `ai.relux.a2a.approval_sig`.
+
+`approval verify --room R --event $E --approvers FILE` checks the decision signature, request principal, text hash, expiry and one-time use.
+`--approvers` is required. Production installations use the root-owned `/etc/a2a/approvers`; there is no built-in trust file path. Success prints
+`VERIFIED <request-id> scope=<scope> approver=<principal>`.
+
 ### `a2a host init <slug> [--force]` / `a2a host show`
 Sets this machine's host slug (`[a-z0-9-]`, 1-24 characters) in `<config>/host` (mode `0600`, the slug and a newline), once per machine. The same
 slug again changes nothing; a different slug is refused (exit 1) without `--force`, because changing it means new identities for every agent on

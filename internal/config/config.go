@@ -322,6 +322,8 @@ type State struct {
 	HooksPaused bool `json:"hooks_paused,omitempty"`
 	// Lease is the one live session that holds this identity (Acquire).
 	Lease *Lease `json:"lease,omitempty"`
+	// UsedApprovals records owner approval request ids that this agent accepted.
+	UsedApprovals []string `json:"used_approvals,omitempty"`
 }
 
 // HookSession is the doorbell state of one agent session.

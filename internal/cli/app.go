@@ -132,6 +132,7 @@ func commands() []command {
 		{"sub-request", "sub-request <agent> --room R --topic T <selector flags> [--note text]   ask an agent to subscribe (rule 10)", cmdSubRequest},
 		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},
 		{"project", "project [--system R] [--kind k1,k2] [--once]   run the #system projector (rule 24) as this identity", cmdProject},
+		{"approval", "approval request|sign|verify ...   create, sign, and verify owner approval requests", cmdApproval},
 		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
 		{"creds", "creds move-human <name>              move a HUMAN's credential file out of agents/ into humans/ (used only with --human)", cmdCreds},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
