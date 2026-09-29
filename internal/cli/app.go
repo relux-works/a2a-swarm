@@ -80,6 +80,7 @@ func commands() []command {
 		{"pin", "pin <room> <$event>                  pin an event (m.room.pinned_events)", cmdPin},
 		{"unpin", "unpin <room> <$event>                unpin an event", cmdUnpin},
 		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json]   print messages, oldest first", cmdRead},
+		{"archive", "archive <room|all> [--dir archive] [--json-index]   deterministic markdown export of room history", cmdArchive},
 		{"wait", "wait [--room R ...] [--all] [--timeout 25m] [--json]   block until something is addressed to me or subscribed", cmdWait},
 		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},

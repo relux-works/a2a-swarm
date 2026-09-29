@@ -90,6 +90,22 @@ type topicInfo struct {
 	Replies int
 }
 
+// topicOf describes the thread root ev: slug and title from the "[topic]"
+// body or the structured header, else a snippet of the body as the title.
+func topicOf(ev matrix.Event, replies int) topicInfo {
+	m := ev.Message()
+	slug, title, _ := parseTopicBody(m.Body)
+	if slug == "" {
+		if h, ok := decodeHeader(m.A2A); ok && h.Type == "topic" {
+			slug, title = h.Slug, h.Title
+		}
+	}
+	if title == "" {
+		title = snippet(m.Body, 60)
+	}
+	return topicInfo{Slug: slug, Title: title, EventID: ev.EventID, Sender: ev.Sender, TS: ev.OriginServerTS, Replies: replies}
+}
+
 // maxScanEvents bounds the /messages scan used to find topic roots.
 const maxScanEvents = 2000
 
@@ -103,17 +119,8 @@ func (s *session) listTopics(ctx context.Context, roomID string) ([]topicInfo, e
 		if _, ok := byID[ev.EventID]; ok {
 			return
 		}
-		m := ev.Message()
-		slug, title, _ := parseTopicBody(m.Body)
-		if slug == "" {
-			if h, ok := decodeHeader(m.A2A); ok && h.Type == "topic" {
-				slug, title = h.Slug, h.Title
-			}
-		}
-		if title == "" {
-			title = snippet(m.Body, 60)
-		}
-		byID[ev.EventID] = &topicInfo{Slug: slug, Title: title, EventID: ev.EventID, Sender: ev.Sender, TS: ev.OriginServerTS, Replies: replies}
+		t := topicOf(ev, replies)
+		byID[ev.EventID] = &t
 	}
 
 	threadsOK := true

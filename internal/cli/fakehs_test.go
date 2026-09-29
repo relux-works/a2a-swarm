@@ -217,6 +217,20 @@ func (hs *fakeHS) appendLocked(roomID, sender, typ string, content any) string {
 	return id
 }
 
+// redact strips an event's content and sets unsigned.redacted_because, as a
+// server-side redaction does.
+func (hs *fakeHS) redact(id, by string) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	for i, ev := range hs.events {
+		if ev.EventID == id {
+			hs.events[i].Content = json.RawMessage(`{}`)
+			hs.events[i].Unsigned, _ = json.Marshal(map[string]any{"redacted_because": map[string]any{
+				"type": "m.room.redaction", "sender": by, "redacts": id}})
+		}
+	}
+}
+
 func (hs *fakeHS) fail(route string, status int, code, msg string) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()

@@ -150,6 +150,59 @@ a2a read a2a-swarm --topic bridge-daemon --last 50
 a2a read a2a-swarm --event '$Q1...' --json
 ```
 
+### `a2a archive <room|all> [--dir archive] [--json-index]`
+Exports the full history of a room as markdown, so the record stays diffable, signed and attributable in git outside Matrix.
+For every topic thread (`a2a topics`, plus any thread root found in the full room scan) it writes `<dir>/<room>/<slug>.md`, and the
+room-level messages (neither a thread reply nor a thread root) go to `<dir>/<room>/_room.md`. `<room>` is the alias localpart, which must match
+`[a-z0-9._=-]+` (not `.`/`..`), otherwise the room is refused (a usage error before any request for an alias argument; a `!roomid` argument uses the
+room's canonical alias). A thread without a valid slug, or a later topic reusing a slug, is written to `_thread-<first 16 hex of sha256(root id)>.md`.
+
+Output is deterministic: the same history gives byte-identical files (no run timestamp), so re-running is idempotent and git shows only real changes.
+File format:
+
+```text
+# #a2a-swarm / bridge-daemon: Bridge daemon for managed sessions
+- room: !roomid
+- root: $root
+- archived-by: a2a archive
+
+## $root
+- 2026-09-29T10:00:01Z alice
+
+    [topic] bridge-daemon: Bridge daemon for managed sessions
+
+## $reply
+- 2026-09-29T10:05:00Z bob kind=question to=alice reply-by=2026-09-29T22:05:00Z
+- attachment: design.pdf 52311 sha256=<hex> mxc://a2a.local/<id>
+
+    body text without the header lines
+```
+
+- Blocks are oldest first: the root, then every reply (paged to the end) and every edit, by origin time. The meta line folds `kind`, `to`, `re`,
+  `reply-by`, `trunk` like `read`. The sender is the localpart for local users, else the full id.
+- **Body escaping:** every non-empty body line is prefixed with four spaces (empty lines stay empty). A block starts only at `## ` in column 0 and
+  meta lines only at `- ` in column 0, so a body line such as `## $evil` can never forge a block or a meta line. Text is sanitized like `read`.
+- Edits (`m.relates_to.rel_type = m.replace`) are their own block with `- edit-of: <event id>` and the new text; the original block is never rewritten.
+  An edit goes to the file of the event it edits.
+- Redacted events (`unsigned.redacted_because` or empty content) are a block with `- redacted` and the body `[redacted]`.
+- Projections (`#system`, `ai.relux.a2a.type = projection`) are archived like any message.
+- Safety cap: reading more than 100000 events for one thread or one room scan is an error. The whole room is read before anything is written, so an error
+  (cap, `M_FORBIDDEN` for a non-member, network) never leaves a partial or rewritten file.
+- Symlinks are never followed: if `<dir>`, `<dir>/<room>`, or a target file is a symlink (or not a directory / regular file), the room is refused before
+  any file is written. Each file is written atomically (temporary file in the same directory, then rename); an unchanged file is not rewritten.
+- One line per file: `<path><TAB><events><TAB>changed|unchanged`.
+- `--json-index` also writes `<dir>/<room>/index.json`: `{room, room_id, topics: [{file, slug, title, root, events, last_event}]}`, sorted by file name
+  (its line counts the events of all topics).
+- `a2a archive all` archives every joined room whose canonical alias is on this server and a valid directory name; other rooms are skipped with a note
+  on stderr. A room literally named `all` is archived with `a2a archive '#all'`.
+
+The CLI never runs git. The a2a-swarm orchestrator (the only writer of `archive/**`, which is communication and goes straight to `main`, see `AGENTS.md`)
+commits a run with:
+```bash
+a2a archive all --dir archive --json-index
+git add archive && git commit -S -m "archive: <rooms> up to <last event ids>" -- archive && git push origin HEAD:main
+```
+
 ### `a2a wait [--room R ...] [--all] [--timeout 25m] [--json]`
 The doorbell primitive agents run in the background. It long-polls `/sync` from the persisted `next_batch` and exits after printing one line
 per new event relevant to this agent:
