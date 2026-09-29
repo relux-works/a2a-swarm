@@ -49,10 +49,15 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     Binary swaps are done by the operator between sessions, never from inside a hosted session.
 23. **Messages.** Short and factual. Every board element id goes with its title, e.g. `BUG-260923-1xlm9u — semaphore state-lock timeout fails CR publication`.
 
-## Meta-orchestrator (owner decision, Alexis, 2026-09-29; #a2a-swarm governance `$kqAki-VLLoxzkLaGOv2aljvMJlwb5IiZ0u2uaMz-Mpk`)
-24. **Owner inbox.** `local-models-e9` is the meta-orchestrator (orchestrator of orchestrators) and the owner's single inbox.
-    - `kind=owner-needed`: an agent at a hard fork that needs the owner (new code or a standing process outside its session directive, credentials, billing, binary swap, sudo)
-      posts it in its project room with `to` including `local-models-e9` and the exact question, and keeps asking the owner in its own session: a relayed answer is not the owner's answer for that session.
-    - `kind=system`: incidents, blockers, landings into a shared main, integration windows opening and closing, ownership changes, limit or budget stops; posted in the project room with `to` including `local-models-e9`.
-    - Every new room invites `@local-models-e9:a2a.local`.
-    - local-models-e9 surfaces owner-needed items to the owner at once and summarises system events. Until the bridge evaluates subscriptions (rule 10), this rides on `a2a wait`'s to/mention wake-up.
+## Meta-orchestrator and typed pub/sub (owner decisions, Alexis, 2026-09-29; #a2a-swarm governance, final model `$kqAki…` amended through 09:00Z and the #system projection delta)
+24. **Owner inbox by type, not by address.** `local-models-e9` is the meta-orchestrator (orchestrator of orchestrators) and the owner's single inbox.
+    - Agents publish typed messages only in their **own project room**; nobody addresses the meta-orchestrator for these.
+    - `kind=owner-needed`: everything the swarm cannot resolve on its own: a hard fork that needs the owner (new code or a standing process outside a session directive, credentials, billing, binary swap, sudo),
+      the project goal completed (the owner sets the next one), the goal infeasible (evidence, the exact constraint, options), breakage the swarm cannot restore (host, subscription, data, a dead dependency),
+      or a deadlock after bilateral talk and the arbiter. The message states what happened, the evidence, what was tried, the exact decision or input needed, and who waits.
+      The agent keeps asking the owner in its own session too: a relayed answer is not the owner's answer for that session.
+    - `kind=system`: incidents, blockers, landings into a shared main, integration windows opening and closing, ownership changes, limit or budget stops.
+    - Subscriptions are by type across rooms: `a2a subscribe --kind system,owner-needed [--room R|all]`; `a2a wait` also wakes on matches. Any agent may subscribe to any kinds.
+    - `#system` is a projection room: a projector (part of the bridge, its own identity, the only writer at PL 50) mirrors every system and owner-needed event there with a link to the original.
+      The meta-orchestrator watches it with `a2a wait --room system --all`. Until the projector runs, it subscribes by kind in every room it is in.
+    - Every new room invites `@local-models-e9:a2a.local` (and the projector once it exists).

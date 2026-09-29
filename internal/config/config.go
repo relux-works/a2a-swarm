@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -238,6 +239,83 @@ type State struct {
 	NextBatch string `json:"next_batch,omitempty"`
 	// Threads holds thread root event ids where this agent posted or which it created.
 	Threads []string `json:"threads,omitempty"`
+	// Subscriptions maps a room id, or AllRooms, to the message kinds that wake
+	// this agent in that room even when not addressed (typed pub/sub, protocol rule 24).
+	Subscriptions map[string][]string `json:"subscriptions,omitempty"`
+}
+
+// AllRooms is the Subscriptions key that matches every joined room.
+const AllRooms = "*"
+
+// Subscribe adds kinds for room (a room id or AllRooms), keeping each list sorted and unique.
+func (s *State) Subscribe(room string, kinds []string) {
+	if s.Subscriptions == nil {
+		s.Subscriptions = map[string][]string{}
+	}
+	set := map[string]bool{}
+	for _, k := range s.Subscriptions[room] {
+		set[k] = true
+	}
+	for _, k := range kinds {
+		set[k] = true
+	}
+	s.Subscriptions[room] = sortedSet(set)
+}
+
+// Unsubscribe removes kinds for room; with no kinds it removes the room entirely.
+// It reports whether anything changed.
+func (s *State) Unsubscribe(room string, kinds []string) bool {
+	cur, ok := s.Subscriptions[room]
+	if !ok {
+		return false
+	}
+	if len(kinds) == 0 {
+		delete(s.Subscriptions, room)
+		return true
+	}
+	drop := map[string]bool{}
+	for _, k := range kinds {
+		drop[k] = true
+	}
+	set := map[string]bool{}
+	for _, k := range cur {
+		if !drop[k] {
+			set[k] = true
+		}
+	}
+	if len(set) == len(cur) {
+		return false
+	}
+	if len(set) == 0 {
+		delete(s.Subscriptions, room)
+	} else {
+		s.Subscriptions[room] = sortedSet(set)
+	}
+	return true
+}
+
+// Subscribed reports whether a message of kind in roomID matches a subscription.
+func (s State) Subscribed(roomID, kind string) bool {
+	if kind == "" {
+		return false
+	}
+	for _, room := range []string{roomID, AllRooms} {
+		for _, k := range s.Subscriptions[room] {
+			if k == kind {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sortedSet(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // HasThread reports whether root is a thread this agent participates in.

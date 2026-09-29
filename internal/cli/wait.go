@@ -34,11 +34,13 @@ const (
 	relTo      relevance = "to"
 	relMention relevance = "mention"
 	relThread  relevance = "thread"
+	relSub     relevance = "sub"
+	relAll     relevance = "all"
 )
 
 // classify decides whether a timeline event concerns this agent. It is pure:
 // the caller updates the thread list from the returned learnedRoot.
-func classify(ev matrix.Event, me, myName string, st config.State) (rel relevance, learnedRoot string) {
+func classify(ev matrix.Event, roomID, me, myName string, st config.State) (rel relevance, learnedRoot string) {
 	if ev.Type != "m.room.message" {
 		return "", ""
 	}
@@ -54,7 +56,8 @@ func classify(ev matrix.Event, me, myName string, st config.State) (rel relevanc
 		}
 		return "", ""
 	}
-	if h, ok := decodeHeader(m.A2A); ok {
+	h, hasHeader := decodeHeader(m.A2A)
+	if hasHeader {
 		for _, t := range h.To {
 			if t == myName || t == me {
 				return relTo, ""
@@ -70,6 +73,9 @@ func classify(ev matrix.Event, me, myName string, st config.State) (rel relevanc
 	}
 	if mentionsUser(m.Body, me) {
 		return relMention, ""
+	}
+	if hasHeader && st.Subscribed(roomID, h.Kind) {
+		return relSub, ""
 	}
 	if root != "" && st.HasThread(root) {
 		return relThread, ""
@@ -168,12 +174,16 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
 	timeout := fs.Duration("timeout", DefaultWaitTimeout, "how long to wait")
 	asJSON := fs.Bool("json", false, "one JSON object per event")
+	all := fs.Bool("all", false, "wake on every new message in the --room rooms, not only on relevant ones")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 0 {
-		return usagef("usage: a2a wait [--room R ...] [--timeout 25m] [--json]")
+		return usagef("usage: a2a wait [--room R ...] [--all] [--timeout 25m] [--json]")
+	}
+	if *all && len(rooms) == 0 {
+		return usagef("--all needs at least one --room")
 	}
 	if *timeout <= 0 {
 		return usagef("--timeout must be positive")
@@ -249,10 +259,13 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		for _, roomID := range sortedKeys(resp.Rooms.Join) {
 			jr := resp.Rooms.Join[roomID]
 			for _, ev := range jr.Timeline.Events {
-				rel, root := classify(ev, me, s.name, st)
+				rel, root := classify(ev, roomID, me, s.name, st)
 				if root != "" {
 					learned = append(learned, root)
 					st.AddThread(root)
+				}
+				if rel == "" && *all && filter[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
+					rel = relAll
 				}
 				if rel == "" || (len(filter) > 0 && !filter[roomID]) {
 					continue

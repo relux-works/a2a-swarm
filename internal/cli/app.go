@@ -75,7 +75,10 @@ func commands() []command {
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
 		{"post", "post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] <text|@file|->", cmdPost},
 		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json]   print messages, oldest first", cmdRead},
-		{"wait", "wait [--room R ...] [--timeout 25m] [--json]   block until something is addressed to me", cmdWait},
+		{"wait", "wait [--room R ...] [--all] [--timeout 25m] [--json]   block until something is addressed to me or subscribed", cmdWait},
+		{"subscribe", "subscribe --kind k1,k2 [--room R|all]   wake on these message kinds without being addressed", cmdSubscribe},
+		{"unsubscribe", "unsubscribe [--kind k1,k2] [--room R|all]   drop kind subscriptions (all kinds without --kind)", cmdUnsubscribe},
+		{"subscriptions", "subscriptions [--json]               list kind subscriptions", cmdSubscriptions},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status set <active|idle|away> [\"text\"] | status get [name]", cmdStatus},
 	}

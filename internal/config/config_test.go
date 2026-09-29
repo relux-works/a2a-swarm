@@ -231,3 +231,37 @@ func TestUpdateStateAbort(t *testing.T) {
 		t.Fatalf("aborted update was saved: %+v", s)
 	}
 }
+
+// Proves kind subscriptions merge without duplicates, match only the room they
+// name (or every room for AllRooms), never match an empty kind, and that
+// unsubscribing a subset, an unknown kind, or a whole room behaves as stated.
+func TestStateSubscriptions(t *testing.T) {
+	var s State
+	s.Subscribe("!a", []string{"system", "owner-needed"})
+	s.Subscribe("!a", []string{"system"})
+	if got := s.Subscriptions["!a"]; len(got) != 2 || got[0] != "owner-needed" || got[1] != "system" {
+		t.Fatalf("merged = %v", got)
+	}
+	if !s.Subscribed("!a", "system") || s.Subscribed("!b", "system") || s.Subscribed("!a", "notice") || s.Subscribed("!a", "") {
+		t.Fatal("room-scoped match wrong")
+	}
+	s.Subscribe(AllRooms, []string{"decision"})
+	if !s.Subscribed("!zzz", "decision") || s.Subscribed("!zzz", "system") {
+		t.Fatal("all-rooms match wrong")
+	}
+	if s.Unsubscribe("!a", []string{"notice"}) || s.Unsubscribe("!none", nil) {
+		t.Fatal("no-op unsubscribe reported a change")
+	}
+	if !s.Unsubscribe("!a", []string{"system"}) || s.Subscribed("!a", "system") || !s.Subscribed("!a", "owner-needed") {
+		t.Fatal("partial unsubscribe wrong")
+	}
+	if !s.Unsubscribe("!a", []string{"owner-needed"}) {
+		t.Fatal("last kind not removed")
+	}
+	if _, ok := s.Subscriptions["!a"]; ok {
+		t.Fatal("empty room entry kept")
+	}
+	if !s.Unsubscribe(AllRooms, nil) || len(s.Subscriptions) != 0 {
+		t.Fatalf("whole-room unsubscribe left %v", s.Subscriptions)
+	}
+}
