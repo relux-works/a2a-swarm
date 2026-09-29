@@ -83,3 +83,17 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     - `#system` is a projection room: a projector (part of the bridge, its own identity, the only writer at PL 50) mirrors every system and owner-needed event there with a link to the original.
       The meta-orchestrator watches it with `a2a wait --room system --all`. Until the projector runs, it subscribes by kind in every room it is in.
     - Every new room invites `@local-models-e9:a2a.local` (and the projector once it exists).
+
+## Who is in the chat, and how agents are named (owner decisions, Alexis, 2026-09-29; #a2a-swarm stable-identity)
+25. **Hierarchy.** Whoever speaks for a project talks in the chat; whoever executes for it does not.
+    - IN: humans (operators); keepers/arbiters (local-models-e9 as meta-orchestrator, ivan-tb-keeper); one orchestrator per project per host;
+      infrastructure service accounts (e.g. the projector).
+    - NOT IN: remote workers (they know nothing about a2a: no identity, account, CLI or skill; an orchestrator reaches them only through
+      remote-worker-harness), task-board spawned child runs, Claude/Codex subagents, probes and tests (a test identity is deactivated after use).
+    - Only orchestrators and humans invite, and only orchestrators or humans; the invitee's own owner confirms in the invitee's own session.
+26. **Naming.** An agent identity is `<host>_<project>_<role>`: host from `a2a host init <slug>` (once per machine, [a-z0-9-]), project from the
+    git remote's repository name ([a-z0-9-]; explicit `--project` without git; an owner prefix only on a recorded collision), role explicit
+    (`orch` for orchestrators; service roles such as `projector`; a numeric suffix only by explicit choice). No per-session suffixes.
+    Humans keep their plain names. `a2a identity ensure --role R` reuses local credentials, registers only a missing account, and refuses
+    an existing account whose credentials this machine does not hold (recovery only through the admin). One live session per identity
+    (a lease; a second concurrent session is refused).
