@@ -47,6 +47,7 @@ type fakeHS struct {
 	wake       chan struct{}
 	seq        int
 	txns       map[string]string // user|room|txn -> event id (send idempotency)
+	syncLimit  int               // per-room timeline limit in /sync (0 = 100, like the real filter)
 	// media repository
 	media     map[string]fakeMedia // media id -> stored upload
 	serveAs   map[string][]byte    // media id -> bytes served instead (a lying server)
@@ -472,12 +473,26 @@ func (hs *fakeHS) messages(w http.ResponseWriter, r *http.Request, u string) {
 	if start < 0 {
 		start = 0
 	}
+	// "to" is a sync token sN: stop at events at or before stream position N.
+	to := -1
+	if t := r.URL.Query().Get("to"); strings.HasPrefix(t, "s") {
+		to, _ = strconv.Atoi(strings.TrimPrefix(t, "s"))
+	}
+	pos := map[string]int{}
+	for i, ev := range hs.events {
+		pos[ev.EventID] = i + 1
+	}
 	chunk := []matrix.Event{}
+	reachedTo := false
 	for i := end - 1; i >= start; i-- {
+		if to >= 0 && pos[evs[i].EventID] <= to {
+			reachedTo = true
+			break
+		}
 		chunk = append(chunk, evs[i])
 	}
 	resp := map[string]any{"chunk": chunk, "start": "m" + strconv.Itoa(end)}
-	if start > 0 {
+	if start > 0 && !reachedTo {
 		resp["end"] = "m" + strconv.Itoa(start)
 	}
 	writeJSON(w, 200, resp)
@@ -598,6 +613,25 @@ func (hs *fakeHS) sync(w http.ResponseWriter, r *http.Request, u string) {
 				tl := jr["timeline"].(map[string]any)
 				tl["events"] = append(tl["events"].([]matrix.Event), ev)
 			}
+		}
+		limit := hs.syncLimit
+		if limit == 0 {
+			limit = 100
+		}
+		for roomID, v := range join {
+			tl := v.(map[string]any)["timeline"].(map[string]any)
+			evs := tl["events"].([]matrix.Event)
+			if len(evs) <= limit {
+				continue
+			}
+			kept := evs[len(evs)-limit:]
+			idx := 0
+			for i, ev := range hs.roomMessages(roomID) {
+				if ev.EventID == kept[0].EventID {
+					idx = i
+				}
+			}
+			tl["events"], tl["limited"], tl["prev_batch"] = kept, true, "m"+strconv.Itoa(idx)
 		}
 		next := "s" + strconv.Itoa(len(hs.events))
 		wake := hs.wake

@@ -263,7 +263,14 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		// Iterate rooms in a stable order so output is deterministic.
 		for _, roomID := range sortedKeys(resp.Rooms.Join) {
 			jr := resp.Rooms.Join[roomID]
-			for _, ev := range jr.Timeline.Events {
+			events, gap, err := s.timelineEvents(ctx, roomID, st.NextBatch, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch)
+			if err != nil {
+				return fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
+			}
+			if gap {
+				fmt.Fprintf(a.Stderr, "a2a: %s: more than %d events since the last wait; older ones were not checked\n", s.roomLabel(ctx, roomID, labels), maxBackfill)
+			}
+			for _, ev := range events {
 				rel, root := classify(ev, roomID, me, s.name, st)
 				if root != "" {
 					learned = append(learned, root)

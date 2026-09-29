@@ -146,7 +146,16 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		for _, roomID := range sortedKeys(resp.Rooms.Join) {
-			for _, ev := range resp.Rooms.Join[roomID].Timeline.Events {
+			tl := resp.Rooms.Join[roomID].Timeline
+			events, gap, err := s.timelineEvents(ctx, roomID, st.NextBatch, tl.Events, tl.Limited, tl.PrevBatch)
+			if err != nil {
+				// Keep the position: the next run retries the whole batch.
+				return fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
+			}
+			if gap {
+				fmt.Fprintf(a.Stderr, "a2a: projector: %s: more than %d events in one batch; older ones were not projected\n", s.roomLabel(ctx, roomID, labels), maxBackfill)
+			}
+			for _, ev := range events {
 				h, ok := projectable(ev, roomID, systemRoom, me, kinds)
 				if !ok {
 					continue

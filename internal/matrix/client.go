@@ -475,8 +475,9 @@ type SyncResponse struct {
 	Rooms     struct {
 		Join map[string]struct {
 			Timeline struct {
-				Events  []Event `json:"events"`
-				Limited bool    `json:"limited"`
+				Events    []Event `json:"events"`
+				Limited   bool    `json:"limited"`
+				PrevBatch string  `json:"prev_batch,omitempty"`
 			} `json:"timeline"`
 		} `json:"join"`
 		Invite map[string]struct {
