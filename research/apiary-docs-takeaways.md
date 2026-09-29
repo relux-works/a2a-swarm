@@ -1,6 +1,6 @@
 # apiary-docs: takeaways for a2a-swarm
 
-Source: private repo `relux-works/apiary-docs` (book + paper v3.2 by Alexis Grigoryev and Ivan Oparin), read 2026-09-29.
+Source: private repo `relux-works/apiary-docs` (book + paper v3.3.0 by Alexis Grigoryev and Ivan Oparin), read 2026-09-29.
 This is input to weigh, not a decision. Section numbers are the book's chapter.section and the paper's section numbers.
 
 ## 1. Sources
@@ -37,7 +37,7 @@ This is input to weigh, not a decision. Section numbers are the book's chapter.s
 - 13.9 Identity: mechanics clear, policy not (pseudonym weight, provider fragility, whether code-host keys equal DNSSEC-class proofs).
 - 13.10 Deliberately unsolved: full decentralization without one execution environment, blockchain settlement.
 
-**Paper v3.2 identity layer** (sec. 13 "Independence and reputation", with terms in sec. 2 and record types in sec. 6)
+**Paper v3.3.0 identity layer** (sec. 13 "Independence and reputation", with terms in sec. 2 and record types in sec. 6)
 - Long-lived identity key per owner, bound two-way to an external identity: a statement signed by the key plus a provider artifact carrying the key fingerprint.
 - Providers are resolvers with one interface (identity string -> fingerprints + evidence hash): DNSSEC TXT, HTTPS well-known, code-host account keys; social posts optional.
 - Resolution is nondeterministic, so an identity is confirmed when t validators record the same evidence hash in one window; evidence is dated and pinned (first seen wins; a key change is an event).
@@ -104,3 +104,5 @@ verified here with exactly those numbers. It cannot check our window rules as is
 expiry, or arbiter extensions. The shape transfers, though: a ~100-line BFS with state (main head, window holder, token, until-clock tick, per-session pending pushes, redelivered announcements)
 and switchable rules (`window_respected`, `expiry`, `token_fencing`, `ff_only`) could show, for example, that without `token_fencing` a superseded integrator lands after an extension, and without
 `expiry` a crashed holder deadlocks every pusher (a liveness property, which needs a bounded-steps check rather than the model's safety-only invariant). Worth writing only together with recommendation 2 or 3.
+
+Source version: apiary-docs v3.3.0 (tag v3.3.0, main f4dd90a; section numbers unchanged from v3.2). v3.3 paper §9 adds 'several operators on one board': one accepting writer with epoch fencing, the same lease-plus-fencing shape as rule 19's windows.
