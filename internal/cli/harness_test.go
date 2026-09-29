@@ -26,6 +26,8 @@ type env struct {
 	// configure, when set, adjusts each App before it runs (replace Stdout,
 	// install the afterPrint crash hook).
 	configure func(*App)
+	// now, when set, is every App's clock (hook rate-limit tests).
+	now func() time.Time
 }
 
 type result struct {
@@ -88,6 +90,9 @@ func (e *env) runCtx(ctx context.Context, args ...string) result {
 		},
 		HTTP: e.hs.srv.Client(),
 		Now:  time.Now,
+	}
+	if e.now != nil {
+		a.Now = e.now
 	}
 	if e.configure != nil {
 		e.configure(a)

@@ -545,6 +545,13 @@ func (hs *fakeHS) getState(w http.ResponseWriter, r *http.Request, u string) {
 	if room == nil {
 		return
 	}
+	if r.PathValue("type") == "m.room.member" {
+		// Membership is served from the room's member map, like a real server's m.room.member state.
+		if m, ok := room.members[r.PathValue("key")]; ok {
+			writeJSON(w, 200, map[string]string{"membership": m})
+			return
+		}
+	}
 	c, ok := room.state[r.PathValue("type")+"|"+r.PathValue("key")]
 	if !ok {
 		writeErr(w, 404, "M_NOT_FOUND", "Event not found.")

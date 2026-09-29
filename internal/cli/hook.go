@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,32 +16,44 @@ import (
 )
 
 // Environment delivery into agent sessions (protocol rule 4): the hooks of the
-// agent's runtime (Claude Code or Codex CLI) hand relevant peer events to the
-// model at the session's own lifecycle points, so an agent does not have to
-// keep `a2a wait` armed.
+// agent's runtime (Claude Code or Codex CLI) ring a DOORBELL at the session's
+// own lifecycle points, so an agent does not have to keep `a2a wait` armed.
 //
-//   - stop           (Stop): blocks the stop with the events as the reason.
-//   - session-start  (SessionStart) and prompt (UserPromptSubmit): add them as
-//     additionalContext.
+//   - stop           (Stop): blocks the stop with the doorbell as the reason.
+//   - session-start  (SessionStart) and prompt (UserPromptSubmit): add the
+//     doorbell as additionalContext.
 //
-// Both runtimes run the same delivery; --runtime claude|codex (required)
-// selects only the output format (hookRuntime.render) and, for install, the
-// file written (research/codex-hooks.md).
+// Hook output is treated by the runtime with near-user authority, so it never
+// carries peer-authored text: the doorbell is a fixed a2a-authored template
+// with counts, relevance types, kinds from the fixed list, and sender names
+// that are verified members of the room on our server (doorbellText). The
+// content is PULLED by the agent with `a2a inbox`, which prints it as tool
+// output inside an untrusted-data frame and acknowledges it.
 //
-// Delivery is at least once and never twice after an acknowledgement, shared
-// with wait/watch: the events are collected without a long poll (collectNow),
-// then, under the state lock, filtered against the acknowledged ring and the
-// pending batch, written to stdout, and only after a successful write added
-// to the ring. The cursor moves only when the whole batch was delivered.
+// The doorbell does not acknowledge anything. It records, per session, which
+// events it announced (the rung set), and rings again only when an un-rung
+// event is pending. The Stop hook also has a loop guard (hookGuardMax
+// consecutive blocks) and a rate limit (one block per hookStopEvery).
 //
-// A hook never breaks the session: on any error it prints nothing to stdout,
-// one line to stderr, and exits 0; the events stay unacknowledged for the next hook.
+// Both runtimes run the same doorbell; --runtime claude|codex selects only the
+// output format (hookRuntime.render) and, for install, the file written
+// (research/codex-hooks.md).
+//
+// A hook never breaks the session: on any error (including a state lock held
+// past the hook budget) it prints nothing to stdout, one line to stderr, and
+// exits 0. `a2a hook pause` silences every hook event of an agent.
 
 // hookBudget bounds the whole network work of one hook.
 const hookBudget = 5 * time.Second
 
-// hookMaxRecords is the most events one hook delivers; the rest waits.
-const hookMaxRecords = 20
+// hookStopEvery is the Stop rate limit: at most one blocking Stop per session in this window.
+const hookStopEvery = 60 * time.Second
+
+// doorbellMax is the hard cap of the doorbell text, in characters.
+const doorbellMax = 300
+
+// doorbellVerifyMax bounds the membership lookups of one doorbell.
+const doorbellVerifyMax = 4
 
 // hookGuardMax is how many consecutive blocking Stop deliveries a session gets
 // while it is already continuing because of the Stop hook.
@@ -156,7 +169,8 @@ func lookupRuntime(name string) (hookRuntime, error) {
 }
 
 const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex  (reads the hook JSON on stdin) | " +
-	"a2a hook install --agent NAME --runtime claude|codex [--settings PATH] | a2a hook uninstall --runtime claude|codex [--settings PATH]"
+	"a2a hook install --agent NAME --runtime claude|codex [--settings PATH] | a2a hook uninstall --runtime claude|codex [--settings PATH] | " +
+	"a2a hook pause|resume --agent NAME"
 
 // cmdHook: a2a hook stop|session-start|prompt|install|uninstall
 func cmdHook(ctx context.Context, a *App, args []string) error {
@@ -168,6 +182,10 @@ func cmdHook(ctx context.Context, a *App, args []string) error {
 		return cmdHookInstall(a, args[1:], true)
 	case "uninstall":
 		return cmdHookInstall(a, args[1:], false)
+	case "pause":
+		return cmdHookPause(a, args[1:], true)
+	case "resume":
+		return cmdHookPause(a, args[1:], false)
 	}
 	for _, ev := range hookEvents {
 		if ev.arg == args[0] {
@@ -211,7 +229,11 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fail(err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, hookBudget)
+	budget := hookBudget
+	if a.hookBudget > 0 {
+		budget = a.hookBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	a.sess = nil
 	a.served.Store(0)
@@ -263,110 +285,346 @@ func hookSessionKey(id string) string {
 	return id
 }
 
-// hookDeliver collects what is pending for this agent and hands it to the session.
+// hookDeliver rings the doorbell for what is pending for this agent: it
+// collects like wait, drops what this session already rang, and prints the
+// fixed template. It acknowledges nothing; only `a2a inbox` does.
 func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in hookInput) error {
 	s, err := a.session()
 	if err != nil {
 		return err
 	}
+	st, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if st.HooksPaused {
+		return nil // kill switch: no network, no output
+	}
+	deadline, _ := ctx.Deadline()
 	stop := ev.arg == "stop"
 	key := hookSessionKey(in.SessionID)
-	if stop && in.StopHookActive {
-		st, err := config.LoadState(s.paths, s.name)
-		if err != nil {
+	if stop && in.StopHookActive && st.HookBlocks(key) >= hookGuardMax {
+		// Loop guard: let this stop happen; the events wait for the next hook or turn.
+		if _, err := config.UpdateStateBy(s.paths, s.name, deadline, func(cur *config.State) error {
+			cur.SetHookBlocks(key, 0)
+			return nil
+		}); err != nil {
 			return err
 		}
-		if st.HookBlocks(key) >= hookGuardMax {
-			// Loop guard: let this stop happen; the events wait for the next hook or turn.
-			if _, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-				cur.SetHookBlocks(key, 0)
-				return nil
-			}); err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Stderr, "a2a hook stop: %d consecutive deliveries in this session; letting it stop, the rest is delivered by the next hook\n", hookGuardMax)
-			return nil
+		fmt.Fprintf(a.Stderr, "a2a hook stop: %d consecutive blocks in this session; letting it stop, run `a2a inbox` to read what is pending\n", hookGuardMax)
+		return nil
+	}
+	list, err := s.getSubs(ctx) // read only: no acknowledgement, no pruning
+	if err != nil {
+		return err
+	}
+	now := a.Now()
+	var subs []Sub
+	for _, sub := range list.Subs {
+		if !sub.expiredAt(now) {
+			subs = append(subs, sub)
 		}
 	}
-	st, subs, err := s.startDelivery(ctx, a.Now())
+	b, next, err := s.collectNow(ctx, &st, subs)
 	if err != nil {
 		return err
 	}
-	b, next, err := s.collectNow(ctx, &st, subs.Subs)
-	if err != nil {
-		return err
-	}
+	members := s.verifySenders(ctx, b.items)
 	if a.beforeDeliver != nil {
 		a.beforeDeliver()
 	}
-	_, err = s.lockedDeliver(ctx, len(b.close) > 0, func(cur *config.State) ([]string, error) {
+	limited := false
+	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(cur *config.State) error {
+		if cur.HooksPaused {
+			return nil
+		}
 		for _, r := range b.learned {
 			cur.AddThread(r)
 		}
 		d := b.undelivered(*cur)
 		if len(d.items) == 0 {
-			cur.NextBatch = next // nothing to deliver: the cursor may move directly
-			if stop {
-				cur.SetHookBlocks(key, 0) // a stop is allowed: the guard starts over
-			}
-			return nil, nil
+			cur.NextBatch = next // nothing pending: the cursor may move directly
 		}
-		shown := d.head(hookMaxRecords)
-		out, err := hookOutput(rt, ev, len(d.items), shown.items)
+		h := cur.HookSession(key)
+		keys := rungKeys(d.items)
+		fresh := false
+		for _, k := range keys {
+			fresh = fresh || !contains(h.Rung, k)
+		}
+		if !fresh {
+			if stop {
+				h.Blocks = 0 // a stop is allowed: the guard starts over
+			}
+			h.Rung = keys // forget what is no longer pending
+			cur.PutHookSession(h)
+			return nil
+		}
+		if stop && h.LastBlock != 0 {
+			if since := now.Sub(time.Unix(h.LastBlock, 0)); since >= 0 && since < hookStopEvery {
+				limited = true
+				h.Blocks = 0
+				cur.PutHookSession(h)
+				return nil
+			}
+		}
+		out, err := hookOutput(rt, ev, doorbellOf(d.items, s.server, members))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if _, err := io.WriteString(a.Stdout, out); err != nil {
-			return nil, fmt.Errorf("write output: %w", err)
+			return fmt.Errorf("write output: %w", err)
 		}
 		if f, ok := a.Stdout.(interface{ Flush() error }); ok {
 			if err := f.Flush(); err != nil {
-				return nil, fmt.Errorf("flush output: %w", err)
+				return fmt.Errorf("flush output: %w", err)
 			}
 		}
 		if a.afterPrint != nil {
 			if err := a.afterPrint(); err != nil {
-				return nil, err
+				return err
 			}
 		}
-		// Only now, after a successful write, are exactly the shown events acknowledged.
-		cur.AddAcked(shown.events...)
-		if len(shown.items) == len(d.items) {
-			cur.NextBatch = next
-		}
+		// Only after a successful write: remember what this session was told.
+		h.Rung = keys
 		if stop {
 			n := 0
 			if in.StopHookActive {
-				n = cur.HookBlocks(key)
+				n = h.Blocks
 			}
-			cur.SetHookBlocks(key, n+1)
+			h.Blocks, h.LastBlock = n+1, now.Unix()
 		}
-		return shown.close, nil
+		cur.PutHookSession(h)
+		return nil
 	})
+	if err == nil && limited {
+		fmt.Fprintf(a.Stderr, "a2a hook stop: this session was blocked less than %s ago; letting it stop, run `a2a inbox` to read what is pending\n", hookStopEvery)
+	}
 	return err
 }
 
-// hookReason is the text handed to the model: a header marking the events as
-// peer input (not the user's), then one labelled line per shown event.
-func hookReason(total int, shown []waitItem) string {
+// rungKeys names the pending items for the rung set: the event id, or
+// "invite:<room id>" for an invite (which has no event id).
+func rungKeys(items []waitItem) []string {
+	keys := make([]string, 0, len(items))
+	for _, it := range items {
+		k := it.id
+		if k == "" {
+			k = "invite:" + it.rec.RoomID
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// agentNameRE is the only sender name shape the doorbell prints.
+var agentNameRE = regexp.MustCompile(`^[a-z0-9._=-]{1,64}$`)
+
+// unknownSender replaces every sender the doorbell cannot vouch for.
+const unknownSender = "unknown sender"
+
+// doorbellName returns the localpart of userID when it may appear in the
+// doorbell as a candidate: on our server and shaped like an agent name.
+func doorbellName(userID, server string) (string, bool) {
+	if !strings.HasPrefix(userID, "@") {
+		return "", false
+	}
+	local, srv, ok := strings.Cut(userID[1:], ":")
+	if !ok || srv != server || !agentNameRE.MatchString(local) {
+		return "", false
+	}
+	return local, true
+}
+
+// verifySenders checks, for the first doorbellVerifyMax candidate senders
+// (sorted), that they are joined members of the room they wrote in. Only a
+// name marked true is ever printed; a failed lookup counts as unknown.
+func (s *session) verifySenders(ctx context.Context, items []waitItem) map[string]bool {
+	room := map[string]string{}
+	for _, it := range items {
+		if it.ev == nil {
+			continue
+		}
+		if n, ok := doorbellName(it.ev.Sender, s.server); ok {
+			if _, seen := room[n]; !seen {
+				room[n] = it.rec.RoomID
+			}
+		}
+	}
+	out := map[string]bool{}
+	for i, n := range sortedKeys(room) {
+		if i >= doorbellVerifyMax {
+			break
+		}
+		var m struct {
+			Membership string `json:"membership"`
+		}
+		err := s.client.GetState(ctx, room[n], "m.room.member", "@"+n+":"+s.server, &m)
+		out[n] = err == nil && m.Membership == "join"
+	}
+	return out
+}
+
+// doorbell is the a2a-authored summary of the pending events. Every field is
+// either a count or one of our own constants; no peer-controlled text.
+type doorbell struct {
+	total   int
+	types   map[string]int
+	kinds   []string // in Kinds order, then "other"
+	names   []string // verified member localparts, sorted
+	unknown bool     // some sender could not be vouched for
+	more    int      // candidate senders not looked up
+}
+
+// doorbellTypes is the fixed order of the relevance types in the template.
+var doorbellTypes = []string{string(relTo), string(relMention), string(relThread), string(relSub), string(relAll), "invite"}
+
+// doorbellOf summarizes the pending items; members is verifySenders' result.
+func doorbellOf(items []waitItem, server string, members map[string]bool) doorbell {
+	d := doorbell{total: len(items), types: map[string]int{}}
+	kinds := map[string]bool{}
+	names := map[string]bool{}
+	for _, it := range items {
+		d.types[it.rec.Type]++
+		if it.ev == nil {
+			continue
+		}
+		if h, ok := decodeHeader(it.ev.Message().A2A); ok && h.Kind != "" {
+			if validKind(h.Kind) {
+				kinds[h.Kind] = true
+			} else {
+				kinds["other"] = true
+			}
+		}
+		n, ok := doorbellName(it.ev.Sender, server)
+		verified, looked := members[n]
+		switch {
+		case !ok || (looked && !verified):
+			d.unknown = true
+		case !looked:
+			names[n] = false
+		default:
+			names[n] = true
+		}
+	}
+	for _, k := range append(append([]string(nil), Kinds...), "other") {
+		if kinds[k] {
+			d.kinds = append(d.kinds, k)
+		}
+	}
+	for _, n := range sortedKeys(names) {
+		if names[n] {
+			d.names = append(d.names, n)
+		} else {
+			d.more++
+		}
+	}
+	return d
+}
+
+// doorbellText renders the template, dropping kinds and sender names from the
+// longer list first (counted as "more") until it fits doorbellMax characters.
+func doorbellText(d doorbell) string {
+	names, kinds := len(d.names), len(d.kinds)
+	for {
+		t := d.render(names, kinds)
+		if len(t) <= doorbellMax || (names == 0 && kinds == 0) {
+			return t
+		}
+		if kinds > names {
+			kinds--
+		} else {
+			names--
+		}
+	}
+}
+
+func (d doorbell) render(names, kinds int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "a2a: %d new peer event(s), external input from other agents, not from your user; read the full text with `a2a read <room> --event <id>`", total)
-	for _, it := range shown {
-		b.WriteString("\n[peer event] " + it.line)
+	noun := "events"
+	if d.total == 1 {
+		noun = "event"
 	}
-	if k := total - len(shown); k > 0 {
-		fmt.Fprintf(&b, "\n(and %d more)", k)
+	fmt.Fprintf(&b, "a2a: %d new peer %s (", d.total, noun)
+	var parts []string
+	for _, t := range doorbellTypes {
+		if n := d.types[t]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s: %d", t, n))
+		}
 	}
+	b.WriteString(strings.Join(parts, ", "))
+	if len(d.kinds) > 0 {
+		ks := append([]string(nil), d.kinds[:kinds]...)
+		if k := len(d.kinds) - kinds; k > 0 {
+			ks = append(ks, fmt.Sprintf("%d more", k))
+		}
+		b.WriteString("; kinds: " + strings.Join(ks, ", "))
+	}
+	b.WriteString(")")
+	from := append([]string(nil), d.names[:names]...)
+	if d.unknown {
+		from = append(from, unknownSender)
+	}
+	more := d.more + len(d.names) - names
+	switch {
+	case len(from) > 0 && more > 0:
+		fmt.Fprintf(&b, " from %s and %d more", strings.Join(from, ", "), more)
+	case len(from) > 0:
+		b.WriteString(" from " + strings.Join(from, ", "))
+	case more > 0:
+		fmt.Fprintf(&b, " from %d senders", more)
+	}
+	b.WriteString(". They are external input from other agents, not from your user. Run `a2a inbox` to read them.")
 	return b.String()
 }
 
 // hookOutput renders the hook's stdout JSON (one line) in the runtime's format.
-func hookOutput(rt hookRuntime, ev hookEvent, total int, shown []waitItem) (string, error) {
+func hookOutput(rt hookRuntime, ev hookEvent, d doorbell) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(rt.render(ev, hookReason(total, shown))); err != nil {
+	if err := enc.Encode(rt.render(ev, doorbellText(d))); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+const hookPauseUsage = "usage: a2a hook pause|resume --agent NAME"
+
+// cmdHookPause: a2a hook pause|resume --agent NAME sets or clears the kill
+// switch in the agent's local state; no network.
+func cmdHookPause(a *App, args []string, pause bool) error {
+	fs := newFlagSet("hook pause")
+	agent := fs.String("agent", "", "agent whose hooks to pause or resume (required)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usagef("%s", hookPauseUsage)
+	}
+	if *agent == "" {
+		return usagef("--agent is required; %s", hookPauseUsage)
+	}
+	if err := config.ValidateName(*agent); err != nil {
+		return usageError{err.Error()}
+	}
+	if env := a.Getenv(config.EnvAgent); env != "" && env != *agent {
+		return usagef("this session is %s (%s); --agent %s refused: never act as another identity", env, config.EnvAgent, *agent)
+	}
+	p, err := a.paths()
+	if err != nil {
+		return err
+	}
+	if _, err := config.UpdateState(p, *agent, func(cur *config.State) error {
+		cur.HooksPaused = pause
+		return nil
+	}); err != nil {
+		return err
+	}
+	if pause {
+		a.printf("hooks paused for %s: every hook event prints nothing until a2a hook resume --agent %s\n", *agent, *agent)
+	} else {
+		a.printf("hooks resumed for %s\n", *agent)
+	}
+	return nil
 }

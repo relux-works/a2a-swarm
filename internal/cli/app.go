@@ -54,6 +54,8 @@ type App struct {
 	// its batch and before it takes the state lock to deliver it: tests use it
 	// to let a concurrent consumer win the race.
 	beforeDeliver func()
+	// hookBudget, when set (tests only), replaces the hook budget.
+	hookBudget time.Duration
 	// exe resolves this binary's path for `hook install` (nil: os.Executable).
 	exe func() (string, error)
 	// stdinTTY reports whether stdin is an interactive terminal, which --human
@@ -108,7 +110,8 @@ func commands() []command {
 		{"archive", "archive <room|all> [--dir archive] [--json-index]   deterministic markdown export of room history", cmdArchive},
 		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until something is addressed to me or subscribed (acks the previous batch)", cmdWait},
 		{"watch", "watch [--room R ...] [--all] [--json]   stream deliveries until interrupted, committing after each batch", cmdWatch},
-		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH]   Claude Code (R=claude) and Codex (R=codex) hooks: deliver into the session", cmdHook},
+		{"inbox", "inbox [--limit N] [--json]           print pending peer events inside an untrusted-data frame and acknowledge them (N <= 50)", cmdInbox},
+		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude) and Codex (R=codex) hooks: a doorbell (counts only) in the session", cmdHook},
 		{"bridge", "bridge tmux --agent NAME --pane T --program P --empty-prompt RE [--idle 60s] [--interval 30s] [--poll 10s] [--once]   wake an idle tmux pane", cmdBridge},
 		{"ack", "ack [all]                           acknowledge the pending batch of the last wait", cmdAck},
 		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},

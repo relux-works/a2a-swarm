@@ -208,7 +208,7 @@ func ringLine(n int, types []string) string {
 	if n == 1 {
 		noun = "event"
 	}
-	return fmt.Sprintf("a2a: %d new peer %s (%s). They are delivered by the prompt hook.", n, noun, strings.Join(types, ", "))
+	return fmt.Sprintf("a2a: %d new peer %s (%s). Run `a2a inbox` to read them.", n, noun, strings.Join(types, ", "))
 }
 
 // paneIdle: the expected program runs in the pane, no tmux client touched the

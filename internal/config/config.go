@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Environment variable names.
@@ -303,42 +304,60 @@ type State struct {
 	// to kinds). Subscriptions now live in the agent's Matrix account data; the
 	// first command that touches them moves this map there and drops it.
 	LegacySubscriptions map[string][]string `json:"subscriptions,omitempty"`
-	// HookSessions is the loop guard of the Claude Code Stop hook: consecutive
-	// blocking deliveries per session id, bounded to HookSessionsMax entries.
+	// HookSessions is the per-session doorbell state of the hooks (Claude Code
+	// and Codex): the Stop loop guard, the Stop rate limit and the rung set,
+	// bounded to HookSessionsMax entries.
 	HookSessions []HookSession `json:"hook_sessions,omitempty"`
+	// HooksPaused is the hook kill switch (`a2a hook pause`): while set, every
+	// hook event prints nothing.
+	HooksPaused bool `json:"hooks_paused,omitempty"`
 }
 
-// HookSession counts consecutive blocking Stop-hook deliveries of one session.
+// HookSession is the doorbell state of one agent session.
 type HookSession struct {
-	ID     string `json:"id"`
-	Blocks int    `json:"blocks"`
+	ID string `json:"id"`
+	// Blocks counts consecutive blocking Stop-hook deliveries (loop guard).
+	Blocks int `json:"blocks,omitempty"`
+	// LastBlock is when the Stop hook last blocked (Unix seconds; rate limit).
+	LastBlock int64 `json:"last_block,omitempty"`
+	// Rung holds the event ids (and "invite:<room id>" keys) the doorbell
+	// announced in this session, at most HookRungMax of them.
+	Rung []string `json:"rung,omitempty"`
 }
 
-// HookSessionsMax bounds the loop-guard map; the least recently updated
+func (h HookSession) empty() bool { return h.Blocks == 0 && h.LastBlock == 0 && len(h.Rung) == 0 }
+
+// HookSessionsMax bounds the per-session map; the least recently updated
 // session is dropped first.
 const HookSessionsMax = 64
 
-// HookBlocks returns the consecutive blocking deliveries recorded for id.
-func (s State) HookBlocks(id string) int {
+// HookRungMax bounds the rung set of one session.
+const HookRungMax = 100
+
+// HookSession returns the doorbell state recorded for id (zero when none).
+func (s State) HookSession(id string) HookSession {
 	for _, h := range s.HookSessions {
 		if h.ID == id {
-			return h.Blocks
+			return h
 		}
 	}
-	return 0
+	return HookSession{ID: id}
 }
 
-// SetHookBlocks records n for id (0 forgets it). The entry becomes the most
-// recent one; beyond HookSessionsMax the oldest entries are dropped.
-func (s *State) SetHookBlocks(id string, n int) {
+// PutHookSession records h, which becomes the most recent entry; an empty
+// entry is forgotten, and beyond HookSessionsMax the oldest entries are dropped.
+func (s *State) PutHookSession(h HookSession) {
 	kept := s.HookSessions[:0:0]
-	for _, h := range s.HookSessions {
-		if h.ID != id {
-			kept = append(kept, h)
+	for _, x := range s.HookSessions {
+		if x.ID != h.ID {
+			kept = append(kept, x)
 		}
 	}
-	if n > 0 {
-		kept = append(kept, HookSession{ID: id, Blocks: n})
+	if len(h.Rung) > HookRungMax {
+		h.Rung = append([]string(nil), h.Rung[:HookRungMax]...)
+	}
+	if !h.empty() {
+		kept = append(kept, h)
 	}
 	if len(kept) > HookSessionsMax {
 		kept = kept[len(kept)-HookSessionsMax:]
@@ -347,6 +366,16 @@ func (s *State) SetHookBlocks(id string, n int) {
 		kept = nil
 	}
 	s.HookSessions = kept
+}
+
+// HookBlocks returns the consecutive blocking deliveries recorded for id.
+func (s State) HookBlocks(id string) int { return s.HookSession(id).Blocks }
+
+// SetHookBlocks records n consecutive blocks for id, keeping the rest of its entry.
+func (s *State) SetHookBlocks(id string, n int) {
+	h := s.HookSession(id)
+	h.Blocks = n
+	s.PutHookSession(h)
 }
 
 // Pending is a printed but unacknowledged delivery batch.
@@ -549,11 +578,26 @@ func UpdateCredentials(p Paths, name string, fn func(*Credentials) error) (Crede
 // (state/<name>.lock) and saves the result, so that a background `a2a wait`
 // and a foreground `a2a post` never lose each other's updates.
 func UpdateState(p Paths, name string, fn func(*State) error) (State, error) {
+	return updateState(p, name, lockFile, fn)
+}
+
+// ErrLockTimeout is returned by UpdateStateBy when another a2a process held
+// the state lock until the deadline.
+var ErrLockTimeout = errors.New("the state file is locked by another a2a process")
+
+// UpdateStateBy is UpdateState with a bounded wait for the lock: it retries a
+// non-blocking lock until deadline and then returns ErrLockTimeout without
+// running fn. Hooks use it so a held lock never outlives their budget.
+func UpdateStateBy(p Paths, name string, deadline time.Time, fn func(*State) error) (State, error) {
+	return updateState(p, name, func(path string) (func(), error) { return lockFileBy(path, deadline) }, fn)
+}
+
+func updateState(p Paths, name string, lock func(string) (func(), error), fn func(*State) error) (State, error) {
 	dir := filepath.Dir(p.StateFile(name))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return State{}, err
 	}
-	unlock, err := lockFile(filepath.Join(dir, name+".lock"))
+	unlock, err := lock(filepath.Join(dir, name+".lock"))
 	if err != nil {
 		return State{}, err
 	}

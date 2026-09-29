@@ -88,7 +88,7 @@ func waitSent(t *testing.T, ft *fakeTmux, n int) {
 // undelivered events (one literal line, then Enter; nothing again while the
 // set is unchanged, again when a new event joins it), stops cleanly on cancel,
 // and never writes delivery state or subscriptions: the state file is
-// byte-identical afterwards and a hook still delivers both events.
+// byte-identical afterwards and `a2a inbox` still delivers both events.
 func TestBridgeRingsOncePerSetAndNeverWrites(t *testing.T) {
 	e, room := subWorld(t)
 	e.hook("alice", "prompt", `{}`).ok(t)
@@ -104,7 +104,7 @@ func TestBridgeRingsOncePerSetAndNeverWrites(t *testing.T) {
 	go func() { done <- e.runCtx(ctx, bridgeArgs("--poll", "5ms")...) }()
 	waitSent(t, ft, 2)
 	time.Sleep(60 * time.Millisecond) // many polls with the same set
-	if got := ft.sentKeys(); len(got) != 2 || got[0] != "-l a2a: 1 new peer event (mention). They are delivered by the prompt hook." || got[1] != "Enter" {
+	if got := ft.sentKeys(); len(got) != 2 || got[0] != "-l a2a: 1 new peer event (mention). Run `a2a inbox` to read them." || got[1] != "Enter" {
 		t.Fatalf("sent = %q", got)
 	}
 	second := e.hs.inject(room, "@bob:test.local", hdrMsg("bob", "system", "landing", "PR#1", "landed"))
@@ -115,14 +115,14 @@ func TestBridgeRingsOncePerSetAndNeverWrites(t *testing.T) {
 	if r.code != ExitOK {
 		t.Fatalf("bridge exit %d: %s", r.code, r.stderr)
 	}
-	if got := ft.sentKeys(); len(got) != 4 || got[2] != "-l a2a: 2 new peer events (mention, sub). They are delivered by the prompt hook." {
+	if got := ft.sentKeys(); len(got) != 4 || got[2] != "-l a2a: 2 new peer events (mention, sub). Run `a2a inbox` to read them." {
 		t.Fatalf("sent = %q", got)
 	}
 	tuitestkit.ContainsStr(t, r.stdout, "rang work:1.0: a2a: 2 new peer events")
 	if readFile(t, e.paths().StateFile("alice")) != stateBefore || e.hs.CallCount(accountDataPut) != puts {
 		t.Fatal("the bridge wrote delivery state or subscriptions")
 	}
-	out := e.hook("alice", "prompt", `{}`).ok(t).stdout
+	out := e.as("alice", "inbox").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, first)
 	tuitestkit.ContainsStr(t, out, second)
 }

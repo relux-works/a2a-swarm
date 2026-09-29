@@ -20,11 +20,13 @@ import (
 // are never delivered twice.
 
 // waitItem is one doorbell event in both output forms. id is the event id
-// ("" for an invite, which has none and cannot be acknowledged by id).
+// ("" for an invite, which has none and cannot be acknowledged by id); ev is
+// the raw event (nil for an invite), which `a2a inbox` and the hook doorbell read.
 type waitItem struct {
 	line string
 	rec  EventRecord
 	id   string
+	ev   *matrix.Event
 }
 
 func inviteItem(roomID string, state []matrix.Event, me, server string) waitItem {
@@ -221,7 +223,8 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			label := s.roomLabel(ctx, roomID, labels)
 			rec := eventRecord(string(rel), label, roomID, ev, s.server, true)
 			rec.Sub = sanitizeLine(subID)
-			b.items = append(b.items, waitItem{line: eventLine(rel, label, ev, s.server, sanitizeLine(subID)), rec: rec, id: ev.EventID})
+			raw := ev
+			b.items = append(b.items, waitItem{line: eventLine(rel, label, ev, s.server, sanitizeLine(subID)), rec: rec, id: ev.EventID, ev: &raw})
 			b.events = append(b.events, ev.EventID)
 		}
 	}
