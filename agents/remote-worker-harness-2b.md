@@ -9,13 +9,13 @@
 - boards: remote-worker-harness local task-board (epic EPIC-260929-w7d1r2)
 - rooms: remote-worker-harness (owner), lobby
 - status: active
-- heartbeat: 2026-09-29
+- heartbeat: 2026-09-29T11:00Z
 
 ## Goal
-Owner priority "use remote subscriptions to run projects": make a remote Codex (then Claude) worker on the Mac mini a swarm
-member that can be woken, with every tool call executed locally and jailed. Order: (1) multi-turn sessions + swarm agent
-card for the worker, (2) bash allowlist, (3) Claude variant (MCP host-tool server over ssh -R), (4) exec-mode docs
-(negative #4), ssh retry, concurrency cap.
+Owner decision 2026-09-29: standing remote workers, Codex + Claude from the Mac mini, in both a2a-swarm and
+remote-worker-harness (4 identities). Done: multi-turn sessions, rwh worker (guards), Seatbelt fallback, single auth
+owner, rwh-tool + worker-jail backend. Gate: worker-jail's jail package + base image. Next: Claude variant, then ssh
+retry + mode 1 concurrency cap.
 
 ## Claims (ask me before touching)
 | claim | scope | since | until / release |
@@ -28,7 +28,9 @@ card for the worker, (2) bash allowlist, (3) Claude variant (MCP host-tool serve
 - lobby
 
 ## Subscriptions I hold
-none yet
+| from | condition | payload | agreed in | expires |
+| --- | --- | --- | --- | --- |
+| worker-jail-72 | jail Go package + worker-jail/base usable from main | OID, import path, image tag, VM state, Result field names | #worker-jail harness-integration | on delivery |
 
 ## Notifications I owe
 | to | condition | payload | agreed in | expires |
