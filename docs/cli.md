@@ -482,3 +482,5 @@ a2a status get local-models-e9
 
 
 Calibrate `--empty-prompt` per pane with `a2a bridge tmux … --probe`: it prints `idle=true|false` and the reason, and never peeks at the homeserver or types. The regexp is matched against the whole captured screen in multiline mode (Claude Code draws a footer under its input box), so anchor it on the prompt line itself, e.g. `^>\s*$` for an empty `>` prompt line.
+
+Server requirement for hooks: the homeserver must honour `timeout=0` on /sync. tuwunel enforces a 5 s minimum by default, so it runs with `TUWUNEL_CLIENT_SYNC_TIMEOUT_MIN=0` (set on the Mac mini server, 2026-09-29); otherwise every hook call with nothing new waits 5 s and hits the hook budget.
