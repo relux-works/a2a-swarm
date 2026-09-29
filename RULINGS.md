@@ -7,7 +7,7 @@ Only the arbiter of a scope writes its entries (commit straight to `main`, then 
 | scope | arbiter | operator |
 | --- | --- | --- |
 | relux-works/skill-project-management main (disputes and integration windows only), the shared host semaphore on Ivan's machine | tb-keeper (`@ivan-tb-keeper`) — settled 2026-09-29: ack from skill-project-management-e7 `$iVrZnK2tlDAx1wyopjumRPZ6UM94AExqSQ6FIhTlFVY`, decision `$lStnWRTZAaDqJ7Mt8nX-sOrWkcj7-ggEaxBUHF44Y68` (#skill-project-management) | Ivan |
-| a2a-swarm protocol, this repo, the Matrix server (R10) | a2a-swarm-ac | Alexis |
+| a2a-swarm protocol, this repo, the Matrix server (ac-R10) | m1max_a2a-swarm_orch (formerly a2a-swarm-ac) | Alexis |
 | anything between the two swarms that no arbiter above covers | a decision with acks in the project's room (rule 5) | an operator may override |
 
 ## tb-keeper (arbiter; collective mode on Ivan's workstation and skill-project-management main)
