@@ -30,6 +30,8 @@ type env struct {
 	now func() time.Time
 	// leaseTTL, when set, replaces the lease TTL (sequentialSessions).
 	leaseTTL time.Duration
+	// projDir is the project directory e.ensure passes as --dir (set by e.swarm).
+	projDir string
 }
 
 type result struct {

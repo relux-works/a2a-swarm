@@ -87,7 +87,7 @@ func cmdHost(ctx context.Context, a *App, args []string) error {
 	return usagef("%s", hostUsage)
 }
 
-const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] | a2a identity release [--force]"
+const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex] [--keeper] | a2a identity release [--force]"
 
 // cmdIdentity: a2a identity ensure|release
 func cmdIdentity(ctx context.Context, a *App, args []string) error {
@@ -104,11 +104,15 @@ func cmdIdentity(ctx context.Context, a *App, args []string) error {
 }
 
 // cmdIdentityEnsure: a2a identity ensure --role R [--project P] [--dir D]
+// [--runtime claude|codex] [--keeper]. After the identity it onboards the
+// session (onboard.go): rooms, subscriptions, hooks, and a summary.
 func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("identity ensure")
 	role := fs.String("role", "", "the role of this session (required): [a-z0-9-], 1-24 characters")
 	project := fs.String("project", "", "the project (default: the repo name of the git remote origin of --dir)")
-	dir := fs.String("dir", "", "the directory whose git remote names the project (the current directory when omitted)")
+	dir := fs.String("dir", "", "the project directory: its git remote names the project, its hooks file is written (the current directory when omitted)")
+	runtime := fs.String("runtime", "", "agent runtime whose hooks are installed: "+runtimeNames+" (detected only from an unambiguous CLAUDECODE=1)")
+	keeper := fs.Bool("keeper", false, "also subscribe to every event of #system (keepers and the meta-orchestrator)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -127,6 +131,10 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 			return usageError{err.Error()}
 		}
 	}
+	rt, rtSource, err := a.ensureRuntime(*runtime)
+	if err != nil {
+		return err
+	}
 	p, err := a.paths()
 	if err != nil {
 		return err
@@ -135,13 +143,13 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	projDir := *dir
+	if projDir == "" {
+		projDir = "."
+	}
 	proj := *project
 	if proj == "" {
-		d := *dir
-		if d == "" {
-			d = "."
-		}
-		if proj, err = detectProject(ctx, d); err != nil {
+		if proj, err = detectProject(ctx, projDir); err != nil {
 			return err
 		}
 	}
@@ -156,9 +164,9 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	a.printf("identity %s (host %s, project %s, role %s)\n", name, host, proj, *role)
+	var s *session
 	if _, err := os.Lstat(p.AgentFile(name)); err == nil {
-		s, err := a.sessionAs(name)
-		if err != nil {
+		if s, err = a.sessionAs(name); err != nil {
 			return err
 		}
 		w, err := s.client.Whoami(ctx)
@@ -189,9 +197,12 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		a.printf("registered %s (device %s)\ncredentials: %s (0600)\n", creds.UserID, creds.DeviceID, path)
+		if s, err = a.sessionAs(name); err != nil {
+			return err
+		}
 	}
 	a.printf("export %s=%s\n", config.EnvAgent, name)
-	return nil
+	return a.onboard(ctx, s, onboarding{host: host, project: proj, role: *role, dir: projDir, rt: rt, rtSource: rtSource, keeper: *keeper})
 }
 
 // detectProject returns the project part from the git remote "origin" of dir.

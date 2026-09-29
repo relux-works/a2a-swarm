@@ -421,6 +421,31 @@ func (c *Client) Invite(ctx context.Context, roomID, userID string) error {
 	return c.call(ctx, http.MethodPost, v3+"/rooms/"+seg(roomID)+"/invite", nil, map[string]any{"user_id": userID}, nil)
 }
 
+// CreateRoomRequest is the body of POST /createRoom (the subset a2a sets).
+type CreateRoomRequest struct {
+	Preset        string   `json:"preset,omitempty"`
+	Visibility    string   `json:"visibility,omitempty"`
+	RoomAliasName string   `json:"room_alias_name,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	Topic         string   `json:"topic,omitempty"`
+	Invite        []string `json:"invite,omitempty"`
+	// PowerLevelContentOverride is merged over the preset's m.room.power_levels.
+	PowerLevelContentOverride map[string]any `json:"power_level_content_override,omitempty"`
+}
+
+// CreateRoom creates a room and returns its id. A taken alias is the
+// homeserver's M_ROOM_IN_USE error.
+func (c *Client) CreateRoom(ctx context.Context, req CreateRoomRequest) (string, error) {
+	var out struct {
+		RoomID string `json:"room_id"`
+	}
+	err := c.call(ctx, http.MethodPost, v3+"/createRoom", nil, req, &out)
+	if err == nil && out.RoomID == "" {
+		return "", fmt.Errorf("createRoom: the homeserver returned no room_id")
+	}
+	return out.RoomID, err
+}
+
 // GetState reads one state event's content into out.
 func (c *Client) GetState(ctx context.Context, roomID, evType, stateKey string, out any) error {
 	return c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType)+"/"+seg(stateKey), nil, nil, out)

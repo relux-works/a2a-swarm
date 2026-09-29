@@ -181,3 +181,42 @@ func TestEventHelpers(t *testing.T) {
 		t.Fatal("non-thread event misread")
 	}
 }
+
+// Proves CreateRoom sends the documented body (preset, visibility, alias
+// local part, power level override) to POST /createRoom and returns room_id;
+// a taken alias surfaces as M_ROOM_IN_USE, and a 200 without room_id is an
+// error, never an empty id.
+func TestCreateRoom(t *testing.T) {
+	var got map[string]any
+	status, body := 200, `{"room_id":"!new:s"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/_matrix/client/v3/createRoom" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		got = nil
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(status)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "t")
+	req := CreateRoomRequest{Preset: "public_chat", Visibility: "private", RoomAliasName: "proj",
+		PowerLevelContentOverride: map[string]any{"redact": 100, "users": map[string]int{"@k:s": 100}}}
+	id, err := c.CreateRoom(context.Background(), req)
+	if err != nil || id != "!new:s" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+	pl, _ := json.Marshal(got["power_level_content_override"])
+	if got["preset"] != "public_chat" || got["visibility"] != "private" || got["room_alias_name"] != "proj" ||
+		string(pl) != `{"redact":100,"users":{"@k:s":100}}` || got["invite"] != nil || got["name"] != nil {
+		t.Fatalf("body = %v", got)
+	}
+	status, body = 400, `{"errcode":"M_ROOM_IN_USE","error":"taken"}`
+	if _, err := c.CreateRoom(context.Background(), req); !IsCode(err, "M_ROOM_IN_USE") {
+		t.Fatalf("err = %v", err)
+	}
+	status, body = 200, `{}`
+	if id, err := c.CreateRoom(context.Background(), req); err == nil || id != "" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+}

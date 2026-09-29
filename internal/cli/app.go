@@ -101,9 +101,10 @@ func commands() []command {
 	return []command{
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},
-		{"identity", "identity ensure --role R [--project P] [--dir D] | identity release   the stable identity <host>_<project>_<role> and its lease", cmdIdentity},
+		{"identity", "identity ensure --role R [--project P] [--dir D] [--runtime claude|codex] [--keeper] | identity release   onboard the stable identity <host>_<project>_<role> in one command; its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
+		{"room", "room new <alias> [--name N] [--topic T] [--invite a,b]   create a room with the standard policy (rule 24); an existing alias is a no-op", cmdRoom},
 		{"join", "join <room>                          join a room", cmdJoin},
 		{"leave", "leave <room> [--force]               leave a room (#lobby only with --force)", cmdLeave},
 		{"invite", "invite <room> <@user|name>           invite someone to a room", cmdInvite},

@@ -46,7 +46,7 @@ func TestIdentityEnsureReuse(t *testing.T) {
 	e := newEnv(t)
 	e.run("host", "init", "mini").ok(t)
 	e.agent("mini_proj_orch")
-	out := e.run("identity", "ensure", "--role", "orch", "--project", "proj").ok(t).stdout
+	out := e.ensure("--role", "orch", "--project", "proj").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "identity mini_proj_orch (host mini, project proj, role orch)")
 	tuitestkit.ContainsStr(t, out, "reusing mini_proj_orch (@mini_proj_orch:test.local)")
 	tuitestkit.ContainsStr(t, out, "export A2A_AGENT=mini_proj_orch\n")
@@ -60,7 +60,7 @@ func TestIdentityEnsureReuse(t *testing.T) {
 func TestIdentityEnsureRegisters(t *testing.T) {
 	e := newEnv(t)
 	e.run("host", "init", "mini").ok(t)
-	out := e.run("identity", "ensure", "--role", "orch", "--project", "proj").ok(t).stdout
+	out := e.ensure("--role", "orch", "--project", "proj").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "registered @mini_proj_orch:test.local")
 	tuitestkit.ContainsStr(t, out, "export A2A_AGENT=mini_proj_orch\n")
 	tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, registerRoute, 3)
@@ -68,7 +68,7 @@ func TestIdentityEnsureRegisters(t *testing.T) {
 	if err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("credential file: %v %v", st, err)
 	}
-	tuitestkit.ContainsStr(t, e.run("identity", "ensure", "--role", "orch", "--project", "proj").ok(t).stdout, "reusing mini_proj_orch")
+	tuitestkit.ContainsStr(t, e.ensure("--role", "orch", "--project", "proj").ok(t).stdout, "reusing mini_proj_orch")
 	tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, registerRoute, 3)
 }
 
@@ -81,7 +81,7 @@ func TestIdentityEnsureRefusesRemoteOnly(t *testing.T) {
 	e.run("host", "init", "mini").ok(t)
 	uid, tok := e.hs.addUser("mini_proj_orch")
 	e.tokens["mini_proj_orch"] = tok
-	r := e.run("identity", "ensure", "--role", "orch", "--project", "proj").failsWith(t, ExitError,
+	r := e.ensure("--role", "orch", "--project", "proj").failsWith(t, ExitError,
 		"account @mini_proj_orch:test.local exists but this machine holds no credentials for it; recovery only through the admin")
 	tuitestkit.NotContainsStr(t, r.stdout, "export A2A_AGENT")
 	tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, registerRoute, 1) // the probe only
@@ -89,14 +89,14 @@ func TestIdentityEnsureRefusesRemoteOnly(t *testing.T) {
 		t.Fatalf("credential file left behind: %v", err)
 	}
 	e.writeCred("mini_proj_orch", uid, tok, 0o600)
-	tuitestkit.ContainsStr(t, e.run("identity", "ensure", "--role", "orch", "--project", "proj").ok(t).stdout, "reusing mini_proj_orch")
+	tuitestkit.ContainsStr(t, e.ensure("--role", "orch", "--project", "proj").ok(t).stdout, "reusing mini_proj_orch")
 }
 
 // Proves ensure needs the host slug: without one it fails (exit 1) with the
 // fix and no traffic.
 func TestIdentityEnsureNeedsHost(t *testing.T) {
 	e := newEnv(t)
-	e.run("identity", "ensure", "--role", "orch", "--project", "proj").failsWith(t, ExitError, "run a2a host init <slug> once per machine")
+	e.run("identity", "ensure", "--role", "orch", "--project", "proj", "--runtime", "claude", "--dir", t.TempDir()).failsWith(t, ExitError, "run a2a host init <slug> once per machine")
 	if n := len(e.hs.Calls()); n != 0 {
 		t.Fatalf("%d requests without a host slug", n)
 	}
@@ -113,7 +113,7 @@ func TestIdentityEnsureProject(t *testing.T) {
 	e := newEnv(t)
 	e.run("host", "init", "mini").ok(t)
 	plain := t.TempDir()
-	e.run("identity", "ensure", "--role", "orch", "--dir", plain).failsWith(t, ExitUsage, "pass --project P")
+	e.ensure("--role", "orch", "--dir", plain).failsWith(t, ExitUsage, "pass --project P")
 	if n := len(e.hs.Calls()); n != 0 {
 		t.Fatalf("%d requests without a project", n)
 	}
@@ -123,13 +123,13 @@ func TestIdentityEnsureProject(t *testing.T) {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}
 	}
-	e.run("identity", "ensure", "--role", "orch", "--dir", plain+"-missing").failsWith(t, ExitUsage, "pass --project P")
+	e.ensure("--role", "orch", "--dir", plain+"-missing").failsWith(t, ExitUsage, "pass --project P")
 	e.agent("mini_my-repo_orch")
-	out := e.run("identity", "ensure", "--role", "orch", "--dir", repo).ok(t).stdout
+	out := e.ensure("--role", "orch", "--dir", repo).ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "reusing mini_my-repo_orch")
 	tuitestkit.NotContainsStr(t, out, "example.com")
 	e.agent("mini_other_orch")
-	tuitestkit.ContainsStr(t, e.run("identity", "ensure", "--role", "orch", "--project", "other", "--dir", repo).ok(t).stdout, "reusing mini_other_orch")
+	tuitestkit.ContainsStr(t, e.ensure("--role", "orch", "--project", "other", "--dir", repo).ok(t).stdout, "reusing mini_other_orch")
 }
 
 // Proves repoSlug maps remote URLs to the repo name (last element, no .git,
@@ -159,20 +159,20 @@ func TestRepoSlug(t *testing.T) {
 func TestIdentityEnsureUsage(t *testing.T) {
 	e := newEnv(t)
 	e.run("host", "init", "mini").ok(t)
-	e.run("identity", "ensure", "--project", "proj").failsWith(t, ExitUsage, "--role is required")
-	e.run("identity", "ensure", "--role", "Orch", "--project", "proj").failsWith(t, ExitUsage, "invalid role")
-	e.run("identity", "ensure", "--role", "a_b", "--project", "proj").failsWith(t, ExitUsage, "invalid role")
-	e.run("identity", "ensure", "--role", "orch", "--project", "p.q").failsWith(t, ExitUsage, "invalid project")
-	e.run("identity", "ensure", "--role", strings.Repeat("r", 24), "--project", strings.Repeat("p", 40)).failsWith(t, ExitUsage, "longer than the 64")
-	e.run("identity", "ensure", "--role", "orch", "extra").failsWith(t, ExitUsage, "usage")
+	e.ensure("--project", "proj").failsWith(t, ExitUsage, "--role is required")
+	e.ensure("--role", "Orch", "--project", "proj").failsWith(t, ExitUsage, "invalid role")
+	e.ensure("--role", "a_b", "--project", "proj").failsWith(t, ExitUsage, "invalid role")
+	e.ensure("--role", "orch", "--project", "p.q").failsWith(t, ExitUsage, "invalid project")
+	e.ensure("--role", strings.Repeat("r", 24), "--project", strings.Repeat("p", 40)).failsWith(t, ExitUsage, "longer than the 64")
+	e.ensure("--role", "orch", "extra").failsWith(t, ExitUsage, "usage")
 	e.run("identity").failsWith(t, ExitUsage, "usage")
 	e.extra[config.EnvAgent] = "someone-else"
-	e.run("identity", "ensure", "--role", "orch", "--project", "proj").failsWith(t, ExitUsage, "never act as another identity")
+	e.ensure("--role", "orch", "--project", "proj").failsWith(t, ExitUsage, "never act as another identity")
 	if n := len(e.hs.Calls()); n != 0 {
 		t.Fatalf("%d requests from usage errors", n)
 	}
 	e.extra[config.EnvAgent] = "mini_proj_orch"
-	tuitestkit.ContainsStr(t, e.run("identity", "ensure", "--role", "orch", "--project", "proj").ok(t).stdout, "export A2A_AGENT=mini_proj_orch")
+	tuitestkit.ContainsStr(t, e.ensure("--role", "orch", "--project", "proj").ok(t).stdout, "export A2A_AGENT=mini_proj_orch")
 }
 
 // lease returns alice's recorded lease (nil when none).

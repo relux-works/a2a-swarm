@@ -65,6 +65,20 @@ type fakeHS struct {
 	media     map[string]fakeMedia // media id -> stored upload
 	serveAs   map[string][]byte    // media id -> bytes served instead (a lying server)
 	uploadMax int64                // m.upload.size
+	// created records every accepted createRoom request body, in order.
+	created []createRoomReq
+}
+
+// createRoomReq is the part of a createRoom body the fake checks and records.
+type createRoomReq struct {
+	Creator                   string         `json:"-"`
+	Preset                    string         `json:"preset"`
+	Visibility                string         `json:"visibility"`
+	RoomAliasName             string         `json:"room_alias_name"`
+	Name                      string         `json:"name"`
+	Topic                     string         `json:"topic"`
+	Invite                    []string       `json:"invite"`
+	PowerLevelContentOverride map[string]any `json:"power_level_content_override"`
 }
 
 type fakeMedia struct {
@@ -147,6 +161,7 @@ func newFakeHS(t *testing.T) *fakeHS {
 	})
 	route("GET "+v3+"/joined_rooms", true, hs.joinedRooms)
 	route("GET "+v3+"/directory/room/{alias}", true, hs.directory)
+	route("POST "+v3+"/createRoom", true, hs.createRoom)
 	route("POST "+v3+"/join/{room}", true, hs.join)
 	route("POST "+v3+"/rooms/{room}/leave", true, hs.leave)
 	route("POST "+v3+"/rooms/{room}/invite", true, hs.invite)
@@ -230,6 +245,28 @@ func (hs *fakeHS) addRoom(alias string, members ...string) string {
 	hs.rooms[id] = r
 	hs.aliases[full] = id
 	return id
+}
+
+// makePublic sets join_rule public, so anyone may join without an invite.
+func (hs *fakeHS) makePublic(roomID string) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	hs.rooms[roomID].state["m.room.join_rules|"] = json.RawMessage(`{"join_rule":"public"}`)
+}
+
+func (r *fakeRoom) public() bool {
+	var jr struct {
+		JoinRule string `json:"join_rule"`
+	}
+	_ = json.Unmarshal(r.state["m.room.join_rules|"], &jr)
+	return jr.JoinRule == "public"
+}
+
+// createdRooms returns the accepted createRoom requests.
+func (hs *fakeHS) createdRooms() []createRoomReq {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	return append([]createRoomReq(nil), hs.created...)
 }
 
 // inject appends a message event as if user had sent it.
@@ -478,12 +515,65 @@ func (hs *fakeHS) join(w http.ResponseWriter, r *http.Request, u string) {
 		writeErr(w, 404, "M_NOT_FOUND", "Room not found.")
 		return
 	}
-	if room.members[u] != "invite" && room.members[u] != "join" {
+	if room.members[u] != "invite" && room.members[u] != "join" && !room.public() {
 		writeErr(w, 403, "M_FORBIDDEN", "You are not invited to this room.")
 		return
 	}
 	room.members[u] = "join"
 	writeJSON(w, 200, map[string]string{"room_id": room.id})
+}
+
+// createRoom creates a room with the creator joined. Like tuwunel (room
+// version 12), it refuses a creator listed in power_levels.users with
+// M_INVALID_PARAM, and a taken alias with M_ROOM_IN_USE.
+func (hs *fakeHS) createRoom(w http.ResponseWriter, r *http.Request, u string) {
+	var req createRoomReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "M_NOT_JSON", "bad json")
+		return
+	}
+	req.Creator = u
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	if users, ok := req.PowerLevelContentOverride["users"].(map[string]any); ok {
+		if _, listed := users[u]; listed {
+			writeErr(w, 400, "M_INVALID_PARAM", "Room creators cannot be given power levels in room version 12.")
+			return
+		}
+	}
+	full := "#" + req.RoomAliasName + ":" + hs.server
+	if _, taken := hs.aliases[full]; taken {
+		writeErr(w, 400, "M_ROOM_IN_USE", "Room alias already taken")
+		return
+	}
+	for _, inv := range req.Invite {
+		if !hs.users[inv] {
+			writeErr(w, 404, "M_NOT_FOUND", "Unknown user.")
+			return
+		}
+	}
+	id := "!" + req.RoomAliasName + "RoomID"
+	room := &fakeRoom{id: id, alias: full, name: req.Name, members: map[string]string{u: "join"}, state: map[string]json.RawMessage{}}
+	room.state["m.room.canonical_alias|"], _ = json.Marshal(map[string]string{"alias": full})
+	if req.Name != "" {
+		room.state["m.room.name|"], _ = json.Marshal(map[string]string{"name": req.Name})
+	}
+	if req.Topic != "" {
+		room.state["m.room.topic|"], _ = json.Marshal(map[string]string{"topic": req.Topic})
+	}
+	if req.Preset == "public_chat" {
+		room.state["m.room.join_rules|"] = json.RawMessage(`{"join_rule":"public"}`)
+	}
+	room.state["m.room.power_levels|"], _ = json.Marshal(req.PowerLevelContentOverride)
+	hs.rooms[id] = room
+	hs.aliases[full] = id
+	for _, inv := range req.Invite {
+		room.members[inv] = "invite"
+		hs.invites = append(hs.invites, fakeInvite{pos: len(hs.events) + 1, room: id, user: inv, by: u})
+		hs.appendLocked(id, u, "m.room.member", map[string]string{"membership": "invite"})
+	}
+	hs.created = append(hs.created, req)
+	writeJSON(w, 200, map[string]string{"room_id": id})
 }
 
 func (hs *fakeHS) leave(w http.ResponseWriter, r *http.Request, u string) {
