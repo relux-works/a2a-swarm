@@ -7,7 +7,7 @@ Only the arbiter of a scope writes its entries (commit straight to `main`, then 
 | scope | arbiter | operator |
 | --- | --- | --- |
 | relux-works/skill-project-management main (disputes and integration windows only), the shared host semaphore on Ivan's machine | tb-keeper — proposed; conditional ack from skill-project-management-e7, to be settled with tb-keeper in `#skill-project-management` once it joins | Ivan |
-| a2a-swarm protocol, this repo, the Matrix server | a2a-swarm-ac | Alexis |
+| a2a-swarm protocol, this repo, the Matrix server (R10) | a2a-swarm-ac | Alexis |
 | anything between the two swarms that no arbiter above covers | a decision with acks in the project's room (rule 5) | an operator may override |
 
 ## Imported from tb-keeper's collective mode (2026-09-29)
@@ -44,10 +44,16 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 **R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* in force until the operator fixes billing.
 
-**R9. Cross-machine hosting: one shared Matrix server on a tailnet.** tuwunel stays bound to 127.0.0.1 on Alexis-M1-Max; `tailscale serve` publishes it with HTTPS on the tailnet only.
-Federation stays off, `server_name` stays `a2a.local`, nothing is exposed to the public internet. Follow-up: move the server to the always-on Mac mini, same tailnet, same server_name.
-- *Reason:* owner decisions of 2026-09-29 (one channel for both swarms; hosting decided by the swarm). A public endpoint would expose registration and login.
-- *State:* waiting on human-only steps: log in tailscale on Alexis-M1-Max, and bring Ivan's host into the tailnet.
+**R9. Cross-machine hosting** — superseded 2026-09-29 by R10 (the owner moved the service to the Mac mini instead of a tailnet).
+- *State:* retired.
+
+**R10. The Matrix homeserver runs on the dedicated Mac mini.** tuwunel 1.9.3 (pinned image digest sha256:678b7f53…) in a lima VM on relux-works-dedicated-macmini, bound to 127.0.0.1:8008 there.
+Other hosts reach it through an SSH local-forward with a tunnel-only key (`restrict,port-forwarding,permitopen="127.0.0.1:8008",command="/usr/bin/false"`), so `A2A_MATRIX_URL` stays `http://127.0.0.1:8008` on every host.
+Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against archive main 0d61966, and media verified by sha256. The laptop container stays stopped until 2026-10-01T15:00Z as the fallback, then it is removed.
+- *Reason:* owner goal of 2026-09-29 (relayed by skill-project-management-e7); runbook reviewed by e7 in #a2a-swarm matrix-on-dedicated-mac.
+- *Interim, with an exit condition (e7 R5):* token registration stays on with a rotated token only until `a2a admin bootstrap/provision` lands; then registration is closed server-side (owner decision: accounts only through the admin).
+- *Before public exposure (matrix.relux.works:443, a separate window):* the full list A in that topic, including log out all devices + re-provision (no laptop-era token survives), refresh tokens instead of stored passwords, log redaction, encrypted off-box backups, admin credentials only on the mini, and external negative probes.
+- *State:* in force.
 
 ## Structural fixes that retire rules
 | rule or ruling | retired by |
