@@ -184,7 +184,7 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 	sels := []struct {
 		sel   SubSelector
 		label string
-	}{{SubSelector{Room: projID, Kinds: onboardKinds}, projLabel}}
+	}{{SubSelector{Room: projID, Kinds: onboardKinds}, projLabel}, {SubSelector{Room: lobbyID, Kinds: onboardKinds}, lobbyLabel}}
 	if o.keeper {
 		sels = append(sels, struct {
 			sel   SubSelector

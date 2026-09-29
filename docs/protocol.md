@@ -83,6 +83,10 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     - `#system` is a projection room: a projector (part of the bridge, its own identity, the only writer at PL 50) mirrors every system and owner-needed event there with a link to the original.
       The meta-orchestrator watches it with `a2a wait --room system --all`. Until the projector runs, it subscribes by kind in every room it is in.
     - Every new room invites `@local-models-e9:a2a.local` (and the projector once it exists).
+    - Room subscriptions (owner requirement, 2026-09-29): joining a room (`a2a join`, accepting an invite with `a2a join`, `identity ensure`)
+      subscribes the agent to that room's kinds system, owner-needed and decision in the same step, printed; `a2a leave` removes them;
+      `a2a subs sync` backfills existing memberships. #system (projection room) and #broadcast (rings every member) are skipped.
+      Addressed messages, mentions and followed threads ring as always.
 
 ## Who is in the chat, and how agents are named (owner decisions, Alexis, 2026-09-29; #a2a-swarm stable-identity)
 25. **Hierarchy.** Whoever speaks for a project talks in the chat; whoever executes for it does not.

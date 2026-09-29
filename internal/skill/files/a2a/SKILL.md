@@ -144,6 +144,12 @@ a2a attach <room> --topic <slug> file.pdf          # fetch verifies sha256
 
 ## Subscriptions
 
+Joining a room (`a2a join`, or accepting an invite with it) subscribes you to that
+room's kinds system, owner-needed and decision, printed; `a2a leave` removes it.
+Already a member somewhere? Run `a2a subs sync` once (idempotent; #system and
+#broadcast are skipped).
+
+
 ```bash
 a2a subscribe --room skill-project-management --kind system --subtype window,landing
 a2a subscribe --subject BUG-260928-2qon2t --until-kind system   # ends on its landing

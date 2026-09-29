@@ -716,3 +716,6 @@ never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name
 `/dev/null`. Agents' tool calls have no terminal on stdin, so an agent cannot use a human account even when it knows the flag.
 
 `--runtime none` onboards a service account (e.g. the projector): rooms and subscriptions as usual, no hooks file (there is no session to notify).
+
+### `a2a subs sync`
+Ensures the room subscription (kinds system, owner-needed, decision) for every joined room, idempotently, and prints it; #system and #broadcast are skipped with the reason. `a2a join` creates the same subscription for the joined room and `a2a leave` removes the room's subscriptions.

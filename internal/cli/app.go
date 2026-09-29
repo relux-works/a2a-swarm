@@ -127,7 +127,7 @@ func commands() []command {
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},
 		{"subscribe", "subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]   add a runtime subscription", cmdSubscribe},
 		{"unsubscribe", "unsubscribe <sub-id>|--all             remove subscriptions", cmdUnsubscribe},
-		{"subs", "subs [--json]                        list live subscriptions with ids", cmdSubs},
+		{"subs", "subs [--json] | subs sync             list live subscriptions with ids; sync ensures a room subscription for every joined room", cmdSubs},
 		{"subscriptions", "subscriptions [--json]               alias of subs", cmdSubs},
 		{"sub-request", "sub-request <agent> --room R --topic T <selector flags> [--note text]   ask an agent to subscribe (rule 10)", cmdSubRequest},
 		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},

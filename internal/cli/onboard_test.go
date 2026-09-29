@@ -95,7 +95,9 @@ func TestEnsureOnboardsIdempotently(t *testing.T) {
 		tuitestkit.ContainsStr(t, out, want)
 	}
 	subs := e.subsOf("mini_proj_orch")
-	if len(subs) != 1 || subs[0].Room != "!projRoomID" || kindSet(subs[0].Kinds) != kindSet(onboardKinds) {
+	// The project room and #lobby each get the room subscription (every joined room does).
+	if len(subs) != 2 || subs[0].Room != "!projRoomID" || subs[1].Room != "!lobbyRoomID" ||
+		kindSet(subs[0].Kinds) != kindSet(onboardKinds) || kindSet(subs[1].Kinds) != kindSet(onboardKinds) {
 		t.Fatalf("subscriptions after the first run: %+v", subs)
 	}
 	tuitestkit.ContainsStr(t, out, "created "+subs[0].ID+"\t")
@@ -118,7 +120,7 @@ func TestEnsureOnboardsIdempotently(t *testing.T) {
 	if after := counts(); after != before {
 		t.Fatalf("second run changed the server: create/join/invite/account-data %v -> %v", before, after)
 	}
-	if n := len(e.subsOf("mini_proj_orch")); n != 1 {
+	if n := len(e.subsOf("mini_proj_orch")); n != 2 {
 		t.Fatalf("%d subscriptions after the second run", n)
 	}
 	if got := readFile(t, hooks); got != first {
@@ -241,7 +243,7 @@ func TestEnsureKeeper(t *testing.T) {
 			n++
 		}
 	}
-	if n != 1 || len(e.subsOf("mini_proj_orch")) != 2 {
+	if n != 1 || len(e.subsOf("mini_proj_orch")) != 3 {
 		t.Fatalf("keeper subscriptions: %+v", e.subsOf("mini_proj_orch"))
 	}
 }

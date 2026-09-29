@@ -172,7 +172,7 @@ func cmdJoin(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("join %s: %w", label, err)
 	}
 	a.printf("joined %s %s\n", label, id)
-	return nil
+	return s.subscribeRoom(ctx, a, id, label, a.Now())
 }
 
 // cmdInvite: a2a invite <room> <@user|name>
@@ -241,7 +241,7 @@ func cmdLeave(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("leave %s: %w", label, err)
 	}
 	a.printf("left %s %s\n", sanitizeLine(label), id)
-	return nil
+	return s.unsubscribeRoom(ctx, a, id, sanitizeLine(label))
 }
 
 // cmdCreds: a2a creds move-human <name>
