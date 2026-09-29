@@ -236,3 +236,32 @@ func TestBridgeProbe(t *testing.T) {
 		}
 	}
 }
+
+// Proves --program is a regexp, so a Claude Code pane whose
+// pane_current_command is its version string ("2.1.284") matches, while an
+// unrelated program does not; and that the real Claude Code empty prompt
+// ("❯" + U+00A0, above a footer) is matched by '^❯[\s\x{00a0}]*$' while a typed
+// prompt is not.
+func TestBridgeClaudeCodeShapes(t *testing.T) {
+	e, _ := world(t)
+	args := func(extra ...string) []string {
+		return append([]string{"--as", "alice", "bridge", "tmux", "--agent", "alice", "--pane", "orch:0.0",
+			"--program", `^(claude|node|[0-9]+\.[0-9]+\.[0-9]+)$`, "--empty-prompt", `^❯[\s\x{00a0}]*$`,
+			"--idle", "60s", "--interval", "1ms", "--probe"}, extra...)
+	}
+	for _, c := range []struct {
+		command, screen, want string
+	}{
+		{"2.1.284", "answer\n───\n❯ \n───\n  ⏵⏵ bypass permissions on\n", "idle=true"},
+		{"2.1.284", "answer\n───\n❯ half typed\n───\n  ⏵⏵ bypass permissions on\n", "does not match the screen"},
+		{"zsh", "❯ \n", "which --program does not match"},
+	} {
+		ft := idleTmux()
+		ft.set(func(f *fakeTmux) { f.command, f.screen = c.command, c.screen })
+		e.configure = func(a *App) { a.tmux = ft }
+		r := e.run(args()...).ok(t)
+		e.configure = nil
+		tuitestkit.ContainsStr(t, r.stdout, c.want)
+	}
+	e.run(append(args(), "--program", "(")...).failsWith(t, ExitUsage, "--program")
+}

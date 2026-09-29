@@ -36,7 +36,10 @@ type App struct {
 	Now    func() time.Time
 
 	// as is the identity from --as (overrides A2A_AGENT).
-	as      string
+	as string
+	// human selects a human operator's own account (humans/<name>.json); never
+	// set by agents. It needs --as and ignores A2A_AGENT.
+	human   bool
 	secrets redact.Set
 
 	// sess is the last session opened by the running command (nil before one is
@@ -115,6 +118,7 @@ func commands() []command {
 		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},
 		{"project", "project [--system R] [--kind k1,k2] [--once]   run the #system projector (rule 24) as this identity", cmdProject},
 		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
+		{"creds", "creds move-human <name>              move a HUMAN's credential file out of agents/ into humans/ (used only with --human)", cmdCreds},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status set <active|idle|away> [\"text\"] | status get [name]", cmdStatus},
 	}
@@ -178,6 +182,8 @@ func (a *App) extractGlobal(args []string) ([]string, error) {
 			i++
 		case strings.HasPrefix(arg, "--as=") || strings.HasPrefix(arg, "-as="):
 			a.as = arg[strings.Index(arg, "=")+1:]
+		case arg == "--human":
+			a.human = true
 		default:
 			rest = append(rest, arg)
 		}
@@ -281,11 +287,23 @@ func (a *App) loadMatrix() (config.Paths, config.Matrix, error) {
 // identity returns the agent name from --as or A2A_AGENT.
 func (a *App) identity() (string, error) {
 	name := a.as
-	if name == "" {
-		name = a.Getenv(config.EnvAgent)
+	env := a.Getenv(config.EnvAgent)
+	if a.human {
+		if name == "" {
+			return "", usagef("--human needs --as <your own human account>")
+		}
+	} else {
+		// A session bound to an identity (hook install sets A2A_AGENT) never
+		// acts as someone else by accident.
+		if name != "" && env != "" && name != env {
+			return "", usagef("this session is %s (%s); --as %s refused: never act as another identity (operators: unset %s)", env, config.EnvAgent, name, config.EnvAgent)
+		}
+		if name == "" {
+			name = env
+		}
 	}
 	if name == "" {
-		return "", usagef("no identity: pass --as <name> or set %s", config.EnvAgent)
+		return "", usagef("no identity: pass --as <your-own-name> or set %s; never borrow another identity (register your own after your owner confirms)", config.EnvAgent)
 	}
 	if err := config.ValidateName(name); err != nil {
 		return "", usageError{err.Error()}
@@ -302,7 +320,11 @@ func (a *App) session() (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	creds, err := config.LoadCredentials(p, name)
+	load := config.LoadCredentials
+	if a.human {
+		load = config.LoadHumanCredentials
+	}
+	creds, err := load(p, name)
 	if err != nil {
 		return nil, err
 	}

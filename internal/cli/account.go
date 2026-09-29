@@ -34,6 +34,9 @@ func cmdRegister(ctx context.Context, a *App, args []string) (err error) {
 	if mx.URL == "" {
 		return fmt.Errorf("no homeserver URL: set %s in %s", config.EnvMatrixURL, p.EnvFile())
 	}
+	if _, err := os.Lstat(p.HumanFile(name)); err == nil {
+		return fmt.Errorf("%q is a human's identity; register your own agent name instead", name)
+	}
 	// Reserve the credential file first: an existing file is never overwritten,
 	// and no account is created when the file cannot be written.
 	f, err := config.CreateCredentialFile(p, name)
@@ -220,5 +223,25 @@ func cmdLeave(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("leave %s: %w", label, err)
 	}
 	a.printf("left %s %s\n", sanitizeLine(label), id)
+	return nil
+}
+
+// cmdCreds: a2a creds move-human <name>
+func cmdCreds(ctx context.Context, a *App, args []string) error {
+	if len(args) != 2 || args[0] != "move-human" {
+		return usagef("usage: a2a creds move-human <name>")
+	}
+	if err := config.ValidateName(args[1]); err != nil {
+		return usageError{err.Error()}
+	}
+	p, err := a.paths()
+	if err != nil {
+		return err
+	}
+	dst, err := config.MoveToHumans(p, args[1])
+	if err != nil {
+		return err
+	}
+	a.printf("moved %s to %s; use it only as that human: a2a --human --as %s …\n", args[1], dst, args[1])
 	return nil
 }

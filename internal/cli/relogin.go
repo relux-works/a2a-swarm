@@ -61,7 +61,8 @@ func (a *App) runWithRelogin(ctx context.Context, c command, args []string) erro
 	a.sess = nil
 	a.served.Store(0)
 	err := c.run(ctx, a, args)
-	if err == nil || !errors.Is(err, matrix.ErrAuth) || a.sess == nil || a.served.Load() != 0 {
+	// Human accounts are never re-logged in by the tool (their file lives in humans/).
+	if err == nil || a.human || !errors.Is(err, matrix.ErrAuth) || a.sess == nil || a.served.Load() != 0 {
 		return err
 	}
 	if lerr := a.relogin(ctx, a.sess, err); lerr != nil {

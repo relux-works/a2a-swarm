@@ -119,7 +119,7 @@ func TestLoadCredentials(t *testing.T) {
 		t.Errorf("symlink: err = %v", err)
 	}
 
-	if _, err := LoadCredentials(p, "missing"); err == nil || !strings.Contains(err.Error(), "a2a register missing") {
+	if _, err := LoadCredentials(p, "missing"); err == nil || !strings.Contains(err.Error(), "a2a register <your-session-name>") {
 		t.Errorf("missing: err = %v", err)
 	}
 	if _, err := LoadCredentials(p, "../x"); err == nil {
@@ -290,5 +290,39 @@ func TestUpdateStateAbort(t *testing.T) {
 	}
 	if s, _ := LoadState(p, "a"); s.NextBatch != "" {
 		t.Fatalf("aborted update was saved: %+v", s)
+	}
+}
+
+// Proves a human's credentials live outside agents/: LoadCredentials refuses a
+// name that exists only in humans/ with a human-identity error, while
+// LoadHumanCredentials reads it; MoveToHumans moves an agents/ file there with
+// dir 0700 / file 0600 and never overwrites an existing human file.
+func TestHumanCredentials(t *testing.T) {
+	p := testPaths(t)
+	os.MkdirAll(filepath.Dir(p.AgentFile("x")), 0o700)
+	write := func(path string) {
+		os.WriteFile(path, []byte(`{"user_id":"@ivan:a2a.local","access_token":"t"}`), 0o600)
+		os.Chmod(path, 0o600)
+	}
+	write(p.AgentFile("ivan"))
+	if _, err := LoadCredentials(p, "ivan"); err != nil {
+		t.Fatalf("control: agents/ivan.json loads before the move: %v", err)
+	}
+	dst, err := MoveToHumans(p, "ivan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(filepath.Dir(dst)); st.Mode().Perm() != 0o700 {
+		t.Fatalf("humans dir mode %o", st.Mode().Perm())
+	}
+	if _, err := LoadCredentials(p, "ivan"); err == nil || !strings.Contains(err.Error(), "human's identity") {
+		t.Fatalf("agent load of a human: %v", err)
+	}
+	if c, err := LoadHumanCredentials(p, "ivan"); err != nil || c.UserID != "@ivan:a2a.local" {
+		t.Fatalf("human load: %+v %v", c, err)
+	}
+	write(p.AgentFile("ivan"))
+	if _, err := MoveToHumans(p, "ivan"); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("overwrite: %v", err)
 	}
 }

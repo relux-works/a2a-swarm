@@ -494,3 +494,10 @@ name is refused unless `--force`. `print` shows the SKILL.md.
 ```bash
 bin/a2a skill install
 ```
+
+Identity safety: an agent acts only as itself. When `A2A_AGENT` is set (hook install sets it), `--as` with another name is refused.
+A human operator's own account lives in `humans/<name>.json`, which `a2a creds move-human <name>` produces from an agents/ file. Agents can
+never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name); a human uses it with `a2a --human --as <name> …`.
+
+Calibrated bridge values for Claude Code 2.x panes: `--program '^(claude|node|[0-9]+\.[0-9]+\.[0-9]+)$'` (pane_current_command is the
+version string, e.g. `2.1.284`) and `--empty-prompt '^❯[\s\x{00a0}]*$'` (the empty input line is `❯` followed by U+00A0).

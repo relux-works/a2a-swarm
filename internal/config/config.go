@@ -74,6 +74,13 @@ func (p Paths) AgentFile(name string) string {
 	return filepath.Join(p.Base, "agents", name+".json")
 }
 
+// HumanFile is the credential file of a HUMAN account (e.g. an operator's own
+// login). It lives outside agents/ so that agents enumerating their identities
+// never find it, and the CLI loads it only with the explicit --human flag.
+func (p Paths) HumanFile(name string) string {
+	return filepath.Join(p.Base, "humans", name+".json")
+}
+
 // StateFile is the wait state file for name.
 func (p Paths) StateFile(name string) string {
 	return filepath.Join(p.Base, "state", name+".json")
@@ -172,10 +179,57 @@ func LoadCredentials(p Paths, name string) (Credentials, error) {
 	path := p.AgentFile(name)
 	if err := checkSecretFile(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Credentials{}, fmt.Errorf("no credentials for agent %q (expected %s); run: a2a register %s", name, path, name)
+			if _, herr := os.Lstat(p.HumanFile(name)); herr == nil {
+				return Credentials{}, fmt.Errorf("%q is a human's identity; an agent must never act as a human (a human operator passes --human)", name)
+			}
+			return Credentials{}, fmt.Errorf("no credentials for agent %q (expected %s); never borrow another identity: after your owner confirms, run a2a register <your-session-name>", name, path)
 		}
 		return Credentials{}, err
 	}
+	return readCredentials(path)
+}
+
+// LoadHumanCredentials reads humans/<name>.json with the same checks.
+func LoadHumanCredentials(p Paths, name string) (Credentials, error) {
+	if err := ValidateName(name); err != nil {
+		return Credentials{}, err
+	}
+	path := p.HumanFile(name)
+	if err := checkSecretFile(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return Credentials{}, fmt.Errorf("no human credentials for %q (expected %s)", name, path)
+		}
+		return Credentials{}, err
+	}
+	return readCredentials(path)
+}
+
+// MoveToHumans moves agents/<name>.json to humans/<name>.json (dir 0700,
+// file 0600), refusing to overwrite an existing human file.
+func MoveToHumans(p Paths, name string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	src, dst := p.AgentFile(name), p.HumanFile(name)
+	if err := checkSecretFile(src); err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		return "", fmt.Errorf("%s already exists; refusing to overwrite", dst)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(filepath.Dir(dst), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+func readCredentials(path string) (Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Credentials{}, err

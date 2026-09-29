@@ -58,7 +58,7 @@ type tmuxBridge struct {
 	s        *session
 	tmux     tmuxRunner
 	pane     string
-	program  string
+	program  *regexp.Regexp
 	prompt   *regexp.Regexp
 	idle     time.Duration
 	interval time.Duration
@@ -77,7 +77,7 @@ func cmdBridge(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("bridge tmux")
 	agent := fs.String("agent", "", "agent whose deliveries ring the pane (required)")
 	pane := fs.String("pane", "", "tmux target pane, e.g. work:1.0 (required)")
-	program := fs.String("program", "", "expected #{pane_current_command}, e.g. claude or node (required)")
+	program := fs.String("program", "", "regexp for #{pane_current_command}, e.g. '^(claude|node|[0-9]+\\.[0-9]+\\.[0-9]+)$' (Claude Code reports its version) (required)")
 	emptyPrompt := fs.String("empty-prompt", "", "multiline regexp over the whole captured pane that matches only when the input prompt is empty (required; calibrate with --probe)")
 	probe := fs.Bool("probe", false, "print the idle checks for the pane and exit, without peeking or ringing")
 	idle := fs.Duration("idle", 60*time.Second, "no tmux client activity on the session for this long")
@@ -102,12 +102,16 @@ func cmdBridge(ctx context.Context, a *App, args []string) error {
 	if a.as != "" && a.as != *agent {
 		return usagef("--as %s and --agent %s disagree", a.as, *agent)
 	}
+	progRE, err := regexp.Compile(*program)
+	if err != nil {
+		return usagef("--program: %v", err)
+	}
 	re, err := regexp.Compile("(?m)" + *emptyPrompt)
 	if err != nil {
 		return usagef("--empty-prompt: %v", err)
 	}
 	if *probe {
-		br := &tmuxBridge{a: a, tmux: a.tmuxRunner(), pane: *pane, program: *program, prompt: re, idle: *idle, interval: *interval}
+		br := &tmuxBridge{a: a, tmux: a.tmuxRunner(), pane: *pane, program: progRE, prompt: re, idle: *idle, interval: *interval}
 		idleNow, why, err := br.paneState(ctx, a.Now())
 		if err != nil {
 			return err
@@ -120,7 +124,7 @@ func cmdBridge(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	br := &tmuxBridge{a: a, s: s, tmux: a.tmuxRunner(), pane: *pane, program: *program, prompt: re, idle: *idle, interval: *interval}
+	br := &tmuxBridge{a: a, s: s, tmux: a.tmuxRunner(), pane: *pane, program: progRE, prompt: re, idle: *idle, interval: *interval}
 	for {
 		err := br.check(ctx)
 		if *once {
@@ -227,8 +231,8 @@ func (br *tmuxBridge) paneState(ctx context.Context, now time.Time) (bool, strin
 	if len(f) != 3 {
 		return false, "", fmt.Errorf("tmux display-message: unexpected output %q", snippet(out, 80))
 	}
-	if f[0] != br.program {
-		return false, "program is " + sanitizeLine(f[0]) + ", not " + br.program, nil
+	if !br.program.MatchString(f[0]) {
+		return false, "program is " + sanitizeLine(f[0]) + ", which --program does not match", nil
 	}
 	latest, err := strconv.ParseInt(f[1], 10, 64)
 	if err != nil {
