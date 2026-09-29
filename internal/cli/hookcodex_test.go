@@ -208,7 +208,7 @@ func TestHookInstallUpgradesLegacyClaudeEntries(t *testing.T) {
 
 // Proves --runtime has no default: install and uninstall without it, with an
 // unknown runtime, or with an empty --settings are usage errors (exit 2) that
-// create no file; a hook event without it or with an unknown one exits 0 with
+// create no file; a hook event with an unknown one exits 0 with
 // empty stdout and one stderr line naming the fix, acknowledging nothing; the
 // same calls with a valid runtime work (positive controls).
 func TestHookRuntimeRequired(t *testing.T) {
@@ -231,7 +231,6 @@ func TestHookRuntimeRequired(t *testing.T) {
 	id := e.hs.inject(room, "@bob:test.local", ping(1))
 	e.stdin = codexStdin("s1", false)
 	for _, r := range []result{
-		e.as("alice", "hook", "stop"),
 		e.as("alice", "hook", "stop", "--runtime", "gemini"),
 		e.as("alice", "hook", "prompt", "--runtime"),
 	} {
@@ -242,11 +241,16 @@ func TestHookRuntimeRequired(t *testing.T) {
 			t.Fatalf("stderr does not name --runtime: %q", r.stderr)
 		}
 	}
-	e.stdin = ""
 	if e.state("alice").IsAcked(id) {
-		t.Fatal("acknowledged without a runtime")
+		t.Fatal("acknowledged with an invalid runtime")
 	}
-	tuitestkit.ContainsStr(t, stopReason(t, e.hookRT("codex", "alice", "stop", codexStdin("s1", false)).ok(t).stdout), id)
+	// A bare event command (hooks installed before --runtime existed) keeps
+	// delivering: the output is identical for every runtime.
+	tuitestkit.ContainsStr(t, stopReason(t, e.as("alice", "hook", "stop").ok(t).stdout), id)
+	e.stdin = ""
+	if !e.state("alice").IsAcked(id) {
+		t.Fatal("bare hook stop did not acknowledge what it delivered")
+	}
 }
 
 // Codex's command output wires (codex-rs/hooks/src/schema.rs:87-99, 385-464),

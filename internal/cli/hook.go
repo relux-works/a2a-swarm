@@ -185,7 +185,7 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fmt.Fprintln(a.Stderr, "a2a hook "+ev.arg+": "+a.secrets.Scrub(sanitizeLine(err.Error()))+"; nothing new was acknowledged")
 	}
 	fs := newFlagSet("hook " + ev.arg)
-	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (required)")
+	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (optional for events: the output is identical)")
 	pos, err := parseInterspersed(fs, args)
 	if err == nil && len(pos) != 0 {
 		err = errors.New("unexpected arguments")
@@ -194,10 +194,17 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fail(fmt.Errorf("%v; %s", err, hookUsage))
 		return
 	}
-	rt, err := lookupRuntime(*runtime)
-	if err != nil {
-		fail(fmt.Errorf("%v; re-run a2a hook install --agent NAME --runtime %s", err, runtimeNames))
-		return
+	// The event commands' output is byte-identical for every runtime (see
+	// research/codex-hooks.md), so --runtime is optional here: omitting it is
+	// not a default that changes behaviour, and hooks installed before
+	// --runtime existed keep delivering. install/uninstall still require it,
+	// because there it chooses which file is written.
+	rt := hookRuntimes[0]
+	if *runtime != "" {
+		if rt, err = lookupRuntime(*runtime); err != nil {
+			fail(fmt.Errorf("%v; re-run a2a hook install --agent NAME --runtime %s", err, runtimeNames))
+			return
+		}
 	}
 	in, err := readHookInput(a.Stdin)
 	if err != nil {

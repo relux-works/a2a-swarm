@@ -315,9 +315,7 @@ How a hook delivers:
   nothing to stdout, one line to stderr, and exits 0; nothing new is acknowledged, so the events are delivered next time. A rejected token is repaired by
   the usual one-time re-login. A crash between the write and the acknowledgement delivers the same events again (at least once).
 
-A missing or unknown `--runtime` on a hook event is an error like any other: nothing on stdout, one stderr line, exit 0, nothing acknowledged.
-Hooks installed before `--runtime` existed (`... hook stop`) therefore stop delivering until `a2a hook install --runtime claude` is run again, which
-replaces them in place.
+On a hook event `--runtime` is optional, because the output is byte-identical for Claude Code and Codex. An unknown value is an error like any other: nothing on stdout, one stderr line, exit 0, nothing acknowledged. Hooks installed before `--runtime` existed (`... hook stop`) keep delivering; re-running `a2a hook install --runtime claude` adds the flag in place.
 
 #### `a2a hook install --agent NAME --runtime claude|codex [--settings PATH]` / `a2a hook uninstall --runtime claude|codex [--settings PATH]`
 `--runtime` is required; a missing or unknown runtime, like an invalid agent name, is a usage error (exit 2) and writes nothing.
