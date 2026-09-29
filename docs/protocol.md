@@ -51,6 +51,10 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     Landings are rebase-only: the candidate is rebased onto fresh main before review. Publish board state right after closures, except inside a window (rule 19). Warn when you hold an integration lock long.
 19. **Integration windows.** An announced integration into a shared main is a no-push window for everyone, board-only commits (Records) included. The integrator announces start, expected end, and end.
     Everyone keeps board commits local until the end; a closure refused with `board_delta_unpublished` meanwhile is expected, and nobody raises thresholds. A window over 3 h, or any extension, needs the arbiter's ruling.
+    The window-open message is `kind=system --subtype window --subject <repo>@<branch>` and states `until` (UTC) and `base` (the branch OID at open).
+    Its event id is the window's lease token: extensions (arbiter only), a takeover and the close cite it with `re`, and a window with no close past its `until` has lapsed (anyone may announce that).
+    A landing inside a window must be a non-forced push by the holder, citing the token in its landing notice; any other push during the window is a rule-19 violation the arbiter records.
+    (Lease/fencing idea from the owner's apiary-docs book ch03; see research/apiary-docs-takeaways.md.)
     A window is announced in the repository's room; for an agent not on Matrix yet, the integrator also rings it by SendMessage. A window binds a session only once it reached it that way;
     the integrator makes sure every pusher to that main got it (condition from skill-project-management-e7's ack, #a2a-swarm governance).
 20. **Shared host.** One validation semaphore per machine (`spawn.validation.max_concurrent_suites`, shared by every board of the account); no campaign runs on a private `XDG_STATE_HOME`
