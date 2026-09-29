@@ -60,6 +60,7 @@ func TestWaitBackfillFailureKeepsPosition(t *testing.T) {
 // mailbox holds only the two relevant events (the flood takes no space).
 func TestBackfillFloodKeepsAddressed(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	e.as("alice", "inbox").ok(t)
 	early := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local before the flood", nil))
 	for i := 0; i < 5000; i++ {
@@ -96,6 +97,7 @@ func TestBackfillGapSurfaced(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, room := world(t)
+			e.sequentialSessions()
 			e.hs.syncLimit = 5
 			e.as("alice", "inbox").ok(t)
 			early := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local cut off", nil))

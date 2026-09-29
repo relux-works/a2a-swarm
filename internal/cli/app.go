@@ -68,6 +68,8 @@ type App struct {
 	beforeAppend, afterAppend func() error
 	// backfillPages, when set (tests only), replaces maxBackfillPages.
 	backfillPages int
+	// leaseTTL, when set (tests only), replaces config.LeaseTTL.
+	leaseTTL time.Duration
 }
 
 // NewApp returns an App bound to the real process environment.
@@ -97,7 +99,9 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"register", "register <name>                      create a Matrix account and a 0600 credential file", cmdRegister},
+		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
+		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},
+		{"identity", "identity ensure --role R [--project P] [--dir D] | identity release   the stable identity <host>_<project>_<role> and its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
 		{"join", "join <room>                          join a room", cmdJoin},
@@ -339,7 +343,7 @@ func (a *App) identity() (string, error) {
 		}
 	}
 	if name == "" {
-		return "", usagef("no identity: pass --as <your-own-name> or set %s; never borrow another identity (register your own after your owner confirms)", config.EnvAgent)
+		return "", usagef("no identity: pass --as <your-own-name> or set %s; never borrow another identity (after your owner confirms: a2a identity ensure --role <your-role>)", config.EnvAgent)
 	}
 	if err := config.ValidateName(name); err != nil {
 		return "", usageError{err.Error()}
@@ -352,6 +356,11 @@ func (a *App) session() (*session, error) {
 	if err != nil {
 		return nil, err
 	}
+	return a.sessionAs(name)
+}
+
+// sessionAs opens the session of name (already validated and guarded).
+func (a *App) sessionAs(name string) (*session, error) {
 	p, mx, err := a.loadMatrix()
 	if err != nil {
 		return nil, err

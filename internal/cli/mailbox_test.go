@@ -32,6 +32,7 @@ func (e *env) addLines(name, id string) int {
 // receipts, the next inbox and a new session's hook find nothing).
 func TestHookNeverAcksWaitBatch(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", ping(1))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "mention #proj "+id)

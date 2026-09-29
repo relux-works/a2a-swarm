@@ -82,6 +82,7 @@ func toMsg(from, kind, body string) map[string]any {
 // the fixed template with counts, a listed kind and a verified member's name.
 func TestHookDoorbellTemplate(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	e.hook("alice", "prompt", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", toMsg("bob", "question", "can you review <PR#3> && more?"))
 	e.hs.inject(room, "@bob:test.local", ping(1))
@@ -116,6 +117,7 @@ var (
 func TestHookDoorbellAdversarial(t *testing.T) {
 	ring := func(inject func(e *env, room string)) string {
 		e, room := world(t)
+		e.sequentialSessions()
 		e.hook("alice", "prompt", `{}`).ok(t)
 		inject(e, room)
 		return bellContext(t, e.hook("alice", "prompt", `{"session_id":"a"}`).ok(t).stdout)
@@ -178,6 +180,7 @@ func TestHookDoorbellLengthCap(t *testing.T) {
 // prints "no new peer events", and a new session's hook prints nothing.
 func TestHookDoesNotAckInboxDoes(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	e.hook("alice", "stop", `{}`).ok(t)
 	to := e.hs.inject(room, "@bob:test.local", toMsg("bob", "question", "can you review PR#3?"))
 	men := e.hs.inject(room, "@bob:test.local", ping(1))
@@ -320,6 +323,7 @@ func TestInboxUsage(t *testing.T) {
 // new event rings the first session again, counting everything pending.
 func TestHookRingsOncePerSession(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	e.hook("alice", "prompt", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", ping(1))
 	tuitestkit.ContainsStr(t, bellContext(t, e.hook("alice", "prompt", `{"session_id":"s1"}`).ok(t).stdout), "a2a: 1 new peer event (mention: 1)")
@@ -361,6 +365,7 @@ func TestHookStopRungAndNew(t *testing.T) {
 // another session still ring; after 60 s the first session's Stop blocks again.
 func TestHookStopRateLimit(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	clk := e.clock()
 	e.hook("alice", "stop", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", ping(1))
@@ -416,6 +421,7 @@ func TestHookStopLoopGuard(t *testing.T) {
 // arguments, and refuse another identity than A2A_AGENT (exit 2).
 func TestHookPauseResume(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	e.hook("alice", "prompt", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", ping(1))
 	tuitestkit.ContainsStr(t, e.run("hook", "pause", "--agent", "alice").ok(t).stdout, "hooks paused for alice")

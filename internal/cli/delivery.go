@@ -428,6 +428,9 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.acquireLease(s, "", time.Time{}); err != nil {
+		return err
+	}
 	filter, err := s.resolveFilter(ctx, rooms, *all)
 	if err != nil {
 		return err
@@ -467,6 +470,9 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 			if remaining < poll {
 				poll = remaining
 			}
+		}
+		if err := a.acquireLease(s, "", time.Time{}); err != nil {
+			return err
 		}
 		resp, err := s.client.Sync(ctx, st.NextBatch, poll, syncFilter)
 		if err != nil {
@@ -557,6 +563,9 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.acquireLease(s, "", time.Time{}); err != nil {
+		return err
+	}
 	filter, err := s.resolveFilter(ctx, rooms, *all)
 	if err != nil {
 		return err
@@ -579,6 +588,9 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	for {
 		if _, err := a.showNew(ctx, s, filter, *asJSON); err != nil {
 			return err
+		}
+		if err := a.acquireLease(s, "", time.Time{}); err != nil {
+			return stopped(err)
 		}
 		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, syncFilter)
 		if err != nil {

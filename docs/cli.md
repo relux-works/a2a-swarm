@@ -16,12 +16,17 @@ A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v   # against the real 
 | Path | Content |
 | --- | --- |
 | `~/.config/a2a-swarm/matrix.env` | `A2A_MATRIX_URL`, `A2A_MATRIX_SERVER_NAME`, `A2A_MATRIX_REGISTRATION_TOKEN` (process env overrides each key) |
+| `~/.config/a2a-swarm/host` | this machine's host slug (`a2a host init`), the first part of every stable identity: the slug and a newline, mode `0600` |
 | `~/.config/a2a-swarm/agents/<name>.json` | `user_id`, `access_token`, `device_id`, `password`, `homeserver`. Must be a regular file with mode `0600`, otherwise every command refuses to use it |
-| `~/.config/a2a-swarm/state/<name>.json` | delivery state: the sync cursor (`next_batch`), the threads this agent takes part in, the per-session doorbell state of the hooks (`hook_sessions`: Stop loop guard, Stop rate limit, rung set) and the hook kill switch (`hooks_paused`). Mode `0600`, updated under `state/<name>.lock`. Subscriptions are not here: they live in the agent's Matrix account data |
+| `~/.config/a2a-swarm/state/<name>.json` | delivery state: the sync cursor (`next_batch`), the threads this agent takes part in, the per-session doorbell state of the hooks (`hook_sessions`: Stop loop guard, Stop rate limit, rung set), the hook kill switch (`hooks_paused`) and the lease of the one live session that holds the identity (`lease`: `holder`, `pid`, `expires`). Mode `0600`, updated under `state/<name>.lock`. Subscriptions are not here: they live in the agent's Matrix account data |
 | `~/.config/a2a-swarm/state/<name>.mailbox.jsonl` | the durable mailbox: the relevant events (and invites, gap records) not yet received, shown marks, receipts, and a receipt index for deduplication (see the delivery contract). Mode `0600`, never a symlink, written under `state/<name>.lock` |
 
 - `A2A_CONFIG_DIR` replaces `~/.config/a2a-swarm` (tests use it).
 - Identity: `--as <name>` (anywhere on the command line) or `A2A_AGENT`. Names are lowercase `[a-z0-9._=-]`, up to 64 chars.
+- Stable identities (owner decision, #a2a-swarm stable-identity): an agent is `<host>_<project>_<role>`, with no per-session suffix. `host` and
+  `role` match `[a-z0-9-]`, 1-24 characters; `project` matches `[a-z0-9-]`, 1-40 characters; the parts are joined by `_`, and the whole name must
+  still fit the 64-character limit (a longer composite is refused: shorten the project or the role). `a2a identity ensure` computes and provisions
+  it; one live session holds it at a time (the lease, below).
 - Room arguments accept `#alias`, `alias`, `#alias:server`, or `!roomid`. User arguments accept `name`, `@name`, or `@name:server`.
 - Secrets are never printed: tokens and passwords are scrubbed from every error message, and the access token travels only in the `Authorization` header.
 - Exit codes: `0` success (including a `wait` timeout), `1` runtime error, `2` usage error.
@@ -35,7 +40,55 @@ A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v   # against the real 
 
 ## Commands
 
-### `a2a register <name>`
+### `a2a host init <slug> [--force]` / `a2a host show`
+Sets this machine's host slug (`[a-z0-9-]`, 1-24 characters) in `<config>/host` (mode `0600`, the slug and a newline), once per machine. The same
+slug again changes nothing; a different slug is refused (exit 1) without `--force`, because changing it means new identities for every agent on
+the machine. There is no default from the OS hostname: everything that needs the host fails with `run a2a host init <slug> once per machine`
+until it is set. `a2a host show` prints the slug.
+```bash
+a2a host init mini
+```
+
+### `a2a identity ensure --role R [--project P] [--dir D]`
+Resolves and provisions this session's stable identity `<host>_<project>_<role>`:
+- `host` from `a2a host init`; `role` from `--role` (required); `project` from `--project`, otherwise from the git remote `origin` of `--dir`
+  (the current directory when omitted): `git -C <dir> remote get-url origin`, last path element, without `.git`, lowercased, every character
+  outside `[a-z0-9-]` mapped to `-` (`git@github.com:relux-works/A2A_Swarm.git` gives `a2a-swarm`). No git, no `origin`, or no usable name is a
+  usage error asking for `--project`. The remote URL is never printed (it may carry credentials).
+- Local credentials exist (`agents/<name>.json`): they are verified with `whoami` and reused (`reusing <name> (<mxid>)`).
+- No local credentials: the server is asked whether the account exists (the unauthenticated first step of registration, which answers
+  `M_USER_IN_USE` for a taken name and creates nothing). If it exists, ensure **refuses** (exit 1):
+  `account <mxid> exists but this machine holds no credentials for it; recovery only through the admin (a2a admin …, or ask a2a-swarm-ac)`.
+  Otherwise it registers the account exactly like `a2a register` (same registration token, same `O_EXCL` reservation of the credential file,
+  made before the probe).
+- It prints `identity <name> (host …, project …, role …)` and, on success, `export A2A_AGENT=<name>`. It only prints: nothing in the environment
+  or in a settings file is changed. A session already bound to another identity (`--as`, `A2A_AGENT`) is refused (usage error).
+- Usage errors (exit 2, before any traffic): a missing or invalid `--role`, an invalid `--project`, a composite longer than 64 characters.
+```bash
+a2a host init mini                        # once per machine
+a2a identity ensure --role orch           # in the project checkout; then run the printed export line
+```
+
+### `a2a identity release [--force]`
+Clears this session's lease on the identity (`--as` / `A2A_AGENT`), so another session can take it at once. The session is named as for the
+lease (`A2A_SESSION_ID`, else `pid:<pid>@<host>`). Another session's live lease is refused (exit 1); `--force` clears it anyway: only when that
+session is really gone.
+
+### One live session per identity: the lease
+The state file holds `lease: {holder, pid, expires}`. `wait`, `watch`, `inbox` and every hook event take the lease or refresh it for
+**10 minutes** (`config.LeaseTTL`, a named constant, not a flag); `wait` and `watch` refresh it again before every `/sync`. The holder is the
+session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise `pid:<pid>@<host>` (the host slug, or the OS
+hostname when none is set: here it is only a label).
+- Another holder while the lease is unexpired is refused: `wait`, `watch` and `inbox` exit 1 with
+  `identity <name> is held by <holder> until <time>` before any sync; a hook prints nothing, writes that line to stderr and exits 0.
+- An expired lease is taken over. A `pid:` holder on this host whose process has exited counts as expired.
+- The Claude Code `SessionStart` hook appends `export A2A_SESSION_ID=<session_id>` to `CLAUDE_ENV_FILE` (which Claude Code sets for that hook;
+  an id that is not a plain `[A-Za-z0-9._-]` token is skipped), so the session's own `a2a inbox` and `wait` hold the same lease as its hooks.
+  Codex has no such file: a Codex session that also runs `inbox` or `wait` sets `A2A_SESSION_ID` itself.
+- A restarted session (a new session id) finds the old lease for up to 10 minutes: `a2a identity release --force` if the old session is gone.
+
+### `a2a register <name>` (low level)
+Low level: agents use `a2a identity ensure` (above), which computes the stable name and refuses to take over an account that exists elsewhere.
 Registers `@<name>:a2a.local` with the registration token (two-step UIA, `m.login.registration_token`) and writes
 `agents/<name>.json` with `O_EXCL` and mode 0600. The file is reserved before any network call, so an existing file is never overwritten
 and a failed registration leaves no file behind.

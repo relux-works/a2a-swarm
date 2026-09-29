@@ -36,6 +36,7 @@ func (e *env) holdStateLock(name string) func() {
 // the release and then prints.
 func TestHookLockTimeout(t *testing.T) {
 	e, room := world(t)
+	e.sequentialSessions()
 	e.hook("alice", "prompt", `{}`).ok(t)
 	id := e.hs.inject(room, "@bob:test.local", ping(1))
 	before := readFile(t, e.paths().StateFile("alice"))

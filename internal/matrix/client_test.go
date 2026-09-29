@@ -36,6 +36,39 @@ func TestNextStage(t *testing.T) {
 	}
 }
 
+// Proves UserExists reads the first registration step: M_USER_IN_USE is a
+// taken name, a 401 UIA challenge (with a session) is a free one, and anything
+// else (a 401 without a session, a server error) is an error, never "free".
+func TestUserExists(t *testing.T) {
+	for _, c := range []struct {
+		name, body   string
+		status       int
+		exists, fail bool
+	}{
+		{"taken", `{"errcode":"M_USER_IN_USE","error":"taken"}`, 400, true, false},
+		{"free", `{"session":"s","flows":[{"stages":["m.login.registration_token"]}]}`, 401, false, false},
+		{"401 without session", `{"errcode":"M_FORBIDDEN"}`, 401, false, true},
+		{"server error", `{"errcode":"M_UNKNOWN"}`, 500, false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				if r.URL.Path != "/_matrix/client/v3/register" || req["username"] != "bob" || req["auth"] != nil {
+					t.Errorf("unexpected probe %s %v", r.URL.Path, req)
+				}
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+			exists, err := New(srv.URL, "").UserExists(context.Background(), "bob")
+			if exists != c.exists || (err != nil) != c.fail {
+				t.Fatalf("UserExists = %v, %v", exists, err)
+			}
+		})
+	}
+}
+
 // Proves a server that needs registration_token then dummy is walked through
 // both stages, and that a server that never accepts the token fails instead of looping.
 func TestRegisterStages(t *testing.T) {

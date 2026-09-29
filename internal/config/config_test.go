@@ -119,7 +119,7 @@ func TestLoadCredentials(t *testing.T) {
 		t.Errorf("symlink: err = %v", err)
 	}
 
-	if _, err := LoadCredentials(p, "missing"); err == nil || !strings.Contains(err.Error(), "a2a register <your-session-name>") {
+	if _, err := LoadCredentials(p, "missing"); err == nil || !strings.Contains(err.Error(), "a2a identity ensure --role <your-role>") {
 		t.Errorf("missing: err = %v", err)
 	}
 	if _, err := LoadCredentials(p, "../x"); err == nil {

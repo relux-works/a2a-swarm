@@ -60,6 +60,9 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.acquireLease(s, "", time.Time{}); err != nil {
+		return err
+	}
 	st, subs, err := s.startDelivery(ctx, a.Now())
 	if err != nil {
 		return err

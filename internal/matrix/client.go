@@ -237,6 +237,26 @@ func (c *Client) Register(ctx context.Context, username, password, regToken, dev
 	return out, fmt.Errorf("register: too many authentication stages")
 }
 
+// UserExists asks whether username is taken, with the first unauthenticated
+// step of registration: the homeserver refuses a taken name with
+// M_USER_IN_USE before any authentication, and answers a free one with the
+// 401 UIA challenge, which creates nothing.
+func (c *Client) UserExists(ctx context.Context, username string) (bool, error) {
+	err := c.call(ctx, http.MethodPost, v3+"/register", nil, RegisterRequest{Username: username}, nil)
+	switch {
+	case err == nil:
+		return false, fmt.Errorf("register probe: the homeserver registered %s without authentication", username)
+	case IsCode(err, "M_USER_IN_USE"):
+		return true, nil
+	}
+	var me *Error
+	var uia uiaResponse
+	if errors.As(err, &me) && me.Status == http.StatusUnauthorized && json.Unmarshal(me.Raw, &uia) == nil && uia.Session != "" {
+		return false, nil
+	}
+	return false, fmt.Errorf("register probe: %w", err)
+}
+
 var supportedStages = map[string]bool{"m.login.registration_token": true, "m.login.dummy": true}
 
 func nextStage(u uiaResponse) (string, bool) {

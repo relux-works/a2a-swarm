@@ -4,6 +4,7 @@
 // Layout (default base directory ~/.config/a2a-swarm, override with A2A_CONFIG_DIR):
 //
 //	matrix.env              A2A_MATRIX_URL, A2A_MATRIX_SERVER_NAME, A2A_MATRIX_REGISTRATION_TOKEN
+//	host                    this machine's host slug (a2a host init), mode 0600
 //	agents/<name>.json      credentials, mode 0600
 //	state/<name>.json       delivery state (cursor, threads, hook sessions), mode 0600
 //	state/<name>.mailbox.jsonl  durable mailbox of relevant events and receipts, mode 0600
@@ -41,6 +42,7 @@ var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._=-]{0,63}$`)
 
 // ValidateName checks an agent name. Names become Matrix localparts and file
 // names, so they are restricted to lowercase letters, digits, and . _ = -.
+// Composite identities (<host>_<project>_<role>, ComposeIdentity) are names too.
 func ValidateName(name string) error {
 	if !nameRE.MatchString(name) {
 		return fmt.Errorf("invalid agent name %q: use lowercase letters, digits, and . _ = - (max 64, must start with a letter or digit)", name)
@@ -184,7 +186,7 @@ func LoadCredentials(p Paths, name string) (Credentials, error) {
 			if _, herr := os.Lstat(p.HumanFile(name)); herr == nil {
 				return Credentials{}, fmt.Errorf("%q is a human's identity; an agent must never act as a human (a human operator passes --human)", name)
 			}
-			return Credentials{}, fmt.Errorf("no credentials for agent %q (expected %s); never borrow another identity: after your owner confirms, run a2a register <your-session-name>", name, path)
+			return Credentials{}, fmt.Errorf("no credentials for agent %q (expected %s); never borrow another identity: after your owner confirms, run a2a identity ensure --role <your-role>", name, path)
 		}
 		return Credentials{}, err
 	}
@@ -318,6 +320,8 @@ type State struct {
 	// HooksPaused is the hook kill switch (`a2a hook pause`): while set, every
 	// hook event prints nothing.
 	HooksPaused bool `json:"hooks_paused,omitempty"`
+	// Lease is the one live session that holds this identity (Acquire).
+	Lease *Lease `json:"lease,omitempty"`
 }
 
 // HookSession is the doorbell state of one agent session.

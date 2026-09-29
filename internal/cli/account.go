@@ -14,7 +14,7 @@ import (
 )
 
 // cmdRegister: a2a register <name>
-func cmdRegister(ctx context.Context, a *App, args []string) (err error) {
+func cmdRegister(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("register")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -31,46 +31,65 @@ func cmdRegister(ctx context.Context, a *App, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	creds, path, err := a.registerAgent(ctx, p, mx, name, nil)
+	if err != nil {
+		return err
+	}
+	a.printf("registered %s (device %s)\ncredentials: %s (0600)\n", creds.UserID, creds.DeviceID, path)
+	return nil
+}
+
+// registerAgent creates the account name and writes agents/<name>.json. The
+// credential file is reserved (O_EXCL, 0600) before any network call; check,
+// when set, runs after the reservation and before the registration (an error
+// removes the reservation and creates nothing).
+func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matrix, name string, check func(*matrix.Client) error) (_ config.Credentials, path string, err error) {
 	if mx.URL == "" {
-		return fmt.Errorf("no homeserver URL: set %s in %s", config.EnvMatrixURL, p.EnvFile())
+		return config.Credentials{}, "", fmt.Errorf("no homeserver URL: set %s in %s", config.EnvMatrixURL, p.EnvFile())
 	}
 	if _, err := os.Lstat(p.HumanFile(name)); err == nil {
-		return fmt.Errorf("%q is a human's identity; register your own agent name instead", name)
+		return config.Credentials{}, "", fmt.Errorf("%q is a human's identity; register your own agent name instead", name)
 	}
 	// Reserve the credential file first: an existing file is never overwritten,
 	// and no account is created when the file cannot be written.
 	f, err := config.CreateCredentialFile(p, name)
 	if err != nil {
-		return err
+		return config.Credentials{}, "", err
 	}
-	path := p.AgentFile(name)
+	reserved := p.AgentFile(name)
+	path = reserved
 	written := false
 	defer func() {
 		if !written {
 			f.Close()
-			os.Remove(path)
+			os.Remove(reserved)
 		}
 	}()
 
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return err
+		return config.Credentials{}, "", err
 	}
 	password := base64.RawURLEncoding.EncodeToString(raw[:])
 	a.secrets.Add(password)
 
 	c := matrix.New(mx.URL, "")
 	c.HTTP = a.HTTP
+	if check != nil {
+		if err := check(c); err != nil {
+			return config.Credentials{}, "", err
+		}
+	}
 	resp, err := c.Register(ctx, name, password, mx.RegistrationToken, "a2a "+name)
 	if err != nil {
 		if matrix.IsCode(err, "M_USER_IN_USE") {
-			return fmt.Errorf("register %s: the user already exists on the homeserver", name)
+			return config.Credentials{}, "", fmt.Errorf("register %s: the user already exists on the homeserver", name)
 		}
-		return fmt.Errorf("register %s: %w", name, err)
+		return config.Credentials{}, "", fmt.Errorf("register %s: %w", name, err)
 	}
 	a.secrets.Add(resp.AccessToken)
 	if resp.AccessToken == "" || resp.UserID == "" {
-		return errors.New("register: homeserver returned no access token")
+		return config.Credentials{}, "", errors.New("register: homeserver returned no access token")
 	}
 	creds := config.Credentials{
 		UserID:      resp.UserID,
@@ -80,11 +99,10 @@ func cmdRegister(ctx context.Context, a *App, args []string) (err error) {
 		Homeserver:  mx.URL,
 	}
 	if err := config.WriteCredentials(f, creds); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+		return config.Credentials{}, "", fmt.Errorf("write %s: %w", path, err)
 	}
 	written = true
-	a.printf("registered %s (device %s)\ncredentials: %s (0600)\n", resp.UserID, resp.DeviceID, path)
-	return nil
+	return creds, path, nil
 }
 
 // cmdWhoami: a2a whoami

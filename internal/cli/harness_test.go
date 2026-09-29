@@ -28,6 +28,8 @@ type env struct {
 	configure func(*App)
 	// now, when set, is every App's clock (hook rate-limit tests).
 	now func() time.Time
+	// leaseTTL, when set, replaces the lease TTL (sequentialSessions).
+	leaseTTL time.Duration
 }
 
 type result struct {
@@ -68,6 +70,11 @@ func (e *env) writeCred(name, uid, tok string, mode os.FileMode) {
 	os.Chmod(path, mode)
 }
 
+// sequentialSessions makes every lease lapse at once: the sessions of a test
+// that exercises per-session doorbell state take turns instead of being
+// refused as a second live session (the lease itself: lease_test.go).
+func (e *env) sequentialSessions() { e.leaseTTL = -time.Nanosecond }
+
 func (e *env) paths() config.Paths { return config.Paths{Base: e.dir} }
 
 // run executes one a2a invocation in-process.
@@ -94,6 +101,7 @@ func (e *env) runCtx(ctx context.Context, args ...string) result {
 	if e.now != nil {
 		a.Now = e.now
 	}
+	a.leaseTTL = e.leaseTTL
 	if e.configure != nil {
 		e.configure(a)
 	}

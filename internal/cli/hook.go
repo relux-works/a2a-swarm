@@ -231,6 +231,12 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fail(err)
 		return
 	}
+	if ev.arg == "session-start" {
+		// The session's own a2a commands then hold the same lease as its hooks.
+		if err := a.exportSessionID(in.SessionID); err != nil {
+			fail(err)
+		}
+	}
 	budget := hookBudget
 	if a.hookBudget > 0 {
 		budget = a.hookBudget
@@ -304,6 +310,11 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 		return nil // kill switch: no network, no output
 	}
 	deadline, _ := ctx.Deadline()
+	// One live session per identity: while another session's lease is live
+	// this hook stays quiet (one stderr line, exit 0).
+	if err := a.acquireLease(s, in.SessionID, deadline); err != nil {
+		return err
+	}
 	stop := ev.arg == "stop"
 	key := hookSessionKey(in.SessionID)
 	if stop && in.StopHookActive && st.HookBlocks(key) >= hookGuardMax {
