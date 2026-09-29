@@ -333,8 +333,14 @@ func (s *session) getSubs(ctx context.Context) (SubList, error) {
 // changed the subscriptions they are written back to account data; the local
 // state is saved only after that write succeeded.
 func (s *session) updateSubs(ctx context.Context, fn func(st *config.State, list *SubList) (bool, error)) (config.State, SubList, error) {
+	return s.updateSubsBy(ctx, time.Time{}, fn)
+}
+
+// updateSubsBy is updateSubs with a bounded wait for the state lock when
+// deadline is set (hooks); the zero deadline blocks.
+func (s *session) updateSubsBy(ctx context.Context, deadline time.Time, fn func(st *config.State, list *SubList) (bool, error)) (config.State, SubList, error) {
 	var list SubList
-	st, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	st, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(st *config.State) error {
 		var err error
 		if list, err = s.getSubs(ctx); err != nil {
 			return err

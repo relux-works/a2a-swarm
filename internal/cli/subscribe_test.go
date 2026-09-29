@@ -319,8 +319,8 @@ func TestSubSubjectScopedIgnoresUnrelated(t *testing.T) {
 
 // Proves --until-kind delivers matching events until the first one of that
 // kind, delivers that closing event, drops later matches of the same batch,
-// and removes the subscription when the batch is acknowledged, so nothing
-// further is delivered.
+// and removes the subscription when the closing event is persisted, so
+// nothing further is delivered.
 func TestSubUntilKindClosesAfterFirstClosingEvent(t *testing.T) {
 	e, room := subWorld(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -333,8 +333,11 @@ func TestSubUntilKindClosesAfterFirstClosingEvent(t *testing.T) {
 	out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "sub #proj "+closing)
 	tuitestkit.NotContainsStr(t, out, late)
-	if n := len(e.serverSubs("alice").Subs); n != 1 {
-		t.Fatalf("sub removed before the ack: %d left", n)
+	// The subscription closes once its closing event is durable in the mailbox
+	// (the old code waited for the ack of the wait batch, the implicit ack of
+	// defect 1 in research/waking-sessions-converged.md).
+	if n := len(e.serverSubs("alice").Subs); n != 0 {
+		t.Fatalf("sub kept after its closing event was persisted: %d left", n)
 	}
 	e.hs.inject(room, "@bob:test.local", msg("BUG-1 still?", nil))
 	if r := e.as("alice", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {

@@ -169,19 +169,25 @@ func TestWaitLearnsThreadsFromSync(t *testing.T) {
 	tuitestkit.ContainsStr(t, r.stdout, "thread #proj "+id)
 }
 
-// Proves --room restricts which rooms can wake me.
+// Proves --room restricts which rooms can wake me, without losing what it
+// filters out: the lobby mention does not wake a `--room proj` wait, but it is
+// in the mailbox, so a later wait that includes the lobby prints it (the old
+// wait moved the shared cursor past it and it was lost), and the proj mention
+// follows.
 func TestWaitRoomFilter(t *testing.T) {
 	e, room := world(t)
 	lobby := "!lobbyRoomID"
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
-	e.hs.inject(lobby, "@bob:test.local", msg("@alice:test.local in lobby", nil))
+	lid := e.hs.inject(lobby, "@bob:test.local", msg("@alice:test.local in lobby", nil))
 	r := e.as("alice", "wait", "--room", "proj", "--timeout", "60ms").ok(t)
 	if r.stdout != "timeout\n" {
 		t.Fatalf("filtered room woke wait: %q", r.stdout)
 	}
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local in proj", nil))
 	r = e.as("alice", "wait", "--room", "#proj", "--room", "lobby", "--timeout", "2s").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, id)
+	tuitestkit.ContainsStr(t, r.stdout, "mention #lobby "+lid)
+	r = e.as("alice", "wait", "--room", "#proj", "--timeout", "2s").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "mention #proj "+id)
 }
 
 // Proves doorbell lines never carry more than 200 characters of body, never

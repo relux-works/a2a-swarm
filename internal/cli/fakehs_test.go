@@ -50,6 +50,10 @@ type fakeHS struct {
 	seq        int
 	txns       map[string]string // user|room|txn -> event id (send idempotency)
 	syncLimit  int               // per-room timeline limit in /sync (0 = 100, like the real filter)
+	// historyFloor, when > 0, is the index (in a room's messages) below which
+	// /messages cannot page (a purged history): it keeps returning an empty
+	// chunk with the same end token.
+	historyFloor int
 	// accountData is global account data: user id -> type -> content.
 	accountData map[string]map[string]json.RawMessage
 	// liveClock stamps events with the wall clock (strictly increasing ms)
@@ -607,6 +611,9 @@ func (hs *fakeHS) messages(w http.ResponseWriter, r *http.Request, u string) {
 	start := end - limit
 	if start < 0 {
 		start = 0
+	}
+	if hs.historyFloor > 0 && start < hs.historyFloor {
+		start = min(hs.historyFloor, end)
 	}
 	// "to" is a sync token sN: stop at events at or before stream position N.
 	to := -1

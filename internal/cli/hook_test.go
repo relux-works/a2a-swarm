@@ -172,19 +172,18 @@ func TestHookDoorbellLengthCap(t *testing.T) {
 	}
 }
 
-// Proves the doorbell acknowledges nothing (ring, cursor and pending batch
-// unchanged after it rang), and that `a2a inbox` prints the events inside the
-// untrusted frame and acknowledges exactly them: the cursor moves, a second
-// inbox prints "no new peer events", and a new session's hook prints nothing.
+// Proves the doorbell receipts nothing (the events are persisted in the
+// mailbox and stay unreceived after it rang), and that `a2a inbox` prints the
+// events inside the untrusted frame and receipts exactly them: a second inbox
+// prints "no new peer events", and a new session's hook prints nothing.
 func TestHookDoesNotAckInboxDoes(t *testing.T) {
 	e, room := world(t)
 	e.hook("alice", "stop", `{}`).ok(t)
-	cursor := e.state("alice").NextBatch
 	to := e.hs.inject(room, "@bob:test.local", toMsg("bob", "question", "can you review PR#3?"))
 	men := e.hs.inject(room, "@bob:test.local", ping(1))
 	bellContext(t, e.hook("alice", "prompt", `{"session_id":"s1"}`).ok(t).stdout)
-	if st := e.state("alice"); st.IsAcked(to) || st.IsAcked(men) || st.NextBatch != cursor || st.Pending != nil {
-		t.Fatalf("the doorbell acknowledged: %+v", st)
+	if len(e.mailbox("alice").Pending()) != 2 || e.received("alice", to) || e.received("alice", men) {
+		t.Fatal("the doorbell receipted, or the events are not in the mailbox")
 	}
 	out := e.as("alice", "inbox").ok(t).stdout
 	lines := tuitestkit.LinesFromStr(out)
@@ -193,9 +192,8 @@ func TestHookDoesNotAckInboxDoes(t *testing.T) {
 		!strings.Contains(out, "--- event 2/2: mention from=bob room=#proj kind=- id="+men+"\n  | @alice:test.local ping 1\n") {
 		t.Fatalf("inbox = %q", out)
 	}
-	st := e.state("alice")
-	if !st.IsAcked(to) || !st.IsAcked(men) || st.NextBatch == cursor || st.Pending != nil {
-		t.Fatalf("inbox did not acknowledge what it printed: %+v", st)
+	if !e.received("alice", to) || !e.received("alice", men) || len(e.mailbox("alice").Pending()) != 0 {
+		t.Fatal("inbox did not receipt what it printed")
 	}
 	if r := e.as("alice", "inbox").ok(t); r.stdout != "no new peer events\n" {
 		t.Fatalf("second inbox = %q", r.stdout)
@@ -205,22 +203,22 @@ func TestHookDoesNotAckInboxDoes(t *testing.T) {
 	}
 }
 
-// Proves at-least-once for inbox: a crash after the write but before the
-// acknowledgement (test hook) fails the command and leaves the events
-// unacknowledged and the cursor unmoved, so the next inbox prints them again;
+// Proves at-least-once for inbox (crash between the inbox write and its
+// receipt): a crash after the write but before the receipt (test hook) fails
+// the command and leaves the event unreceived in the mailbox (the cursor has
+// moved: the event was persisted first), so the next inbox prints it again;
 // after that successful inbox a third prints nothing.
 func TestInboxRedeliversAfterCrashBeforeAck(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "inbox").ok(t)
-	cursor := e.state("alice").NextBatch
 	id := e.hs.inject(room, "@bob:test.local", ping(1))
 	e.configure = func(a *App) { a.afterPrint = func() error { return errors.New("killed") } }
 	r := e.as("alice", "inbox").failsWith(t, ExitError, "killed")
 	e.configure = nil
 	tuitestkit.ContainsStr(t, r.stdout, id)
 	tuitestkit.ContainsStr(t, r.stderr, "nothing was acknowledged")
-	if st := e.state("alice"); st.IsAcked(id) || st.NextBatch != cursor || st.Pending != nil {
-		t.Fatalf("acknowledged before the write completed: %+v", st)
+	if _, ok := e.pendingEntry("alice", id); !ok || e.received("alice", id) {
+		t.Fatal("received before the write completed")
 	}
 	tuitestkit.ContainsStr(t, e.as("alice", "inbox").ok(t).stdout, "id="+id)
 	if r := e.as("alice", "inbox").ok(t); r.stdout != "no new peer events\n" {
@@ -266,13 +264,12 @@ func TestInboxFrameCannotBeClosedByBody(t *testing.T) {
 }
 
 // Proves inbox bounds: --limit 2 of 3 events prints 2, says "(1 more pending",
-// acknowledges only those and keeps the cursor, and the next inbox prints the
-// third; a 2500-character body is cut at 2000 with a marker; --json prints one
+// receipts only those (the third stays in the mailbox), and the next inbox
+// prints the third; a 2500-character body is cut at 2000 with a marker; --json prints one
 // EventRecord per event with the body (and no frame).
 func TestInboxLimitTruncationAndJSON(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "inbox").ok(t)
-	cursor := e.state("alice").NextBatch
 	a := e.hs.inject(room, "@bob:test.local", ping(1))
 	b := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local "+strings.Repeat("y", 2482), nil))
 	c := e.hs.inject(room, "@bob:test.local", ping(3))
@@ -282,8 +279,8 @@ func TestInboxLimitTruncationAndJSON(t *testing.T) {
 	tuitestkit.NotContainsStr(t, out, "id="+c)
 	tuitestkit.ContainsStr(t, out, inboxIndent+"[truncated: 500 more characters; full text: a2a read #proj --event "+b+"]\n")
 	tuitestkit.ContainsStr(t, out, inboxEnd+"\n(1 more pending: run a2a inbox again)\n")
-	if st := e.state("alice"); !st.IsAcked(b) || st.IsAcked(c) || st.NextBatch != cursor {
-		t.Fatalf("after --limit 2: %+v", st)
+	if _, ok := e.pendingEntry("alice", c); !e.received("alice", b) || e.received("alice", c) || !ok {
+		t.Fatal("--limit 2 receipted the wrong entries")
 	}
 	d := e.hs.inject(room, "@bob:test.local", toMsg("bob", "answer", "line1\nline2"))
 	out = e.as("alice", "inbox", "--json").ok(t).stdout
@@ -295,8 +292,8 @@ func TestInboxLimitTruncationAndJSON(t *testing.T) {
 		t.Fatalf("--json = %q", out)
 	}
 	tuitestkit.NotContainsStr(t, out, inboxBegin)
-	if st := e.state("alice"); !st.IsAcked(d) || st.NextBatch == cursor {
-		t.Fatalf("--json did not acknowledge: %+v", st)
+	if !e.received("alice", d) {
+		t.Fatal("--json did not receipt")
 	}
 }
 
@@ -311,7 +308,7 @@ func TestInboxUsage(t *testing.T) {
 	for _, args := range [][]string{{"--limit", "0"}, {"--limit", "51"}, {"--limit", "x"}, {"extra"}} {
 		e.as("alice", append([]string{"inbox"}, args...)...).failsWith(t, ExitUsage, "inbox")
 	}
-	if len(e.hs.Calls()) != calls || e.state("alice").IsAcked(id) {
+	if len(e.hs.Calls()) != calls || e.received("alice", id) {
 		t.Fatal("a usage error contacted the server or acknowledged")
 	}
 	e.as("alice", "inbox", "--limit", "50", "--json").ok(t)
@@ -464,9 +461,13 @@ func TestHookNeverRingsUnrelatedOrOwn(t *testing.T) {
 	}
 }
 
-// Proves a concurrent wait and inbox never print the same event twice, in
-// both race directions (the shared ring and pending batch), and that a
-// doorbell racing a wait neither prints nor acknowledges what the wait took.
+// Proves a concurrent wait and inbox never lose or double-receipt an event
+// in either race direction: when inbox wins, it receipts the event and the
+// wait does not print it; when a wait wins, it only marks the event shown, so
+// inbox still prints and receipts it (the old test asserted the opposite,
+// "inbox prints nothing after a wait printed": that was defect 1 of
+// research/waking-sessions-converged.md, a wait consuming for the model), and
+// a later inbox and hook find nothing.
 func TestInboxAndWaitNeverDuplicate(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -488,7 +489,7 @@ func TestInboxAndWaitNeverDuplicate(t *testing.T) {
 	e.configure = nil
 	tuitestkit.ContainsStr(t, inner.stdout, "id="+first)
 	if w.stdout != "timeout\n" {
-		t.Fatalf("wait printed what inbox printed: %q", w.stdout)
+		t.Fatalf("wait printed what inbox received: %q", w.stdout)
 	}
 
 	fired.Store(false)
@@ -497,14 +498,14 @@ func TestInboxAndWaitNeverDuplicate(t *testing.T) {
 	h := e.as("alice", "inbox").ok(t)
 	e.configure = nil
 	tuitestkit.ContainsStr(t, inner.stdout, "mention #proj "+second)
-	if h.stdout != "no new peer events\n" {
-		t.Fatalf("inbox printed what the wait printed: %q", h.stdout)
+	if strings.Count(h.stdout, "--- event ") != 1 || !strings.Contains(h.stdout, "id="+second) {
+		t.Fatalf("inbox did not print what the wait only showed: %q", h.stdout)
 	}
 	if r := e.as("alice", "inbox").ok(t); r.stdout != "no new peer events\n" {
 		t.Fatalf("printed again: %q", r.stdout)
 	}
 	if r := e.hook("alice", "stop", `{}`).ok(t); r.stdout != "" {
-		t.Fatalf("rang for delivered events: %q", r.stdout)
+		t.Fatalf("rang for received events: %q", r.stdout)
 	}
 }
 
@@ -529,8 +530,8 @@ func TestHookFailuresAreSilent(t *testing.T) {
 			t.Fatalf("hook failure broke the contract: %+v", r)
 		}
 	}
-	if st := e.state("alice"); st.IsAcked(id) || len(st.HookSessions) != 0 {
-		t.Fatalf("acknowledged or rang on failure: %+v", st)
+	if st := e.state("alice"); e.received("alice", id) || len(st.HookSessions) != 0 {
+		t.Fatalf("receipted or rang on failure: %+v", st)
 	}
 	e.hs.mu.Lock()
 	delete(e.hs.failures, "GET /_matrix/client/v3/sync")

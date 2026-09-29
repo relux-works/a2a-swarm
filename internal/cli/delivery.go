@@ -5,41 +5,90 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
-// Delivery is at least once (protocol rule 10). The local state holds one
-// committed cursor (next_batch) plus the pending batch: `wait` prints a batch
-// and only then records it as pending; the cursor moves past it when the batch
-// is acknowledged (by the next `wait`, `watch`, or `a2a ack`). A wait that dies
-// before the pending batch was saved leaves the cursor where it was, so the
-// batch is delivered again. Acknowledged event ids go into a bounded ring and
-// are never delivered twice.
+// Delivery is at least once (protocol rule 10), with one durable boundary per
+// agent: the mailbox (config.Mailbox, state/<name>.mailbox.jsonl).
+//
+//   - Persist before advance. Every consumer (wait, watch, inbox, the hooks)
+//     syncs from the one cursor, classifies the batch (backfill pages drop
+//     irrelevant events as they arrive), appends the relevant events, invites
+//     and gap records to the mailbox, fsyncs it, and only then saves the
+//     cursor. A crash in between re-syncs the batch; the mailbox deduplicates
+//     it by event id.
+//   - Receipts on pull. An entry leaves the mailbox only by a receipt: `a2a
+//     inbox` records one for exactly the entries it printed, after the write;
+//     `a2a ack <id...>|all-shown` records one explicitly. wait and watch mark
+//     what they printed as shown (so the next wait blocks for something new)
+//     and receipt nothing; the hooks ring a doorbell and receipt nothing.
+//   - Gaps are surfaced. A backfill that cannot reach the previous position
+//     appends a gap record, which inbox, wait, watch and the doorbell report.
 
-// waitItem is one doorbell event in both output forms. id is the event id
-// ("" for an invite, which has none and cannot be acknowledged by id); ev is
-// the raw event (nil for an invite), which `a2a inbox` and the hook doorbell read.
+// waitItem is one mailbox entry in both output forms. id is the mailbox id
+// (the event id, or invite:/gap: ids); ev is the raw event (nil for an invite
+// or a gap), which `a2a inbox` and the hook doorbell read.
 type waitItem struct {
 	line string
 	rec  EventRecord
 	id   string
 	ev   *matrix.Event
+	gap  *config.MailEntry
 }
 
-func inviteItem(roomID string, state []matrix.Event, me, server string) waitItem {
-	room, inviter := inviteInfo(roomID, state, me, server)
-	rec := EventRecord{Type: "invite", RoomID: sanitizeLine(roomID), Sender: sanitizeLine(inviter)}
-	if room != roomID {
-		rec.Room = sanitizeLine(room)
+// gapText is the a2a-authored report of a gap entry (after "gap: ").
+func gapText(e config.MailEntry) string {
+	return "events between " + sanitizeLine(e.From) + " and " + sanitizeLine(e.To) + " could not be checked; read them with a2a read " + sanitizeLine(e.Label)
+}
+
+// itemOf renders one mailbox entry.
+func itemOf(e config.MailEntry, server string) waitItem {
+	switch e.Kind {
+	case config.MailInvite:
+		rec := EventRecord{Type: "invite", RoomID: sanitizeLine(e.Room), Sender: sanitizeLine(e.Sender)}
+		if e.Label != e.Room {
+			rec.Room = sanitizeLine(e.Label)
+		}
+		line := "invite " + e.Label + " " + e.Room
+		if e.Sender != "" {
+			line += " from=" + e.Sender
+		}
+		return waitItem{line: snippet(line, 400), rec: rec, id: e.ID}
+	case config.MailGap:
+		g := e
+		rec := EventRecord{Type: "gap", Room: sanitizeLine(e.Label), RoomID: sanitizeLine(e.Room), EventID: sanitizeLine(e.ID), Excerpt: "gap: " + gapText(e)}
+		return waitItem{line: sanitizeLine("gap "+e.Label+" "+e.ID) + ": " + gapText(e), rec: rec, id: e.ID, gap: &g}
 	}
-	return waitItem{line: inviteLine(roomID, state, me, server), rec: rec}
+	var ev matrix.Event
+	_ = json.Unmarshal(e.Event, &ev)
+	rec := eventRecord(e.Rel, e.Label, e.Room, ev, server, true)
+	rec.Sub = sanitizeLine(e.Sub)
+	return waitItem{line: eventLine(relevance(e.Rel), e.Label, ev, server, sanitizeLine(e.Sub)), rec: rec, id: e.ID, ev: &ev}
+}
+
+// itemsOf renders mailbox entries.
+func itemsOf(entries []config.MailEntry, server string) []waitItem {
+	out := make([]waitItem, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, itemOf(e, server))
+	}
+	return out
+}
+
+func itemIDs(items []waitItem) []string {
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.id)
+	}
+	return ids
 }
 
 // emit writes items (one line or one JSON object each) and flushes the
-// output. Any write error is returned: the caller must then not acknowledge.
+// output. Any write error is returned: the caller must then record nothing.
 func (a *App) emit(items []waitItem, asJSON bool) error {
 	for _, it := range items {
 		line := it.line
@@ -62,87 +111,36 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 	return nil
 }
 
-// batch is what one /sync response delivers.
+// batch is what one sync response adds to the mailbox.
 type batch struct {
-	items   []waitItem
-	events  []string          // delivered event ids
-	learned []string          // thread roots learned from my own events
-	close   []string          // --until-kind subscriptions closed by a delivered event
-	closeBy map[string]string // subscription id -> the event that closes it
-}
-
-// keep returns the batch restricted to the items for which keep is true;
-// events and closed subscriptions follow the kept items.
-func (b batch) keep(keep func(i int, it waitItem) bool) batch {
-	out := batch{learned: b.learned}
-	kept := map[string]bool{}
-	for i, it := range b.items {
-		if !keep(i, it) {
-			continue
-		}
-		out.items = append(out.items, it)
-		if it.id != "" {
-			out.events = append(out.events, it.id)
-			kept[it.id] = true
-		}
-	}
-	for _, id := range b.close {
-		if kept[b.closeBy[id]] {
-			if out.closeBy == nil {
-				out.closeBy = map[string]string{}
-			}
-			out.close = append(out.close, id)
-			out.closeBy[id] = b.closeBy[id]
-		}
-	}
-	return out
-}
-
-// undelivered drops what another consumer (a concurrent wait, watch or hook)
-// delivered since the batch was collected: ids in the acknowledged ring or in
-// the pending batch of cur. Callers hold the state lock, so the check and the
-// following write and acknowledgement are one step and no event is delivered twice.
-func (b batch) undelivered(cur config.State) batch {
-	pending := map[string]bool{}
-	if cur.Pending != nil {
-		for _, id := range cur.Pending.Events {
-			pending[id] = true
-		}
-	}
-	return b.keep(func(_ int, it waitItem) bool {
-		return it.id == "" || (!pending[it.id] && !cur.IsAcked(it.id))
-	})
-}
-
-// head returns the first n items of the batch.
-func (b batch) head(n int) batch {
-	return b.keep(func(i int, _ waitItem) bool { return i < n })
-}
-
-// mergePending records d as printed but unacknowledged. A pending batch that
-// a concurrent consumer saved meanwhile is kept: its events stay pending too.
-func mergePending(p *config.Pending, next string, d batch) *config.Pending {
-	if p == nil {
-		return &config.Pending{NextBatch: next, Events: d.events, CloseSubs: d.close}
-	}
-	out := &config.Pending{NextBatch: next, Events: append([]string(nil), p.Events...), CloseSubs: append([]string(nil), p.CloseSubs...)}
-	for _, id := range d.events {
-		if !contains(out.Events, id) {
-			out.Events = append(out.Events, id)
-		}
-	}
-	for _, id := range d.close {
-		if !contains(out.CloseSubs, id) {
-			out.CloseSubs = append(out.CloseSubs, id)
-		}
-	}
-	return out
+	entries []config.MailEntry
+	learned []string // thread roots learned from my own events
+	close   []string // --until-kind subscriptions closed by a persisted event
 }
 
 // deliveryFilter is the --room/--all selection of wait and watch.
 type deliveryFilter struct {
 	rooms map[string]bool // empty = every joined room
 	all   bool
+}
+
+// allRooms is the set of rooms whose every message is relevant (--all).
+func (f deliveryFilter) allRooms() map[string]bool {
+	if !f.all {
+		return nil
+	}
+	return f.rooms
+}
+
+// shows reports whether wait/watch with this filter prints e.
+func (f deliveryFilter) shows(e config.MailEntry) bool {
+	if e.Kind == config.MailInvite {
+		return true
+	}
+	if e.Rel == string(relAll) && !f.all {
+		return false
+	}
+	return len(f.rooms) == 0 || f.rooms[e.Room]
 }
 
 func (s *session) resolveFilter(ctx context.Context, rooms []string, all bool) (deliveryFilter, error) {
@@ -157,12 +155,22 @@ func (s *session) resolveFilter(ctx context.Context, rooms []string, all bool) (
 	return f, nil
 }
 
-// collectBatch classifies one sync response. st gains learned threads in memory.
-func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st *config.State, subs []Sub, f deliveryFilter, labels map[string]string) (batch, error) {
+// inviteEntry is the mailbox entry of a pending invite. Its id includes the
+// position the sync started from, so a re-synced batch deduplicates it.
+func inviteEntry(roomID, since string, state []matrix.Event, me, server string) config.MailEntry {
+	room, inviter := inviteInfo(roomID, state, me, server)
+	return config.MailEntry{ID: "invite:" + roomID + ":" + since, Kind: config.MailInvite, Room: roomID, Label: room, Sender: inviter}
+}
+
+// collectBatch classifies one sync response into mailbox entries. Backfill
+// keeps only candidates (my own events, thread replies, and what classify or
+// --all accepts) while it pages; they are classified oldest first. all is the
+// set of rooms whose every message counts (wait/watch --all).
+func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string) (batch, error) {
 	var b batch
 	me := s.creds.UserID
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
-		b.items = append(b.items, inviteItem(roomID, resp.Rooms.Invite[roomID].InviteState.Events, me, s.server))
+		b.entries = append(b.entries, inviteEntry(roomID, since, resp.Rooms.Invite[roomID].InviteState.Events, me, s.server))
 	}
 	byID := map[string]Sub{}
 	for _, sub := range subs {
@@ -173,12 +181,23 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 	// Iterate rooms in a stable order so output is deterministic.
 	for _, roomID := range sortedKeys(resp.Rooms.Join) {
 		jr := resp.Rooms.Join[roomID]
-		events, gap, err := s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch)
+		keep := func(ev matrix.Event) bool {
+			if ev.Type != "m.room.message" {
+				return false
+			}
+			if ev.Sender == me || ev.ThreadRoot() != "" || all[roomID] {
+				return true
+			}
+			rel, _, _ := classify(ev, roomID, me, s.name, st, subs)
+			return rel != ""
+		}
+		events, gap, err := s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
 		if err != nil {
 			return b, fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
 		}
-		if gap {
-			fmt.Fprintf(s.app.Stderr, "a2a: %s: more than %d events since the last wait; older ones were not checked\n", s.roomLabel(ctx, roomID, labels), maxBackfill)
+		if gap != nil {
+			b.entries = append(b.entries, config.MailEntry{ID: "gap:" + roomID + ":" + since, Kind: config.MailGap, Room: roomID,
+				Label: s.roomLabel(ctx, roomID, labels), From: gap.From, To: gap.To})
 		}
 		for _, ev := range events {
 			active := subs
@@ -190,19 +209,16 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 					}
 				}
 			}
-			rel, root, matched := classify(ev, roomID, me, s.name, *st, active)
+			rel, root, matched := classify(ev, roomID, me, s.name, st, active)
 			if root != "" {
 				b.learned = append(b.learned, root)
 				st.AddThread(root)
 			}
-			if rel == "" && f.all && f.rooms[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
+			if rel == "" && all[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
 				rel = relAll
 			}
-			if rel == "" || (len(f.rooms) > 0 && !f.rooms[roomID]) || seen[ev.EventID] {
+			if rel == "" || seen[ev.EventID] {
 				continue
-			}
-			if st.IsAcked(ev.EventID) {
-				continue // acknowledged before: never delivered twice
 			}
 			seen[ev.EventID] = true
 			h, _ := decodeHeader(ev.Message().A2A)
@@ -210,85 +226,43 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 				if sub := byID[id]; sub.UntilKind != "" && sub.UntilKind == h.Kind && !closed[id] {
 					closed[id] = true
 					b.close = append(b.close, id)
-					if b.closeBy == nil {
-						b.closeBy = map[string]string{}
-					}
-					b.closeBy[id] = ev.EventID
 				}
 			}
 			subID := ""
 			if rel == relSub {
 				subID = matched[0]
 			}
-			label := s.roomLabel(ctx, roomID, labels)
-			rec := eventRecord(string(rel), label, roomID, ev, s.server, true)
-			rec.Sub = sanitizeLine(subID)
-			raw := ev
-			b.items = append(b.items, waitItem{line: eventLine(rel, label, ev, s.server, sanitizeLine(subID)), rec: rec, id: ev.EventID, ev: &raw})
-			b.events = append(b.events, ev.EventID)
+			raw, err := json.Marshal(ev)
+			if err != nil {
+				return b, err
+			}
+			b.entries = append(b.entries, config.MailEntry{ID: ev.EventID, Kind: config.MailEvent, Room: roomID,
+				Label: s.roomLabel(ctx, roomID, labels), Rel: string(rel), Sub: subID, Sender: ev.Sender, TS: ev.OriginServerTS, Event: raw})
 		}
 	}
 	return b, nil
 }
 
-// startDelivery acknowledges any pending batch, removes the subscriptions it
-// closed and the expired ones, and returns the state to deliver from and the
-// live subscriptions.
-func (s *session) startDelivery(ctx context.Context, now time.Time) (config.State, SubList, error) {
-	return s.updateSubs(ctx, func(st *config.State, list *SubList) (bool, error) {
-		changed := false
-		if p := st.Ack(); p != nil && list.remove(p.CloseSubs...) {
-			changed = true
-		}
-		if len(list.pruneExpired(now)) > 0 {
-			changed = true
-		}
-		return changed, nil
-	})
-}
-
-// collectNow is the shared "what is pending for me right now" step of the
-// Claude Code hooks and the tmux bridge: one /sync from the committed cursor
-// with timeout 0 (no long poll), backfilled and classified exactly like wait
-// (collectBatch), minus what was already delivered (the acknowledged ring and
-// the pending batch). It writes nothing; st only gains learned threads in
-// memory. next is where the cursor moves once the whole batch was delivered.
-// Without a cursor it takes a position instead: the batch then holds only the
-// pending invites.
-func (s *session) collectNow(ctx context.Context, st *config.State, subs []Sub) (b batch, next string, err error) {
-	if st.NextBatch == "" {
-		resp, err := s.client.Sync(ctx, "", 0, initialFilter)
+// lockedDeliver runs fn under the state lock with the mailbox open, and saves
+// the state only when fn succeeds. When withSubs is set the subscription list
+// is held as well and the ids fn returns are removed from it (account data is
+// written before the state). A set deadline bounds the wait for the lock.
+func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSubs bool, fn func(cur *config.State, mb *config.Mailbox) (closeSubs []string, err error)) (config.State, error) {
+	run := func(cur *config.State) ([]string, error) {
+		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {
-			return b, "", err
+			return nil, err
 		}
-		for _, roomID := range sortedKeys(resp.Rooms.Invite) {
-			b.items = append(b.items, inviteItem(roomID, resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
-		}
-		return b, resp.NextBatch, nil
+		return fn(cur, mb)
 	}
-	resp, err := s.client.Sync(ctx, st.NextBatch, 0, syncFilter)
-	if err != nil {
-		return b, "", err
-	}
-	b, err = s.collectBatch(ctx, resp, st.NextBatch, st, subs, deliveryFilter{rooms: map[string]bool{}}, map[string]string{})
-	if err != nil {
-		return b, "", err
-	}
-	return b.undelivered(*st), resp.NextBatch, nil
-}
-
-// lockedDeliver runs fn under the state lock and saves the state only when fn
-// succeeds. When withSubs is set the subscription list is held as well and the
-// ids fn returns are removed from it (account data is written before the state).
-func (s *session) lockedDeliver(ctx context.Context, withSubs bool, fn func(cur *config.State) (closeSubs []string, err error)) (config.State, error) {
 	if !withSubs {
-		return config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-			_, err := fn(cur)
+		return config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
+			_, err := run(cur)
 			return err
 		})
 	}
-	st, _, err := s.updateSubs(ctx, func(cur *config.State, list *SubList) (bool, error) {
-		ids, err := fn(cur)
+	st, _, err := s.updateSubsBy(ctx, deadline, func(cur *config.State, list *SubList) (bool, error) {
+		ids, err := run(cur)
 		if err != nil {
 			return false, err
 		}
@@ -297,28 +271,136 @@ func (s *session) lockedDeliver(ctx context.Context, withSubs bool, fn func(cur 
 	return st, err
 }
 
-// takePosition is the very first run: it takes a sync position without
-// replaying history and reports pending invites. The position is saved only
-// after the invites were written. It reports whether anything was printed.
-func (a *App) takePosition(ctx context.Context, s *session, asJSON bool) (config.State, bool, error) {
-	resp, err := s.client.Sync(ctx, "", 0, initialFilter)
-	if err != nil {
-		return config.State{}, false, err
-	}
-	var items []waitItem
-	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
-		items = append(items, inviteItem(roomID, resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
-	}
-	if len(items) > 0 {
-		if err := a.emit(items, asJSON); err != nil {
-			return config.State{}, false, err
+// migrateLegacyDelivery moves a pre-mailbox acked ring into the receipt index
+// and drops a pre-mailbox pending batch (its events are behind the cursor, so
+// this sync puts them into the mailbox).
+func migrateLegacyDelivery(cur *config.State, mb *config.Mailbox) error {
+	if len(cur.LegacyAcked) > 0 {
+		if err := mb.AddReceived(cur.LegacyAcked); err != nil {
+			return err
 		}
 	}
-	st, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-		cur.NextBatch = resp.NextBatch
-		return nil
+	cur.LegacyAcked, cur.LegacyPending = nil, nil
+	return nil
+}
+
+// persist appends a collected batch to the mailbox (fsynced) and only then
+// moves the cursor from since to next; a cursor another consumer moved
+// meanwhile is left alone (its batch is in the mailbox too).
+func (s *session) persist(ctx context.Context, b batch, since, next string, deadline time.Time) (config.State, error) {
+	a := s.app
+	return s.lockedDeliver(ctx, deadline, len(b.close) > 0, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
+		if err := migrateLegacyDelivery(cur, mb); err != nil {
+			return nil, err
+		}
+		if a.beforeAppend != nil {
+			if err := a.beforeAppend(); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := mb.Append(b.entries); err != nil {
+			return nil, err
+		}
+		if a.afterAppend != nil {
+			if err := a.afterAppend(); err != nil {
+				return nil, err
+			}
+		}
+		for _, r := range b.learned {
+			cur.AddThread(r)
+		}
+		if cur.NextBatch == since {
+			cur.NextBatch = next
+		}
+		return b.close, nil
 	})
-	return st, len(items) > 0, err
+}
+
+// ingest classifies one sync response from since and persists it.
+func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time) (config.State, error) {
+	snap, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return snap, err
+	}
+	b, err := s.collectBatch(ctx, resp, since, snap, subs, all, map[string]string{})
+	if err != nil {
+		return snap, err
+	}
+	if s.app.beforeDeliver != nil {
+		s.app.beforeDeliver()
+	}
+	return s.persist(ctx, b, since, resp.NextBatch, deadline)
+}
+
+// takePosition is the very first run: it takes a sync position without
+// replaying history; pending invites go into the mailbox first.
+func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.State, error) {
+	resp, err := s.client.Sync(ctx, "", 0, initialFilter)
+	if err != nil {
+		return config.State{}, err
+	}
+	var b batch
+	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
+		b.entries = append(b.entries, inviteEntry(roomID, "", resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
+	}
+	return s.persist(ctx, b, "", resp.NextBatch, deadline)
+}
+
+// syncNow is the "bring the mailbox up to date" step of inbox and the hooks:
+// one /sync from the cursor with timeout 0 (no long poll), persisted like
+// wait's; the first run only takes a position.
+func (s *session) syncNow(ctx context.Context, st config.State, subs []Sub, deadline time.Time) (config.State, error) {
+	if st.NextBatch == "" {
+		return s.takePosition(ctx, deadline)
+	}
+	resp, err := s.client.Sync(ctx, st.NextBatch, 0, syncFilter)
+	if err != nil {
+		return st, err
+	}
+	return s.ingest(ctx, resp, st.NextBatch, subs, nil, deadline)
+}
+
+// startDelivery removes expired subscriptions and returns the state to
+// deliver from and the live subscriptions. It acknowledges nothing.
+func (s *session) startDelivery(ctx context.Context, now time.Time) (config.State, SubList, error) {
+	return s.updateSubs(ctx, func(st *config.State, list *SubList) (bool, error) {
+		return len(list.pruneExpired(now)) > 0, nil
+	})
+}
+
+// shownHint tells a wait/watch consumer how its entries leave the mailbox.
+const shownHint = "a2a: printed entries stay in the mailbox until received: run `a2a inbox`, or `a2a ack <ids>` / `a2a ack all-shown`"
+
+// showNew prints the mailbox entries that wait/watch has not shown yet and f
+// selects, one flushed write each, and marks them shown after the write, under
+// the state lock (so concurrent waits never print the same entry). It receipts
+// nothing. It returns how many it printed.
+func (a *App) showNew(ctx context.Context, s *session, f deliveryFilter, asJSON bool) (int, error) {
+	printed := 0
+	_, err := s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+		var items []waitItem
+		for _, e := range mb.Pending() {
+			if !e.Shown && f.shows(e) {
+				items = append(items, itemOf(e, s.server))
+			}
+		}
+		for _, it := range items {
+			if err := a.emit([]waitItem{it}, asJSON); err != nil {
+				return nil, fmt.Errorf("%w; nothing was marked shown, the entries stay in the mailbox and are printed again", err)
+			}
+			printed++
+		}
+		if len(items) == 0 {
+			return nil, nil
+		}
+		if a.afterPrint != nil {
+			if err := a.afterPrint(); err != nil {
+				return nil, fmt.Errorf("%w; nothing was marked shown, the entries stay in the mailbox and are printed again", err)
+			}
+		}
+		return nil, mb.MarkShown(itemIDs(items))
+	})
+	return printed, err
 }
 
 // cmdWait: a2a wait [--room R ...] [--all] [--timeout 25m|0] [--json]
@@ -350,7 +432,6 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	labels := map[string]string{}
 	var deadline time.Time
 	if *timeout > 0 {
 		deadline = a.Now().Add(*timeout)
@@ -360,12 +441,19 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	if st.NextBatch == "" {
-		var printed bool
-		if st, printed, err = a.takePosition(ctx, s, *asJSON); err != nil || printed {
+		if st, err = s.takePosition(ctx, time.Time{}); err != nil {
 			return err
 		}
 	}
 	for {
+		n, err := a.showNew(ctx, s, filter, *asJSON)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			fmt.Fprintln(a.Stderr, shownHint)
+			return nil
+		}
 		poll := maxPoll
 		if !deadline.IsZero() {
 			remaining := deadline.Sub(a.Now())
@@ -391,81 +479,64 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		b, err := s.collectBatch(ctx, resp, st.NextBatch, &st, subs.Subs, filter, labels)
-		if err != nil {
+		if st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}); err != nil {
 			return err
 		}
-		if a.beforeDeliver != nil {
-			a.beforeDeliver()
-		}
-		// Under the state lock: drop what a concurrent hook or watch delivered
-		// meanwhile, print, and only after a successful write record the batch
-		// as pending; the cursor moves past it when it is acknowledged.
-		printed, failed := false, false
-		next, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
-			for _, r := range b.learned {
-				cur.AddThread(r)
-			}
-			d := b.undelivered(*cur)
-			if len(d.items) == 0 {
-				cur.NextBatch = resp.NextBatch // nothing to deliver: the cursor may move directly
-				return nil
-			}
-			failed = true
-			if err := a.emit(d.items, *asJSON); err != nil {
-				return fmt.Errorf("%w; nothing was acknowledged, the next wait delivers this batch again", err)
-			}
-			printed = true
-			if a.afterPrint != nil {
-				if err := a.afterPrint(); err != nil {
-					return err
-				}
-			}
-			failed = false
-			cur.Pending = mergePending(cur.Pending, resp.NextBatch, d)
-			return nil
-		})
-		switch {
-		case err != nil && printed && !failed:
-			return fmt.Errorf("save pending batch: %w (it will be delivered again)", err)
-		case err != nil && !printed && !failed:
-			return fmt.Errorf("save wait state: %w", err)
-		case err != nil:
-			return err
-		case printed:
-			return nil
-		}
-		st = next
 	}
 }
 
-// cmdAck: a2a ack [all] commits the pending batch explicitly.
+const ackUsage = "usage: a2a ack <id...>|all-shown  (ids as wait/watch/inbox print them; all-shown: every entry wait or watch printed)"
+
+// cmdAck: a2a ack <id...>|all-shown records receipts in the mailbox.
 func cmdAck(ctx context.Context, a *App, args []string) error {
-	if len(args) > 1 || (len(args) == 1 && args[0] != "all") {
-		return usagef("usage: a2a ack [all]")
+	allShown := len(args) == 1 && args[0] == "all-shown"
+	if len(args) == 0 {
+		return usagef("%s", ackUsage)
+	}
+	if !allShown {
+		for _, id := range args {
+			if !strings.HasPrefix(id, "$") && !strings.HasPrefix(id, "invite:") && !strings.HasPrefix(id, "gap:") {
+				return usagef("%q is not a mailbox id; %s", sanitizeLine(id), ackUsage)
+			}
+		}
 	}
 	s, err := a.session()
 	if err != nil {
 		return err
 	}
-	var p *config.Pending
-	if _, _, err := s.updateSubs(ctx, func(st *config.State, list *SubList) (bool, error) {
-		p = st.Ack()
-		return p != nil && list.remove(p.CloseSubs...), nil
+	n, asked := 0, 0
+	if _, err := s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+		ids := args
+		if allShown {
+			ids = nil
+			for _, e := range mb.Pending() {
+				if e.Shown {
+					ids = append(ids, e.ID)
+				}
+			}
+		}
+		asked = len(ids)
+		var err error
+		n, err = mb.Receive(ids)
+		return nil, err
 	}); err != nil {
 		return err
 	}
-	if p == nil {
+	switch {
+	case asked == 0:
 		a.printf("nothing pending\n")
-		return nil
+	case n < asked:
+		a.printf("acked %d events (%d not pending)\n", n, asked-n)
+	default:
+		a.printf("acked %d events\n", n)
 	}
-	a.printf("acked %d events\n", len(p.Events))
 	return nil
 }
 
-// cmdWatch: a2a watch [--room R ...] [--all] [--json] streams deliveries until
-// interrupted: one line (or JSON object) per event, flushed each, and the
-// cursor is committed right after each batch was fully written.
+// cmdWatch: a2a watch [--room R ...] [--all] [--json] streams new mailbox
+// entries until interrupted: one line (or JSON object) per entry, flushed
+// each, marked shown after the write. It receipts nothing: a reader that dies
+// after the write loses nothing, `a2a inbox` still prints the entries.
 func cmdWatch(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("watch")
 	var rooms stringList
@@ -496,17 +567,19 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		}
 		return err
 	}
-	labels := map[string]string{}
 	st, _, err := s.startDelivery(ctx, a.Now())
 	if err != nil {
 		return stopped(err)
 	}
 	if st.NextBatch == "" {
-		if st, _, err = a.takePosition(ctx, s, *asJSON); err != nil {
+		if st, err = s.takePosition(ctx, time.Time{}); err != nil {
 			return stopped(err)
 		}
 	}
 	for {
+		if _, err := a.showNew(ctx, s, filter, *asJSON); err != nil {
+			return err
+		}
 		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, syncFilter)
 		if err != nil {
 			return stopped(err)
@@ -515,33 +588,8 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return stopped(err)
 		}
-		b, err := s.collectBatch(ctx, resp, st.NextBatch, &st, subs.Subs, filter, labels)
-		if err != nil {
+		if st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}); err != nil {
 			return stopped(err)
-		}
-		// Under the state lock: skip what a concurrent consumer delivered, print
-		// each item, then commit the cursor and the delivered ids.
-		written := true
-		st, err = s.lockedDeliver(ctx, len(b.close) > 0, func(cur *config.State) ([]string, error) {
-			d := b.undelivered(*cur)
-			for _, it := range d.items {
-				if err := a.emit([]waitItem{it}, *asJSON); err != nil {
-					written = false
-					return nil, fmt.Errorf("%w; the batch was not committed and will be delivered again", err)
-				}
-			}
-			cur.NextBatch = resp.NextBatch
-			cur.AddAcked(d.events...)
-			for _, r := range b.learned {
-				cur.AddThread(r)
-			}
-			return d.close, nil
-		})
-		if err != nil {
-			if !written {
-				return err
-			}
-			return stopped(fmt.Errorf("commit watch cursor: %w", err))
 		}
 	}
 }

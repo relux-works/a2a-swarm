@@ -11,7 +11,7 @@ import (
 // object per line by `read --json` and `wait --json`. Text fields are
 // sanitized exactly like the human-readable output.
 type EventRecord struct {
-	Type    string   `json:"type"` // read: "topic" or "message"; wait/watch: "to", "mention", "sub", "thread", "all" or "invite"
+	Type    string   `json:"type"` // read: "topic" or "message"; wait/watch/inbox: "to", "mention", "sub", "thread", "all", "invite" or "gap"
 	Room    string   `json:"room,omitempty"`
 	RoomID  string   `json:"room_id"`
 	EventID string   `json:"event_id,omitempty"`

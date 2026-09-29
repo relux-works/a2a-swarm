@@ -56,3 +56,6 @@ func unlocker(f *os.File) func() {
 		f.Close()
 	}
 }
+
+// openNoFollow makes an open fail on a symlink.
+const openNoFollow = syscall.O_NOFOLLOW

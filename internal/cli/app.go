@@ -47,12 +47,13 @@ type App struct {
 	sess   *session
 	served atomic.Int64
 
-	// afterPrint, when set (tests only), runs after `wait` printed a batch and
-	// before it saves the pending batch: an error simulates a crash there.
+	// afterPrint, when set (tests only), runs after wait, watch, inbox or a hook
+	// printed and before it records that (shown, receipt, rung set): an error
+	// simulates a crash there.
 	afterPrint func() error
-	// beforeDeliver, when set (tests only), runs after a wait or hook collected
-	// its batch and before it takes the state lock to deliver it: tests use it
-	// to let a concurrent consumer win the race.
+	// beforeDeliver, when set (tests only), runs after a consumer synced and
+	// before it takes the state lock to persist and print: tests use it to let
+	// a concurrent consumer win the race.
 	beforeDeliver func()
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
@@ -61,8 +62,12 @@ type App struct {
 	// stdinTTY reports whether stdin is an interactive terminal, which --human
 	// requires (nil: stdinIsTerminal on os.Stdin; tests override it).
 	stdinTTY func() bool
-	// tmux runs tmux for `bridge tmux` (nil: the real tmux binary).
-	tmux tmuxRunner
+	// beforeAppend and afterAppend, when set (tests only), run right before and
+	// right after a sync batch is appended to the mailbox (before the cursor
+	// moves): an error simulates a crash there.
+	beforeAppend, afterAppend func() error
+	// backfillPages, when set (tests only), replaces maxBackfillPages.
+	backfillPages int
 }
 
 // NewApp returns an App bound to the real process environment.
@@ -108,12 +113,11 @@ func commands() []command {
 		{"unpin", "unpin <room> <$event>                unpin an event", cmdUnpin},
 		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json]   print messages, oldest first", cmdRead},
 		{"archive", "archive <room|all> [--dir archive] [--json-index]   deterministic markdown export of room history", cmdArchive},
-		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until something is addressed to me or subscribed (acks the previous batch)", cmdWait},
-		{"watch", "watch [--room R ...] [--all] [--json]   stream deliveries until interrupted, committing after each batch", cmdWatch},
-		{"inbox", "inbox [--limit N] [--json]           print pending peer events inside an untrusted-data frame and acknowledge them (N <= 50)", cmdInbox},
+		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until a new mailbox entry is addressed to me or subscribed (acknowledges nothing)", cmdWait},
+		{"watch", "watch [--room R ...] [--all] [--json]   stream new mailbox entries until interrupted (acknowledges nothing)", cmdWatch},
+		{"inbox", "inbox [--limit N] [--json]           print unreceived mailbox entries inside an untrusted-data frame, then receipt exactly them (N <= 50)", cmdInbox},
 		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude) and Codex (R=codex) hooks: a doorbell (counts only) in the session", cmdHook},
-		{"bridge", "bridge tmux --agent NAME --pane T --program P --empty-prompt RE [--idle 60s] [--interval 30s] [--poll 10s] [--once]   wake an idle tmux pane", cmdBridge},
-		{"ack", "ack [all]                           acknowledge the pending batch of the last wait", cmdAck},
+		{"ack", "ack <id...>|all-shown               receipt mailbox entries (all-shown: every entry wait/watch printed)", cmdAck},
 		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},
 		{"subscribe", "subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]   add a runtime subscription", cmdSubscribe},

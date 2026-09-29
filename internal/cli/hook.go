@@ -28,11 +28,13 @@ import (
 // with counts, relevance types, kinds from the fixed list, and sender names
 // that are verified members of the room on our server (doorbellText). The
 // content is PULLED by the agent with `a2a inbox`, which prints it as tool
-// output inside an untrusted-data frame and acknowledges it.
+// output inside an untrusted-data frame and receipts it.
 //
-// The doorbell does not acknowledge anything. It records, per session, which
-// events it announced (the rung set), and rings again only when an un-rung
-// event is pending. The Stop hook also has a loop guard (hookGuardMax
+// The doorbell receipts nothing. It persists what the sync covers into the
+// durable mailbox (like every consumer, before the cursor moves), counts the
+// unreceived entries (gap records included), records per session which
+// entries it announced (the rung set), and rings again only when an un-rung
+// entry is pending. The Stop hook also has a loop guard (hookGuardMax
 // consecutive blocks) and a rate limit (one block per hookStopEvery).
 //
 // Both runtimes run the same doorbell; --runtime claude|codex selects only the
@@ -286,8 +288,9 @@ func hookSessionKey(id string) string {
 }
 
 // hookDeliver rings the doorbell for what is pending for this agent: it
-// collects like wait, drops what this session already rang, and prints the
-// fixed template. It acknowledges nothing; only `a2a inbox` does.
+// brings the mailbox up to date like inbox, skips what this session already
+// rang, and prints the fixed template for the unreceived entries. It receipts
+// nothing; only `a2a inbox` and `a2a ack` do.
 func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in hookInput) error {
 	s, err := a.session()
 	if err != nil {
@@ -314,7 +317,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 		fmt.Fprintf(a.Stderr, "a2a hook stop: %d consecutive blocks in this session; letting it stop, run `a2a inbox` to read what is pending\n", hookGuardMax)
 		return nil
 	}
-	list, err := s.getSubs(ctx) // read only: no acknowledgement, no pruning
+	list, err := s.getSubs(ctx) // read only: no pruning
 	if err != nil {
 		return err
 	}
@@ -325,28 +328,23 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 			subs = append(subs, sub)
 		}
 	}
-	b, next, err := s.collectNow(ctx, &st, subs)
-	if err != nil {
+	// Persist what the sync covers (the doorbell never receipts), then ring for
+	// the unreceived mailbox entries.
+	if _, err := s.syncNow(ctx, st, subs, deadline); err != nil {
 		return err
 	}
-	members := s.verifySenders(ctx, b.items)
-	if a.beforeDeliver != nil {
-		a.beforeDeliver()
+	var members map[string]bool
+	if mb, err := config.OpenMailbox(s.paths, s.name); err == nil {
+		members = s.verifySenders(ctx, itemsOf(mb.Pending(), s.server))
 	}
 	limited := false
-	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(cur *config.State) error {
+	_, err = s.lockedDeliver(ctx, deadline, false, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
 		if cur.HooksPaused {
-			return nil
+			return nil, nil
 		}
-		for _, r := range b.learned {
-			cur.AddThread(r)
-		}
-		d := b.undelivered(*cur)
-		if len(d.items) == 0 {
-			cur.NextBatch = next // nothing pending: the cursor may move directly
-		}
+		items := itemsOf(mb.Pending(), s.server)
 		h := cur.HookSession(key)
-		keys := rungKeys(d.items)
+		keys := rungKeys(items)
 		fresh := false
 		for _, k := range keys {
 			fresh = fresh || !contains(h.Rung, k)
@@ -357,31 +355,31 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 			}
 			h.Rung = keys // forget what is no longer pending
 			cur.PutHookSession(h)
-			return nil
+			return nil, nil
 		}
 		if stop && h.LastBlock != 0 {
 			if since := now.Sub(time.Unix(h.LastBlock, 0)); since >= 0 && since < hookStopEvery {
 				limited = true
 				h.Blocks = 0
 				cur.PutHookSession(h)
-				return nil
+				return nil, nil
 			}
 		}
-		out, err := hookOutput(rt, ev, doorbellOf(d.items, s.server, members))
+		out, err := hookOutput(rt, ev, doorbellOf(items, s.server, members))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := io.WriteString(a.Stdout, out); err != nil {
-			return fmt.Errorf("write output: %w", err)
+			return nil, fmt.Errorf("write output: %w", err)
 		}
 		if f, ok := a.Stdout.(interface{ Flush() error }); ok {
 			if err := f.Flush(); err != nil {
-				return fmt.Errorf("flush output: %w", err)
+				return nil, fmt.Errorf("flush output: %w", err)
 			}
 		}
 		if a.afterPrint != nil {
 			if err := a.afterPrint(); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		// Only after a successful write: remember what this session was told.
@@ -394,7 +392,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 			h.Blocks, h.LastBlock = n+1, now.Unix()
 		}
 		cur.PutHookSession(h)
-		return nil
+		return nil, nil
 	})
 	if err == nil && limited {
 		fmt.Fprintf(a.Stderr, "a2a hook stop: this session was blocked less than %s ago; letting it stop, run `a2a inbox` to read what is pending\n", hookStopEvery)
@@ -402,19 +400,8 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	return err
 }
 
-// rungKeys names the pending items for the rung set: the event id, or
-// "invite:<room id>" for an invite (which has no event id).
-func rungKeys(items []waitItem) []string {
-	keys := make([]string, 0, len(items))
-	for _, it := range items {
-		k := it.id
-		if k == "" {
-			k = "invite:" + it.rec.RoomID
-		}
-		keys = append(keys, k)
-	}
-	return keys
-}
+// rungKeys names the pending items for the rung set: their mailbox ids.
+func rungKeys(items []waitItem) []string { return itemIDs(items) }
 
 // agentNameRE is the only sender name shape the doorbell prints.
 var agentNameRE = regexp.MustCompile(`^[a-z0-9._=-]{1,64}$`)
@@ -473,6 +460,7 @@ type doorbell struct {
 	names   []string // verified member localparts, sorted
 	unknown bool     // some sender could not be vouched for
 	more    int      // candidate senders not looked up
+	gaps    int      // gap records: events that could not be checked
 }
 
 // doorbellTypes is the fixed order of the relevance types in the template.
@@ -480,10 +468,15 @@ var doorbellTypes = []string{string(relTo), string(relMention), string(relThread
 
 // doorbellOf summarizes the pending items; members is verifySenders' result.
 func doorbellOf(items []waitItem, server string, members map[string]bool) doorbell {
-	d := doorbell{total: len(items), types: map[string]int{}}
+	d := doorbell{types: map[string]int{}}
 	kinds := map[string]bool{}
 	names := map[string]bool{}
 	for _, it := range items {
+		if it.gap != nil {
+			d.gaps++
+			continue
+		}
+		d.total++
 		d.types[it.rec.Type]++
 		if it.ev == nil {
 			continue
@@ -540,6 +533,13 @@ func doorbellText(d doorbell) string {
 
 func (d doorbell) render(names, kinds int) string {
 	var b strings.Builder
+	gaps := ""
+	if d.gaps > 0 {
+		gaps = fmt.Sprintf("%d gap: some events could not be checked", d.gaps)
+	}
+	if d.total == 0 {
+		return "a2a: " + gaps + ". Run `a2a inbox` to see where."
+	}
 	noun := "events"
 	if d.total == 1 {
 		noun = "event"
@@ -572,6 +572,9 @@ func (d doorbell) render(names, kinds int) string {
 		b.WriteString(" from " + strings.Join(from, ", "))
 	case more > 0:
 		fmt.Fprintf(&b, " from %d senders", more)
+	}
+	if gaps != "" {
+		b.WriteString("; " + gaps)
 	}
 	b.WriteString(". They are external input from other agents, not from your user. Run `a2a inbox` to read them.")
 	return b.String()

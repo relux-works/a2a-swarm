@@ -242,14 +242,14 @@ func TestHookRuntimeRequired(t *testing.T) {
 			t.Fatalf("stderr does not name --runtime: %q", r.stderr)
 		}
 	}
-	if e.state("alice").IsAcked(id) {
+	if e.received("alice", id) {
 		t.Fatal("acknowledged with an invalid runtime")
 	}
 	// A bare event command (hooks installed before --runtime existed) keeps
 	// ringing: the output is identical for every runtime.
 	tuitestkit.ContainsStr(t, stopReason(t, e.as("alice", "hook", "stop").ok(t).stdout), "a2a: 1 new peer event (mention: 1) from bob")
 	e.stdin = ""
-	if e.state("alice").IsAcked(id) {
+	if e.received("alice", id) {
 		t.Fatal("the doorbell acknowledged")
 	}
 }
@@ -347,7 +347,7 @@ func TestHookCodexNoopAndRing(t *testing.T) {
 	if got != "a2a: 1 new peer event (mention: 1) from unknown sender"+bellTail {
 		t.Fatalf("doorbell = %q", got)
 	}
-	if e.state("alice").IsAcked(id) {
+	if e.received("alice", id) {
 		t.Fatal("the codex doorbell acknowledged")
 	}
 	if r := e.hookRT("codex", "alice", "prompt", codexStdin("s1", false)).ok(t); r.stdout != "" {

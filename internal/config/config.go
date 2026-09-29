@@ -5,7 +5,8 @@
 //
 //	matrix.env              A2A_MATRIX_URL, A2A_MATRIX_SERVER_NAME, A2A_MATRIX_REGISTRATION_TOKEN
 //	agents/<name>.json      credentials, mode 0600
-//	state/<name>.json       delivery state (cursor, pending batch, acked ring, threads), mode 0600
+//	state/<name>.json       delivery state (cursor, threads, hook sessions), mode 0600
+//	state/<name>.mailbox.jsonl  durable mailbox of relevant events and receipts, mode 0600
 package config
 
 import (
@@ -288,16 +289,19 @@ func WriteCredentials(f *os.File, c Credentials) error {
 	return f.Close()
 }
 
-// State is the per-agent delivery state.
+// State is the per-agent delivery state. The events themselves live in the
+// durable mailbox (MailboxFile), which is written before NextBatch moves.
 type State struct {
-	// NextBatch is the committed delivery cursor: `a2a wait` syncs from it, and
-	// it moves past delivered events only when their batch is acknowledged.
+	// NextBatch is the sync cursor: every relevant event before it is in the
+	// mailbox (appended and fsynced before the cursor was saved).
 	NextBatch string `json:"next_batch,omitempty"`
-	// Pending is the batch the last `a2a wait` printed but nobody acknowledged yet.
-	Pending *Pending `json:"pending,omitempty"`
-	// Acked is a bounded ring of the last AckedMax acknowledged event ids; an
-	// event in it is never delivered again.
-	Acked []string `json:"acked,omitempty"`
+	// LegacyPending is the pre-mailbox pending wait batch. It is dropped at the
+	// first sync: the cursor never moved past it, so its events are synced
+	// into the mailbox again.
+	LegacyPending json.RawMessage `json:"pending,omitempty"`
+	// LegacyAcked is the pre-mailbox acknowledged-id ring; the first sync moves
+	// it into the mailbox receipt index and drops it.
+	LegacyAcked []string `json:"acked,omitempty"`
 	// Threads holds thread root event ids where this agent posted or which it created.
 	Threads []string `json:"threads,omitempty"`
 	// LegacySubscriptions is the pre-v2 kind subscription map (room id or "*"
@@ -378,61 +382,8 @@ func (s *State) SetHookBlocks(id string, n int) {
 	s.PutHookSession(h)
 }
 
-// Pending is a printed but unacknowledged delivery batch.
-type Pending struct {
-	// NextBatch is where the cursor moves when the batch is acknowledged.
-	NextBatch string `json:"next_batch"`
-	// Events are the delivered event ids, added to Acked on acknowledgement.
-	Events []string `json:"events,omitempty"`
-	// CloseSubs are subscriptions whose closing event (until_kind) is in the
-	// batch; they are removed on acknowledgement.
-	CloseSubs []string `json:"close_subs,omitempty"`
-}
-
 // LegacyAllRooms is the LegacySubscriptions key that matched every joined room.
 const LegacyAllRooms = "*"
-
-// AckedMax bounds the acknowledged-id ring.
-const AckedMax = 1000
-
-// IsAcked reports whether id was acknowledged recently (it is in the ring).
-func (s State) IsAcked(id string) bool {
-	for _, a := range s.Acked {
-		if a == id {
-			return true
-		}
-	}
-	return false
-}
-
-// AddAcked appends ids to the acknowledged ring, keeping the last AckedMax.
-func (s *State) AddAcked(ids ...string) {
-	for _, id := range ids {
-		if id == "" || s.IsAcked(id) {
-			continue
-		}
-		s.Acked = append(s.Acked, id)
-	}
-	if len(s.Acked) > AckedMax {
-		s.Acked = append([]string(nil), s.Acked[len(s.Acked)-AckedMax:]...)
-	}
-}
-
-// Ack commits the pending batch: the cursor moves to its next_batch and its
-// events join the acknowledged ring. It returns the committed batch (nil when
-// nothing was pending).
-func (s *State) Ack() *Pending {
-	p := s.Pending
-	if p == nil {
-		return nil
-	}
-	if p.NextBatch != "" {
-		s.NextBatch = p.NextBatch
-	}
-	s.AddAcked(p.Events...)
-	s.Pending = nil
-	return p
-}
 
 // HasThread reports whether root is a thread this agent participates in.
 func (s State) HasThread(root string) bool {
@@ -590,6 +541,15 @@ var ErrLockTimeout = errors.New("the state file is locked by another a2a process
 // running fn. Hooks use it so a held lock never outlives their budget.
 func UpdateStateBy(p Paths, name string, deadline time.Time, fn func(*State) error) (State, error) {
 	return updateState(p, name, func(path string) (func(), error) { return lockFileBy(path, deadline) }, fn)
+}
+
+// UpdateStateUntil is UpdateStateBy for a set deadline and UpdateState (a
+// blocking lock) for the zero deadline.
+func UpdateStateUntil(p Paths, name string, deadline time.Time, fn func(*State) error) (State, error) {
+	if deadline.IsZero() {
+		return UpdateState(p, name, fn)
+	}
+	return UpdateStateBy(p, name, deadline, fn)
 }
 
 func updateState(p Paths, name string, lock func(string) (func(), error), fn func(*State) error) (State, error) {

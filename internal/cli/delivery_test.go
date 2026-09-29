@@ -54,6 +54,29 @@ func (e *env) state(name string) config.State {
 	return st
 }
 
+// mailbox loads name's durable mailbox.
+func (e *env) mailbox(name string) *config.Mailbox {
+	e.t.Helper()
+	mb, err := config.OpenMailbox(e.paths(), name)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return mb
+}
+
+// received reports whether id left name's mailbox by a receipt.
+func (e *env) received(name, id string) bool { return e.mailbox(name).Received(id) }
+
+// pendingEntry returns the unreceived mailbox entry id (ok false when there is none).
+func (e *env) pendingEntry(name, id string) (config.MailEntry, bool) {
+	for _, en := range e.mailbox(name).Pending() {
+		if en.ID == id {
+			return en, true
+		}
+	}
+	return config.MailEntry{}, false
+}
+
 // Proves a wait with no matching events blocks instead of returning empty:
 // with --timeout it prints only "timeout" after the full timeout, and with
 // --timeout 0 it keeps blocking through non-matching traffic until a
@@ -85,39 +108,46 @@ func TestWaitBlocksWithoutMatch(t *testing.T) {
 	tuitestkit.ContainsStr(t, r.stdout, "mention #proj "+id)
 }
 
-// Proves wait prints first and records the batch as pending only afterwards:
-// the cursor does not move until the next wait acknowledges the batch, which
-// then moves it to the batch's next_batch and records the delivered ids.
-func TestWaitPendingUntilAck(t *testing.T) {
+// Proves wait persists before it prints and receipts nothing (defect 1 of
+// research/waking-sessions-converged.md: the old wait acknowledged the previous
+// batch implicitly): after a wait printed an event, the cursor has moved (the
+// event is durable), the entry is still unreceived but marked shown, so the
+// next wait blocks instead of printing it again; only `ack all-shown` receipts it.
+func TestWaitMarksShownNeverReceipts(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
 	cursor := e.state("alice").NextBatch
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local one", nil))
-	e.as("alice", "wait", "--timeout", "2s").ok(t)
-	st := e.state("alice")
-	if st.NextBatch != cursor || st.Pending == nil || len(st.Pending.Events) != 1 || st.Pending.Events[0] != id {
-		t.Fatalf("after delivery: %+v", st)
+	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
+	tuitestkit.ContainsStr(t, r.stderr, "a2a ack")
+	en, ok := e.pendingEntry("alice", id)
+	if e.state("alice").NextBatch == cursor || !ok || !en.Shown {
+		t.Fatalf("after delivery: entry %+v (%v)", en, ok)
 	}
-	e.as("alice", "wait", "--timeout", "20ms").ok(t)
-	st = e.state("alice")
-	if st.Pending != nil || st.NextBatch == cursor || !st.IsAcked(id) {
-		t.Fatalf("after ack: %+v", st)
+	if r := e.as("alice", "wait", "--timeout", "60ms").ok(t); r.stdout != "timeout\n" {
+		t.Fatalf("shown entry printed again: %q", r.stdout)
+	}
+	if e.received("alice", id) {
+		t.Fatal("a wait receipted")
+	}
+	tuitestkit.ContainsStr(t, e.as("alice", "ack", "all-shown").ok(t).stdout, "acked 1 events")
+	if !e.received("alice", id) {
+		t.Fatal("ack all-shown did not receipt")
 	}
 }
 
 // Proves at-least-once delivery when the output fails: a wait whose stdout
-// write fails exits 1, saves no pending batch and leaves the cursor where it
-// was, so the next wait delivers the same event again.
+// write fails exits 1 and marks nothing shown (the event is in the mailbox),
+// so the next wait prints the same event again.
 func TestWaitRedeliversAfterWriteFailure(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
-	cursor := e.state("alice").NextBatch
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local must not be lost", nil))
 	e.configure = func(a *App) { a.Stdout = failWriter{} }
 	e.as("alice", "wait", "--timeout", "2s").failsWith(t, ExitError, "broken pipe")
 	e.configure = nil
-	if st := e.state("alice"); st.Pending != nil || st.NextBatch != cursor {
-		t.Fatalf("state moved after a failed write: %+v", st)
+	if en, ok := e.pendingEntry("alice", id); !ok || en.Shown {
+		t.Fatalf("after a failed write: %+v (%v)", en, ok)
 	}
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "mention #proj "+id)
 }
@@ -139,17 +169,20 @@ func TestWaitRedeliversAfterCrashBeforeSave(t *testing.T) {
 	}
 }
 
-// Proves an acknowledged event is never delivered twice, even when the cursor
-// is rolled back behind it (a restored state file, an old token): the acked
-// ring filters it, while a new event in the same batch is delivered.
+// Proves a received event is never delivered twice, even when the cursor is
+// rolled back behind it (a restored state file, an old token): the receipt
+// index deduplicates the re-synced event, while a new event in the same batch
+// is delivered. `ack` receipts by id; bare `ack`, `ack all` and a non-id are
+// usage errors (the old implicit "ack the pending batch" is gone).
 func TestAckedEventNeverDeliveredTwice(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
 	old := e.state("alice").NextBatch
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local once", nil))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, id)
-	tuitestkit.ContainsStr(t, e.as("alice", "ack").ok(t).stdout, "acked 1 events")
-	tuitestkit.ContainsStr(t, e.as("alice", "ack", "all").ok(t).stdout, "nothing pending")
+	tuitestkit.ContainsStr(t, e.as("alice", "ack", id).ok(t).stdout, "acked 1 events")
+	tuitestkit.ContainsStr(t, e.as("alice", "ack", "all-shown").ok(t).stdout, "nothing pending")
+	tuitestkit.ContainsStr(t, e.as("alice", "ack", id, "$never").ok(t).stdout, "acked 0 events (2 not pending)")
 	if _, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.NextBatch = old; return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -157,12 +190,19 @@ func TestAckedEventNeverDeliveredTwice(t *testing.T) {
 	out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, id2)
 	tuitestkit.NotContainsStr(t, out, id+" ")
-	e.as("alice", "ack", "extra").failsWith(t, ExitUsage, "usage")
+	calls := len(e.hs.Calls())
+	e.as("alice", "ack").failsWith(t, ExitUsage, "usage: a2a ack")
+	e.as("alice", "ack", "all").failsWith(t, ExitUsage, "not a mailbox id")
+	e.as("alice", "ack", "extra").failsWith(t, ExitUsage, "not a mailbox id")
+	if len(e.hs.Calls()) != calls {
+		t.Fatal("a usage error contacted the server")
+	}
 }
 
 // Proves watch streams every delivered event as its own flushed line without
-// exiting, stops cleanly (exit 0) when its context is cancelled, and commits
-// the cursor after each batch: a later wait delivers nothing again.
+// exiting, stops cleanly (exit 0) when its context is cancelled, and marks
+// what it printed shown without receipting it: a later wait delivers nothing
+// again, the entries stay unreceived.
 func TestWatch(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -206,9 +246,10 @@ func TestWatch(t *testing.T) {
 	if len(lines) != 2 || !strings.Contains(lines[0], "mention #proj "+a) || !strings.Contains(lines[1], "mention #proj "+b) || flushes != 2 {
 		t.Fatalf("lines = %q, flushes = %d", lines, flushes)
 	}
-	st := e.state("alice")
-	if st.Pending != nil || !st.IsAcked(a) || !st.IsAcked(b) {
-		t.Fatalf("watch did not commit: %+v", st)
+	for _, id := range []string{a, b} {
+		if en, ok := e.pendingEntry("alice", id); !ok || !en.Shown {
+			t.Fatalf("watch did not mark %s shown (or receipted it): %+v %v", id, en, ok)
+		}
 	}
 	if r := e.as("alice", "wait", "--timeout", "60ms").ok(t); r.stdout != "timeout\n" {
 		t.Fatalf("committed events delivered again: %q", r.stdout)
@@ -216,7 +257,7 @@ func TestWatch(t *testing.T) {
 }
 
 // Proves watch refuses bad input before any request, and a watch whose output
-// fails exits 1 without committing, so wait delivers the event again.
+// fails exits 1 without marking anything shown, so wait delivers the event again.
 func TestWatchNegative(t *testing.T) {
 	e, room := world(t)
 	before := len(e.hs.Calls())
@@ -229,7 +270,7 @@ func TestWatchNegative(t *testing.T) {
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local keep me", nil))
 	e.configure = func(a *App) { a.Stdout = failWriter{} }
-	e.as("alice", "watch").failsWith(t, ExitError, "not committed")
+	e.as("alice", "watch").failsWith(t, ExitError, "nothing was marked shown")
 	e.configure = nil
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, id)
 }

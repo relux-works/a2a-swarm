@@ -50,7 +50,7 @@ func TestHookLockTimeout(t *testing.T) {
 		t.Fatalf("lock timeout broke the hook contract: %+v", r)
 	}
 	tuitestkit.ContainsStr(t, r.stderr, "locked by another a2a process; nothing new was acknowledged")
-	if readFile(t, e.paths().StateFile("alice")) != before || e.state("alice").IsAcked(id) {
+	if readFile(t, e.paths().StateFile("alice")) != before || e.received("alice", id) {
 		t.Fatal("state changed under a held lock")
 	}
 	done := make(chan result, 1)

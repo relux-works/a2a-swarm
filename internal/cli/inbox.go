@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -14,10 +15,11 @@ import (
 // `a2a inbox` is where an agent reads what the hook doorbell announced. The
 // peer content arrives as TOOL OUTPUT, inside a frame that marks it as data
 // from other agents, never as hook context (which runtimes treat with
-// near-user authority). It collects exactly like the hooks and wait (to,
-// mention, thread, sub, invites; never own events or projections; minus the
-// acknowledged ring and a wait's pending batch) and acknowledges exactly what
-// it printed, after a successful write: a crash before that prints it again.
+// near-user authority). It brings the mailbox up to date (one /sync, persisted
+// before the cursor moves), prints the oldest unreceived entries (to, mention,
+// thread, sub, invites, gap records; also those a wait or watch printed, which
+// receipt nothing) and, only after a successful write, records a receipt for
+// exactly what it printed: a crash before that prints them again.
 
 // inboxMax is the fixed maximum of events one inbox prints (and the value when
 // --limit is omitted: it only bounds output, so it is a cap, not a behaviour default).
@@ -62,54 +64,44 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	b, next, err := s.collectNow(ctx, &st, subs.Subs)
-	if err != nil {
+	if _, err := s.syncNow(ctx, st, subs.Subs, time.Time{}); err != nil {
 		return err
 	}
-	if a.beforeDeliver != nil {
-		a.beforeDeliver()
-	}
+	const lost = "; nothing was acknowledged, the next inbox prints these entries again"
 	printed := false
-	_, err = s.lockedDeliver(ctx, len(b.close) > 0, func(cur *config.State) ([]string, error) {
-		for _, r := range b.learned {
-			cur.AddThread(r)
-		}
-		d := b.undelivered(*cur)
-		if len(d.items) == 0 {
-			cur.NextBatch = next // nothing to deliver: the cursor may move directly
+	_, err = s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+		pending := mb.Pending()
+		if len(pending) == 0 {
 			return nil, nil
 		}
-		shown := d.head(*limit)
-		more := len(d.items) - len(shown.items)
+		shown := itemsOf(pending[:min(*limit, len(pending))], s.server)
+		more := len(pending) - len(shown)
 		var out string
 		if *asJSON {
 			var err error
-			if out, err = inboxJSON(shown.items, s.server); err != nil {
+			if out, err = inboxJSON(shown, s.server); err != nil {
 				return nil, err
 			}
 		} else {
-			out = inboxFrame(shown.items, s.server, more)
+			out = inboxFrame(shown, s.server, more)
 		}
 		if _, err := io.WriteString(a.Stdout, out); err != nil {
-			return nil, fmt.Errorf("write output: %w; nothing was acknowledged, the next inbox prints these events again", err)
+			return nil, fmt.Errorf("write output: %w%s", err, lost)
 		}
 		if f, ok := a.Stdout.(interface{ Flush() error }); ok {
 			if err := f.Flush(); err != nil {
-				return nil, fmt.Errorf("flush output: %w; nothing was acknowledged, the next inbox prints these events again", err)
+				return nil, fmt.Errorf("flush output: %w%s", err, lost)
 			}
 		}
 		printed = true
 		if a.afterPrint != nil {
 			if err := a.afterPrint(); err != nil {
-				return nil, fmt.Errorf("%w; nothing was acknowledged, the next inbox prints these events again", err)
+				return nil, fmt.Errorf("%w%s", err, lost)
 			}
 		}
-		// Only now, after a successful write, are exactly the shown events acknowledged.
-		cur.AddAcked(shown.events...)
-		if more == 0 {
-			cur.NextBatch = next
-		}
-		return shown.close, nil
+		// Only now, after a successful write, are exactly the shown entries received.
+		_, err := mb.Receive(itemIDs(shown))
+		return nil, err
 	})
 	if err != nil {
 		return err
@@ -122,6 +114,11 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 
 // inboxRecord is the full record of one item, the body bounded to inboxBodyMax.
 func inboxRecord(it waitItem, server string) (EventRecord, int) {
+	if it.gap != nil {
+		rec := it.rec
+		rec.Body, rec.Excerpt = rec.Excerpt, ""
+		return rec, 0
+	}
 	if it.ev == nil {
 		return it.rec, 0
 	}
@@ -178,6 +175,10 @@ func inboxFrame(items []waitItem, server string, more int) string {
 	b.WriteString(inboxBegin + "\n")
 	for i, it := range items {
 		fmt.Fprintf(&b, "--- event %d/%d: ", i+1, len(items))
+		if it.gap != nil {
+			b.WriteString("gap room=" + inboxField(it.rec.Room) + " id=" + inboxField(it.rec.EventID) + "\n" + inboxIndent + "gap: " + gapText(*it.gap) + "\n")
+			continue
+		}
 		if it.ev == nil {
 			b.WriteString(inboxField(it.line) + "\n")
 			continue

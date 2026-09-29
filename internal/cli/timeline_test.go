@@ -52,21 +52,73 @@ func TestWaitBackfillFailureKeepsPosition(t *testing.T) {
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, id)
 }
 
-// Proves more than maxBackfill skipped events are bounded: wait warns on
-// stderr about the gap instead of paging forever, and still reports the
-// newest addressed message.
-func TestWaitBackfillBounded(t *testing.T) {
+// Proves relevance-first backfill (defect 3 of
+// research/waking-sessions-converged.md: the old backfill kept only the newest
+// 2000 events before classifying, so a flood pushed an addressed message out of
+// reach): an addressed message before a flood of 5000 irrelevant events and one
+// after it are both delivered, the doorbell and inbox report no gap, and the
+// mailbox holds only the two relevant events (the flood takes no space).
+func TestBackfillFloodKeepsAddressed(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
-	for i := 0; i < maxBackfill+150; i++ {
+	e.as("alice", "inbox").ok(t)
+	early := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local before the flood", nil))
+	for i := 0; i < 5000; i++ {
 		e.hs.inject(room, "@bob:test.local", msg("flood", nil))
 	}
-	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local after the flood", nil))
-	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, id)
-	tuitestkit.ContainsStr(t, r.stderr, "older ones were not checked")
-	if n := e.hs.CallCount(messagesRoute); n > maxBackfill/100+1 {
-		t.Fatalf("backfill pages = %d", n)
+	late := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local after the flood", nil))
+	bell := bellContext(t, e.hook("alice", "prompt", `{"session_id":"s"}`).ok(t).stdout)
+	if bell != "a2a: 2 new peer events (mention: 2) from bob"+bellTail {
+		t.Fatalf("doorbell = %q", bell)
+	}
+	if n := len(e.mailbox("alice").Pending()); n != 2 {
+		t.Fatalf("mailbox holds %d entries", n)
+	}
+	out := e.as("alice", "inbox").ok(t).stdout
+	tuitestkit.ContainsStr(t, out, "id="+early)
+	tuitestkit.ContainsStr(t, out, "id="+late)
+	tuitestkit.NotContainsStr(t, out, "gap")
+}
+
+// Proves a stretch the backfill cannot reach is surfaced, never skipped
+// silently: when the server stops paging above the previous position (a
+// purged history) and when the page bound is hit, the mailbox gets a gap
+// record that the doorbell counts and wait and inbox print ("gap: events
+// between X and Y could not be checked"), while the addressed message the
+// pages did reach is still delivered (positive control); the cut early
+// message is not claimed as delivered.
+func TestBackfillGapSurfaced(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env, floor int)
+	}{
+		{"server stops paging", func(e *env, floor int) { e.hs.historyFloor = floor }},
+		{"page bound", func(e *env, _ int) { e.configure = func(a *App) { a.backfillPages = 2 } }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, room := world(t)
+			e.hs.syncLimit = 5
+			e.as("alice", "inbox").ok(t)
+			early := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local cut off", nil))
+			floor := len(e.hs.roomMessages(room))
+			for i := 0; i < 250; i++ {
+				e.hs.inject(room, "@bob:test.local", msg("noise", nil))
+			}
+			late := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local reachable", nil))
+			tc.setup(e, floor)
+			bell := bellContext(t, e.hook("alice", "prompt", `{"session_id":"s"}`).ok(t).stdout)
+			if bell != "a2a: 1 new peer event (mention: 1) from bob; 1 gap: some events could not be checked"+bellTail {
+				t.Fatalf("doorbell = %q", bell)
+			}
+			w := e.as("alice", "wait", "--timeout", "1s").ok(t).stdout
+			tuitestkit.ContainsStr(t, w, "gap #proj gap:"+room)
+			tuitestkit.ContainsStr(t, w, "mention #proj "+late)
+			out := e.as("alice", "inbox").ok(t).stdout
+			tuitestkit.ContainsStr(t, out, "--- event 1/2: gap room=#proj id=gap:"+room)
+			tuitestkit.ContainsStr(t, out, inboxIndent+"gap: events between ")
+			tuitestkit.ContainsStr(t, out, " could not be checked; read them with a2a read #proj\n")
+			tuitestkit.ContainsStr(t, out, "id="+late)
+			tuitestkit.NotContainsStr(t, out, early)
+		})
 	}
 }
 

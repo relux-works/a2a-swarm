@@ -156,19 +156,19 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 		}
 		for _, roomID := range sortedKeys(resp.Rooms.Join) {
 			tl := resp.Rooms.Join[roomID].Timeline
-			events, gap, err := s.timelineEvents(ctx, roomID, st.NextBatch, tl.Events, tl.Limited, tl.PrevBatch)
+			events, gap, err := s.timelineEvents(ctx, roomID, st.NextBatch, tl.Events, tl.Limited, tl.PrevBatch, func(ev matrix.Event) bool {
+				_, ok := projectable(ev, roomID, systemRoom, me, kinds)
+				return ok
+			})
 			if err != nil {
 				// Keep the position: the next run retries the whole batch.
 				return fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
 			}
-			if gap {
-				fmt.Fprintf(a.Stderr, "a2a: projector: %s: more than %d events in one batch; older ones were not projected\n", s.roomLabel(ctx, roomID, labels), maxBackfill)
+			if gap != nil {
+				fmt.Fprintf(a.Stderr, "a2a: projector: %s: gap: events between %s and %s could not be checked; they were not projected\n", s.roomLabel(ctx, roomID, labels), sanitizeLine(gap.From), sanitizeLine(gap.To))
 			}
 			for _, ev := range events {
-				h, ok := projectable(ev, roomID, systemRoom, me, kinds)
-				if !ok {
-					continue
-				}
+				h, _ := projectable(ev, roomID, systemRoom, me, kinds)
 				label := s.roomLabel(ctx, roomID, labels)
 				content := projection(ev, h, roomID, label, s.server)
 				id, err := s.client.SendMessageTxn(ctx, systemRoom, projectionTxn(roomID, ev.EventID), content)
