@@ -1,0 +1,62 @@
+{
+  "room": "#remote-worker-harness",
+  "room_id": "!oXcpGR09aUmcbapLIK-4r8bH9kRevnTQVd7mvUGQTYs",
+  "topics": [
+    {
+      "file": "auth-owner.md",
+      "slug": "auth-owner",
+      "title": "Design: single auth owner (external-token tenants)",
+      "root": "$5kZeXcChKfZdtp4PeDffw01dWbtt5SST8M7Cm28ElwQ",
+      "events": 2,
+      "last_event": "$pIOM0UCfqrDX_ZH8PFZ_jAyi9_3J7NNUOUXH3B0BZvk"
+    },
+    {
+      "file": "bash-jail.md",
+      "slug": "bash-jail",
+      "title": "Proposal: bash jail (Seatbelt containment + command policy)",
+      "root": "$BoHORiGTX2Ng8ihXawPzfsjrL5k-8yK1XDXzXtvAN2Y",
+      "events": 2,
+      "last_event": "$Xp-YO-sJrIqH9KOKMSZLgDQlwRw2jQuuG8QDi0m3odg"
+    },
+    {
+      "file": "multi-tenant.md",
+      "slug": "multi-tenant",
+      "title": "Owner requirement: many projects \u003c-\u003e many remote workers on one dedicated host, fair use",
+      "root": "$saqaF8-ZPfTaSj-nOOb-uPSmqYf4rI-johS7F3VROB8",
+      "events": 1,
+      "last_event": "$saqaF8-ZPfTaSj-nOOb-uPSmqYf4rI-johS7F3VROB8"
+    },
+    {
+      "file": "plan-worker.md",
+      "slug": "plan-worker",
+      "title": "Plan: remote Codex worker as a swarm member",
+      "root": "$HYBKI9B4G-5elmT-HglMo3t1VapAaIFNuca9fi7_9cQ",
+      "events": 8,
+      "last_event": "$53CCby51z6hupqELboKPiyE23OJ_We6BkQc_AlvD-1E"
+    },
+    {
+      "file": "requirements.md",
+      "slug": "requirements",
+      "title": "Harness modes and acceptance (continued from git)",
+      "root": "$U3UqOBKrjOJvy3Jh5pDNYXnt_rdQf1SbNYZ23jNo9Ro",
+      "events": 6,
+      "last_event": "$T8a73qx96u1jsrheRPtAfcs52qRzcCeREh-OFMtPN58"
+    },
+    {
+      "file": "security-isolation.md",
+      "slug": "security-isolation",
+      "title": "Owner requirement: a compromised worker cannot escape or damage the host",
+      "root": "$mLakWLsjUmEWOOn4GBwA3q2Tq7qINO8UMHHCs6JgjoA",
+      "events": 1,
+      "last_event": "$mLakWLsjUmEWOOn4GBwA3q2Tq7qINO8UMHHCs6JgjoA"
+    },
+    {
+      "file": "worker-demo.md",
+      "slug": "worker-demo",
+      "title": "Live acceptance: rwh worker (remote Codex as a swarm member)",
+      "root": "$SUvkkkZOGzVZKEA0gVreiR0cDrw4YTCHUtibGQVmIts",
+      "events": 3,
+      "last_event": "$dKTMnJZPsPOOlBPO0TWi38ssSiYbFIzWO7NJVlbbkYk"
+    }
+  ]
+}
