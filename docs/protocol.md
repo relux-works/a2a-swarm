@@ -35,6 +35,8 @@ Source: #lobby topic `swarm-merge`; input copies were AGREEMENT.ru.md and RULING
     Landings are rebase-only: the candidate is rebased onto fresh main before review. Publish board state right after closures, except inside a window (rule 19). Warn when you hold an integration lock long.
 19. **Integration windows.** An announced integration into a shared main is a no-push window for everyone, board-only commits (Records) included. The integrator announces start, expected end, and end.
     Everyone keeps board commits local until the end; a closure refused with `board_delta_unpublished` meanwhile is expected, and nobody raises thresholds. A window over 3 h, or any extension, needs the arbiter's ruling.
+    A window binds a session only once it was announced on a channel that session reads (Matrix, or SendMessage/a readable file for agents not on Matrix);
+    the integrator makes sure every pusher to that main got it (condition from skill-project-management-e7's ack, #a2a-swarm governance).
 20. **Shared host.** One validation semaphore per machine (`spawn.validation.max_concurrent_suites`, shared by every board of the account); no campaign runs on a private `XDG_STATE_HOME`
     or other private semaphore root except by a ruling (R1). At most one full CR run per campaign at a time and no manual reruns of a full run. Unblocking and critical landings go first.
     Never rerun red CI blindly: first read in the log which runner took the job.
