@@ -87,21 +87,21 @@ func TestHostFile(t *testing.T) {
 func TestLease(t *testing.T) {
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	var s State
-	if err := s.Acquire("a", "s1", 1, now, LeaseTTL, nil); err != nil || !s.Lease.Expires.Equal(now.Add(LeaseTTL)) {
+	if err := s.Acquire("a", "s1", "h1", 1, now, LeaseTTL, nil); err != nil || !s.Lease.Expires.Equal(now.Add(LeaseTTL)) {
 		t.Fatalf("acquire = %v %+v", err, s.Lease)
 	}
-	if err := s.Acquire("a", "s1", 1, now.Add(time.Minute), LeaseTTL, nil); err != nil || !s.Lease.Expires.Equal(now.Add(time.Minute+LeaseTTL)) {
+	if err := s.Acquire("a", "s1", "h1", 1, now.Add(time.Minute), LeaseTTL, nil); err != nil || !s.Lease.Expires.Equal(now.Add(time.Minute+LeaseTTL)) {
 		t.Fatalf("refresh = %v %+v", err, s.Lease)
 	}
 	var held *LeaseHeldError
-	err := s.Acquire("a", "s2", 2, now.Add(2*time.Minute), LeaseTTL, nil)
+	err := s.Acquire("a", "s2", "h1", 2, now.Add(2*time.Minute), LeaseTTL, nil)
 	if !errors.As(err, &held) || !strings.Contains(err.Error(), "identity a is held by s1 until 2026-09-29T12:11:00Z") || s.Lease.Holder != "s1" {
 		t.Fatalf("second holder = %v %+v", err, s.Lease)
 	}
-	if err := s.Acquire("a", "s2", 2, now.Add(2*time.Minute), LeaseTTL, func(h string) bool { return h == "s1" }); err != nil || s.Lease.Holder != "s2" {
+	if err := s.Acquire("a", "s2", "h1", 2, now.Add(2*time.Minute), LeaseTTL, func(h string) bool { return h == "s1" }); err != nil || s.Lease.Holder != "s2" {
 		t.Fatalf("dead holder not taken over: %v %+v", err, s.Lease)
 	}
-	if err := s.Acquire("a", "s1", 1, now.Add(2*time.Minute+LeaseTTL), LeaseTTL, nil); err != nil || s.Lease.Holder != "s1" {
+	if err := s.Acquire("a", "s1", "h1", 1, now.Add(2*time.Minute+LeaseTTL), LeaseTTL, nil); err != nil || s.Lease.Holder != "s1" {
 		t.Fatalf("expired lease not taken over: %v %+v", err, s.Lease)
 	}
 	at := now.Add(3 * time.Minute)
@@ -111,11 +111,40 @@ func TestLease(t *testing.T) {
 	if ok, err := s.Release("a", "s2", true, at, nil); !ok || err != nil || s.Lease != nil {
 		t.Fatalf("forced release = %v, %v", ok, err)
 	}
-	_ = s.Acquire("a", "s1", 1, at, LeaseTTL, nil)
+	_ = s.Acquire("a", "s1", "h1", 1, at, LeaseTTL, nil)
 	if ok, err := s.Release("a", "s1", false, at, nil); !ok || err != nil || s.Lease != nil {
 		t.Fatalf("own release = %v, %v", ok, err)
 	}
 	if ok, err := s.Release("a", "s1", false, at, nil); ok || err != nil {
 		t.Fatalf("release without a lease = %v, %v", ok, err)
+	}
+}
+
+// Proves same-host compatibility: a session-less "pid:" process never evicts a
+// live session's lease and a session replaces a pid lease on the same host,
+// while two known sessions on one host, and holders on different hosts, still
+// conflict (the case the lease exists for).
+func TestLeaseSameHostPIDCompatible(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	var s State
+	if err := s.Acquire("a", "sessA", "h1", 1, now, LeaseTTL, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Acquire("a", "pid:77@h1", "h1", 77, now, LeaseTTL, nil); err != nil || s.Lease.Holder != "sessA" {
+		t.Fatalf("pid process on the same host: %v, holder %s", err, s.Lease.Holder)
+	}
+	if err := s.Acquire("a", "sessB", "h1", 2, now, LeaseTTL, nil); err == nil {
+		t.Fatal("a second known session on the same host was not refused")
+	}
+	if err := s.Acquire("a", "pid:88@h2", "h2", 88, now, LeaseTTL, nil); err == nil {
+		t.Fatal("a process on another host was not refused")
+	}
+	var p State
+	_ = p.Acquire("a", "pid:77@h1", "h1", 77, now, LeaseTTL, nil)
+	if err := p.Acquire("a", "sessA", "h1", 1, now, LeaseTTL, nil); err != nil || p.Lease.Holder != "sessA" {
+		t.Fatalf("session over a pid lease: %v, holder %s", err, p.Lease.Holder)
+	}
+	if err := p.Acquire("a", "sessX", "h2", 3, now, LeaseTTL, nil); err == nil {
+		t.Fatal("a session on another host was not refused")
 	}
 }

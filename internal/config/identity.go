@@ -116,6 +116,7 @@ const LeaseTTL = 10 * time.Minute
 type Lease struct {
 	// Holder is the session id: the hook's session_id, A2A_SESSION_ID, or "pid:<pid>@<host>".
 	Holder  string    `json:"holder"`
+	Host    string    `json:"host,omitempty"`
 	PID     int       `json:"pid"`
 	Expires time.Time `json:"expires"`
 }
@@ -135,11 +136,28 @@ func (e *LeaseHeldError) Error() string {
 // A lease of another holder is refused while it is live: unexpired and, for a
 // "pid:" holder on this host (dead reports whether such a holder's process has
 // exited), its process still running. An expired or dead lease is taken over.
-func (s *State) Acquire(name, holder string, pid int, now time.Time, ttl time.Duration, dead func(holder string) bool) error {
+//
+// Compatibility on one host: a "pid:" holder is a process that does not know
+// its session (e.g. a background wait started before the session exported
+// A2A_SESSION_ID). It cannot be told apart from the session it belongs to, so
+// it is compatible with any holder on the SAME host: a known session replaces
+// a pid lease, and a pid process leaves a session's lease in place. Two
+// different known sessions, or holders on different hosts, still conflict,
+// which is the case the lease exists for (one identity used twice at once).
+func (s *State) Acquire(name, holder, host string, pid int, now time.Time, ttl time.Duration, dead func(holder string) bool) error {
+	isPID := func(h string) bool { return strings.HasPrefix(h, "pid:") }
 	if l := s.Lease; l != nil && l.Holder != holder && now.Before(l.Expires) && (dead == nil || !dead(l.Holder)) {
-		return &LeaseHeldError{Name: name, Lease: *l}
+		sameHost := l.Host != "" && l.Host == host
+		switch {
+		case sameHost && isPID(holder) && !isPID(l.Holder):
+			return nil // a session-less process of the live session's host: leave the session's lease
+		case sameHost && isPID(l.Holder):
+			// a known session (or another process) of the same host replaces a pid lease
+		default:
+			return &LeaseHeldError{Name: name, Lease: *l}
+		}
 	}
-	s.Lease = &Lease{Holder: holder, PID: pid, Expires: now.Add(ttl)}
+	s.Lease = &Lease{Holder: holder, Host: host, PID: pid, Expires: now.Add(ttl)}
 	return nil
 }
 

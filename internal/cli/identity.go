@@ -326,7 +326,7 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 		ttl = a.leaseTTL
 	}
 	_, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
-		return cur.Acquire(s.name, holder, os.Getpid(), a.Now(), ttl, a.leaseDead(s.paths))
+		return cur.Acquire(s.name, holder, hostLabel(s.paths), os.Getpid(), a.Now(), ttl, a.leaseDead(s.paths))
 	})
 	return err
 }
