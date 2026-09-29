@@ -54,7 +54,11 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     The window-open message is `kind=system --subtype window --subject <repo>@<branch>` and states `until` (UTC) and `base` (the branch OID at open).
     Its event id is the window's lease token: extensions (arbiter only), a takeover and the close cite it with `re`, and a window with no close past its `until` has lapsed (anyone may announce that).
     A landing inside a window must be a non-forced push by the holder, citing the token in its landing notice; any other push during the window is a rule-19 violation the arbiter records.
-    (Lease/fencing idea from the owner's apiary-docs book ch03; see research/apiary-docs-takeaways.md.)
+    After a close or a lapse there is a 10-minute publication gap: anyone may push held board-only Records (never `.task-board/.goals`), announcing before and after,
+    and on a non-fast-forward rejection fetches, rebases and pushes again; the next window opens only after the gap.
+    If the base moved under a window anyway (a violation the arbiter records), the holder's non-forced push fails; the holder rebases, rebuilds and re-reviews,
+    and never lands the old candidate over the new head: an approval binds to the exact candidate over its exact head.
+    (Lease/fencing idea from the owner's apiary-docs book ch03; the gap and rebuild rules are tb-keeper's amendment 8 and book 7.6.3–7.6.5; see research/apiary-docs-takeaways.md.)
     A window is announced in the repository's room; for an agent not on Matrix yet, the integrator also rings it by SendMessage. A window binds a session only once it reached it that way;
     the integrator makes sure every pusher to that main got it (condition from skill-project-management-e7's ack, #a2a-swarm governance).
 20. **Shared host.** One validation semaphore per machine (`spawn.validation.max_concurrent_suites`, shared by every board of the account); no campaign runs on a private `XDG_STATE_HOME`
