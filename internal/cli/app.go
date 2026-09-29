@@ -79,6 +79,7 @@ func commands() []command {
 		{"subscribe", "subscribe --kind k1,k2 [--room R|all]   wake on these message kinds without being addressed", cmdSubscribe},
 		{"unsubscribe", "unsubscribe [--kind k1,k2] [--room R|all]   drop kind subscriptions (all kinds without --kind)", cmdUnsubscribe},
 		{"subscriptions", "subscriptions [--json]               list kind subscriptions", cmdSubscriptions},
+		{"project", "project [--system R] [--kind k1,k2] [--once]   run the #system projector (rule 24) as this identity", cmdProject},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status set <active|idle|away> [\"text\"] | status get [name]", cmdStatus},
 	}

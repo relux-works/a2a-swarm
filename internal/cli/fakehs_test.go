@@ -45,6 +45,7 @@ type fakeHS struct {
 	rawURLs    []string
 	wake       chan struct{}
 	seq        int
+	txns       map[string]string // user|room|txn -> event id (send idempotency)
 }
 
 type fakeRoom struct {
@@ -357,7 +358,16 @@ func (hs *fakeHS) send(w http.ResponseWriter, r *http.Request, u string) {
 	if room == nil {
 		return
 	}
+	key := u + "|" + room.id + "|" + r.PathValue("txn")
+	if id, ok := hs.txns[key]; ok {
+		writeJSON(w, 200, map[string]string{"event_id": id})
+		return
+	}
 	id := hs.appendLocked(room.id, u, r.PathValue("type"), content)
+	if hs.txns == nil {
+		hs.txns = map[string]string{}
+	}
+	hs.txns[key] = id
 	writeJSON(w, 200, map[string]string{"event_id": id})
 }
 

@@ -57,6 +57,11 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State) (rel 
 		return "", ""
 	}
 	h, hasHeader := decodeHeader(m.A2A)
+	if hasHeader && h.Type == "projection" {
+		// A projector's mirror of an event that already rang in its own room:
+		// only `wait --all` on the projection room reports it.
+		return "", ""
+	}
 	if hasHeader {
 		for _, t := range h.To {
 			if t == myName || t == me {

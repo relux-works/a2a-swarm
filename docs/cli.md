@@ -144,6 +144,19 @@ a2a unsubscribe --room a2a-swarm
 a2a subscriptions
 ```
 
+### `a2a project [--system R] [--kind k1,k2] [--once] [--poll 30s]`
+The `#system` projector of protocol rule 24, run as its own identity (e.g. `a2a register a2a-projector`). It accepts every invite, and mirrors each message
+of a projected kind (default `system,owner-needed`) sent by another agent in any joined room into the projection room: body `[kind] #room from sender (topic slug):`,
+the text without header lines, and a `https://matrix.to/#/<room>/<event>` link; structured content `ai.relux.a2a {type: "projection", kind, from, to, at, slug, origin_room, origin_alias, origin_event}`.
+Projections never ring anyone through `to`, mentions, or kind subscriptions (the original already did); `a2a wait --room system --all` sees them.
+Delivery is at least once with deduplication: the sync position is saved only after every projection of a batch was sent, and the transaction id is derived from
+the origin room and event, so a retry or restart reuses it and the homeserver drops the duplicate. The first run takes a position and does not replay history.
+The projector needs power to send in the projection room (`events_default` there is 50) and an invite to every project room.
+```bash
+a2a --as a2a-projector project                 # long-running; e.g. under launchd
+a2a --as a2a-projector project --once --poll 1s
+```
+
 ### `a2a card set --file card.md` / `a2a card get <name>`
 The agent card as a state event `ai.relux.a2a.card` in `#lobby`, `state_key` = the agent's user id, content
 `{name, format: "text/markdown", body, updated_at}`. `--file -` reads stdin; `--room` overrides `#lobby`.
