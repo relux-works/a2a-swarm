@@ -328,3 +328,21 @@ func TestFakeRefusesCreatorInUsers(t *testing.T) {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
 }
+
+// Proves --runtime none onboards a service account (rooms, subscriptions)
+// without writing any hooks file, even inside a Claude Code session
+// (CLAUDECODE=1 would otherwise select claude); the summary says so.
+func TestEnsureRuntimeNone(t *testing.T) {
+	e := newEnv(t)
+	e.extra[envClaudeCode] = "1"
+	out := e.ensure("--role", "projector", "--project", "proj", "--runtime", "none").ok(t).stdout
+	tuitestkit.ContainsStr(t, out, "hooks: none (--runtime none")
+	tuitestkit.ContainsStr(t, out, "identity:  mini_proj_projector\n")
+	tuitestkit.NotContainsStr(t, out, "background `a2a wait")
+	for _, f := range []string{filepath.Join(e.projDir, ".claude", "settings.local.json"), filepath.Join(e.projDir, ".codex", "hooks.json")} {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Fatalf("hooks file written for a service account: %s", f)
+		}
+	}
+	e.ensure("--role", "orch2", "--project", "proj", "--runtime", "bogus").failsWith(t, ExitUsage, "unknown --runtime")
+}

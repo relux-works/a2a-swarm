@@ -49,7 +49,7 @@ until it is set. `a2a host show` prints the slug.
 a2a host init mini
 ```
 
-### `a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex] [--keeper]`
+### `a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper]`
 Onboards a new orchestrator in one command (owner requirement, 2026-09-29): it provisions this session's stable identity
 `<host>_<project>_<role>`, then joins the swarm rooms, creates the onboarding subscriptions, installs the notification hooks and prints a
 summary. Every step is printed; nothing is a hidden default; a re-run changes nothing and says `already` / `unchanged`.
@@ -714,3 +714,5 @@ A human operator's own account lives in `humans/<name>.json`, which `a2a creds m
 never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name); a human uses it with `a2a --human --as <name> …`.
 `--human` is refused (usage error, exit 2, before anything is read or sent) unless stdin is an interactive terminal: a character device other than
 `/dev/null`. Agents' tool calls have no terminal on stdin, so an agent cannot use a human account even when it knows the flag.
+
+`--runtime none` onboards a service account (e.g. the projector): rooms and subscriptions as usual, no hooks file (there is no session to notify).

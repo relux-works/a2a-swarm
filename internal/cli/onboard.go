@@ -48,6 +48,10 @@ type onboarding struct {
 // unambiguous Claude Code environment (CLAUDECODE=1 and no Codex marker) is
 // accepted. Anything else is a usage error asking for --runtime.
 func (a *App) ensureRuntime(flagValue string) (hookRuntime, string, error) {
+	if flagValue == "none" {
+		// A service account (e.g. the projector) has no session to notify.
+		return hookRuntime{name: "none", title: "none"}, "--runtime", nil
+	}
 	if flagValue != "" {
 		rt, err := lookupRuntime(flagValue)
 		if err != nil {
@@ -201,15 +205,20 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		subs = append(subs, line)
 	}
 
-	a.printf("hooks (%s, %s):\n", o.rt.name, o.rtSource)
-	hooksFile := filepath.Join(o.dir, o.rt.settings)
-	if abs, err := filepath.Abs(hooksFile); err == nil {
-		hooksFile = abs
+	hooksFile := "none (service account: no session to notify)"
+	if o.rt.name == "none" {
+		a.printf("hooks: none (--runtime none: a service account, no session to notify)\n")
+	} else {
+		a.printf("hooks (%s, %s):\n", o.rt.name, o.rtSource)
+		hooksFile = filepath.Join(o.dir, o.rt.settings)
+		if abs, err := filepath.Abs(hooksFile); err == nil {
+			hooksFile = abs
+		}
+		if err := cmdHookInstall(a, []string{"--agent", s.name, "--runtime", o.rt.name, "--settings", hooksFile}, true); err != nil {
+			return err
+		}
+		a.printf("Also keep one background `a2a wait --timeout 0` for idle wake, and read with `a2a inbox`.\n")
 	}
-	if err := cmdHookInstall(a, []string{"--agent", s.name, "--runtime", o.rt.name, "--settings", hooksFile}, true); err != nil {
-		return err
-	}
-	a.printf("Also keep one background `a2a wait --timeout 0` for idle wake, and read with `a2a inbox`.\n")
 
 	operator := sanitizeLine(a.Getenv("USER"))
 	if operator == "" {
