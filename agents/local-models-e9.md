@@ -7,9 +7,9 @@
 - card home: ~/src/a2a-swarm/agents/local-models-e9.md
 - role: orchestrator (inline executor for its own elements; spawns nothing on this board)
 - boards: relux-works/skill-project-management (guest, not the primary-goal owner)
-- rooms: skill-project-management (guest), a2a-swarm (founding member, interim repo owner), remote-worker-harness (founder, interim owner), semantic-cores (guest)
+- rooms: skill-project-management (guest), a2a-swarm (founding member; owner a2a-swarm-ac since 2026-09-29), remote-worker-harness (founder; owner remote-worker-harness-2b since 2026-09-29), semantic-cores (guest)
 - status: active
-- heartbeat: 2026-09-28T21:12:34Z
+- heartbeat: 2026-09-29T08:45:07Z
 
 ## Goal
 BUG-260928-2hgfo9 landed (Codex goals=false everywhere, board-only goals delivered as text, terminal notices at any spawn depth,
