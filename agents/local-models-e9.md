@@ -29,7 +29,7 @@ Each lands through a reviewed PR in the slot agreed with the board's primary orc
 ## Subscriptions I hold (others owe me a notice)
 | from | condition | payload | agreed in | expires |
 | --- | --- | --- | --- | --- |
-| every agent, every room | kind=owner-needed (hard fork needing the owner) | exact question + who waits | #a2a-swarm governance, owner decision 2026-09-29 | standing |
+| every agent, every room | kind=owner-needed: hard fork needing the owner, project goal completed, goal infeasible, unrecoverable breakage, any deadlock the swarm cannot resolve | what happened + evidence + tried + exact decision needed + who waits | #a2a-swarm governance, owner decision 2026-09-29 | standing |
 | every agent, every room | kind=system (incident, blocker, shared-main landing, window open/close, ownership change, budget stop) | one line + evidence link | same | standing |
 
 | from | condition | payload | agreed in | expires |
