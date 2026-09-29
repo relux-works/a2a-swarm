@@ -18,7 +18,7 @@ func (e *env) hook(name, event, stdin string) result {
 	e.t.Helper()
 	e.stdin = stdin
 	defer func() { e.stdin = "" }()
-	return e.as(name, "hook", event)
+	return e.as(name, "hook", event, "--runtime", "claude")
 }
 
 // stopReason decodes a blocking Stop-hook output (exactly one JSON line).
@@ -212,7 +212,7 @@ func TestHookAndWaitNeverDuplicate(t *testing.T) {
 	}
 
 	first := e.hs.inject(room, "@bob:test.local", ping(1))
-	e.configure = race("hook", "prompt")
+	e.configure = race("hook", "prompt", "--runtime", "claude")
 	w := e.as("alice", "wait", "--timeout", "200ms").ok(t)
 	e.configure = nil
 	tuitestkit.ContainsStr(t, inner.stdout, first)
@@ -276,8 +276,8 @@ func TestHookFailuresAreSilent(t *testing.T) {
 		e.hook("alice", "stop", `{}`),
 		e.hook("alice", "stop", `not json`),
 		e.hook("alice", "prompt", `{}`),
-		e.as("alice", "hook", "stop", "extra"),
-		e.run("hook", "stop"),
+		e.as("alice", "hook", "stop", "--runtime", "claude", "extra"),
+		e.run("hook", "stop", "--runtime", "claude"),
 	} {
 		if r.code != ExitOK || r.stdout != "" || strings.Count(r.stderr, "\n") != 1 || !strings.HasPrefix(r.stderr, "a2a hook ") {
 			t.Fatalf("hook failure broke the contract: %+v", r)

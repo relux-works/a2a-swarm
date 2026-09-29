@@ -22,7 +22,7 @@ const installedFresh = `{
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/a2a --as alice hook session-start"
+            "command": "/usr/local/bin/a2a --as alice hook session-start --runtime claude"
           }
         ]
       }
@@ -32,7 +32,7 @@ const installedFresh = `{
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/a2a --as alice hook prompt"
+            "command": "/usr/local/bin/a2a --as alice hook prompt --runtime claude"
           }
         ]
       }
@@ -42,7 +42,7 @@ const installedFresh = `{
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/a2a --as alice hook stop"
+            "command": "/usr/local/bin/a2a --as alice hook stop --runtime claude"
           }
         ]
       }
@@ -95,14 +95,14 @@ func TestHookInstallFresh(t *testing.T) {
 	e := newEnv(t)
 	e.exePath("/usr/local/bin/a2a")
 	path := filepath.Join(t.TempDir(), ".claude", "settings.local.json")
-	tuitestkit.ContainsStr(t, e.run("hook", "install", "--agent", "alice", "--settings", path).ok(t).stdout, "installed")
+	tuitestkit.ContainsStr(t, e.run("hook", "install", "--runtime", "claude", "--agent", "alice", "--settings", path).ok(t).stdout, "installed")
 	if got := readFile(t, path); got != installedFresh {
 		t.Fatalf("installed:\n%s", got)
 	}
 	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", st.Mode())
 	}
-	tuitestkit.ContainsStr(t, e.run("hook", "install", "--agent", "alice", "--settings", path).ok(t).stdout, "unchanged")
+	tuitestkit.ContainsStr(t, e.run("hook", "install", "--runtime", "claude", "--agent", "alice", "--settings", path).ok(t).stdout, "unchanged")
 	if got := readFile(t, path); got != installedFresh {
 		t.Fatal("re-run changed the file")
 	}
@@ -124,7 +124,7 @@ func TestHookInstallMergesIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Chmod(path, 0o640)
-	e.run("hook", "install", "--settings", path, "--agent", "alice").ok(t)
+	e.run("hook", "install", "--runtime", "claude", "--settings", path, "--agent", "alice").ok(t)
 	first := readFile(t, path)
 	var got struct {
 		Permissions json.RawMessage              `json:"permissions"`
@@ -138,7 +138,7 @@ func TestHookInstallMergesIdempotently(t *testing.T) {
 	if got.Env["OTHER"] != "1" || got.Env["A2A_AGENT"] != "alice" || got.Model != "opus" || compactJSON(t, string(got.Permissions)) != `{"allow":["Bash(ls)"]}` {
 		t.Fatalf("unrelated keys changed: %s", first)
 	}
-	stop := `{"hooks":[{"type":"command","command":"'/opt/a2a tools/a2a' --as alice hook stop"}]}`
+	stop := `{"hooks":[{"type":"command","command":"'/opt/a2a tools/a2a' --as alice hook stop --runtime claude"}]}`
 	if len(got.Hooks["Stop"]) != 2 || compactJSON(t, string(got.Hooks["Stop"][0])) != `{"hooks":[{"type":"command","command":"echo done && true"}]}` ||
 		compactJSON(t, string(got.Hooks["Stop"][1])) != stop || len(got.Hooks["PreToolUse"]) != 1 ||
 		len(got.Hooks["UserPromptSubmit"]) != 2 || len(got.Hooks["SessionStart"]) != 1 {
@@ -153,16 +153,16 @@ func TestHookInstallMergesIdempotently(t *testing.T) {
 	if st, _ := os.Stat(path); st.Mode().Perm() != 0o640 {
 		t.Fatalf("mode %v", st.Mode())
 	}
-	e.run("hook", "install", "--settings", path, "--agent", "alice").ok(t)
+	e.run("hook", "install", "--runtime", "claude", "--settings", path, "--agent", "alice").ok(t)
 	if readFile(t, path) != first {
 		t.Fatal("re-run is not byte-identical")
 	}
 	e.exePath("/usr/local/bin/a2a")
-	e.run("hook", "install", "--settings", path, "--agent", "alice").ok(t)
+	e.run("hook", "install", "--runtime", "claude", "--settings", path, "--agent", "alice").ok(t)
 	if err := json.Unmarshal([]byte(readFile(t, path)), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Hooks["Stop"]) != 2 || compactJSON(t, string(got.Hooks["Stop"][1])) != `{"hooks":[{"type":"command","command":"/usr/local/bin/a2a --as alice hook stop"}]}` {
+	if len(got.Hooks["Stop"]) != 2 || compactJSON(t, string(got.Hooks["Stop"][1])) != `{"hooks":[{"type":"command","command":"/usr/local/bin/a2a --as alice hook stop --runtime claude"}]}` {
 		t.Fatalf("moved binary: %s", got.Hooks["Stop"])
 	}
 }
@@ -177,24 +177,24 @@ func TestHookUninstall(t *testing.T) {
 	if err := os.WriteFile(path, []byte(userSettings), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	e.run("hook", "install", "--settings", path, "--agent", "alice").ok(t)
-	tuitestkit.ContainsStr(t, e.run("hook", "uninstall", "--settings", path).ok(t).stdout, "removed 3 a2a hook entries")
+	e.run("hook", "install", "--runtime", "claude", "--settings", path, "--agent", "alice").ok(t)
+	tuitestkit.ContainsStr(t, e.run("hook", "uninstall", "--runtime", "claude", "--settings", path).ok(t).stdout, "removed 3 a2a hook entries")
 	if compactJSON(t, readFile(t, path)) != compactJSON(t, userSettings) {
 		t.Fatalf("uninstall left:\n%s", readFile(t, path))
 	}
 	before := readFile(t, path)
-	tuitestkit.ContainsStr(t, e.run("hook", "uninstall", "--settings", path).ok(t).stdout, "unchanged")
+	tuitestkit.ContainsStr(t, e.run("hook", "uninstall", "--runtime", "claude", "--settings", path).ok(t).stdout, "unchanged")
 	if readFile(t, path) != before {
 		t.Fatal("second uninstall changed the file")
 	}
 	fresh := filepath.Join(t.TempDir(), "settings.local.json")
-	e.run("hook", "install", "--settings", fresh, "--agent", "alice").ok(t)
-	e.run("hook", "uninstall", "--settings", fresh).ok(t)
+	e.run("hook", "install", "--runtime", "claude", "--settings", fresh, "--agent", "alice").ok(t)
+	e.run("hook", "uninstall", "--runtime", "claude", "--settings", fresh).ok(t)
 	if got := readFile(t, fresh); got != "{}\n" {
 		t.Fatalf("fresh uninstall left %q", got)
 	}
 	missing := filepath.Join(t.TempDir(), "none.json")
-	tuitestkit.ContainsStr(t, e.run("hook", "uninstall", "--settings", missing).ok(t).stdout, "no such file")
+	tuitestkit.ContainsStr(t, e.run("hook", "uninstall", "--runtime", "claude", "--settings", missing).ok(t).stdout, "no such file")
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Fatal("uninstall created a file")
 	}
@@ -209,23 +209,23 @@ func TestHookInstallNegative(t *testing.T) {
 	e.exePath("/usr/local/bin/a2a")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
-	e.run("hook", "install", "--agent", "Bad Name", "--settings", path).failsWith(t, ExitUsage, "invalid agent name")
-	e.run("hook", "install", "--settings", path).failsWith(t, ExitUsage, "--agent is required")
-	e.run("hook", "install", "--agent", "alice", "--settings", path, "extra").failsWith(t, ExitUsage, "usage")
-	e.run("hook", "uninstall", "--agent", "alice").failsWith(t, ExitUsage, "flag provided but not defined")
+	e.run("hook", "install", "--runtime", "claude", "--agent", "Bad Name", "--settings", path).failsWith(t, ExitUsage, "invalid agent name")
+	e.run("hook", "install", "--runtime", "claude", "--settings", path).failsWith(t, ExitUsage, "--agent is required")
+	e.run("hook", "install", "--runtime", "claude", "--agent", "alice", "--settings", path, "extra").failsWith(t, ExitUsage, "usage")
+	e.run("hook", "uninstall", "--runtime", "claude", "--agent", "alice").failsWith(t, ExitUsage, "flag provided but not defined")
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("a refused install wrote the file")
 	}
 	for name, content := range map[string]string{"array.json": `[]`, "hooks.json": `{"hooks": []}`, "broken.json": `{"a":`} {
 		p := filepath.Join(dir, name)
 		os.WriteFile(p, []byte(content), 0o600)
-		e.run("hook", "install", "--agent", "alice", "--settings", p).failsWith(t, ExitError, "refusing to change it")
+		e.run("hook", "install", "--runtime", "claude", "--agent", "alice", "--settings", p).failsWith(t, ExitError, "refusing to change it")
 		if readFile(t, p) != content {
 			t.Fatalf("%s changed", name)
 		}
 	}
 	link := filepath.Join(dir, "link.json")
 	os.Symlink(filepath.Join(dir, "array.json"), link)
-	e.run("hook", "install", "--agent", "alice", "--settings", link).failsWith(t, ExitError, "not a regular file")
-	e.run("hook", "install", "--agent", "alice", "--settings", path).ok(t)
+	e.run("hook", "install", "--runtime", "claude", "--agent", "alice", "--settings", link).failsWith(t, ExitError, "not a regular file")
+	e.run("hook", "install", "--runtime", "claude", "--agent", "alice", "--settings", path).ok(t)
 }

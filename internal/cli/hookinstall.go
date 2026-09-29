@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -14,17 +15,24 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// DefaultHookSettings is where `a2a hook install` writes by default: the
-// project's local (not committed) Claude Code settings.
+// DefaultHookSettings is where `a2a hook install --runtime claude` writes by
+// default: the project's local (not committed) Claude Code settings.
 const DefaultHookSettings = ".claude/settings.local.json"
 
+// DefaultCodexHooks is where `a2a hook install --runtime codex` writes by
+// default: the project layer's hooks.json, which Codex loads only in a trusted
+// project (research/codex-hooks.md).
+const DefaultCodexHooks = ".codex/hooks.json"
+
 // ourHookRE recognizes a command written by `a2a hook install`, whatever the
-// binary path: <path> --as <name> hook <event>.
-var ourHookRE = regexp.MustCompile(`^(?:'(?:[^']|'\\'')*'|[^\s']+) --as ([a-z0-9][a-z0-9._=-]{0,63}) hook (stop|session-start|prompt)$`)
+// binary path: <path> --as <name> hook <event> --runtime <rt>. The form
+// without --runtime was written by earlier versions for Claude Code only.
+var ourHookRE = regexp.MustCompile(`^(?:'(?:[^']|'\\'')*'|[^\s']+) --as ([a-z0-9][a-z0-9._=-]{0,63}) hook (stop|session-start|prompt)(?: --runtime (claude|codex))?$`)
 
 var shellSafeRE = regexp.MustCompile(`^[A-Za-z0-9_./+:@%=,-]+$`)
 
-// shellQuote quotes s for the shell Claude Code runs hook commands with.
+// shellQuote quotes s for the shell the runtime runs hook commands with (Codex:
+// $SHELL -lc).
 func shellQuote(s string) string {
 	if shellSafeRE.MatchString(s) {
 		return s
@@ -156,8 +164,9 @@ func (o *jsonObject) childObject(k string) (*jsonObject, error) {
 }
 
 // ourHookGroup reports whether a hook matcher group is exactly one command
-// written by `a2a hook install` for event arg, and the agent it names.
-func ourHookGroup(raw json.RawMessage, arg string) (string, bool) {
+// written by `a2a hook install` for runtime rt and event arg, and the agent it
+// names. A command without --runtime (earlier versions) belongs to claude.
+func ourHookGroup(raw json.RawMessage, rt hookRuntime, arg string) (string, bool) {
 	var g map[string]json.RawMessage
 	if json.Unmarshal(raw, &g) != nil {
 		return "", false
@@ -178,12 +187,15 @@ func ourHookGroup(raw json.RawMessage, arg string) (string, bool) {
 	if m == nil || m[2] != arg {
 		return "", false
 	}
+	if m[3] != rt.name && (m[3] != "" || rt.name != "claude") {
+		return "", false
+	}
 	return m[1], true
 }
 
-// mergeHooks installs (cmd != "") or removes (cmd == "") our entry for every
+// mergeHooks installs (cmd != nil) or removes (cmd == nil) our entry for every
 // event. It returns the agent names of the removed entries.
-func mergeHooks(root *jsonObject, cmd func(arg string) string) ([]string, error) {
+func mergeHooks(root *jsonObject, rt hookRuntime, cmd func(arg string) string) ([]string, error) {
 	hooks, err := root.childObject("hooks")
 	if err != nil {
 		return nil, err
@@ -204,7 +216,7 @@ func mergeHooks(root *jsonObject, cmd func(arg string) string) ([]string, error)
 		out := []json.RawMessage{}
 		placed := false
 		for _, g := range groups {
-			if name, ok := ourHookGroup(g, ev.arg); ok {
+			if name, ok := ourHookGroup(g, rt, ev.arg); ok {
 				removed = append(removed, name)
 				touched = true
 				if desired != nil && !placed {
@@ -236,16 +248,17 @@ func mergeHooks(root *jsonObject, cmd func(arg string) string) ([]string, error)
 	return removed, nil
 }
 
-// cmdHookInstall: a2a hook install --agent NAME [--settings PATH] /
-// a2a hook uninstall [--settings PATH]
+// cmdHookInstall: a2a hook install --agent NAME --runtime claude|codex [--settings PATH] /
+// a2a hook uninstall --runtime claude|codex [--settings PATH]
 func cmdHookInstall(a *App, args []string, install bool) error {
 	name := "hook uninstall"
-	usage := "usage: a2a hook uninstall [--settings PATH]"
+	usage := "usage: a2a hook uninstall --runtime claude|codex [--settings PATH]"
 	if install {
-		name, usage = "hook install", "usage: a2a hook install --agent NAME [--settings PATH]"
+		name, usage = "hook install", "usage: a2a hook install --agent NAME --runtime claude|codex [--settings PATH]"
 	}
 	fs := newFlagSet(name)
-	settings := fs.String("settings", DefaultHookSettings, "Claude Code settings JSON to change")
+	settings := fs.String("settings", "", "file to change (claude: "+DefaultHookSettings+", codex: "+DefaultCodexHooks+")")
+	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (required)")
 	var agent *string
 	if install {
 		agent = fs.String("agent", "", "agent name the hooks deliver for (required)")
@@ -254,8 +267,17 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 	if err != nil {
 		return err
 	}
-	if len(pos) != 0 || *settings == "" {
+	settingsSet := false
+	fs.Visit(func(f *flag.Flag) { settingsSet = settingsSet || f.Name == "settings" })
+	if len(pos) != 0 || (settingsSet && *settings == "") {
 		return usagef("%s", usage)
+	}
+	rt, err := lookupRuntime(*runtime)
+	if err != nil {
+		return usagef("%v; %s", err, usage)
+	}
+	if !settingsSet {
+		*settings = rt.settings
 	}
 	if install {
 		if *agent == "" {
@@ -280,9 +302,13 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 			return fmt.Errorf("%s: %v; refusing to change it", sanitizeLine(path), err)
 		}
 	}
-	env, err := root.childObject("env")
-	if err != nil {
-		return fmt.Errorf("%s: %w", sanitizeLine(path), err)
+	// Codex hooks have no env: its hooks.json takes only "description" and
+	// "hooks", so env is neither read nor written there.
+	env := newJSONObject()
+	if rt.env {
+		if env, err = root.childObject("env"); err != nil {
+			return fmt.Errorf("%s: %w", sanitizeLine(path), err)
+		}
 	}
 	var removed []string
 	if install {
@@ -290,19 +316,21 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 		if err != nil {
 			return err
 		}
-		env.set(config.EnvAgent, marshalNoEscape(*agent))
-		root.set("env", env.marshal())
-		removed, err = mergeHooks(root, func(arg string) string {
-			return shellQuote(exe) + " --as " + *agent + " hook " + arg
+		if rt.env {
+			env.set(config.EnvAgent, marshalNoEscape(*agent))
+			root.set("env", env.marshal())
+		}
+		removed, err = mergeHooks(root, rt, func(arg string) string {
+			return shellQuote(exe) + " --as " + *agent + " hook " + arg + " --runtime " + rt.name
 		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", sanitizeLine(path), err)
 		}
 	} else {
-		if removed, err = mergeHooks(root, nil); err != nil {
+		if removed, err = mergeHooks(root, rt, nil); err != nil {
 			return fmt.Errorf("%s: %w", sanitizeLine(path), err)
 		}
-		if raw, ok := env.get(config.EnvAgent); ok {
+		if raw, ok := env.get(config.EnvAgent); ok && rt.env {
 			var cur string
 			if json.Unmarshal(raw, &cur) == nil && contains(removed, cur) {
 				env.del(config.EnvAgent)
@@ -322,6 +350,9 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 		var before bytes.Buffer
 		if json.Compact(&before, orig) == nil && bytes.Equal(before.Bytes(), out.Bytes()) {
 			a.printf("unchanged %s\n", sanitizeLine(path))
+			if install {
+				a.hookTrustNote(rt, path)
+			}
 			return nil
 		}
 	}
@@ -333,12 +364,39 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 	if err := writeSettings(path, pretty.Bytes(), mode); err != nil {
 		return err
 	}
-	if install {
-		a.printf("installed %s: env.%s=%s, hooks SessionStart, UserPromptSubmit, Stop\n", sanitizeLine(path), config.EnvAgent, *agent)
-	} else {
+	switch {
+	case install && rt.env:
+		a.printf("installed %s (%s): env.%s=%s, hooks SessionStart, UserPromptSubmit, Stop\n", sanitizeLine(path), rt.title, config.EnvAgent, *agent)
+	case install:
+		a.printf("installed %s (%s): hooks SessionStart, UserPromptSubmit, Stop for --as %s\n", sanitizeLine(path), rt.title, *agent)
+	default:
 		a.printf("removed %d a2a hook entries from %s\n", len(removed), sanitizeLine(path))
 	}
+	if install {
+		a.hookTrustNote(rt, path)
+	}
 	return nil
+}
+
+// hookTrustNote prints the human step a runtime needs before newly written
+// hooks run. Codex runs a non-managed hook only after a human trusted its exact
+// command (hooks.state.<key>.trusted_hash, written by Codex's TUI); a2a never
+// writes that approval itself (research/codex-hooks.md, (d)).
+func (a *App) hookTrustNote(rt hookRuntime, path string) {
+	if rt.name != "codex" {
+		return
+	}
+	where := path
+	if abs, err := filepath.Abs(path); err == nil {
+		where = abs
+		if filepath.Base(filepath.Dir(abs)) == ".codex" {
+			where = filepath.Dir(filepath.Dir(abs))
+		}
+	}
+	a.printf("human step: Codex runs these hooks only after a human trusts them; a2a does not trust them for you.\n")
+	a.printf("  1. start codex in %s (answer the project trust prompt with trust: an untrusted project ignores its .codex/);\n", sanitizeLine(where))
+	a.printf("  2. at \"Hooks need review\" choose \"Trust all and continue\" (or review them with /hooks).\n")
+	a.printf("  Repeat after the command changes (a moved a2a binary makes the hooks untrusted again).\n")
 }
 
 // executable is this binary's absolute path with symlinks resolved.

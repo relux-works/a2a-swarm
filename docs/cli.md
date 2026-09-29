@@ -279,15 +279,20 @@ pending batch. A write error exits 1 without committing, so the batch is deliver
 a2a watch --json | my-bridge
 ```
 
-### Environment delivery: Claude Code hooks (`a2a hook`)
-Notifications are delivered into the agent's session (protocol rule 4); an armed `wait` is only the fallback. For Claude Code this uses its public hook
-mechanism: commands in a settings file that Claude Code runs at lifecycle points, with a JSON object on stdin.
+### Environment delivery: Claude Code and Codex hooks (`a2a hook`)
+Notifications are delivered into the agent's session (protocol rule 4); an armed `wait` is only the fallback. This uses the public hook mechanism of
+the agent's runtime: commands that Claude Code or the Codex CLI runs at lifecycle points, with a JSON object on stdin. `--runtime claude|codex` is
+required on every `hook` command (no default); it selects the output format and, for `install`, the file written. Everything else (collection,
+acknowledgement, the 20-record bound, the loop guard, the 5 s budget) is the same for both.
 
-| Command | Claude Code event | Output when something is new |
+| Command (`R` = `claude` or `codex`) | Event | Output when something is new |
 | --- | --- | --- |
-| `a2a --as NAME hook session-start` | `SessionStart` | `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":R}}` |
-| `a2a --as NAME hook prompt` | `UserPromptSubmit` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":R}}` |
-| `a2a --as NAME hook stop` | `Stop` | `{"decision":"block","reason":R}` (the session does not stop; R is fed to the model) |
+| `a2a --as NAME hook session-start --runtime R` | `SessionStart` | `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":R}}` |
+| `a2a --as NAME hook prompt --runtime R` | `UserPromptSubmit` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":R}}` |
+| `a2a --as NAME hook stop --runtime R` | `Stop` | `{"decision":"block","reason":R}` (the session does not stop; R is fed to the model) |
+
+Codex (0.155, `codex-rs/hooks/src/schema.rs`) reads exactly these shapes, with the same event names and the same stdin fields a2a uses
+(`session_id`, `stop_hook_active`); its output structs reject unknown fields, so a2a emits nothing else. Research: `research/codex-hooks.md`.
 
 `R` is a header line, then one record per event in the one-line format of `wait`, each prefixed with `[peer event]`, and `(and K more)` when truncated:
 ```
@@ -310,10 +315,16 @@ How a hook delivers:
   nothing to stdout, one line to stderr, and exits 0; nothing new is acknowledged, so the events are delivered next time. A rejected token is repaired by
   the usual one-time re-login. A crash between the write and the acknowledgement delivers the same events again (at least once).
 
-#### `a2a hook install --agent NAME [--settings PATH]` / `a2a hook uninstall [--settings PATH]`
-`install` merges the three hooks and `env.A2A_AGENT` into a Claude Code settings file (default `./.claude/settings.local.json`, the project's local,
-uncommitted settings). The command is this binary's absolute path (symlinks resolved, shell-quoted when needed). In a new file (created with mode `0600`)
-the result is exactly:
+A missing or unknown `--runtime` on a hook event is an error like any other: nothing on stdout, one stderr line, exit 0, nothing acknowledged.
+Hooks installed before `--runtime` existed (`... hook stop`) therefore stop delivering until `a2a hook install --runtime claude` is run again, which
+replaces them in place.
+
+#### `a2a hook install --agent NAME --runtime claude|codex [--settings PATH]` / `a2a hook uninstall --runtime claude|codex [--settings PATH]`
+`--runtime` is required; a missing or unknown runtime, like an invalid agent name, is a usage error (exit 2) and writes nothing.
+
+`--runtime claude` merges the three hooks and `env.A2A_AGENT` into a Claude Code settings file (default `./.claude/settings.local.json`, the project's
+local, uncommitted settings). The command is this binary's absolute path (symlinks resolved, shell-quoted when needed). In a new file (created with mode
+`0600`) the result is exactly:
 ```json
 {
   "env": {
@@ -325,7 +336,7 @@ the result is exactly:
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/a2a --as alice hook session-start"
+            "command": "/usr/local/bin/a2a --as alice hook session-start --runtime claude"
           }
         ]
       }
@@ -335,7 +346,7 @@ the result is exactly:
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/a2a --as alice hook prompt"
+            "command": "/usr/local/bin/a2a --as alice hook prompt --runtime claude"
           }
         ]
       }
@@ -345,7 +356,7 @@ the result is exactly:
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/a2a --as alice hook stop"
+            "command": "/usr/local/bin/a2a --as alice hook stop --runtime claude"
           }
         ]
       }
@@ -353,14 +364,67 @@ the result is exactly:
   }
 }
 ```
-In an existing file every other key, its order, the other hooks and the file mode are kept; our entry (a matcher group holding exactly one command
-`<path> --as <name> hook <event>`) is added once per event or replaced in place (a moved binary). The write is atomic (temporary file and rename). Re-running
-prints `unchanged` and leaves the file byte-identical. `uninstall` removes exactly those entries, and `env.A2A_AGENT` when it names the agent of a removed
-entry, plus containers that became empty. An invalid agent name, a file that is not a JSON object, a non-object `hooks`/`env`, or a symlink is refused.
-Neither command contacts the homeserver.
+`--runtime codex` merges the three hooks into a Codex `hooks.json` (default `./.codex/hooks.json`, the project layer; `~/.codex/hooks.json` is the
+user layer and applies to every Codex session of that user, so it only suits a user that runs one agent). Codex hooks have no `env`, and the file
+takes only `description` and `hooks` at the top level, so nothing else is written; the identity is the `--as NAME` in each command. In a new file
+(mode `0600`) the result is exactly:
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/a2a --as alice hook session-start --runtime codex"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/a2a --as alice hook prompt --runtime codex"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/a2a --as alice hook stop --runtime codex"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+**Human step for Codex (trust).** Codex runs a hook only after a human trusted its exact command; the approval is stored by Codex's TUI as
+`[hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash = …` in `~/.codex/config.toml`. a2a never writes that approval (it would be
+the agent approving its own commands, which run outside Codex's sandbox). `install` prints the step, and exits 0:
+1. start `codex` in the project directory (the one holding `.codex/`) and trust the project when asked: an untrusted project's `.codex/` is ignored;
+2. at "Hooks need review" choose "Trust all and continue" (or review them with `/hooks`).
+
+Repeat it whenever the command changes (a moved a2a binary, a new agent name): Codex then reports the hooks as modified and does not run them.
+The only non-interactive alternative is Codex's own launch flag `--dangerously-bypass-hook-trust`, the choice of whoever starts Codex. In a linked
+git worktree Codex takes project hooks from the main checkout's matching `.codex/`, so install there with `--settings`. The `hooks` feature is
+stable and on by default in Codex 0.155; nothing needs enabling.
+
+For both runtimes: in an existing file every other key, its order, the other hooks and the file mode are kept; our entry (a matcher group holding
+exactly one command `<path> --as <name> hook <event> --runtime <R>`) is added once per event or replaced in place (a moved binary). An entry of the
+other runtime is not ours; a Claude entry without `--runtime` (written by earlier versions) is claude's and is upgraded in place. The write is atomic
+(temporary file and rename). Re-running prints `unchanged` and leaves the file byte-identical. `uninstall` removes exactly the entries of its runtime,
+and (claude) `env.A2A_AGENT` when it names the agent of a removed entry, plus containers that became empty. An invalid agent name, a file that is not a
+JSON object, a non-object `hooks`/`env`, or a symlink is refused. Neither command contacts the homeserver.
 ```bash
-a2a hook install --agent alice               # in the project directory of alice's Claude Code session
-a2a hook uninstall
+a2a hook install --agent alice --runtime claude    # in the project directory of alice's Claude Code session
+a2a hook install --agent alice --runtime codex     # in the project directory of alice's Codex session, then the human trust step
+a2a hook uninstall --runtime codex
 ```
 
 ### `a2a bridge tmux --agent NAME --pane TARGET --program P --empty-prompt RE [--idle 60s] [--interval 30s] [--poll 10s] [--once]`
@@ -495,9 +559,11 @@ name is refused unless `--force`. `print` shows the SKILL.md.
 bin/a2a skill install
 ```
 
-Identity safety: an agent acts only as itself. When `A2A_AGENT` is set (hook install sets it), `--as` with another name is refused.
+Identity safety: an agent acts only as itself. When `A2A_AGENT` is set (`hook install --runtime claude` sets it), `--as` with another name is refused.
 A human operator's own account lives in `humans/<name>.json`, which `a2a creds move-human <name>` produces from an agents/ file. Agents can
 never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name); a human uses it with `a2a --human --as <name> …`.
+`--human` is refused (usage error, exit 2, before anything is read or sent) unless stdin is an interactive terminal: a character device other than
+`/dev/null`. Agents' tool calls have no terminal on stdin, so an agent cannot use a human account even when it knows the flag.
 
 Calibrated bridge values for Claude Code 2.x panes: `--program '^(claude|node|[0-9]+\.[0-9]+\.[0-9]+)$'` (pane_current_command is the
 version string, e.g. `2.1.284`) and `--empty-prompt '^❯[\s\x{00a0}]*$'` (the empty input line is `❯` followed by U+00A0).

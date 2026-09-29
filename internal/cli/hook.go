@@ -14,13 +14,18 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
-// Environment delivery into Claude Code sessions (protocol rule 4): the hooks
-// hand relevant peer events to the model at the session's own lifecycle
-// points, so an agent does not have to keep `a2a wait` armed.
+// Environment delivery into agent sessions (protocol rule 4): the hooks of the
+// agent's runtime (Claude Code or Codex CLI) hand relevant peer events to the
+// model at the session's own lifecycle points, so an agent does not have to
+// keep `a2a wait` armed.
 //
 //   - stop           (Stop): blocks the stop with the events as the reason.
 //   - session-start  (SessionStart) and prompt (UserPromptSubmit): add them as
 //     additionalContext.
+//
+// Both runtimes run the same delivery; --runtime claude|codex (required)
+// selects only the output format (hookRuntime.render) and, for install, the
+// file written (research/codex-hooks.md).
 //
 // Delivery is at least once and never twice after an acknowledgement, shared
 // with wait/watch: the events are collected without a long poll (collectNow),
@@ -44,10 +49,11 @@ const hookGuardMax = 3
 // hookStdinMax caps the hook input read from stdin.
 const hookStdinMax = 1 << 20
 
-// hookEvent is one Claude Code hook event a2a handles.
+// hookEvent is one lifecycle hook event a2a handles; Claude Code and Codex use
+// the same event names.
 type hookEvent struct {
 	arg  string // a2a hook <arg>
-	name string // Claude Code event name
+	name string // the runtime's event name
 }
 
 var hookEvents = []hookEvent{
@@ -56,20 +62,21 @@ var hookEvents = []hookEvent{
 	{"stop", "Stop"},
 }
 
-// hookInput is the part of the Claude Code hook stdin JSON a2a uses.
+// hookInput is the part of the hook stdin JSON a2a uses; Claude Code and Codex
+// both send these fields under these names (Codex: hooks/src/schema.rs).
 type hookInput struct {
 	SessionID      string `json:"session_id"`
 	HookEventName  string `json:"hook_event_name"`
 	StopHookActive bool   `json:"stop_hook_active"`
 }
 
-// hookStopOutput blocks a stop; the reason is fed to the model.
+// hookStopOutput blocks a Claude Code stop; the reason is fed to the model.
 type hookStopOutput struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason"`
 }
 
-// hookContextOutput adds context to SessionStart and UserPromptSubmit.
+// hookContextOutput adds context to Claude Code's SessionStart and UserPromptSubmit.
 type hookContextOutput struct {
 	HookSpecificOutput struct {
 		HookEventName     string `json:"hookEventName"`
@@ -77,8 +84,79 @@ type hookContextOutput struct {
 	} `json:"hookSpecificOutput"`
 }
 
-const hookUsage = "usage: a2a hook stop|session-start|prompt  (reads the Claude Code hook JSON on stdin) | " +
-	"a2a hook install --agent NAME [--settings PATH] | a2a hook uninstall [--settings PATH]"
+// codexStopOutput is Codex's StopCommandOutputWire (codex-rs/hooks/src/schema.rs:451-464,
+// deny_unknown_fields): decision "block" with a non-empty reason continues the
+// turn with the reason as its prompt.
+type codexStopOutput struct {
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+}
+
+// codexContextOutput is Codex's SessionStart / UserPromptSubmit command output
+// wire (codex-rs/hooks/src/schema.rs:385-449, deny_unknown_fields).
+type codexContextOutput struct {
+	HookSpecificOutput codexHookSpecific `json:"hookSpecificOutput"`
+}
+
+type codexHookSpecific struct {
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext"`
+}
+
+// hookRuntime is an agent runtime whose hooks a2a serves. Delivery, acking,
+// bounds and the loop guard are shared; only the output format and the file
+// `hook install` writes differ.
+type hookRuntime struct {
+	name     string // --runtime value
+	title    string // for messages
+	settings string // default file of install/uninstall
+	// env: install also sets env.A2A_AGENT in the file (Codex hooks have no env).
+	env bool
+	// render returns the stdout JSON value for ev carrying reason.
+	render func(ev hookEvent, reason string) any
+}
+
+var hookRuntimes = []hookRuntime{
+	{
+		name: "claude", title: "Claude Code", settings: DefaultHookSettings, env: true,
+		render: func(ev hookEvent, reason string) any {
+			if ev.arg == "stop" {
+				return hookStopOutput{Decision: "block", Reason: reason}
+			}
+			var o hookContextOutput
+			o.HookSpecificOutput.HookEventName = ev.name
+			o.HookSpecificOutput.AdditionalContext = reason
+			return o
+		},
+	},
+	{
+		name: "codex", title: "Codex", settings: DefaultCodexHooks,
+		render: func(ev hookEvent, reason string) any {
+			if ev.arg == "stop" {
+				return codexStopOutput{Decision: "block", Reason: reason}
+			}
+			return codexContextOutput{HookSpecificOutput: codexHookSpecific{HookEventName: ev.name, AdditionalContext: reason}}
+		},
+	},
+}
+
+const runtimeNames = "claude|codex"
+
+// lookupRuntime resolves --runtime; there is no default (owner rule: no implicit defaults).
+func lookupRuntime(name string) (hookRuntime, error) {
+	if name == "" {
+		return hookRuntime{}, fmt.Errorf("--runtime is required (%s)", runtimeNames)
+	}
+	for _, rt := range hookRuntimes {
+		if rt.name == name {
+			return rt, nil
+		}
+	}
+	return hookRuntime{}, fmt.Errorf("unknown --runtime %q (%s)", sanitizeLine(name), runtimeNames)
+}
+
+const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex  (reads the hook JSON on stdin) | " +
+	"a2a hook install --agent NAME --runtime claude|codex [--settings PATH] | a2a hook uninstall --runtime claude|codex [--settings PATH]"
 
 // cmdHook: a2a hook stop|session-start|prompt|install|uninstall
 func cmdHook(ctx context.Context, a *App, args []string) error {
@@ -106,8 +184,19 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	fail := func(err error) {
 		fmt.Fprintln(a.Stderr, "a2a hook "+ev.arg+": "+a.secrets.Scrub(sanitizeLine(err.Error()))+"; nothing new was acknowledged")
 	}
-	if len(args) != 0 {
-		fail(errors.New("unexpected arguments; " + hookUsage))
+	fs := newFlagSet("hook " + ev.arg)
+	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (required)")
+	pos, err := parseInterspersed(fs, args)
+	if err == nil && len(pos) != 0 {
+		err = errors.New("unexpected arguments")
+	}
+	if err != nil {
+		fail(fmt.Errorf("%v; %s", err, hookUsage))
+		return
+	}
+	rt, err := lookupRuntime(*runtime)
+	if err != nil {
+		fail(fmt.Errorf("%v; re-run a2a hook install --agent NAME --runtime %s", err, runtimeNames))
 		return
 	}
 	in, err := readHookInput(a.Stdin)
@@ -119,13 +208,13 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	defer cancel()
 	a.sess = nil
 	a.served.Store(0)
-	err = a.hookDeliver(ctx, ev, in)
+	err = a.hookDeliver(ctx, rt, ev, in)
 	// A rejected token that the server refused before doing anything: log in
 	// again once and retry, like every other command (relogin.go).
 	if err != nil && errors.Is(err, matrix.ErrAuth) && a.sess != nil && a.served.Load() == 0 {
 		if err = a.relogin(ctx, a.sess, err); err == nil {
 			a.sess = nil
-			err = a.hookDeliver(ctx, ev, in)
+			err = a.hookDeliver(ctx, rt, ev, in)
 		}
 	}
 	if err != nil {
@@ -168,7 +257,7 @@ func hookSessionKey(id string) string {
 }
 
 // hookDeliver collects what is pending for this agent and hands it to the session.
-func (a *App) hookDeliver(ctx context.Context, ev hookEvent, in hookInput) error {
+func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in hookInput) error {
 	s, err := a.session()
 	if err != nil {
 		return err
@@ -216,7 +305,7 @@ func (a *App) hookDeliver(ctx context.Context, ev hookEvent, in hookInput) error
 			return nil, nil
 		}
 		shown := d.head(hookMaxRecords)
-		out, err := hookOutput(ev, len(d.items), shown.items)
+		out, err := hookOutput(rt, ev, len(d.items), shown.items)
 		if err != nil {
 			return nil, err
 		}
@@ -264,22 +353,12 @@ func hookReason(total int, shown []waitItem) string {
 	return b.String()
 }
 
-// hookOutput renders the hook's stdout JSON (one line).
-func hookOutput(ev hookEvent, total int, shown []waitItem) (string, error) {
-	reason := hookReason(total, shown)
-	var v any
-	if ev.arg == "stop" {
-		v = hookStopOutput{Decision: "block", Reason: reason}
-	} else {
-		var o hookContextOutput
-		o.HookSpecificOutput.HookEventName = ev.name
-		o.HookSpecificOutput.AdditionalContext = reason
-		v = o
-	}
+// hookOutput renders the hook's stdout JSON (one line) in the runtime's format.
+func hookOutput(rt hookRuntime, ev hookEvent, total int, shown []waitItem) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
+	if err := enc.Encode(rt.render(ev, hookReason(total, shown))); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

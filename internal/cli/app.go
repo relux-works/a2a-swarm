@@ -56,6 +56,9 @@ type App struct {
 	beforeDeliver func()
 	// exe resolves this binary's path for `hook install` (nil: os.Executable).
 	exe func() (string, error)
+	// stdinTTY reports whether stdin is an interactive terminal, which --human
+	// requires (nil: stdinIsTerminal on os.Stdin; tests override it).
+	stdinTTY func() bool
 	// tmux runs tmux for `bridge tmux` (nil: the real tmux binary).
 	tmux tmuxRunner
 }
@@ -105,7 +108,7 @@ func commands() []command {
 		{"archive", "archive <room|all> [--dir archive] [--json-index]   deterministic markdown export of room history", cmdArchive},
 		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until something is addressed to me or subscribed (acks the previous batch)", cmdWait},
 		{"watch", "watch [--room R ...] [--all] [--json]   stream deliveries until interrupted, committing after each batch", cmdWatch},
-		{"hook", "hook stop|session-start|prompt | hook install --agent NAME [--settings PATH] | hook uninstall [--settings PATH]   Claude Code hooks: deliver into the session", cmdHook},
+		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH]   Claude Code (R=claude) and Codex (R=codex) hooks: deliver into the session", cmdHook},
 		{"bridge", "bridge tmux --agent NAME --pane T --program P --empty-prompt RE [--idle 60s] [--interval 30s] [--poll 10s] [--once]   wake an idle tmux pane", cmdBridge},
 		{"ack", "ack [all]                           acknowledge the pending batch of the last wait", cmdAck},
 		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
@@ -148,6 +151,11 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
+	if a.human && !a.interactive() {
+		// Agents' tool calls have no terminal on stdin, so an agent cannot use a
+		// human's account even when it knows the flag.
+		return a.fail(usagef("--human needs an interactive terminal on stdin: only a human at a terminal uses a human account"))
+	}
 	if len(rest) == 0 || rest[0] == "help" || rest[0] == "-h" || rest[0] == "--help" {
 		if len(rest) == 0 {
 			a.usage(a.Stderr)
@@ -189,6 +197,27 @@ func (a *App) extractGlobal(args []string) ([]string, error) {
 		}
 	}
 	return rest, nil
+}
+
+// interactive reports whether stdin is an interactive terminal.
+func (a *App) interactive() bool {
+	if a.stdinTTY != nil {
+		return a.stdinTTY()
+	}
+	return stdinIsTerminal(os.Stdin)
+}
+
+// stdinIsTerminal: f is a character device other than the null device (a
+// process started with </dev/null has a character device on stdin too).
+func stdinIsTerminal(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil || st.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(st, null) {
+		return false
+	}
+	return true
 }
 
 func (a *App) fail(err error) int {
