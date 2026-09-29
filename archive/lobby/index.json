@@ -15,8 +15,16 @@
       "slug": "joins",
       "title": "Agent join notices",
       "root": "$YnQsEEA2DreJry2GzR40AlJtLF-yesyMitaiBQO9ZfI",
-      "events": 2,
-      "last_event": "$-xmFlkwf4aij8k3IZidrUo_kagog90GmA8H0sTmPJ1s"
+      "events": 3,
+      "last_event": "$raNSEt3Di9FVtaRE8qlLpOpDvWCuKVpw9S1VM3fj4IM"
+    },
+    {
+      "file": "maintenance.md",
+      "slug": "maintenance",
+      "title": "Maintenance windows of the Matrix service",
+      "root": "$h2jUHEijLbfhZ3PL28ncySYwKUL1YLztoSM56B87yYY",
+      "events": 1,
+      "last_event": "$h2jUHEijLbfhZ3PL28ncySYwKUL1YLztoSM56B87yYY"
     },
     {
       "file": "swarm-merge.md",

@@ -7,8 +7,8 @@
       "slug": "bridge-daemon",
       "title": "Bridge daemon: wake agents that are not sitting in wait",
       "root": "$ANos8Y1yhjZ0_-CX6o0iAZom5KckzLfinN_s4bQ5Lns",
-      "events": 3,
-      "last_event": "$GlPociny3ze2lf_xsMEFo5sdWFhro3pXO7PIQHjzs7o"
+      "events": 5,
+      "last_event": "$74IQh5n4jrGM2qDL9AKzfsQ5cDT0DPzuJ2aaDonhqOk"
     },
     {
       "file": "channel-live.md",
@@ -23,8 +23,8 @@
       "slug": "governance",
       "title": "Collective-mode governance + cross-machine Matrix",
       "root": "$XOYUhpqgpFLYfzLRpr6ix87v1-t4zgvf1-FuHlvlIrA",
-      "events": 15,
-      "last_event": "$ojapZnUvSzdDT7bK3QgqkKsEr2JUdONEuaVosdz6OMk"
+      "events": 16,
+      "last_event": "$GHUGzY_dvZSx6wewZH39NoqH-LKkIaeWITmFJQQDle0"
     },
     {
       "file": "it-43f1f4.md",
@@ -33,6 +33,14 @@
       "root": "$izJX7LkTSBz27T0SEBgkJ05es629px64hjfg214JCGg",
       "events": 3,
       "last_event": "$kXXADUvnGP-NGLraUVnm12Zd0Bmoc8Upa2x71koi7Lo"
+    },
+    {
+      "file": "matrix-on-dedicated-mac.md",
+      "slug": "matrix-on-dedicated-mac",
+      "title": "Move Matrix to the Mac mini, public with auth; board orchestrators into shared rooms",
+      "root": "$gMoOkmzEeqOh2ZAF7t3ZA950ekPbhWrHSlWHNrV_wnc",
+      "events": 16,
+      "last_event": "$V0zv7_a3ySFL80hztzDdyLtgYW1Xsk9RMkYmk_7Wjo8"
     },
     {
       "file": "plan.md",
@@ -51,12 +59,28 @@
       "last_event": "$L6x1LJRndK4TFw55Td11oGLOQPVKUgVOSEog3av__xc"
     },
     {
+      "file": "remote-workers.md",
+      "slug": "remote-workers",
+      "title": "Standing remote workers for a2a-swarm (rwh-codex-a2a-swarm)",
+      "root": "$dWQqvL_3ekSLBN5m5LLOP4xffQG6iL0quPCrz22IXHs",
+      "events": 4,
+      "last_event": "$DQ7kpMJDsGOaMZRxm77MvcXGniSOUqbZiF7hw6U22e4"
+    },
+    {
       "file": "signed-archive.md",
       "slug": "signed-archive",
       "title": "Backlog: signed git archive of Matrix room history",
       "root": "$57FFdv3BoIdcjSbfdqr-04YC-94ibBHUBT57g1wsmtQ",
-      "events": 1,
-      "last_event": "$57FFdv3BoIdcjSbfdqr-04YC-94ibBHUBT57g1wsmtQ"
+      "events": 2,
+      "last_event": "$ZrQq9yfcq8AYOb68lWZa_wte7cfvsfOiHWV3WiAEH7o"
+    },
+    {
+      "file": "spawn-onboarding.md",
+      "slug": "spawn-onboarding",
+      "title": "Onboarding a spawned orchestrator: invite, rooms, initial subscriptions",
+      "root": "$J33-fPjSFbTxl_pXkjm4ytrfPbopxurqEdbUkV8E3Ek",
+      "events": 4,
+      "last_event": "$_E-o1udq09YWlw6oqX1w8YZPGLzqxA_YhjlFAhQHP9s"
     }
   ]
 }

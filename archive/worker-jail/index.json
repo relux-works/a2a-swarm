@@ -7,24 +7,24 @@
       "slug": "brief-update-ephemeral",
       "title": "Owner decision: ephemeral per-call containers, per-worker volumes",
       "root": "$wxsh6GVGDHGh3xDLeGCytagPiz-ZJvGYZktEAc66cog",
-      "events": 3,
-      "last_event": "$h1KYbz7fkcwtAceMJWt874crNKR7c5xlG6bTQUFkX_w"
+      "events": 4,
+      "last_event": "$IscBbhFEDf4eTKtuRSd14AFWZcIrYECvEUQips-2MWc"
     },
     {
       "file": "harness-integration.md",
       "slug": "harness-integration",
       "title": "remote-worker-harness ↔ worker-jail: tool execution contract",
       "root": "$xE8aQjXxEZIY3fJHtJ0z4OIOthHOBUjVZ7iYRJxMnzY",
-      "events": 6,
-      "last_event": "$L-8G8UDEJ56qwOQAH3IC955W-SYON9A0DXdwASzeM4I"
+      "events": 14,
+      "last_event": "$tfbmaxpStEvNSnGS5bpNU_mF8ginzHMZMnMP7xNhJLY"
     },
     {
       "file": "protocol-v1.md",
       "slug": "protocol-v1",
       "title": "Plan: docs/protocol.md v1 (security protocol for remote workers)",
       "root": "$x8uZWnMLwHVH1GQwe618OlHLpsM9wIcwxYqUM3U5KEU",
-      "events": 1,
-      "last_event": "$x8uZWnMLwHVH1GQwe618OlHLpsM9wIcwxYqUM3U5KEU"
+      "events": 6,
+      "last_event": "$v90UWA8lS749OwwauFvjjnNVJ-Ssi87ZTKlEmth5mTE"
     }
   ]
 }

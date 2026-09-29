@@ -7,8 +7,8 @@
       "slug": "auth-owner",
       "title": "Design: single auth owner (external-token tenants)",
       "root": "$5kZeXcChKfZdtp4PeDffw01dWbtt5SST8M7Cm28ElwQ",
-      "events": 2,
-      "last_event": "$pIOM0UCfqrDX_ZH8PFZ_jAyi9_3J7NNUOUXH3B0BZvk"
+      "events": 3,
+      "last_event": "$R3HSchM8Y6vlw0FBqL0nbsM1B3CywU1d5YYsXbxxRtw"
     },
     {
       "file": "bash-jail.md",
@@ -17,6 +17,22 @@
       "root": "$BoHORiGTX2Ng8ihXawPzfsjrL5k-8yK1XDXzXtvAN2Y",
       "events": 2,
       "last_event": "$Xp-YO-sJrIqH9KOKMSZLgDQlwRw2jQuuG8QDi0m3odg"
+    },
+    {
+      "file": "claude-variant.md",
+      "slug": "claude-variant",
+      "title": "Design: Claude worker (MCP over reverse unix socket, setup-token login)",
+      "root": "$I55hEsKIBLgHbWTcCnzbvMEjHqq0KLBQVboPTQ5uy-c",
+      "events": 3,
+      "last_event": "$nslcnYUaTUzDboO-7XEeVlGAs4lMiW3fk06oHyO96io"
+    },
+    {
+      "file": "jailed-live.md",
+      "slug": "jailed-live",
+      "title": "Live: first jailed worker (rwh-codex-rwh, worker-jail container)",
+      "root": "$SpzgKpvYCp-7wsCdBT99SQZRyHTd2vWDODRclD0r5W4",
+      "events": 4,
+      "last_event": "$cYBJPamV4bamCGLSO3HjqAG9arqU8Tvhk9aLaZp7-dg"
     },
     {
       "file": "multi-tenant.md",
@@ -31,8 +47,8 @@
       "slug": "plan-worker",
       "title": "Plan: remote Codex worker as a swarm member",
       "root": "$HYBKI9B4G-5elmT-HglMo3t1VapAaIFNuca9fi7_9cQ",
-      "events": 8,
-      "last_event": "$53CCby51z6hupqELboKPiyE23OJ_We6BkQc_AlvD-1E"
+      "events": 12,
+      "last_event": "$NfTs7v_TxoOxXBVsm8x6-deXCrB7V07inYEY7znh0Ak"
     },
     {
       "file": "requirements.md",
