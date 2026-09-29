@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -46,6 +47,16 @@ type fakeHS struct {
 	wake       chan struct{}
 	seq        int
 	txns       map[string]string // user|room|txn -> event id (send idempotency)
+	// media repository
+	media     map[string]fakeMedia // media id -> stored upload
+	serveAs   map[string][]byte    // media id -> bytes served instead (a lying server)
+	uploadMax int64                // m.upload.size
+}
+
+type fakeMedia struct {
+	data        []byte
+	contentType string
+	filename    string
 }
 
 type fakeRoom struct {
@@ -82,6 +93,9 @@ func newFakeHS(t *testing.T) *fakeHS {
 		threadsAPI: true,
 		failures:   map[string]fakeFailure{},
 		wake:       make(chan struct{}),
+		media:      map[string]fakeMedia{},
+		serveAs:    map[string][]byte{},
+		uploadMax:  24 << 20,
 	}
 	mux := http.NewServeMux()
 	route := func(pattern string, auth bool, h func(w http.ResponseWriter, r *http.Request, user string)) {
@@ -129,6 +143,13 @@ func newFakeHS(t *testing.T) *fakeHS {
 	route("GET "+v3+"/sync", true, hs.sync)
 	route("PUT "+v3+"/presence/{user}/status", true, hs.putPresence)
 	route("GET "+v3+"/presence/{user}/status", true, hs.getPresence)
+	route("POST /_matrix/media/v3/upload", true, hs.upload)
+	route("GET "+v1+"/media/config", true, func(w http.ResponseWriter, r *http.Request, _ string) {
+		hs.mu.Lock()
+		defer hs.mu.Unlock()
+		writeJSON(w, 200, map[string]int64{"m.upload.size": hs.uploadMax})
+	})
+	route("GET "+v1+"/media/download/{server}/{media}", true, hs.download)
 	hs.srv = httptest.NewServer(mux)
 	t.Cleanup(hs.srv.Close)
 	return hs
@@ -223,6 +244,23 @@ func (hs *fakeHS) urls() []string {
 	defer hs.mu.Unlock()
 	return append([]string(nil), hs.rawURLs...)
 }
+
+// pinned returns the room's m.room.pinned_events list (nil if unset).
+func (hs *fakeHS) pinned(roomID string) []string {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	raw, ok := hs.rooms[roomID].state[matrixPinned+"|"]
+	if !ok {
+		return nil
+	}
+	var c struct {
+		Pinned []string `json:"pinned"`
+	}
+	_ = json.Unmarshal(raw, &c)
+	return c.Pinned
+}
+
+const matrixPinned = "m.room.pinned_events"
 
 // --- handlers ------------------------------------------------------------------
 
@@ -602,4 +640,41 @@ func (hs *fakeHS) getPresence(w http.ResponseWriter, r *http.Request, _ string) 
 		return
 	}
 	writeJSON(w, 200, p)
+}
+
+func (hs *fakeHS) upload(w http.ResponseWriter, r *http.Request, _ string) {
+	hs.mu.Lock()
+	max := hs.uploadMax
+	hs.mu.Unlock()
+	data, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		writeErr(w, 400, "M_UNKNOWN", "read error")
+		return
+	}
+	if int64(len(data)) > max {
+		writeErr(w, 413, "M_TOO_LARGE", "Upload too large")
+		return
+	}
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	hs.seq++
+	id := fmt.Sprintf("media%03dAbC_-", hs.seq)
+	hs.media[id] = fakeMedia{data: data, contentType: r.Header.Get("Content-Type"), filename: r.URL.Query().Get("filename")}
+	writeJSON(w, 200, map[string]string{"content_uri": "mxc://" + hs.server + "/" + id})
+}
+
+func (hs *fakeHS) download(w http.ResponseWriter, r *http.Request, _ string) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	m, ok := hs.media[r.PathValue("media")]
+	if !ok || r.PathValue("server") != hs.server {
+		writeErr(w, 404, "M_NOT_FOUND", "Media not found")
+		return
+	}
+	data := m.data
+	if alt, ok := hs.serveAs[r.PathValue("media")]; ok {
+		data = alt
+	}
+	w.Header().Set("Content-Type", m.contentType)
+	w.Write(data)
 }

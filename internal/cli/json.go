@@ -27,6 +27,8 @@ type EventRecord struct {
 	Trunk   string   `json:"trunk,omitempty"`
 	Excerpt string   `json:"excerpt,omitempty"` // wait: at most SnippetMax characters
 	Body    string   `json:"body,omitempty"`    // read: the full text without the header lines
+	// Attachment is set for file messages (a2a attach).
+	Attachment *Attachment `json:"attachment,omitempty"`
 }
 
 // eventRecord builds the record for a message event. typ is the record type;
@@ -45,6 +47,10 @@ func eventRecord(typ, room, roomID string, ev matrix.Event, server string, excer
 	text := m.Body
 	if h, ok := decodeHeader(m.A2A); ok {
 		r.Kind, r.Topic, r.To, r.Re, r.ReplyBy, r.Trunk = h.Kind, h.Slug, h.To, h.Re, h.ReplyBy, h.Trunk
+		if at := h.Attachment; at != nil {
+			r.Attachment = &Attachment{Name: sanitizeLine(at.Name), Size: at.Size, SHA256: sanitizeLine(at.SHA256),
+				MXC: sanitizeLine(at.MXC), MimeType: sanitizeLine(at.MimeType)}
+		}
 		if h.Type == "topic" {
 			r.Title = h.Title
 		} else {

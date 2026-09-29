@@ -76,24 +76,48 @@ var ErrAuth = errors.New("access token rejected by the homeserver")
 func seg(s string) string { return url.PathEscape(s) }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, in, out any) error {
-	u := c.BaseURL + path
-	if len(query) > 0 {
-		u += "?" + query.Encode()
-	}
 	var body io.Reader
+	contentType := ""
+	size := int64(-1)
 	if in != nil {
 		data, err := json.Marshal(in)
 		if err != nil {
 			return err
 		}
-		body = bytes.NewReader(data)
+		body, contentType, size = bytes.NewReader(data), "application/json", int64(len(data))
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	resp, err := c.send(ctx, method, path, query, body, contentType, size)
 	if err != nil {
 		return err
 	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
+	defer resp.Body.Close()
+	if out == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("%s %s: decode response: %w", method, path, err)
+	}
+	return nil
+}
+
+// send performs one request and returns the response for statuses below 300.
+// Other statuses are turned into *Error (or ErrAuth) and the body is closed.
+// size is the body length, or -1 when there is no body.
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, size int64) (*http.Response, error) {
+	u := c.BaseURL + path
+	if len(query) > 0 {
+		u += "?" + query.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil && size >= 0 {
+		req.ContentLength = size
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
@@ -105,26 +129,19 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	resp, err := hc.Do(req)
 	if err != nil {
 		// url.Error includes the URL, which never carries the token.
-		return fmt.Errorf("%s %s: %w", method, path, err)
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		me := &Error{Status: resp.StatusCode, Raw: data}
 		_ = json.Unmarshal(data, me)
 		if resp.StatusCode == http.StatusUnauthorized && (me.ErrCode == "M_UNKNOWN_TOKEN" || me.ErrCode == "M_MISSING_TOKEN") {
-			return fmt.Errorf("%w (%s)", ErrAuth, me.ErrCode)
+			return nil, fmt.Errorf("%w (%s)", ErrAuth, me.ErrCode)
 		}
-		return me
+		return nil, me
 	}
-	if out == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("%s %s: decode response: %w", method, path, err)
-	}
-	return nil
+	return resp, nil
 }
 
 func withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

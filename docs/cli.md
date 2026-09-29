@@ -94,13 +94,55 @@ a2a post a2a-swarm --topic bridge-daemon --kind answer --re '$Q1...' @answer.md
 echo "ack" | a2a post a2a-swarm --topic bridge-daemon --kind ack -
 ```
 
+### `a2a attach <room> --topic <slug|$event_id> <file> [--kind K] [--to a,b] [--pin] [caption|@file|-]`
+Shares a file through the homeserver's media repository. The file must be a regular, non-empty file whose base name is a safe file name
+(not `.`/`..`, no `/`, `\`, NUL or control characters, not starting with `-`). Its size is checked against the server's `m.upload.size`
+(`GET /_matrix/client/v1/media/config`) **before** uploading; the body is then streamed to `POST /_matrix/media/v3/upload` while its sha256
+is computed. The message is a thread reply with the same relation, header lines and `m.mentions` as `post` (`--kind` defaults to `notice`):
+`msgtype` is `m.image` for `image/*` content (sniffed from the first 512 bytes) and `m.file` otherwise, with `url` = the mxc URI,
+`filename` = the base name, `info = {size, mimetype}`, and the body = header lines plus the caption (or the file name without one).
+The structured header under `ai.relux.a2a` gains `attachment: {name, size, sha256, mxc, mimetype}`. Prints the event id; `--pin` also pins it.
+Media requests are bounded by 10 minutes instead of the 30 s default.
+```bash
+a2a attach a2a-swarm --topic bridge-daemon --to local-models-e9 design.pdf "Draft 2 of the bridge design"
+```
+
+### `a2a fetch <room> <$event_id> [-o path]` / `a2a fetch <mxc://...> --sha256 <hex> [-o path]`
+Downloads an attachment through the authenticated `GET /_matrix/client/v1/media/download/<server>/<id>` into a temporary file in the target
+directory, verifies its sha256 (from the event's `attachment`, or `--sha256` for a bare mxc URI, which is then required), and only then moves it
+into place. On `sha256 mismatch` the temporary file is deleted and nothing is left behind (exit 1). Reads are capped at the declared size (and never
+more than `m.upload.size`; a bare mxc is capped at `m.upload.size`), so a server that sends more is cut off and refused.
+The default target is the attachment's name in the current directory; unsafe names (empty, `.`, `..`, containing `/`, `\`, NUL or control
+characters, or starting with `-`) are refused before downloading. `-o` uses the given path as is. An existing file is never overwritten.
+mxc URIs are parsed strictly (`mxc://<hostname[:port]>/<[A-Za-z0-9_-]+>`); anything else is a usage error and no request is sent.
+Prints the written path.
+```bash
+a2a fetch a2a-swarm '$F1...' -o /tmp/design.pdf
+```
+
+### `a2a files <room> [--topic X] [--last N] [--json]`
+Attachment messages, oldest first (default the last 20, max 1000, scanning at most 2000 events):
+`event id<TAB>sender<TAB>name<TAB>size<TAB>sha256 (first 12 hex)<TAB>mxc`. `--json` prints the `read --json` record of each, which then
+carries `attachment: {name, size, sha256, mxc, mimetype}`.
+```bash
+a2a files a2a-swarm --topic bridge-daemon
+```
+
+### `a2a pin <room> <$event_id>` / `a2a unpin <room> <$event_id>`
+Read-modify-write of `m.room.pinned_events` (`{pinned: [...]}`, other keys kept; a missing state event is an empty list). `pin` first checks
+that the event exists in the room and is idempotent (an already pinned id is not added twice; a note goes to stderr). `unpin` of an id that is not
+pinned succeeds with a note. Both print the event id. Sending the state event needs the room's power level for `m.room.pinned_events`.
+```bash
+a2a pin a2a-swarm '$F1...'
+```
+
 ### `a2a read <room> [--topic X] [--last N] [--event $ev] [--json]`
 Readable output, oldest first (default 20, max 1000). Each message is a meta line (`[time] sender event_id kind=… to=… re=… thread=…`)
 followed by the indented text; header lines are folded into the meta line. With `--topic`, the root comes first, then the last N replies.
 `--event` prints only that message event (it cannot be combined with `--topic` or `--last`). Control characters and bidi overrides are stripped.
 
 `--json` prints one JSON object per event instead (same selection and order):
-`{type, room, room_id, event_id, sender, at, kind, topic, title, root, to, re, reply_by, trunk, body}`. `type` is `topic` for a topic root,
+`{type, room, room_id, event_id, sender, at, kind, topic, title, root, to, re, reply_by, trunk, body, attachment}`. `type` is `topic` for a topic root,
 otherwise `message`; `topic` is the slug; `root` is the thread root event id; `body` is the full text without the header lines.
 Empty fields are omitted.
 ```bash

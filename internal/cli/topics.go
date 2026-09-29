@@ -45,6 +45,17 @@ type Header struct {
 	Kind    string   `json:"kind,omitempty"`
 	ReplyBy string   `json:"reply_by,omitempty"`
 	Trunk   string   `json:"trunk,omitempty"`
+	// Attachment is set on file messages sent by `a2a attach`.
+	Attachment *Attachment `json:"attachment,omitempty"`
+}
+
+// Attachment describes a file shared through the media repository.
+type Attachment struct {
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	SHA256   string `json:"sha256"`
+	MXC      string `json:"mxc"`
+	MimeType string `json:"mimetype"`
 }
 
 func decodeHeader(raw json.RawMessage) (Header, bool) {
@@ -383,21 +394,9 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	var toNames, mentions []string
-	for _, t := range splitList(*to) {
-		if t == "all" {
-			toNames = append(toNames, "all")
-			continue
-		}
-		uid, err := normalizeUser(t, s.server)
-		if err != nil {
-			return err
-		}
-		toNames = append(toNames, localpartIfLocal(uid, s.server))
-		mentions = append(mentions, uid)
-	}
-	if len(toNames) == 0 {
-		toNames = []string{"all"}
+	toNames, mentions, err := addressees(*to, s.server)
+	if err != nil {
+		return err
 	}
 	roomID, label, err := s.resolveRoom(ctx, pos[0])
 	if err != nil {
@@ -410,18 +409,9 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 
 	h := Header{V: 1, Type: "message", Slug: slug, Topic: root, From: s.name, To: toNames,
 		At: now.Format(time.RFC3339), Re: *re, Kind: *kind, ReplyBy: rb, Trunk: *trunk}
-	content := map[string]any{
-		"msgtype":  "m.text",
-		"body":     formatHeaderBody(h, text),
-		ContentKey: h,
-		"m.relates_to": matrix.RelatesTo{
-			RelType:       "m.thread",
-			EventID:       root,
-			IsFallingBack: *re == "",
-			InReplyTo:     &matrix.InReplyTo{EventID: firstNonEmpty(*re, root)},
-		},
-		"m.mentions": matrix.Mentions{UserIDs: mentions},
-	}
+	content := threadReply(h, mentions)
+	content["msgtype"] = "m.text"
+	content["body"] = formatHeaderBody(h, text)
 	id, err := s.client.SendMessage(ctx, roomID, content)
 	if err != nil {
 		return fmt.Errorf("post to %s: %w", label, err)
@@ -431,6 +421,42 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	}
 	a.printf("%s\n", id)
 	return nil
+}
+
+// addressees turns --to into header names and m.mentions user ids.
+func addressees(to, server string) (names, mentions []string, err error) {
+	for _, t := range splitList(to) {
+		if t == "all" {
+			names = append(names, "all")
+			continue
+		}
+		uid, err := normalizeUser(t, server)
+		if err != nil {
+			return nil, nil, err
+		}
+		names = append(names, localpartIfLocal(uid, server))
+		mentions = append(mentions, uid)
+	}
+	if len(names) == 0 {
+		names = []string{"all"}
+	}
+	return names, mentions, nil
+}
+
+// threadReply returns the content shared by every thread reply (post, attach):
+// the structured header, the m.thread relation to h.Topic, and m.mentions.
+// The caller adds msgtype and body.
+func threadReply(h Header, mentions []string) map[string]any {
+	return map[string]any{
+		ContentKey: h,
+		"m.relates_to": matrix.RelatesTo{
+			RelType:       "m.thread",
+			EventID:       h.Topic,
+			IsFallingBack: h.Re == "",
+			InReplyTo:     &matrix.InReplyTo{EventID: firstNonEmpty(h.Re, h.Topic)},
+		},
+		"m.mentions": matrix.Mentions{UserIDs: mentions},
+	}
 }
 
 // formatHeaderBody renders the protocol header lines (rule 2) above the text.
@@ -568,18 +594,26 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 // collect pages newest-first until n message events are gathered, then
 // returns them oldest first.
 func (s *session) collect(ctx context.Context, n int, page func(from string) (matrix.Page, error)) ([]matrix.Event, error) {
+	return s.collectWhere(ctx, n, nil, page)
+}
+
+// collectWhere is collect restricted to message events for which keep returns
+// true. With a filter, the scan stops after maxScanEvents events.
+func (s *session) collectWhere(ctx context.Context, n int, keep func(matrix.Event) bool, page func(from string) (matrix.Page, error)) ([]matrix.Event, error) {
 	var out []matrix.Event
 	from := ""
-	for len(out) < n {
+	scanned := 0
+	for len(out) < n && (keep == nil || scanned < maxScanEvents) {
 		p, err := page(from)
 		if err != nil {
 			return nil, err
 		}
 		for _, ev := range p.Chunk {
-			if ev.Type == "m.room.message" && len(out) < n {
+			if ev.Type == "m.room.message" && len(out) < n && (keep == nil || keep(ev)) {
 				out = append(out, ev)
 			}
 		}
+		scanned += len(p.Chunk)
 		next := firstNonEmpty(p.End, p.NextBatch)
 		if next == "" || next == from || len(p.Chunk) == 0 {
 			break
@@ -611,6 +645,9 @@ func (a *App) printEvent(ev matrix.Event, server string) {
 		}
 		if h.Trunk != "" {
 			meta = append(meta, "trunk="+h.Trunk)
+		}
+		if h.Attachment != nil {
+			meta = append(meta, "file="+h.Attachment.Name, fmt.Sprintf("size=%d", h.Attachment.Size))
 		}
 	}
 	if root := ev.ThreadRoot(); root != "" {
