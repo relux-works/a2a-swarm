@@ -21,7 +21,7 @@ const ContentKey = "ai.relux.a2a"
 const TopicPrefix = "[topic] "
 
 // Kinds lists the message kinds of protocol rule 3.
-var Kinds = []string{"notice", "question", "answer", "proposal", "decision", "ack", "offer", "request", "accept", "decline", "handover", "subscribe", "unsubscribe"}
+var Kinds = []string{"notice", "question", "answer", "proposal", "decision", "ack", "offer", "request", "accept", "decline", "handover", "subscribe", "unsubscribe", "owner-needed", "system"}
 
 // DefaultReplyBy is the protocol default deadline for questions (rule 6).
 const DefaultReplyBy = 12 * time.Hour

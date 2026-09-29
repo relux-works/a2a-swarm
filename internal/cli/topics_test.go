@@ -266,3 +266,18 @@ func TestReadTopic(t *testing.T) {
 	e.as("alice", "read", "proj", "--last", "0").failsWith(t, ExitUsage, "--last")
 	e.as("carol", "read", "proj").failsWith(t, ExitError, "M_FORBIDDEN")
 }
+
+// Proves the rule-24 kinds owner-needed and system are accepted and stored in
+// the structured header, while an unknown kind is still refused.
+func TestPostOwnerNeededAndSystemKinds(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t)
+	for _, k := range []string{"owner-needed", "system"} {
+		id := strings.TrimSpace(e.as("bob", "post", "proj", "--topic", "alpha", "--kind", k, "--to", "alice", "x").ok(t).stdout)
+		ev, _ := e.hs.eventByID(id)
+		if h, _ := decodeHeader(ev.Message().A2A); h.Kind != k {
+			t.Fatalf("kind = %q, want %q", h.Kind, k)
+		}
+	}
+	e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "owner", "x").failsWith(t, ExitUsage, "invalid --kind")
+}

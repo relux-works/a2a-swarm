@@ -81,7 +81,7 @@ also listed in `m.mentions.user_ids`. Prints the event id.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--topic` | required | topic slug or root event id |
-| `--kind` | `notice` | notice, question, answer, proposal, decision, ack, offer, request, accept, decline, handover, subscribe, unsubscribe |
+| `--kind` | `notice` | notice, question, answer, proposal, decision, ack, offer, request, accept, decline, handover, subscribe, unsubscribe, owner-needed, system (protocol rules 3, 24) |
 | `--re` | - | event id this message answers; makes it a real reply (`m.in_reply_to`) |
 | `--to` | `all` | comma-separated names or user ids |
 | `--reply-by` | question: now + 12 h | RFC3339 deadline (normalized to UTC) |
