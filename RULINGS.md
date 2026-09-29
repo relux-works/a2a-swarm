@@ -129,7 +129,9 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - macos-sys defers its du sweep above load 48; its tb-R6 trim stays ungated.
 - tb-keeper watches thermalState every 30 s and alerts on serious or critical.
 - *Release:* the publication hold lifts on tb-keeper's announcement, not on each session's own load check, so the held republishes do not all land in the same minute. The announcement sets the order: #410 (STORY-260928-2fs0xe — write-boundary snapshot retention) first as the critical unblocker, then codex-fix, then the rest.
-- *State:* in force.
+- *15:33Z:* the publication hold was lifted (load5 52, thermal nominal). #410 went first, codex-fix followed at 15:45Z, and the others could publish from 15:55Z. The tb-R1 lane resumed. The 3-spawn cap, codex-fix's 4/4 and macos-sys's sweep deferral stay until the full end.
+- *17:29Z:* ended. load5 stayed under 48 for 30 min (27.5 at the end), and thermal was nominal throughout. The 3-spawn cap is lifted, and codex-fix may go to 8/8. The machine ceiling of 2 (tb-R27) stays. ivmbp stays in the pool: the operator's pause decision covers load peaks only, so the pending stop was cancelled.
+- *State:* closed; guarded by tb-R30.
 
 **tb-R23. Shared Matrix channel with Alexey's swarm; cross-swarm arbiter of skill-project-management main** (15:30Z).
 - *Operator decision:* Ivan, 2026-09-29: the Ivan-side orchestrators join the shared channel with Alexey's orchestrators, except cocoa and macos-sys.
@@ -154,6 +156,56 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - The window opened at 13:31Z, so its 3 h cap is 16:31Z. CI 36575599723 has been running on ivmbp since 14:51Z under a host load of 110–190.
 - If CI is still running at 16:00Z, the window extends to 16:30Z at most. tb-tests sends the new expected end and tb-keeper posts it in #skill-project-management.
 - The slot after the window and its gap goes to BUG-260928-m6l5lt (e7); tb-critical-fixes yielded it. Its bundle (1bsv99 + 16drs9) follows once its CI on rose-air is green.
+- *State:* in force.
+
+**tb-R25. Queue after #448's window ended without a landing** (16:30Z).
+- tb-tests ended its #448 window at 16:29Z inside the tb-R24 cap. Nothing was pushed, and main stayed at 05b0d902f3.
+- CI 36575599723 on ivmbp had been in "Test CLI" since 14:58Z, over 90 min. This host ran at load 50–140 under tb-R22; the same package takes about 52 min on rose-air (tb-R18 evidence).
+- Order after the gap (16:39Z):
+  1. BUG-260928-m6l5lt (e7);
+  2. #454 (BUG-260928-1bsv99 + TASK-260929-16drs9) once green on rose-air;
+  3. #448, re-queued: after a green CI it rebases onto the moved main and runs one new CI; after a red one it diagnoses first.
+- #454 and #448 remain first-ready-first-served.
+- *State:* in force.
+
+**tb-R26. ivmbp jobs under host overload** (16:32Z).
+- *Evidence:* #448's CI 36575599723 on ivmbp went red at 16:29Z on load alone. The cmd package hit its 90 min timeout (5400 s against 3112 s on rose-air), and TestDeleteOfALeafOnAThousandElementBoardThroughRunMutate took 12.99 s against its absolute 5 s bound (BUG-260929-g7ijg3).
+- Removing the `relux-ci` label from ivmbp would not keep landing jobs off it: branches cut before #448 still use the old selector `[self-hosted, macOS, ARM64]`. Pausing the ivmbp runner service is the effective step. The operator enabled it himself, so that is his decision, and he has been asked.
+- *Until then:* a red ivmbp job that fails on a timeout or a wall-clock bound is a load artifact and may be re-run once on rose-air, with the runner named in the re-run notice (rule 3 / protocol rule 20). A green ivmbp job stays valid landing evidence.
+- *State:* in force until the operator decides on ivmbp or tb-R22 ends.
+
+**tb-R27. Keep the machine ceiling at 2 after the m6l5lt swap** (16:50Z).
+- *What changed:* BUG-260928-m6l5lt landed at 16:44Z (main f3f10747, e7). Validation suites are now capped per project by `spawn.validation.max_concurrent_suites` (default 2), plus a new ceiling across the OS account, `spawn.validation.machine_max_concurrent_suites` (default 3). The old single cap of 2 per machine becomes a ceiling of 3 once the operator swaps the binary.
+- *Ruling:* this host runs hot (tb-R22, 90 °C at full fans). Before the swap, every Ivan-side board on this machine sets `spawn.validation.machine_max_concurrent_suites: 2` in its own `task-board.config.json`, which keeps today's total. Each campaign edits only its own config (rule 1).
+  - Every board has to set it: a run is checked against the lowest ceiling among the runs queued up to it, so one board's setting does not bind the others' earlier runs.
+  - Nobody raises any validation knob.
+- tb-R1's private priority root stays outside the ceiling, as before: the shared cap plus one.
+- The swap itself is the operator's act, between sessions (rule 5).
+- *Amended 16:55Z* (cocoa's measurement): the installed pre-swap binary rejects the key as `invalid_spawn_config: … not a supported validation key`, and live runs re-read the frozen config, so setting the key early breaks every live run. The key is added *right after* the operator's swap and *before the next spawn* of each campaign. tb-keeper announces the swap.
+- *State:* in force until tb-R22 ends and the operator agrees to return to 3.
+
+**tb-R28. Binary swap to m6l5lt; ivmbp paused; tunnel moved to a LaunchAgent** (17:10Z). Operator decisions, 2026-09-29, in tb-keeper's session.
+- *Swap:* Ivan said "можно — через куратор".
+  - tb-keeper ran `curator global upgrade` from its outside shell (iTerm, not hosted by tb-sessiond) at 17:03–17:08Z. task-board and tb-sessiond now build from main e2736418, which includes BUG-260928-m6l5lt.
+  - The three running tb-sessiond daemons were not restarted: ~ since 09-23, skill-project-management-muse (hosting tb-muse, attached), and tgfs.
+  - Probe on a config copy: `machine_max_concurrent_suites` is accepted, and a misspelled key is still refused.
+  - tb-R27 applies: each campaign adds the ceiling of 2 before its next spawn. tb-muse waits for its manager restart, which is the operator's call because it ends the hosted session.
+- *ivmbp:* Ivan said "да". The ivmbp runner service (`actions.runner.relux-works.ivmbp`, plist `~/Library/GitHubActions/ivmbp/manual-service.plist`) is booted out as soon as its current job finishes. It comes back with `launchctl bootstrap gui/$UID <plist>` when tb-R22 ends. Until then landing CI runs on rose-air, and tb-R26 stays for any job ivmbp already took. *17:29Z:* tb-R22 ended before ivmbp's job finished, so the pending stop was cancelled and ivmbp stayed in the pool. tb-R30 pauses it on the next peak.
+- *Muse key on the Mac mini:* stays as it is (Ivan: "пока не трогаем").
+- *Tunnel:* Ivan said "ок". A tunnel-only key `~/.ssh/a2a_tunnel_ed25519` was installed by macmini-infra with `restrict,port-forwarding,permitopen=8008/8088,command=/usr/bin/false`. Three tests passed: the forward works, a login gets no shell, port 22 is prohibited. The tunnel runs as the LaunchAgent `works.relux.a2a-tunnel`.
+- *tb-R6 amendment, pending:* a rate trigger for the 2 h go-build threshold, fired when free space falls more than 0.3 GiB/min across the last two hourly passes, alongside the under-15 GiB level trigger. macos-sys implemented it but shipped it disabled (`RATE_TRIGGER_ENABLED = False`), correctly: deleting more aggressively on the operator's machine is the operator's decision, to be given in macos-sys's own session, and a peer's yes does not stand in for it. Until then the rate is computed and logged every pass, and the manual `--trim-hours 2` stays available. The 2 h floor is absolute in code.
+- *State:* in force.
+
+**tb-R29. Priority slot on skill-agents-management for the gpt-6.1-sol row** (17:26Z).
+- macmini-model-registry, Ivan's session on the Mac mini that maintains the model registry, asked for a priority window on relux-works/skill-agents-management@main at Ivan's request. The change is PR #42: one signed commit 64e4ee62 that adds the gpt-6.1-sol row and retargets the floating `sol` alias from gpt-6-sol to gpt-6.1-sol. It becomes tag v0.5.29.
+- *Slot:* granted from the end of tb-muse's gap, about 17:26Z, with a 30 min cap. It is announced in #skill-agents-management, the repository's room since 17:15Z.
+- *Tags:* tb-agents-infra-exit's #453 fix, planned as v0.5.29, rebases onto 64e4ee62 and becomes v0.5.30.
+- *Pin:* the skill-project-management bump of agents-management stays one change, owned by tb-agents-infra-exit (TASK-260929-20xo9i; corrected by infra-exit, 3mf83p is the children-fragments leaf), and targets v0.5.30, which contains both. macmini-model-registry carries no separate pin bump. The `sol` retarget's effects on task-board (display order, docs) are coordinated between the two in #skill-project-management.
+- *State:* in force.
+
+**tb-R30. Load guard after tb-R22** (17:30Z).
+- If the 5-min load stays above 96 for 10 minutes, or thermalState reaches serious (2) or critical (3), tb-keeper re-engages tb-R22 in full and pauses the ivmbp runner, per the operator's decision for load peaks (tb-R28). It announces both in #skill-project-management and by SendMessage to cocoa and macos-sys.
+- Watchers: thermal and load1 every 30 s, and load5 every 60 s.
 - *State:* in force.
 
 ## a2a-swarm (arbiter a2a-swarm-ac)
