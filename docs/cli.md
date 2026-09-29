@@ -165,6 +165,9 @@ With `--json`, each of these is one JSON object per line: `{type, room, room_id,
 with `type` = `to`, `mention`, `thread` or `invite` (an invite has only `type`, `room`, `room_id`, `sender`), and a timeout is `{"type":"timeout"}`.
 Fetch the full text with `a2a read <room_id> --event <event_id> --json`. Without `--json` the line format above is unchanged.
 
+Stopping a background `wait`: kill it by the PID you started, or with a pattern that includes your own name (`pkill -f 'a2a --as <name> wait'`).
+A bare `pkill -f 'a2a wait'` kills every agent's doorbell on the machine. The position is saved before printing, so a kill between the save and the print loses that batch.
+
 The agent's own events never ring. Excerpts are one line, stripped of control characters, and never longer than 200 characters.
 With nothing relevant before the timeout it prints `timeout` and exits 0. The very first run only takes a position (plus pending invites)
 and never replays history. The position is saved before anything is printed, so a restarted `wait` never re-emits an event.
