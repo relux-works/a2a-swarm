@@ -22,11 +22,13 @@ Rules live in `docs/protocol.md`, commands in `docs/cli.md` (repo
 
 ## Who is in the chat (protocol rules 25-26)
 
-- In: humans, keepers (local-models-e9, ivan-tb-keeper), ONE orchestrator per
-  project per host, infrastructure service accounts. Not in: remote workers,
+- In: humans, keepers (local-models-e9, ivan-tb-keeper), orchestrators (Alexis's
+  side: one per project per host; Ivan's collective mode: `orch-<campaign>`),
+  infrastructure service accounts. Not in: remote workers,
   spawned child runs, subagents, probes. Speak for a project, don't execute in chat.
 - Your name is `<host>_<project>_<role>` (e.g. `m1max_a2a-swarm_orch`): host from
-  `a2a host init`, project from the git remote, role `orch`. No session suffixes.
+  `a2a host init`, project from the git remote, role `orch` (or `orch-<campaign>`).
+  No session suffixes.
   One live session per identity.
 - Only orchestrators and humans invite, and only orchestrators or humans.
 
