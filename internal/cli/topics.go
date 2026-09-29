@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"regexp"
 	"sort"
@@ -478,20 +479,30 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// cmdRead: a2a read <room> [--topic X] [--last N]
+// cmdRead: a2a read <room> [--topic X] [--last N] [--event ID] [--json]
 func cmdRead(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("read")
 	topic := fs.String("topic", "", "topic slug or root event id")
 	last := fs.Int("last", 20, "number of messages")
+	event := fs.String("event", "", "print only this event id")
+	asJSON := fs.Bool("json", false, "one JSON object per event")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return usagef("usage: a2a read <room> [--topic X] [--last N]")
+		return usagef("usage: a2a read <room> [--topic X] [--last N] [--event ID] [--json]")
 	}
 	if *last < 1 || *last > 1000 {
 		return usagef("--last must be between 1 and 1000")
+	}
+	lastSet := false
+	fs.Visit(func(f *flag.Flag) { lastSet = lastSet || f.Name == "last" })
+	if *event != "" && (*topic != "" || lastSet) {
+		return usagef("--event cannot be combined with --topic or --last")
+	}
+	if *event != "" && !strings.HasPrefix(*event, "$") {
+		return usagef("--event must be an event id ($...)")
 	}
 	s, err := a.session()
 	if err != nil {
@@ -502,7 +513,19 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	var events []matrix.Event
-	if *topic != "" {
+	if *event != "" {
+		ev, err := s.client.GetEvent(ctx, roomID, *event)
+		if err != nil {
+			if isNotFound(err) {
+				return fmt.Errorf("event %s not found in %s", sanitizeLine(*event), label)
+			}
+			return err
+		}
+		if ev.Type != "m.room.message" {
+			return fmt.Errorf("event %s is %s, not a message", sanitizeLine(*event), sanitizeLine(ev.Type))
+		}
+		events = []matrix.Event{ev}
+	} else if *topic != "" {
 		root, _, err := s.resolveTopic(ctx, roomID, label, *topic)
 		if err != nil {
 			return err
@@ -527,7 +550,17 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	for _, ev := range events {
-		a.printEvent(ev, s.server)
+		if !*asJSON {
+			a.printEvent(ev, s.server)
+			continue
+		}
+		typ := "message"
+		if h, ok := decodeHeader(ev.Message().A2A); ok && h.Type == "topic" {
+			typ = "topic"
+		}
+		if err := a.printJSON(eventRecord(typ, label, roomID, ev, s.server, false)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

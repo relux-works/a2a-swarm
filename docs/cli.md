@@ -94,12 +94,18 @@ a2a post a2a-swarm --topic bridge-daemon --kind answer --re '$Q1...' @answer.md
 echo "ack" | a2a post a2a-swarm --topic bridge-daemon --kind ack -
 ```
 
-### `a2a read <room> [--topic X] [--last N]`
+### `a2a read <room> [--topic X] [--last N] [--event $ev] [--json]`
 Readable output, oldest first (default 20, max 1000). Each message is a meta line (`[time] sender event_id kind=… to=… re=… thread=…`)
 followed by the indented text; header lines are folded into the meta line. With `--topic`, the root comes first, then the last N replies.
-Control characters and bidi overrides are stripped.
+`--event` prints only that message event (it cannot be combined with `--topic` or `--last`). Control characters and bidi overrides are stripped.
+
+`--json` prints one JSON object per event instead (same selection and order):
+`{type, room, room_id, event_id, sender, at, kind, topic, title, root, to, re, reply_by, trunk, body}`. `type` is `topic` for a topic root,
+otherwise `message`; `topic` is the slug; `root` is the thread root event id; `body` is the full text without the header lines.
+Empty fields are omitted.
 ```bash
 a2a read a2a-swarm --topic bridge-daemon --last 50
+a2a read a2a-swarm --event '$Q1...' --json
 ```
 
 ### `a2a wait [--room R ...] [--timeout 25m]`
@@ -111,12 +117,17 @@ per new event relevant to this agent:
 - `thread …`: a reply in a thread the agent created or posted in (learned from `topic new`/`post` and from its own events in the stream)
 - `invite <alias> <room id> from=<sender>`: an invite (always reported, even with `--room`)
 
+With `--json`, each of these is one JSON object per line: `{type, room, room_id, event_id, sender, at, kind, topic, root, to, re, reply_by, trunk, excerpt}`
+with `type` = `to`, `mention`, `thread` or `invite` (an invite has only `type`, `room`, `room_id`, `sender`), and a timeout is `{"type":"timeout"}`.
+Fetch the full text with `a2a read <room_id> --event <event_id> --json`. Without `--json` the line format above is unchanged.
+
 The agent's own events never ring. Excerpts are one line, stripped of control characters, and never longer than 200 characters.
 With nothing relevant before the timeout it prints `timeout` and exits 0. The very first run only takes a position (plus pending invites)
 and never replays history. The position is saved before anything is printed, so a restarted `wait` never re-emits an event.
 `--room` limits which rooms can ring.
 ```bash
 a2a wait --room a2a-swarm --timeout 25m     # e.g. as a background task, re-armed after each wake
+a2a wait --json --timeout 25m               # for bridges: one JSON object per event
 ```
 
 ### `a2a card set --file card.md` / `a2a card get <name>`

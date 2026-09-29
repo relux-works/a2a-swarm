@@ -130,9 +130,9 @@ func eventLine(rel relevance, room string, ev matrix.Event, server string) strin
 	return sanitizeLine(strings.Join(parts, " ")) + ": " + snippet(text, SnippetMax)
 }
 
-// inviteLine renders a doorbell line for an invite.
-func inviteLine(roomID string, state []matrix.Event, me, server string) string {
-	room, inviter := roomID, ""
+// inviteInfo extracts the room alias (or the id) and the inviter from invite state.
+func inviteInfo(roomID string, state []matrix.Event, me, server string) (room, inviter string) {
+	room = roomID
 	for _, ev := range state {
 		switch ev.Type {
 		case "m.room.canonical_alias":
@@ -144,13 +144,19 @@ func inviteLine(roomID string, state []matrix.Event, me, server string) string {
 			}
 		case "m.room.member":
 			if ev.StateKey != nil && *ev.StateKey == me && ev.Message().Membership == "invite" {
-				inviter = ev.Sender
+				inviter = localpartIfLocal(ev.Sender, server)
 			}
 		}
 	}
+	return room, inviter
+}
+
+// inviteLine renders a doorbell line for an invite.
+func inviteLine(roomID string, state []matrix.Event, me, server string) string {
+	room, inviter := inviteInfo(roomID, state, me, server)
 	line := "invite " + room + " " + roomID
 	if inviter != "" {
-		line += " from=" + localpartIfLocal(inviter, server)
+		line += " from=" + inviter
 	}
 	return snippet(line, 400)
 }
@@ -161,12 +167,13 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	var rooms stringList
 	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
 	timeout := fs.Duration("timeout", DefaultWaitTimeout, "how long to wait")
+	asJSON := fs.Bool("json", false, "one JSON object per event")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 0 {
-		return usagef("usage: a2a wait [--room R ...] [--timeout 25m]")
+		return usagef("usage: a2a wait [--room R ...] [--timeout 25m] [--json]")
 	}
 	if *timeout <= 0 {
 		return usagef("--timeout must be positive")
@@ -197,9 +204,9 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		var lines []string
+		var lines []waitItem
 		for roomID, inv := range resp.Rooms.Invite {
-			lines = append(lines, inviteLine(roomID, inv.InviteState.Events, me, s.server))
+			lines = append(lines, inviteItem(roomID, inv.InviteState.Events, me, s.server))
 		}
 		if _, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
 			cur.NextBatch = resp.NextBatch
@@ -209,16 +216,16 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		}
 		st.NextBatch = resp.NextBatch
 		if len(lines) > 0 {
-			for _, l := range lines {
-				a.printf("%s\n", l)
-			}
-			return nil
+			return a.printWaitItems(lines, *asJSON)
 		}
 	}
 
 	for {
 		remaining := deadline.Sub(a.Now())
 		if remaining <= 0 {
+			if *asJSON {
+				return a.printJSON(map[string]string{"type": "timeout"})
+			}
 			a.printf("timeout\n")
 			return nil
 		}
@@ -233,10 +240,10 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 			}
 			return err
 		}
-		var lines []string
+		var lines []waitItem
 		var learned []string
 		for roomID, inv := range resp.Rooms.Invite {
-			lines = append(lines, inviteLine(roomID, inv.InviteState.Events, me, s.server))
+			lines = append(lines, inviteItem(roomID, inv.InviteState.Events, me, s.server))
 		}
 		// Iterate rooms in a stable order so output is deterministic.
 		for _, roomID := range sortedKeys(resp.Rooms.Join) {
@@ -250,7 +257,11 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 				if rel == "" || (len(filter) > 0 && !filter[roomID]) {
 					continue
 				}
-				lines = append(lines, eventLine(rel, s.roomLabel(ctx, roomID, labels), ev, s.server))
+				label := s.roomLabel(ctx, roomID, labels)
+				lines = append(lines, waitItem{
+					line: eventLine(rel, label, ev, s.server),
+					rec:  eventRecord(string(rel), label, roomID, ev, s.server, true),
+				})
 			}
 		}
 		// Persist the position before printing, so a restart never re-emits these events.
@@ -265,10 +276,35 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 			return fmt.Errorf("save wait state: %w", err)
 		}
 		if len(lines) > 0 {
-			for _, l := range lines {
-				a.printf("%s\n", l)
-			}
-			return nil
+			return a.printWaitItems(lines, *asJSON)
 		}
 	}
+}
+
+// waitItem is one doorbell event in both output forms.
+type waitItem struct {
+	line string
+	rec  EventRecord
+}
+
+func inviteItem(roomID string, state []matrix.Event, me, server string) waitItem {
+	room, inviter := inviteInfo(roomID, state, me, server)
+	rec := EventRecord{Type: "invite", RoomID: sanitizeLine(roomID), Sender: sanitizeLine(inviter)}
+	if room != roomID {
+		rec.Room = sanitizeLine(room)
+	}
+	return waitItem{line: inviteLine(roomID, state, me, server), rec: rec}
+}
+
+func (a *App) printWaitItems(items []waitItem, asJSON bool) error {
+	for _, it := range items {
+		if !asJSON {
+			a.printf("%s\n", it.line)
+			continue
+		}
+		if err := a.printJSON(it.rec); err != nil {
+			return err
+		}
+	}
+	return nil
 }

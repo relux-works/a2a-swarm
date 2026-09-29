@@ -74,8 +74,8 @@ func commands() []command {
 		{"topic", "topic new <room> <slug> \"<title>\" [--body -|@file|text]   start a topic thread", cmdTopic},
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
 		{"post", "post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] <text|@file|->", cmdPost},
-		{"read", "read <room> [--topic X] [--last N]   print messages, oldest first", cmdRead},
-		{"wait", "wait [--room R ...] [--timeout 25m]  block until something is addressed to me", cmdWait},
+		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json]   print messages, oldest first", cmdRead},
+		{"wait", "wait [--room R ...] [--timeout 25m] [--json]   block until something is addressed to me", cmdWait},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status set <active|idle|away> [\"text\"] | status get [name]", cmdStatus},
 	}
