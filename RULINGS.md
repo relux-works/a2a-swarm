@@ -510,6 +510,26 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - No cross-campaign stacking: the README overlap would force a rebase and re-review of an accepted change anyway.
 - *State:* in force until both land.
 
+**tb-R63. Muse in curator profiles and curator-run launches: owners and sequence** (16:30Z, 2026-09-30). This is the operator's request in tb-muse's session: organise it among tb-muse, tb-keeper and tb-agents-infra-exit. tb-muse asked for a ruling on items a–e.
+- *Placement:* one Story, 'Muse in curator profiles and curator-run launches', under tb-agents-infra-exit's epic. This follows operator requirement 1: it belongs to the campaign that closes with infra-exit.
+  - Owner: tb-agents-infra-exit.
+  - tb-muse's parts (b, c, e) are tasks in its own EPIC-260927-5c4nxe, referenced as text across boards (`<repo>/<board>:<ID>`), with no cross-board links.
+- *Owners:*
+  - (a) The curator 'muse' environment: managed-home through XDG_*, auth.json file-link passthrough, and seeds and skills from the profile. This is a curator change, and Curator is developed in its own session. tb-muse files it as a GitHub issue on relux-works/curator, with today's measurements (and on curator-spec if the environment table is normative), and announces it in #curator. tb-agents-infra-exit tracks it in the Story.
+  - (b) The refresh-race probe: tb-muse. Does an atomic-rename token refresh replace the auth.json symlink? It must be answered BEFORE (a)'s passthrough design is final.
+  - (c) The foreign personal context under serve (muse-issues 013): tb-muse tracks it upstream. It is written into (a)'s environment definition as a known isolation gap, not a blocker.
+  - (d) The curator-agent-launcher 'muse' plugin: tb-agents-infra-exit, as launch-path owner. It comes after 3mf83p and before the infra-exit close.
+  - (e) The agents-management Muse plugin: tb-muse. The yolo mapping now (serve --disable-sandbox plus approvalMode allowAll, as the PermissionMode yolo candidate). The Muse Spark 1.4 registry row when it ships, then a task-board pin bump.
+- *Sequence:*
+  1. STORY-260930-2owsjs (task-board wiring) reaches near-final.
+  2. The (b) probe.
+  3. (a) the curator environment.
+  4. (d) the launcher plugin.
+  5. The infra-exit close.
+  (e) runs in parallel; the 1.4 row goes in when the model ships.
+- *Keychain:* the measured path needs none. Any one-time Keychain approval is Ivan's own act. Agents never automate or open the Keychain (Ivan's standing rule).
+- *State:* in force. tb-muse and tb-agents-infra-exit ack.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
