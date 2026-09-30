@@ -720,6 +720,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - orchestrators are unchanged: claude-opus-5-5 at high.
   This replaces the time-boxed Fable/Opus-max rule (20:47–23:47Z). Sol and Muse producers need Codex and Muse logins on the mini. A session without them reports the blocker and does not fall back to Fable.
 - *Amended 22:02Z (Ivan: «и тут тоже такое же правило давай только сразу … разошли все моим оркестраторам (алексея не нужно). это строгое правило»):* the rule is STRICT and covers EVERY Ivan-side orchestrator, not Alexey's. On ivmbp it took effect at once, with the broadcast at 22:02Z to tb-critical-fixes, tb-tests, tb-agents-infra-exit, tb-muse, codex-fix, apiary-podlodka and cocoa. ax applies it on resume, and macos-sys was informed. The Mac mini sessions get it at the wake-up, 23:39:54Z. There are no other pairs and no fallback: a blocker stops the spawn. Runs already in flight finish.
+- *Amended 22:08Z (Ivan: «важные ревью можно делать на астра хай»):* IMPORTANT reviews may run on codex/gpt-6-astra/high. The default reviewer stays claude-sonnet-5-5/high. Astra is for costly-failure reviews: critical fixes, shared-main landings, security paths, final CR reviews. Note that a Sol producer and an Astra reviewer share a publisher.
 - *State:* in force on ivmbp; on the mini from 23:39:54Z.
 
 ## a2a-swarm (arbiter a2a-swarm-ac)
