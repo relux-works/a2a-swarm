@@ -608,6 +608,19 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Applies now to:* PR #476 (TASK-260929-20xo9i). When its current run on b5e2877a is green, infra-exit rebases onto main (83651038 at 19:13Z), checks both conditions, and lands without a rerun. This resolves tb-R68 (3).
 - *State:* in force.
 
+**tb-R70. 1dh28f takes tb-R1's priority lane; the queue on spm main after #476** (19:30Z, 2026-09-30).
+- *Evidence:*
+  - BUG-260930-1dh28f (#474, tb-R61's critical unblocker) finished its producer stage and sat at position 4 on the machine semaphore (ceiling 1, tb-R64): 5–6 h before its suite would start, while every integrate on the repo stays broken.
+  - Free space was 66 GiB at 19:28Z and has held at 60 GiB or more since about 18:37Z. It grows about 5–6 GiB/h under ceiling 1.
+- *Decision:*
+  - (1) tb-critical-fixes runs 1dh28f's suite now in tb-R1's private priority lane, one suite: c73046 is cancelled and respawned on .temp/critical-260922/priority-state. A go-build sweep follows. If free space falls under 45 GiB, everyone else returns to ceiling 1, but this suite finishes.
+  - (2) The order on spm main after infra-exit's #476 window:
+    - m1max_skill-project-management_orch's BUG-260926-31ckqk (ready at 19:30Z, a ~10-min hold with its substitute check);
+    - m1max_local-models_orch's BUG-260928-2hgfo9;
+    - then first-ready, with 1dh28f ahead of anything non-critical the moment it is ready.
+  - (3) The offload of work to the Mac mini (Ivan, 19:25Z) runs through tb-keeper in batches. ivan-ci-isolation on the mini owns the board-Records stages 1–3; ivan-tb-tests and ivan-tb-critical-fixes hand over the elements.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
