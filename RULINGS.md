@@ -208,6 +208,123 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - Watchers: thermal and load1 every 30 s, and load5 every 60 s.
 - *State:* in force.
 
+**tb-R31. #454 re-runs on rose-air; its window runs past the cap; ivmbp paused for the peak** (18:46Z).
+- PR #454's CI 36601212209 on ivmbp (17:05–18:43Z) went red on two load artifacts: TestDeleteOfALeafOnAThousandElementBoardThroughRunMutate at 6.49 s against 5 s (BUG-260929-g7ijg3), and Test CLI timing out at 1 h 30 m. The bundle touches neither.
+- The host was back at load5 90, close to tb-R30's threshold, so the operator's pause-for-peaks decision applies. The ivmbp runner service was booted out at 18:46Z, which lets the re-run land only on rose-air (tb-R26, one re-run).
+- The window is extended from 19:55Z to 21:00Z, past the 3 h cap. Justification: a runner-only re-run of an unchanged exact head (9fe8d3b7) over an unmoved main (e2736418), with no rebase and no new review. #448 is next after its gap.
+- Evidence: ivmbp timed out Test CLI even at moderate host load. Until the host is quieter, rose-air is the landing runner for skill-project-management.
+- *Resume ivmbp:* `launchctl bootstrap gui/$UID ~/Library/GitHubActions/ivmbp/manual-service.plist`, once load5 has stayed under 48 for 30 min.
+- *State:* in force.
+
+**tb-R32. tb-R22 re-engaged under the tb-R30 guard** (18:52Z).
+- *Trigger:* load reached 144/137/110. Free disk fell from 45 to 26 GiB in about 50 min, as go-build grew from 30 to 47 GB under about 22 concurrent `go` processes from campaign suites. The tb-R30 watcher confirmed the trigger at 18:56Z: load5 above 96 for 10 min, 128 at that point.
+- tb-keeper re-engaged tb-R22 in full at 18:52Z: 3-spawn cap, publication hold above load5 64, tb-R1 lane suspended, codex-fix at 4/4. ivmbp had already been paused at 18:46Z (tb-R31). macos-sys's manual 2 h trim freed 16.6 GiB; free space is back to 39.4 GiB, and the cache is at its roughly 31 GB floor.
+- *Structural:* the cache grows 17–20 GB/h entirely inside the 3 h window, so the hourly 3 h pass collects nothing. The fix needs the operator, in macos-sys's own session: a standing 2 h threshold and a 30 min cadence, or the rate trigger. It has been asked.
+- *Release:* announced by tb-keeper, with #410 and codex-fix ordered as before, once load5 has stayed under 64 for 3 min. Full end once load5 has stayed under 48 for 30 min.
+- *19:14Z:* publication hold lifted, staggered: critical items at once, codex-fix from 19:20Z, the rest from 19:25Z. *19:43Z:* full end, with load5 at 14. The tb-R30 guard is re-armed.
+- *State:* closed.
+
+**tb-R33. #410 lands right after #454, ahead of #448** (19:30Z).
+- #410, BUG-260928-2x932g — write-boundary snapshot retention, is accepted: rev7, reviewer RUN-260929-dc76e4, mutants B–F killed. tb-critical-fixes has its landing commit 75502715 prepared on fresh main.
+- *Order after #454's window and gap:* #410, then #448, then first-ready among BUG-260928-2qon2t and BUG-260926-31ckqk (e7), BUG-260928-2hgfo9 (after 31ckqk), STORY-260927-nlbafo, and TASK-260929-20xo9i (the agents-management pin bump to v0.5.30).
+- *Reason:* critical unblockers first (rule 3). Disk is today's top host problem, and #410 retires tb-R6.
+- *State:* in force.
+
+**tb-R34. ivmbp stays paused through the next two landing CIs** (19:44Z).
+- ivmbp timed out Test CLI at 90 min even at moderate load (tb-R31). The next two landings, #410 and #448, run CI under the old `[self-hosted, macOS, ARM64]` selector, which ivmbp would match.
+- ivmbp therefore stays booted out until both landing CIs have run on rose-air.
+- Once #448's relux-ci selector is on main, tb-keeper removes the `relux-ci` label from ivmbp, so skill-project-management landings stop routing there. ivmbp's service is then bootstrapped again for the organisation's other repositories.
+- *State:* in force.
+
+**tb-R35. Alexis-M1-Max diagnosed and fixed; its route back to the landing pool** (20:16Z).
+- *Cause, confirmed by m1max_gha-runner_orch:* the runner's LaunchAgent had no ProcessType, so launchd spawned jobs as `spawn type = daemon` at priority 20 instead of 31. Under load, the internal/mirrorgate gate (about 20 serial child `go test` builds under one 10-minute package timeout) starved and panicked.
+  - Bench: without ProcessType at load up to 133 it timed out; with Interactive under the same load it passed in 369 s.
+  - CI evidence: three timeouts on the M1 Max, then two passes of 294 s and 114 s.
+- *Fix:* `ProcessType = Interactive` added to the runner plist, with a backup kept. The service stays booted out until #448, the relux-ci selector, is on main.
+- *Return:* after #448, the service is bootstrapped with the `relux-ci` label and runs one verification CI that covers internal/mirrorgate. If it is green, the runner is back in the landing pool with no further ruling. This retires the manual-cancel part of tb-R3.
+- *Follow-up for skill-project-management:* a per-child deadline for the mirrorgate gate's child `go test`, offered to tb-tests.
+- *State:* in force.
+
+**tb-R36. No ad-hoc wide test sweeps** (20:25Z).
+- *Evidence (macos-sys, at load5 14):* three concurrent uncached Go test runs wrote about 14 GB into go-build in about an hour: `./cmd -run ^TestS -count=1`, `-p 1 ./internal/... -count=1` and a `-mod=mod ./pkg/agentic` run.
+  - Precision: `-count=1` disables only the test-result cache. The entries come from distinct source trees, distinct flag sets and freshly linked test binaries.
+  - Such runs bypass the validation semaphore and its ceiling of 2, so tb-R27 cannot bound them.
+- *Rule,* as in skill-project-management's CLAUDE.md:
+  - while iterating, test only the touched packages, plus the uncached guard targets that cover the files changed;
+  - run the full suite exactly once, before the CR is published or the PR updated. The CR validation suite and the landing CI are the full runs.
+  - No ad-hoc `./...` or `./internal/...` sweeps, and no repeated `-count=1` full passes per edit.
+  - Campaigns put this into producer and reviewer briefs for new runs. cocoa applies it to its Go repositories.
+- *Result of that pass:* macos-sys's manual 2 h trim freed 18.4 GiB (cache 45 → 27 GB, 49 GiB free). A standing 2 h threshold still waits on the operator.
+- *State:* in force.
+
+**tb-R37. The M1 Max returns now; its first landing CI is the verification** (20:33Z). Supersedes tb-R35's hold.
+- *Asked by Alexis:* the second runner is critical. The ProcessType fix is bench-verified under load.
+- Rulings:
+  - skill-project-management-Alexis-M1-Max is bootstrapped now, and its default labels make it a second landing runner.
+  - The first skill-project-management landing CI it takes is the verification run, watched live by m1max_gha-runner_orch.
+  - If mirrorgate or Test CLI times out, the runner is booted out at once and the job is re-run on rose-air (tb-R26 budget).
+  - If it passes, it stays in the pool and gets `relux-ci` once #448 is on main.
+- #410's CI is already on rose-air, so the verification job will be #448's or a later one.
+- *State:* in force.
+
+**tb-R38. Fallback for the manual go-build trim** (21:20Z).
+- *Tonight:* five manual 2 h passes by macos-sys, each requested by tb-keeper, freed 67.4 GiB. The scheduled 3 h pass collects nothing at this build rate, and the standing threshold and the rate trigger still wait on the operator. macos-sys now logs manual runs to `~/Tools/cache-maintenance/logs/history.log`.
+- *Fallback:* if macos-sys does not answer within about 10 minutes and free space is under 30 GiB, tb-keeper runs `python3 ~/Tools/cache-maintenance/cleanup.py --trim-hours 2 --by tb-keeper` itself as a one-off manual pass. `--by` only labels the run in history.log. Nothing is scheduled and `--force` is never used. The script enforces the 2 h floor and refuses load-adding passes while spawns are live.
+- Automation stays the operator's decision.
+- *State:* in force.
+
+**tb-R39. #410's window extended to 23:30Z** (21:23Z).
+- PR #457 (head 19def337) was picked by macbook-iv on its third try at 21:22Z, because rose-air was taken in the meantime. The run is about 1.5× slower there.
+- The window opened at 20:01Z, so its cap is 23:01Z. It is extended to 23:30Z for a runner-only delay: head and main (2e7d611f) are unchanged, and #410 is a critical unblocker.
+- A red on a timeout or a wall-clock bound means one re-run on rose-air (tb-R26), with the time it needs asked for before 23:30Z.
+- *State:* in force.
+
+**tb-R40. Lane B lands right after #410, then #448, firmly** (21:30Z).
+- STORY-260923-dtftyp (TASK-260922-29gwk3 + TASK-260922-j947qg, the F3 policy-drift exit and current-policy revalidation, #319) is accepted as rev8. It is one of the goal's seven critical fixes, and its landing commit 17510583 is ready on main 2e7d611f.
+- *Order:* #410, then lane B in its own window, then #448 (tb-tests, waiting since 16:29Z; not to be reordered again without a critical reason), then first-ready among 2qon2t, 31ckqk, 2hgfo9, nlbafo and 20xo9i.
+- *State:* in force.
+
+**tb-R41. Machine ceiling of 1 suite for disk** (22:00Z).
+- *Evidence (macos-sys, 21:55Z):* a manual 2 h trim freed only 6.3 GiB. The go-build working set inside the safe 2 h window is 37.6 GiB (8.8 GiB of it written in the last 30 min), larger than free space (34.7 GiB), so trims can no longer create headroom. The write rate is about 19 GiB/h.
+  - Attribution: CR validation suite shards over distinct worktrees (`./internal/... -p 1`, `./cmd -run ^T…`), which are not ad-hoc runs; tb-R36 is holding.
+- *Ruling:* until free space stays above 60 GiB, or the operator frees the unowned data, each campaign sets `spawn.validation.machine_max_concurrent_suites: 1` before its next spawn. Running suites finish.
+  - tb-R36 stays strict.
+  - Manual 2 h trims continue hourly on request, with tb-R38 as the fallback.
+  - This roughly halves the write rate, at the cost of longer CR queues. Landing CIs on remote runners are unaffected.
+- *Operator decision pending:* the unowned 76.6 GiB (relux-tunnel 42.8 GiB), which is the real headroom.
+- *State:* in force.
+
+**tb-R42. #410 re-runs on rose-air; lane B may run stacked in parallel** (23:00Z).
+- #410's CI on macbook-iv failed once: TestDeleteOfALeafOnAThousandElementBoardThroughRunMutate at 11.91 s against its 5 s bound (BUG-260929-g7ijg3, a known load artifact that #410 does not touch). Everything else was green, and head and main are unchanged.
+- *Decision:* one re-run on rose-air (tb-R26), with the window extended to 00:45Z. The order stays as in tb-R40: #410, lane B, #448.
+- *Optional stacking:* lane B's commit is stacked on #410's head, and its CI runs in parallel on the M1 Max (the tb-R37 verification run). If both are green, lane B lands right after #410 on that already-validated exact head, with no second CI.
+- If the rose-air re-run is red again on g7ijg3 alone, the lander stops and asks; there is no third run.
+- *State:* in force.
+
+**tb-R43. macbook-iv paused for skill-project-management landings until #448** (23:05Z).
+- Old-selector branches (everything cut before #448) keep landing on macbook-iv. It is too slow for the cmd package (tb-R18) and flaky on g7ijg3, and it grabbed #410's re-run twice in a row (22:56Z and 22:59Z) while rose-air was free.
+- tb-keeper booted out the relux-works runner service on macbook-iv (host ivmbam1, plist `~/Library/GitHubActions/macbook-iv/manual-service.plist`). Its cocoaskills runner is untouched.
+- *Resume:* after #448 lands, when the relux-ci selector keeps it off landing jobs, with `launchctl bootstrap gui/$UID <plist>` on ivmbam1.
+- Same pattern as the ivmbp pause (tb-R31/tb-R34). For the operator: a pause on another of his machines, reversible with one command.
+- *State:* in force.
+
+**tb-R44. #410's rose-air result decides the next step; lane B waits** (00:25Z, 2026-09-30).
+- Lane B's stacked CI (run 36642495007 on the M1 Max, 22:56Z–00:21Z) went red on one test only: TestDeleteOfALeafOnAThousandElementBoardThroughRunMutate at 10.93 s against its 5 s bound. That is BUG-260929-g7ijg3 — the delete test on a 1000-element board has a load-fragile absolute 5 s bound. #410's re-run has been on rose-air since 23:20Z, with a result expected at 00:30–00:50Z, at the edge of tb-R42's window.
+- *#410 green on rose-air:* tb-critical-fixes lands #410 on that run. The window extends to 01:15Z for that landing only. Lane B does not land on its red run: it goes after #448. If tb-tests lands the g7ijg3 fix first, lane B rebases over both and runs one CI.
+- *#410 red on g7ijg3 alone:* the window closes when the result arrives. tb-tests' g7ijg3 fix lands first. Then tb-critical-fixes rebases the #410 + lane B stack once and runs a single CI. #448 keeps its turn after the stack.
+- *#410 red on anything else:* the window closes, and tb-critical-fixes reports the failure with evidence.
+- No third run of #410 without a tb-keeper ruling (tb-R42).
+- *Outcome:* #410 landed at 00:23Z, before the ruling reached its lander, on rose-air run 36623324102 (PR #457, exact-head fast-forward 2e7d611f..19def337). The window closed at 00:23Z, so the extension was not needed. Posted in #skill-project-management as a decision ($qhXHBhqJ…).
+- *M1 Max evidence (tb-R37):* the whole suite completed. Its only failure was the load-fragile bound, which also failed on macbook-iv (10.3 s and 11.91 s). So the ProcessType fix holds as far as runner health goes. Adding relux-ci to the M1 Max is still decided after #448.
+- *State:* in force.
+
+**tb-R45. The M1 Max leaves the pool until the g7ijg3 fix is on main** (00:35Z).
+- *tb-R37 verification: passed for runner health.* Lane B's run 36642495007 (job 109657762191) completed with no timeout. Test CLI took 79 min (package cmd 4754 s), and the mirrorgate guard 244 s. The only failure was BUG-260929-g7ijg3 at 10.93 s. The ProcessType fix holds.
+- *The problem left is the bound.* Under agent load the M1 Max misses it, as macbook-iv does (tb-R43), while rose-air passed it (#410's run 36623324102). A red landing run costs every campaign a full slot.
+- *Decision:* m1max_gha-runner_orch boots the runner out of the pool now, as with macbook-iv under tb-R43. It returns when the g7ijg3 fix is on main. The relux-ci label decision stays after #448. Lane B's job is not re-run (tb-R44).
+- *Recommendation to tb-tests:* land the g7ijg3 fix before #448 or inside it. That restores two runners, the M1 Max and macbook-iv. The order of its own two items is tb-tests' call.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* in force until the operator fixes billing.
