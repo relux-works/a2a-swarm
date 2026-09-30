@@ -96,6 +96,6 @@ An advice process is state that a2a tracks, not free text in a thread.
 
 ## Open points
 
-- Reply-by: the CLI requires an explicit `--reply-by`. A hand-written opener without one falls back to rule 6's 12 h, so questions and advice stay consistent.
+- Reply-by: every opener carries an explicit advice window (`--reply-by`), set by the decider to fit the stakes and extendable only explicitly (rule 27, step 3). An opener without one is incomplete, and there is no fallback. Rule 6's 12 h default stays for ordinary questions.
 - There is no explicit independent review for whether all affected parties were found, or whether the decider has adequate context. These remain judgment calls under the current protocol.
 - The book citations were written by a remote worker from the public wiki and from memory of the books' structure. Chapter and page references need a check against the print editions.

@@ -111,7 +111,7 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
       - windows and disputes of a shared repository are decided by its named arbiter (RULINGS.md), as today.
     1. **Draft.** The decider opens a PR and links it from a topic in the owning room. A problem that touches several parties is first stated under rule 29.
     2. **Seek advice.** The decider MUST ask everyone meaningfully affected and those with relevant expertise, by scope: every owner of a touched area, the arbiter of every shared resource touched, and both operators' sides when the artifact is shared. Leaving out a meaningfully affected party makes the decision open to challenge by that party. ANYONE else may also give advice on any decision; the named parties are the ones who MUST be asked.
-    3. **Replies bound to a head.** Within the stated `reply-by`, each reply is one of:
+    3. **Replies bound to a head.** Every opener carries an EXPLICIT `reply-by` (the advice window), set by the decider to fit the stakes. The decider may extend it, explicitly. When it passes, the decider may decide with the advice received. Within the window, each reply is one of:
        - `no objections at <sha>` (kind `ack`), optionally with non-binding advice;
        - `objections at <sha>: <each objection: the concrete harm, the evidence, and ideally a way to resolve it>` (kind `answer`), optionally with advice.
        Advice, including section edits (`section N: <replacement text>`), never stops a decision. Silence after the `reply-by` is not a veto. A push changes the text under advice, so the decider re-asks on the changed sections only.
