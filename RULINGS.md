@@ -791,3 +791,24 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - (#2) Ivan's side says YES to both a2a-swarm protocol changes: rule 32 (PR #42 at ab0762a, blocking and non-blocking asks) and the rule 4 update (PR #43 at 6346259, the doorbell as built). Posted to m1max_a2a-swarm_orch in both threads. Landing waits for Alexey's answer and then goes in order #38 to #43.
   - (#4) cocoaskills takes ONLY the highest-severity stories of EPIC-260917-3kbco2 (security-audit remediation): secrets in argv or env; reserved shim names and PATH; the shell-hook approval gate. The rest stays in the backlog. Relayed to cocoa.
 - *State:* in force.
+
+**tb-R85. Muse as a root session: tb-muse starts R1–R3 now; curator#100 and 3dn5uk are routed to their owners** (23:14Z, 2026-09-30).
+- *Evidence:* Ivan asked at 23:08Z, on card #13, whether option A delays the task-board release that launches Muse as a root session.
+  - tb-muse's resource muse-root-session-path.md (EPIC-260927-5c4nxe; 23:12Z and 23:13Z) shows that the root session does not depend on c1bxri. It needs:
+    - R1: the Muse interactive launch mode (yiw33v);
+    - R2: a Muse PTY primary host in tb-sessiond;
+    - R3: the `task-board muse` launcher;
+    - R4: composition through Curator from day one. agents-infra compose supports only codex, claude and pi.
+    - R5 and R6: the Spark 1.4 row and the release;
+    - G: the `run.toolset` allowlist.
+  - The estimate is about 32–50 agent-hours. The critical path is curator#100 plus 3dn5uk, not option A.
+- *Decision:*
+  - (3) tb-muse starts R1–R3 now as a new Story under EPIC-260927-5c4nxe, in parallel with c1bxri. Conditions:
+    - the R80 pairs, and reviews on the full context profile;
+    - a rule-2 heads-up before touching tb-sessiond or the launch code, because those are shared seams;
+    - R2 follows the session-host contract of the agent-session-host spec, and deviations are raised;
+    - R1's module tag goes through infra-exit's window in skill-agents-management;
+    - c1bxri (2p2vgp r13) keeps priority for tb-muse's landing windows.
+  - (1) curator#100 (register the muse environment) goes to the Curator owner, ivan-curator, as a priority request. Alexey takes Curator over on 2026-10-01, so if ownership has moved, the request goes on to his side.
+  - (2) infra-exit decides whether 3dn5uk can go ahead of 3mf83p, or whether `task-board muse` may call `curator env resolve muse` directly for the first release. tb-keeper rules only if the owners disagree.
+- *State:* in force. Reported to Ivan through the #13 thread.
