@@ -184,7 +184,7 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
         - how to tell it is over, and the rollback;
         - for an act done for an operator, whose approval covers it and when ("operator-approved, Ivan, 2026-09-30, in tb-keeper's session"). A relayed approval never counts (rule 24).
       - `--subtype impact-end` after, saying done with verification evidence (e.g. "new build contains X, the old one does not (negative control); N daemons untouched") and whether the rollback was used.
-      - A missing `impact-end` within the stated duration is itself a redline candidate (rule 28).
+      - A missing `impact-end` past the stated duration is raised with the actor by anyone affected; if it blocks others systemically, it is a redline (rule 28).
       `--subject` is the affected thing (host, binary, runner, service). Both share the subject and thread.
     - **Addressing.**
       - Specific affected agents are addressed with `--to`, so it rings them.
