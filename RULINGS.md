@@ -719,7 +719,8 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - routine tasks may use Muse Spark at effort max;
   - orchestrators are unchanged: claude-opus-5-5 at high.
   This replaces the time-boxed Fable/Opus-max rule (20:47–23:47Z). Sol and Muse producers need Codex and Muse logins on the mini. A session without them reports the blocker and does not fall back to Fable.
-- *State:* scheduled; in force from 23:39:54Z.
+- *Amended 22:02Z (Ivan: «и тут тоже такое же правило давай только сразу … разошли все моим оркестраторам (алексея не нужно). это строгое правило»):* the rule is STRICT and covers EVERY Ivan-side orchestrator, not Alexey's. On ivmbp it took effect at once, with the broadcast at 22:02Z to tb-critical-fixes, tb-tests, tb-agents-infra-exit, tb-muse, codex-fix, apiary-podlodka and cocoa. ax applies it on resume, and macos-sys was informed. The Mac mini sessions get it at the wake-up, 23:39:54Z. There are no other pairs and no fallback: a blocker stops the spawn. Runs already in flight finish.
+- *State:* in force on ivmbp; on the mini from 23:39:54Z.
 
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
