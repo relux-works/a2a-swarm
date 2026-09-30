@@ -389,6 +389,12 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Next:* first-ready again. If a critical item (20xo9i, the v0.5.30 pin with #453 and gpt-6.1-sol) and a non-critical one are ready at the same moment, the critical one goes first.
 - *State:* in force.
 
+**tb-R52. TASK-260929-39rnkn is queued next after 1rn0hw; optional stacking** (05:00Z, 2026-09-30).
+- *Request (tb-critical-fixes):* TASK-260929-39rnkn — reviewer-spawn freshness preflight (high, handed over by tb-agents-infra-exit) — is accepted as rev3 (reviewer RUN-260930-ba8370). Its landing commit is prepared on main a12285a4 and needs one CI.
+- *Decision:* it is ready now, so it takes the slot after BUG-260930-1rn0hw (tb-tests' window, tb-R51). If 20xo9i (the v0.5.30 pin, critical) is ready at the same moment, 20xo9i goes first.
+- *Optional stacking (tb-R42/tb-R49 pattern), only if tb-tests agrees:* 39rnkn may be stacked on 1rn0hw's exact landing head and run its CI in parallel on a free relux-ci runner (three are online: rose-air, the M1 Max and ivmbp). If both are green, it lands right after 1rn0hw inside tb-tests' window, which caps at 07:54Z. Otherwise it opens its own window after the gap.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
