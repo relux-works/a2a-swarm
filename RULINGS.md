@@ -308,7 +308,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - Same pattern as the ivmbp pause (tb-R31/tb-R34). For the operator: a pause on another of his machines, reversible with one command.
 - *State:* in force.
 
-**tb-R44. #410's rose-air result decides the next step; lane B waits** (00:25Z, 2026-09-30).
+**tb-R44. #410's rose-air result decides the next step; lane B waits** (00:24Z, 2026-09-30).
 - Lane B's stacked CI (run 36642495007 on the M1 Max, 22:56Z–00:21Z) went red on one test only: TestDeleteOfALeafOnAThousandElementBoardThroughRunMutate at 10.93 s against its 5 s bound. That is BUG-260929-g7ijg3 — the delete test on a 1000-element board has a load-fragile absolute 5 s bound. #410's re-run has been on rose-air since 23:20Z, with a result expected at 00:30–00:50Z, at the edge of tb-R42's window.
 - *#410 green on rose-air:* tb-critical-fixes lands #410 on that run. The window extends to 01:15Z for that landing only. Lane B does not land on its red run: it goes after #448. If tb-tests lands the g7ijg3 fix first, lane B rebases over both and runs one CI.
 - *#410 red on g7ijg3 alone:* the window closes when the result arrives. tb-tests' g7ijg3 fix lands first. Then tb-critical-fixes rebases the #410 + lane B stack once and runs a single CI. #448 keeps its turn after the stack.
@@ -318,7 +318,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *M1 Max evidence (tb-R37):* the whole suite completed. Its only failure was the load-fragile bound, which also failed on macbook-iv (10.3 s and 11.91 s). So the ProcessType fix holds as far as runner health goes. Adding relux-ci to the M1 Max is still decided after #448.
 - *State:* in force.
 
-**tb-R45. The M1 Max leaves the pool until the g7ijg3 fix is on main** (00:35Z).
+**tb-R45. The M1 Max leaves the pool until the g7ijg3 fix is on main** (00:25Z).
 - *tb-R37 verification: passed for runner health.* Lane B's run 36642495007 (job 109657762191) completed with no timeout. Test CLI took 79 min (package cmd 4754 s), and the mirrorgate guard 244 s. The only failure was BUG-260929-g7ijg3 at 10.93 s. The ProcessType fix holds.
 - *The problem left is the bound.* Under agent load the M1 Max misses it, as macbook-iv does (tb-R43), while rose-air passed it (#410's run 36623324102). A red landing run costs every campaign a full slot.
 - *Decision:* m1max_gha-runner_orch boots the runner out of the pool now, as with macbook-iv under tb-R43. It returns when the g7ijg3 fix is on main. The relux-ci label decision stays after #448. Lane B's job is not re-run (tb-R44).
