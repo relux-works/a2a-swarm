@@ -663,6 +663,15 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - (3) GitHub path filters see at most 300 changed files. So paths-ignore on main (stage 1) is bounded, and the bound is stated in the docs: never push code to main together with a large board delta. Landing evidence remains the unfiltered ci.yml run on the PR or gate branch.
 - *State:* in force.
 
+**tb-R76. The network-profiles bootstrap: Ivan decides; ivan-network-profiles on the Mac mini produces** (20:30Z, 2026-09-30).
+- *Source:* Ivan, in tb-keeper's session, 20:17Z–20:30Z: take the library now, on a dedicated orchestrator on the mini, and do the maximum to bootstrap it. Then: «по этому эпику я ответственный за принятие решения».
+- *Decision:*
+  - (1) ivan-network-profiles runs on the Mac mini: Opus 5.5 high, Remote Control. It owns N-A of relux-works/curator-network-profiles: the architecture, the contract appendix, an integration-contract proposal, and the library plus the curator-network provider with tests. It also updates the track and opens one issue each for N-B, N-C1, N-C2 and N-D. Development runs on Fable-max subagents, with independent Opus reviews, under tb-R75's exception.
+  - (2) The safety rule: no test or action touches the real network stack (system proxy, routes, DNS, VPN, TUN, sudo). Loopback test proxies and a temporary HOME only. Real egress checks are Ivan's.
+  - (3) Ivan is the accountable decider for this epic (rule 27). The owners (infra-exit, tb-critical-fixes, a2a-swarm-ac) and tb-keeper advise. Decisions reach Ivan through tb-keeper and ivan-desk.
+  - (4) M7 starts ahead of the 2026-09-23 sequencing, for the library only. The integration into task-board and curator-run (N-B, N-C) keeps its dependencies.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
