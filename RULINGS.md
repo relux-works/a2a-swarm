@@ -694,6 +694,22 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   Open decisions do not block a landing: the conservative default lands, and the decision goes to Ivan through tb-keeper and ivan-desk. tb-keeper reviews after landing, non-blocking. main is unprotected, and reluxbot has write access, so no setting changed.
 - *State:* in force.
 
+**tb-R79. Model routing and usage awareness: Ivan's decisions; ivan-model-routing on the Mac mini** (21:52Z, 2026-09-30).
+- *Source:* Ivan, in tb-keeper's session, about 21:50Z: «д1 - да - д2 - нет - д3 - д4 - да но максимум нужно автоматом», plus requirements on the benchmark format and on starting the specs and architecture on Fable max on the mini.
+- *Decision:*
+  - D1: the module split is adopted.
+    - agents-management holds the facts: the model registry, the bench data, the reactive limit plane (pkg/providerlimits), the machine catalog, and new usage snapshots per (runtime, managed home).
+    - curator-model-router decides: evidence, assessment, fitness, strategies, and decision records.
+    - task-board does admission, the candidate resolver (A0/A1) and enforcement.
+    - The operator files are models.toml and runtimes.toml.
+  - D2: NO CodexBar dependency. Native probes go through each harness's public interfaces; CodexBar is prior art only.
+  - D3 and D4: the dedicated orchestrator ivan-model-routing on the mini, with Fable 5.1 max subagents and Opus reviews, lands its own PRs in curator-model-router, tb-R78-style, and uses PRs, rule-18 heads-ups and windows in skill-agents-management and skill-project-management. Ivan is accountable, but automation is maximal: the orchestrator decides everything the specs cover, and only genuine product forks reach Ivan, batched through tb-keeper.
+  - Requirements:
+    - an internal, source-agnostic benchmark/evidence format: benchmark and version, the task categories covered, exact reasoning levels, metrics with provenance, internal observations per model (e.g. good for review, code or docs), and role suitability;
+    - headroom-aware distribution: remaining capacity per subscription at any moment, with stale meaning unknown. The router weights candidates by headroom and time to reset, spreads load, and keeps a reserve for orchestrators and reviewers. The hard filters stay admission plus the reactive plane.
+  - Order: specs first (evidence format, headroom policy, usage-snapshot spec, the A0 contract appendix), then an architecture-wide skeleton, then one issue per next slice. task-board's resolver itself waits for M4 Gate B.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
