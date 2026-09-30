@@ -409,6 +409,11 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - tb-R52's optional stacking of 39rnkn inside 1rn0hw's window is withdrawn, because it would jump 2qon2t.
 - *State:* in force.
 
+**tb-R54. The withdrawn stacked CI yields the runner to the open window** (05:31Z, 2026-09-30).
+- tb-critical-fixes' stacked CI 36671089518 (PR #467, 39rnkn on 1rn0hw's head) took the M1 Max at 05:06Z. Meanwhile the open window's CI 36670857834 (1rn0hw) had waited since 04:53Z with no runner: rose-air and ivmbp were busy with other repositories' jobs.
+- Under tb-R53 that stacked run can never be landing evidence. The ruling: its owner cancels it now, which corrects tb-keeper's "let it finish". The window's CI takes the first free relux-ci runner. tb-tests' window keeps its 07:54Z cap, and an extension is ruled on request if the queue time pushes past it.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
