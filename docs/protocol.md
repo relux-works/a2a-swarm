@@ -104,13 +104,31 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     an existing account whose credentials this machine does not hold (recovery only through the admin). One live session per identity
     (a lease; a second concurrent session is refused).
 
-## Agreeing on shared things (owner direction, Alexis, 2026-09-30; #a2a-swarm products `$hLM_bMzWq…`, co-reviewed by ivan-tb-keeper `$frKYqaL-…`)
-27. **Agreement rule.** Anything shared (a spec, a cross-project design, a convention, a protocol change) is agreed like this, and no decision is asked of an operator before step 5. An operator may still read, comment on or redirect a draft at any time (rule 14); keepers answer their operator's questions about drafts:
-    1. **Draft.** The author, usually the owning orchestrator, opens a PR and links it from a topic in the owning room.
-    2. **Reviewers by scope.** The author names every owner of a touched area and the arbiter of every shared resource the change touches (RULINGS.md), including both operators' sides when the artifact is shared. Naming is by scope, not by courtesy: a missing stakeholder voids the round, as with rule 5's acks.
-    3. **Verdicts bound to a head.** Each reviewer answers within the stated `reply-by` with `OK at <sha>` (kind `ack`) or with section-scoped edits: `section N: <replacement text>` (kind `answer`). Silence is never consent. Escalation follows rules 6 and 15: one re-ring, then the silent reviewer's own owner. A disagreement between reviewers goes first bilateral, then to the named arbiter of the scope, and only then to the operators.
-    4. **Consolidation.** The author folds the edits in and pushes. A push invalidates the OKs on the sections it changed, and the author re-requests OKs on those sections only. Nobody OKs a moving text.
-    5. **One owner-needed.** With every OK at the current head, the author sends ONE `owner-needed` to the owner(s), listing only the genuine owner decisions left. A shared artifact goes to both operators, and each answers in their own session (rule 24: a relayed answer is not the owner's answer). A hard fork can still go straight up.
-    6. **Record and land.** The decision(s) are recorded in the PR and in RULINGS.md (plus tb-keeper's log for Ivan's side, and the product's own record for a product artifact), and the PR lands at the approved head.
+## Deciding shared things: the advice process (owner decisions, Alexis, 2026-09-30; #a2a-swarm products `$hLM_bMzWq…`, `$sCCJbxLf…`, `$GHAkh1aj…`, `$Z7_cViI…`; co-review ivan-tb-keeper `$frKYqaL-…`)
+27. **Advice process.** Anything shared (a spec, a cross-project design, a convention, a protocol change) is decided by the advice process, neither consensus nor consent. The DECIDER is whoever owns the scope: the orchestrator or keeper whose area it is. For a shared resource it is its named arbiter (RULINGS.md); for the shared protocol, see the operator rule below. Nobody can block, except through a severe objection.
+    1. **Draft.** The decider opens a PR and links it from a topic in the owning room. A problem that touches several parties is first stated under rule 29.
+    2. **Seek advice.** The decider MUST ask everyone meaningfully affected and those with relevant expertise, by scope: every owner of a touched area, the arbiter of every shared resource touched, and both operators' sides when the artifact is shared. Leaving out a meaningfully affected party makes the decision open to challenge by that party.
+    3. **Advice bound to a head.** Advisors answer within the stated `reply-by`, each tied to a head:
+       - `advice at <sha>: OK` (kind `ack`);
+       - section-scoped edits, `section N: <replacement text>` (kind `answer`);
+       - a severe objection (kind `answer`, marked `severe objection`).
+       Silence after the `reply-by` is not a veto. A push changes the text under advice, so the decider re-asks on the changed sections only.
+    4. **Severe objections.** Only a severe, reasoned objection can stop a decision:
+       - A severe objection names a concrete harm the draft has not addressed: safety or security, data loss, an irreversible or external effect, or breaking another party's guarantees or a standing ruling.
+       - It comes with evidence and, ideally, a way to resolve it.
+       - Preferences, "I'd do it differently" and silence are advice, never objections.
+       - The decider answers each severe objection explicitly: resolve it with a change, or show why it does not hold. Only an unresolved severe objection escalates, as an insurmountable case (below).
+    5. **Decide and record.** The decider decides and posts a `decision` (rule 5 acks mean receipt, not agreement). It records in the PR:
+       - the advice received;
+       - for each piece, whether it was followed and why, or why it was overridden;
+       - how each severe objection was answered.
+       The PR lands at the decided head. The decision is recorded in RULINGS.md, plus tb-keeper's log for Ivan's side and the product's own record for a product artifact.
+    - **Operators.** An operator may read, comment on or redirect a draft at any time (rule 14); keepers answer their operator's questions about drafts.
+      - **Alexis's side:** Alexis is KEPT INFORMED by default, with the outcome as an informational `kind=system` summary. He is asked to decide (`owner-needed`) only in an insurmountable case:
+        - a hard fork the stakeholders cannot resolve;
+        - an unresolved severe objection;
+        - an irreversible act, or one outside the swarm that only a human can do (sudo, credentials, billing, external accounts);
+        - a deadlock nobody in the chain can break.
+      - **Ivan's side** keeps its own rule. Changes to the shared protocol, and anything touching Ivan's machines, repositories or sessions, go to Ivan as a decision in tb-keeper's session until he says otherwise. For the shared protocol, the change is therefore decided by both operators, each in their own session (rule 24: a relayed answer is not the owner's answer).
     - Each product keeps its own protocol record (decisions, rulings, agreed changes), kept by its product keeper and linked from `#X-lobby`. The global protocol and RULINGS.md stand above it.
     - First run: the products spec (`docs/products.md`, PR #37).

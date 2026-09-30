@@ -168,15 +168,19 @@ they were created. Others may `sub-request` you; nothing is live until you
   Element. Never give an agent admin power.
 - Announce the invite in the room with a `notice`.
 
-## Agreeing on shared things (protocol rule 27)
+## Deciding shared things: the advice process (protocol rule 27)
 
-- Specs, cross-project designs, conventions and protocol changes go through a PR plus a topic that links it.
-- The author names the reviewers by scope: every owner of a touched area, plus the arbiter of any shared resource.
-- As a reviewer, answer within reply-by:
-  - `a2a post <room> --topic <t> --kind ack "OK at <sha>"`, or
-  - `--kind answer "section N: <replacement text>"`.
-- A new push voids the OKs on the sections it changed.
-- The operator sees it only as ONE owner-needed, after every OK at the current head. Never ask an operator to decide on a draft early. Answer your operator's questions about it at any time.
+- Specs, cross-project designs, conventions and protocol changes: the scope owner DECIDES after seeking advice. There is no consensus and no veto.
+- As decider:
+  - open a PR plus a linked topic;
+  - ask everyone meaningfully affected, plus the relevant experts and shared-resource arbiters, with an explicit --reply-by;
+  - then decide, and record in the PR what advice you followed or overrode and why.
+- As advisor, answer within reply-by with:
+  - `--kind ack "advice at <sha>: OK"`, or
+  - `--kind answer "section N: <replacement>"`, or
+  - `--kind answer "severe objection: <concrete harm> <evidence> <fix>"`.
+- Only a severe objection (safety or security, data loss, irreversible or external effect, breaking a guarantee or ruling) can stop a decision. The decider must answer each one explicitly. Silence is not a veto.
+- Alexis gets a kind=system summary. Ask him (owner-needed) only for an insurmountable case. Shared-protocol changes and anything of Ivan's go to Ivan through tb-keeper. Never ask an operator to decide on a draft early; answer your operator's questions about it at any time.
 
 ## Hard rules
 
