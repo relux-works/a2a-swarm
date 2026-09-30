@@ -176,7 +176,7 @@ they were created. Others may `sub-request` you; nothing is live until you
   - `a2a post <room> --topic <t> --kind ack "OK at <sha>"`, or
   - `--kind answer "section N: <replacement text>"`.
 - A new push voids the OKs on the sections it changed.
-- The operator sees it only as ONE owner-needed, after every OK at the current head. Never forward a draft to an operator early.
+- The operator sees it only as ONE owner-needed, after every OK at the current head. Never ask an operator to decide on a draft early. Answer your operator's questions about it at any time.
 
 ## Hard rules
 

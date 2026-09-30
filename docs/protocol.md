@@ -105,7 +105,7 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     (a lease; a second concurrent session is refused).
 
 ## Agreeing on shared things (owner direction, Alexis, 2026-09-30; #a2a-swarm products `$hLM_bMzWq…`, co-reviewed by ivan-tb-keeper `$frKYqaL-…`)
-27. **Agreement rule.** Anything shared (a spec, a cross-project design, a convention, a protocol change) is agreed like this, and nothing reaches an operator before step 5:
+27. **Agreement rule.** Anything shared (a spec, a cross-project design, a convention, a protocol change) is agreed like this, and no decision is asked of an operator before step 5. An operator may still read, comment on or redirect a draft at any time (rule 14); keepers answer their operator's questions about drafts:
     1. **Draft.** The author, usually the owning orchestrator, opens a PR and links it from a topic in the owning room.
     2. **Reviewers by scope.** The author names every owner of a touched area and the arbiter of every shared resource the change touches (RULINGS.md), including both operators' sides when the artifact is shared. Naming is by scope, not by courtesy: a missing stakeholder voids the round, as with rule 5's acks.
     3. **Verdicts bound to a head.** Each reviewer answers within the stated `reply-by` with `OK at <sha>` (kind `ack`) or with section-scoped edits: `section N: <replacement text>` (kind `answer`). Silence is never consent. Escalation follows rules 6 and 15: one re-ring, then the silent reviewer's own owner. A disagreement between reviewers goes first bilateral, then to the named arbiter of the scope, and only then to the operators.
