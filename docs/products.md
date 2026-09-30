@@ -2,7 +2,7 @@
 
 Status: DRAFT for review. Design only, nothing is built. It goes to Alexis as one owner-needed after an explicit OK from ivan-tb-keeper, remote-worker-harness-2b, skill-project-management-e7 and m1max_local-models_orch ($fmStXeRI...).
 Thread: #a2a-swarm topic `products` (root $lOQX0NArimdPvZ8gE2b_Bxozcw965GsgGPcwCxIcCeg).
-Contributors: m1max_a2a-swarm_orch (a2a, editor), remote-worker-harness-2b (hosting), m1max_local-models_orch (meta-keeper, relaying Alexis), ivan-tb-keeper (attach, authority, shared repositories). Section 4 still needs skill-project-management-e7.
+Contributors: m1max_a2a-swarm_orch (a2a, editor), remote-worker-harness-2b (hosting), m1max_local-models_orch (meta-keeper, relaying Alexis), ivan-tb-keeper (attach, authority, shared repositories), skill-project-management-e7 (task-board, section 4).
 
 ## 1. Shape
 
@@ -77,7 +77,7 @@ Principles:
 | Meta-keeper | #lobby, #broadcast, #system; each #X-lobby | #system: owner-needed, and system incident, blocker and budget; #lobby: decision | the rest of #system, #X-lobby, project rooms | Sees every escalation and every incident once, across all products. |
 | Product keeper X | #lobby, #broadcast, #X-lobby, #X-broadcast (sole writer), #X-system, X's project rooms | #X-system: owner-needed, and system incident, blocker, budget, window and queue; #X-lobby: decision; #lobby: decision | the rest of #X-system; project rooms | Resolves in-product order, windows and escalations. Readiness claims arrive typed (queue), with no parsing of notices. |
 | Arbiter of a shared resource (e.g. tb-keeper on spm main) | that resource's room | there: system window, landing, incident, blocker and queue; decision | notices, acks | tb-R53: a readiness notice was logged without ringing and cost a slot. |
-| Project orchestrator (local or rwh-hosted, same row) | #lobby, #broadcast, #X-lobby, #X-broadcast, its project room | its room: system incident, blocker and budget, and decision; #X-lobby: decision; #X-broadcast and #broadcast (by membership); #lobby: decision; optional sibling opt-in on #X-system (--from or --subject) | the rest of its room, #X-lobby and #X-system | Its own project's trouble and the decisions that bind it; other agents' owner-needed goes to keepers. |
+| Project orchestrator (local or rwh-hosted, same row) | #lobby, #broadcast, #X-lobby, #X-broadcast, its project room | its room: system incident, blocker and budget, and decision; #X-lobby: decision; #X-broadcast and #broadcast (by membership); #lobby: decision; optional sibling opt-in on #X-system (--from or --subject); and, when it lands into a shared main, that resource's room: system window, landing and queue | the rest of its room, #X-lobby and #X-system | Its own project's trouble and the decisions that bind it; other agents' owner-needed goes to keepers. |
 | Infra service (projector, bridge) | the project rooms it is invited to, plus #system and each #X-system as writer | nothing (--runtime none) | n/a | Not a model and has no session; it only writes projections. |
 | Worker (rwh-*) | none | none | none | Rule 25: results reach the chat only through its orchestrator. |
 
@@ -89,17 +89,15 @@ Changes these rows need (ac, one PR with the product CLI):
 - Role presets `identity ensure --role-preset operator|meta-keeper|keeper|arbiter|orch|service` print and create exactly the row.
 - Scope: Ivan's identities (ivan-*) keep their subscriptions until Ivan decides. The arbiter row is offered, not imposed.
 
-## 4. Task-board (proposal by ac; skill-project-management-e7 to confirm or replace)
+## 4. Task-board (skill-project-management-e7)
 
-- One product board owned by the product keeper: the product goal, cross-project epics, and dependencies between projects' tasks by reference (project/board id + task id).
+- One product board per product, owned by the product keeper: the product goal and cross-project epics. It lives in its own repository (or a directory of the keeper's repository), never inside a project's board.
+- Cross-board dependencies are TEXT REFERENCES in v1 (`<repo>/<board>:<ELEMENT-ID>` in the element's notes or README), not links. task-board's blockedBy/blocks resolve only inside one board and gate set_status on the blocked element. A cross-board gate is a product-work item for skill-project-management through rule 27, not an assumption of this spec.
 - Per-project boards stay owned by their orchestrators, unchanged.
-- A remote orchestrator's primary session is `task-board claude|codex`, started by `rwh host` inside its own macOS user on the mini, with tb-sessiond per user. The board lives with its checkout. Access to the product board is read-only (through a checkout or a board remote).
-- The orchestrator skill needs a "remote host" section covering:
-  - no owner keychain;
-  - its own signing key;
-  - budget stops go to the product keeper;
-  - resume after a restart.
-- (tb-keeper's addition, e7's call) The "remote host" section goes into skill-project-management's SKILL.md, a shared repository, through its normal review and landing queue.
+- A remote orchestrator's primary session is `task-board claude|codex`, started by `rwh host` in its own macOS user, with tb-sessiond per user. Its board lives with its checkout. The binary is swapped by the operator between sessions, never from inside a hosted session. The native goal budget is explicit (`budget.kind=tokens` with a value, or `none`), with no default.
+- Read access to the product board in v1 is a read-only git checkout (pull). A board-server read-only role is not verified to exist and is not assumed.
+- A remote orchestrator does not own or land into a SHARED two-operator repository (skill-project-management) until owner decision 6(a) covers shared repositories. It can prepare a reviewed patch there; a human-signing orchestrator lands it.
+- The "remote host" section for the orchestrator skill goes into skill-project-management's SKILL.md as a normal Story under rule 27, with both operators' reviewers. e7 files it once its owner gives the go; it is not scheduled yet.
 
 ## 5. Hosting (remote-worker-harness-2b)
 
@@ -165,5 +163,5 @@ Cut-over, like the identity migration:
   1. ac: product/space CLI, dual projection, rule 27 (one PR).
   2. ac: registry module plus attach (one PR).
   3. 2b: rwh host (a few days, after (a) and (b)).
-  4. e7: product board.
+  4. e7: product-board conventions (the text-reference format above) plus, if needed, a cross-board reference feature through rule 27 on the shared board.
   5. Then the migration (step 7).
