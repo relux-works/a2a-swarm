@@ -540,6 +540,18 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Release:* free space at 60 GiB or more, held for 60 min, announced by tb-keeper.
 - *State:* in force.
 
+**tb-R65. Operator decisions: times in GMT+4, a2a CLI rebuilt, stale replay worktree removed, infra-exit manager restart deferred** (18:24Z, 2026-09-30).
+- *Source:* Ivan, in tb-keeper's session, at about 18:00Z and 18:05Z.
+- *Decision:*
+  - (1) Every Ivan-side session gives times to Ivan in his local time with a suffix, e.g. '22:06 GMT+4'. UTC with 'Z' stays in the shared rooms, rulings, logs, commits and board records, so Alexey's side (GMT+3) reads what it read before. Broadcast at 18:02Z; macos-sys acked.
+  - (2) ivmbp's matrix.env has A2A_SECRET_STORE=file, and secrets stay in the 0600 files. ~/.local/bin/a2a is rebuilt from a2a-swarm main 3b77a00; it was 4aba264. The rollback copy is bin/a2a.4aba2648, and the state backup is state.bak-260930-4aba2648. The notice to Ivan-side sessions went out at 18:18Z: wait no longer receipts, the identity lease, A2A_SESSION_ID.
+  - (3) agent-session-manager-spec/.temp/base-refresh/replay-3535161407 is removed. Its worktree was clean, and its HEAD is on STORY-260908-37gsmp's branch. It held 3.4 MB; the earlier 'about 1 GiB' was du -g rounding up. It is the same class as #338.
+  - (4) The infra-exit manager restart is deferred.
+    - The manager is pid 60087, build a0e79ce2 of 2026-09-28. Its binary is already evicted from the curator cache.
+    - The current CLI reaches it: session status is OK, with 37 sessions. Codex run RUN-260930-5219fa is live.
+    - Recommendation: one restart after swap #4, at an idle point of infra-exit's primary, on Ivan's per-event go. The board's other daemons are handled in the same window: 30676, 96815 and 97313 on older builds, and 10911 on the current build with no children.
+- *State:* (1)–(3) done; (4) waits for Ivan.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
