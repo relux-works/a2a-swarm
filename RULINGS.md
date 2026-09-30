@@ -627,6 +627,15 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Scope:* a clarification of tb-R69's mechanics; no landing under R69 had happened yet.
 - *State:* in force.
 
+**tb-R72. tb-R64 released, partially** (19:38Z, 2026-09-30).
+- *Evidence:* free space held at 60 GiB or more for 60 minutes; the watcher fired at 19:37:29Z with 66 GiB free. The level is partly a one-off: codex-fix's sweep took codex-target from 34 to 5.7 GiB, and tb-tests pruned 5.7 GiB. The rate under ceiling 1 is about 5–6 GiB/h, against 20–25 before (macos-sys, 18:42Z).
+- *Decision:*
+  - (1) The machine ceiling is back to 2. tb-R70's priority-lane suite counts inside it.
+  - (2) codex-fix stays at one build at a time, by its own guard, and keeps tb-R64's cap on codex-target: 15 GB, with a sweep after each suite. tb-keeper's watcher alarms at 16 GiB, polling every 2 min.
+  - (3) The re-engage line: under 45 GiB free, ceiling 1 returns at once, announced by tb-keeper. Running suites finish.
+  - (4) Wiki PR #32 found that without -trimpath every worktree re-caches every main-module package. -trimpath for suites is a candidate lever, after a trial in one worktree and a rule-18 heads-up. It is not in force.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
