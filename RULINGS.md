@@ -569,6 +569,22 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - (4) Ivan can still write to any session directly.
 - *State:* in force.
 
+**tb-R67. Owner-needed triage, the first round under R66** (18:38Z, 2026-09-30).
+- *tb-tests, 18:34Z (EPIC-260910-vbuq8g):*
+  - Q1, CI on board-only pushes. Settled by tb-keeper as the spm main arbiter; tb-R60 raised it. Yes to paths-ignore ['.task-board/**'], with one condition.
+    - Board Records also land through gate/** pushes, and task-board's remote gate waits for hosted CI there.
+    - So before the change lands, tb-tests shows that a board-only gate push does not leave the gate waiting on a skipped run. Two ways: scope the filter to pushes on main, or make the gate skip hosted CI for board-only deltas (tb-critical-fixes' code).
+    - A rule-27 advice request comes first, because Alexey's side lands on the same main. ciguard pins the result.
+  - Q3, ciguard's single-job contract: follows Q2. It changes in the same PR as the split, under rule 27.
+  - The semaphore slot held while the remote gate waits on hosted CI: reported as a GitHub issue plus a heads-up to tb-critical-fixes, not as an element in its epic (rule 1).
+  - Q2 (one more quiet runner) and Q4 (a cap on review rounds) are Ivan's calls, now on ivan-desk.
+- *macos-sys, about 18:40Z:* both items are Ivan's calls, now on ivan-desk.
+  - The stale-daemon restarts are merged into desk card #1, with the process-tree facts: six of the eight managers host nothing, while 60087 and 22921 host live sessions.
+  - A separate GOCACHE for the ivmbp runner.
+  - macos-sys's own deletions and threshold changes stay in its own session, as tb-R66 requires.
+- *cocoa, about 18:40Z:* what cocoaskills does next is Ivan's call, desk card #4. tb-keeper recommends C.
+- *State:* Q1 and Q3 are in force. The rest waits for Ivan; the reply-by for tb-tests and cocoa is 06:00Z.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
