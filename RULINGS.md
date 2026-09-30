@@ -873,3 +873,26 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *Instruction:* audit which other repositories can go public, excluding the board core (skill-project-management), which moves on 2026-10-16. ax-speed-audit is running it read-only. Ivan decides per repository, and no visibility changes without his answer.
 - *Done since:* AX main carries R80 as 5712474 (PR #67), which Ivan confirmed in ax's session.
 - *State:* in force.
+
+**tb-R88. A standing rule for session managers: tb-keeper restarts or stops only the safe ones** (23:51Z, 2026-09-30).
+- *Source:* Ivan on ivan-desk at 23:48Z, card #1 (outdated tb-sessiond managers), verbatim: «пускай кипер возьмет за правило перезапускать только те которые можно без проблем перезапустить и которые не делют ничего критического».
+- *The rule, standing:*
+  - A manager counts as safe to restart or stop only when all of these hold:
+    - it hosts no live session and no running run;
+    - it has no connected clients and no child processes;
+    - no process of its build depends on it;
+    - it is doing nothing critical.
+  - How to act on a safe manager:
+    - a lock holder is restarted with `task-board session restart` from an outside shell;
+    - a stale non-holder is stopped with SIGTERM.
+  - The board owner gets a heads-up under rule 2.
+  - A manager with live sessions waits until its owner reports a quiet moment. It is never restarted to pick up a build.
+  - This supersedes "a per-event go for each daemon restart" for the safe cases only.
+- *Executed at 23:50Z:*
+  - Stopped five stale managers that hosted nothing: 10911, 30676, 96815 and 97313 (duplicates on infra-exit's board), and 68107 (an orphan on the curator board).
+  - Restarted tgfs's manager, which had no live sessions: 49738 became 35640, on the current build 94691714.
+  - Waiting for a quiet moment:
+    - 60087, infra-exit's live primary and two runs;
+    - 22921, «Task-board корневые цели и запуски»;
+    - 55355, tb-muse's live primary.
+- *State:* in force.
