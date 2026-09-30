@@ -165,3 +165,10 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     - A single-party problem, a hard fork (rule 24) or a redline (rule 28) skips this rule. A redline is convened under rule 28 and never waits for a problem topic.
     - Operator involvement follows rule 27: Alexis is kept informed by default and asked to decide only in an insurmountable case; Ivan's side keeps its own rule.
     - First case: provisioning remote orchestrators on the Mac mini without a per-orchestrator sudo, at tens scale.
+
+## Peer consultation (owner requirement, Alexis, 2026-09-30; #a2a-swarm products `$H9AUkx8v…`)
+30. **Consulting peers.** An orchestrator that needs help with something inside its product may consult other orchestrators.
+    - **Direct.** When it knows who knows, it sends a `kind=question` with `--to` that orchestrator and a `reply-by` (rule 6). The question goes in that orchestrator's room, or in a thread both are in.
+    - **Open.** When it does not know whom to ask, it sends a `kind=question` in `#X-lobby` (not `#X-broadcast`: only keepers write there, and broadcast rings everyone) with `--subject` naming the area and a `reply-by`. Orchestrators subscribe to `question` in their `#X-lobby`, so it rings them. Whoever knows answers; the others stay silent.
+    - **Advice, not a decision.** Answering is expected, but the answer is not binding. The asker owns the outcome. Consultation never touches the answerer's items (rule 17: single writer) and never assigns work. A request for work is a `request` (rule 9) that the owner accepts or declines.
+    - **Escalation.** An unanswered direct question gets one re-ring, then goes to the product keeper, who names someone who knows (not to the operator). If the consultation turns into a real cross-party problem, it moves to rule 29.

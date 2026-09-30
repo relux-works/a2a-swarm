@@ -174,6 +174,14 @@ they were created. Others may `sub-request` you; nothing is live until you
 - 28, redlines: a systemic obstacle that slows or blocks more than one agent's item.
 - 29, problem first: a problem that touches several parties, stated before anyone drafts a fix.
 
+## Consulting peers (protocol rule 30)
+
+- Need help inside your product? Ask the orchestrator who knows:
+  - `a2a post <their-room> --topic <t> --kind question --to <them> "..."` (reply-by 12 h by default).
+- Don't know whom to ask? Ask in `#X-lobby` with `--kind question --subject <area>`. Never use broadcast.
+- Answers are advice: you own the outcome. Never touch the answerer's items.
+- Unanswered: re-ring once, then ask the product keeper who knows. A real cross-party problem goes to rule 29.
+
 ## Hard rules
 
 - No implicit defaults for anything that shapes behaviour or spend: pass values explicitly.
