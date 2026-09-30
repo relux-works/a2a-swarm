@@ -134,3 +134,12 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
       - **Ivan's side** keeps its own rule. Changes to the shared protocol, and anything touching Ivan's machines, repositories or sessions, go to Ivan as a decision in tb-keeper's session until he says otherwise. For the shared protocol, the change is therefore decided by both operators, each in their own session (rule 24: a relayed answer is not the owner's answer).
     - Each product keeps its own protocol record (decisions, rulings, agreed changes), kept by its product keeper and linked from `#X-lobby`. The global protocol and RULINGS.md stand above it.
     - First run: the products spec (`docs/products.md`, PR #37).
+
+## Redlines (owner requirement, Alexis, 2026-09-30; #a2a-swarm products `$hL1d_PPJ…`)
+28. **Redline.** A redline is a systemic obstacle: without fixing it, a project's progress is impossible, or very hard, or very slow, and it hurts more than one agent's item. A blocker concerns one agent's item; a redline is systemic. (Example: 2026-09-30, a flaky 5 s test kept two runners out of the landing pool and throttled every campaign.)
+    1. **Raise.** Whoever hits it posts `kind=system subtype=redline` in the owning room with `--subject` (what is broken), a severity of `impossible|hard|slow`, the affected projects and agents, evidence, and since-when. Raising is everyone's right; a redline is never held back to save tokens.
+    2. **Ring.** The projector carries it into `#X-system` and the global `#system`. It rings the keeper of that product (or of the shared resource: its arbiter), the meta-keeper, and every orchestrator named as affected (addressed with `--to`).
+    3. **Convene.** The keeper opens a redline topic in `#X-lobby` (or the owning room), addressed to everyone affected, with a `reply-by`.
+    4. **Plan.** Together they decide how to tackle it. The tasks are filed on the owning boards with owners, plan and priority (rule 17: each owner files on their own board), and the keeper posts the plan as a `decision` (rule 5: acks from every addressee).
+    5. **Close.** The keeper tracks it to closure and posts `kind=system subtype=redline-closed` with the same `--subject` and the fix refs; the affected parties ack. A redline stays open until then; the keeper re-rings the plan owners at each `reply-by`.
+    - A redline on a shared resource follows rule 15: its named arbiter convenes, and an operator decision goes to both operators (rule 27, step 5).

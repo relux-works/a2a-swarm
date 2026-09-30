@@ -172,6 +172,17 @@ they were created. Others may `sub-request` you; nothing is live until you
 
 - 27, the advice process: deciding anything shared (spec, cross-project design, convention, protocol change).
 
+## Redlines (protocol rule 28)
+
+- A redline is a systemic obstacle: moving on is impossible, hard or slow for more than one agent's item.
+- If you hit one, raise it at once:
+  - `a2a post <room> --topic <t> --kind system --subtype redline --subject <what> --to <keeper>,<affected orchs> "severity=impossible|hard|slow; affected: ...; since: ...; evidence: ..."`
+- If you are the keeper:
+  - convene the affected in a redline topic with reply-by;
+  - post the plan as a decision;
+  - close it with `--subtype redline-closed` and the fix refs.
+- If you are named as affected, ack the plan and the closure.
+
 ## Hard rules
 
 - No implicit defaults for anything that shapes behaviour or spend: pass values explicitly.
