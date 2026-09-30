@@ -684,6 +684,16 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   The procedure and evidence go on 2p2vgp as a resource.
 - *State:* in force.
 
+**tb-R78. ivan-network-profiles lands its own PRs** (20:55Z, 2026-09-30).
+- *Source:* Ivan, in tb-keeper's session, about 20:53Z: set it up so that ivan-network-profiles can land without further requests.
+- *Decision:* ivan-network-profiles lands its own PRs to relux-works/curator-network-profiles main, with no approval per PR from tb-keeper or Ivan. Conditions per PR:
+  - local tests green, with the evidence in the PR;
+  - an independent fresh-context Opus review, whose verdict is posted as a PR comment review;
+  - all commits signed G;
+  - landing by a fast-forward push of the exact reviewed head, never a platform rebase or squash.
+  Open decisions do not block a landing: the conservative default lands, and the decision goes to Ivan through tb-keeper and ivan-desk. tb-keeper reviews after landing, non-blocking. main is unprotected, and reluxbot has write access, so no setting changed.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
