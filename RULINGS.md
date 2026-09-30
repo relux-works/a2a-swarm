@@ -414,6 +414,19 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - Under tb-R53 that stacked run can never be landing evidence. The ruling: its owner cancels it now, which corrects tb-keeper's "let it finish". The window's CI takes the first free relux-ci runner. tb-tests' window keeps its 07:54Z cap, and an extension is ruled on request if the queue time pushes past it.
 - *State:* in force.
 
+**tb-R55. Operator decisions: the shared protocol, the products spec, a standing swap go, the tb-muse restart** (12:50Z, 2026-09-30). Ivan in tb-keeper's session, verbatim: «27–31 да, 6(a) да, 6(f) да» — «Постоянное разрешение на замену бинаря под критические фиксы. — да» — «Перезапуск менеджера tb-muse — да».
+- *Shared protocol:* Ivan's side decides yes on a2a protocol rules 27 to 31 at the heads under advice: #38 at 98799c8 (rule 27, the advice process, plus docs/advice-process.md), #39 at b6b1082 (rule 28, redlines), #40 at e0f514b (rule 29, problem first) and #41 at cd6e261 (rules 30 and 31). A later push that changes substance comes back to Ivan; pure wording does not.
+- *Products spec (#37 at 57a1b1f):* yes on 6(a) and 6(f).
+  - 6(a): bot-authored commits only in Alexis's own repositories. Shared repositories keep human-authored, signed commits, and remote orchestrators do not land into them until both operators decide.
+  - 6(f): shared repositories stay outside single-operator product spaces and keep their named arbiter.
+- *Standing go for critical-fix binary swaps on this workstation (ivmbp):*
+  - tb-keeper runs `curator global upgrade` from its outside, unhosted shell whenever a landing carries a critical fix, batching where it can.
+  - Before and after, it posts impact notices (rule 31), and it probes the new build.
+  - Daemons are not restarted by this go. Each daemon restart still needs its own go, which ends hosted Claude sessions.
+  - The Mac mini is not covered. Its swaps need Ivan's go in macmini-infra's own session.
+- *tb-muse:* go to restart its manager (the older tb-sessiond daemon of skill-project-management-muse). It runs from tb-keeper's outside shell after tb-muse is at a safe point, and then tb-muse's session is resumed.
+- *State:* in force. The standing go holds until Ivan withdraws it.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
