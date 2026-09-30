@@ -530,6 +530,16 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Keychain:* the measured path needs none. Any one-time Keychain approval is Ivan's own act. Agents never automate or open the Keychain (Ivan's standing rule).
 - *State:* in force. tb-muse and tb-agents-infra-exit ack.
 
+**tb-R64. Disk: machine ceiling of 1 re-engaged; codex-fix to one build** (17:37Z, 2026-09-30).
+- *Evidence:* free space is 43 GiB at 17:35Z, down from 78 GiB at about 17:00Z. codex-target regrew from 19 to 35 GiB within about 40 min of codex-fix's sweep, as the A2 suite and the B1 reviewer built in parallel. go-build grew from 28 to 38 GiB under the suites at ceiling 2. Together that is about 25 GiB/h.
+- *Decision:*
+  - (1) The machine ceiling goes back to 1 (tb-R41's terms): every campaign sets spawn.validation.machine_max_concurrent_suites: 1 before its next spawn, and running suites finish.
+  - (2) codex-fix runs ONE build at a time (the A2 suite). The B1 reviewer and G1 hold. codex-target's cap is 15 GB, with a sweep after each suite. This amends tb-R58 while this ruling is in force.
+  - (3) macos-sys runs its passes as its runner guard allows.
+  - (4) If free space falls under 35 GiB, tb-keeper also pauses the ivmbp runner. Its CI shares GOCACHE, and pausing it releases macos-sys's under-3 h trims.
+- *Release:* free space at 60 GiB or more, held for 60 min, announced by tb-keeper.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
