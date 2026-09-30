@@ -140,14 +140,18 @@ func (sub Sub) matches(ev matrix.Event, roomID string, h Header, hasHeader bool)
 	if sub.expiredAt(time.UnixMilli(ev.OriginServerTS)) || !sub.after(ev) {
 		return false
 	}
-	if hasHeader && h.Type == "projection" && !sub.AllEvents {
-		// A projection mirrors an event that already matched in its own room.
+	projected := hasHeader && h.Type == "projection"
+	if projected && sub.Room == "" {
+		// A room=all subscription already matched the original in its own
+		// room; only a subscription bound to the projection room itself
+		// (a keeper watching #system) is delivered the mirror, filtered by
+		// the origin's kind, subtype, subject and sender from its header.
 		return false
 	}
 	if sub.Topic != "" && ev.ThreadRoot() != sub.Topic {
 		return false
 	}
-	if sub.From != "" && ev.Sender != sub.From {
+	if sub.From != "" && ev.Sender != sub.From && !(projected && originSender(sub.From, h.From)) {
 		return false
 	}
 	if sub.Subtype != "" && h.Subtype != sub.Subtype {
@@ -160,6 +164,13 @@ func (sub Sub) matches(ev matrix.Event, roomID string, h Header, hasHeader bool)
 		return false
 	}
 	return true
+}
+
+// originSender reports whether the subscription's --from (a full user id)
+// names the origin sender of a projection, whose header holds its localpart
+// (or a full id for a remote sender).
+func originSender(subFrom, from string) bool {
+	return from != "" && (subFrom == from || strings.HasPrefix(subFrom, "@"+from+":"))
 }
 
 func contains(list []string, v string) bool {

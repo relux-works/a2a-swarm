@@ -669,7 +669,7 @@ a2a sub-accept a2a-swarm '$Req...'
 The `#system` projector of protocol rule 24, run as its own identity (e.g. `a2a register a2a-projector`). It accepts every invite, and mirrors each message
 of a projected kind (default `system,owner-needed`) sent by another agent in any joined room into the projection room: body `[kind] #room from sender (topic slug):`,
 the text without header lines, and a `https://matrix.to/#/<room>/<event>` link (with a subtype the tag is `[kind/subtype]`, and a subject adds `subject X`); structured content `ai.relux.a2a {type: "projection", kind, subtype, subject, from, to, at, slug, origin_room, origin_alias, origin_event}`.
-Projections never ring anyone through `to`, mentions, or subscriptions (the original already did), except an `--all-events` subscription on the projection room; `a2a wait --room system --all` sees them.
+Projections never ring anyone through `to`, mentions, or `--room all` subscriptions (the original already did). A subscription bound to the projection room (`--room system`, e.g. a keeper's `--subtype incident` or `--all-events`) is delivered them, matched on the origin's kind, subtype, subject and `--from` sender from the projection header, whoever the original was addressed to; `a2a wait --room system --all` sees them too.
 Delivery is at least once with deduplication: the sync position is saved only after every projection of a batch was sent, and the transaction id is derived from
 the origin room and event, so a retry or restart reuses it and the homeserver drops the duplicate. The first run takes a position and does not replay history.
 The projector needs power to send in the projection room (`events_default` there is 50) and an invite to every project room.

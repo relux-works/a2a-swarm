@@ -170,6 +170,50 @@ func TestProjectionDoesNotRingTwice(t *testing.T) {
 	_ = system
 }
 
+// Proves a subscription bound to #system is delivered projections matched on
+// the origin header (regression: carol's `--room system --subtype incident`
+// never rang for an incident addressed to=dave in a room she is not in),
+// with --from matching the origin sender; a non-matching subtype, a --from
+// naming another sender, and a --room all subscription stay silent.
+func TestProjectionRingsSystemRoomSubscription(t *testing.T) {
+	e, room, system := projWorld(t)
+	e.agent("carol")
+	e.hs.mu.Lock()
+	e.hs.liveClock = true
+	e.hs.rooms[system].members["@carol:test.local"] = "join"
+	e.hs.mu.Unlock()
+	e.project().ok(t)
+	incSub, _ := e.subscribe("carol", "--room", "system", "--subtype", "incident")
+	e.as("carol", "wait", "--timeout", "10ms").ok(t)
+	incident := func(subtype string) {
+		e.hs.inject(room, "@bob:test.local", msg("- from: bob\n\nrunner down", map[string]any{
+			ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"dave"}, Kind: "system", Subtype: subtype, Slug: "alpha"}}))
+		e.project().ok(t)
+	}
+	incident("landing")
+	if r := e.as("carol", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
+		t.Fatalf("a landing rang the incident subscription: %q", r.stdout)
+	}
+	incident("incident")
+	r := e.as("carol", "wait", "--timeout", "2s").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "sub #system ")
+	if strings.Count(r.stdout, "\n") != 1 {
+		t.Fatalf("want exactly the incident projection: %q", r.stdout)
+	}
+
+	e.as("carol", "unsubscribe", incSub).ok(t)
+	e.as("carol", "subscribe", "--room", "system", "--from", "mallory", "--kind", "system").ok(t)
+	e.as("carol", "subscribe", "--kind", "system").ok(t)
+	incident("incident")
+	if r := e.as("carol", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
+		t.Fatalf("another sender or a room=all subscription rang: %q", r.stdout)
+	}
+	e.as("carol", "subscribe", "--room", "system", "--from", "bob", "--kind", "system").ok(t)
+	incident("incident")
+	r = e.as("carol", "wait", "--timeout", "2s").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "sub #system ")
+}
+
 // Proves bad projector input is refused before any network call.
 func TestProjectNegative(t *testing.T) {
 	e, _, _ := projWorld(t)
