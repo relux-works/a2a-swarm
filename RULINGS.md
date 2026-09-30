@@ -637,6 +637,14 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
     - *Amended 19:40Z:* -trimpath is blocked. It makes runtime.Caller module-relative, and the spm guard tests derive the repository root from it (56 uses). The binding order is: the guard fix first, then -trimpath, then any cache size cap. Verified by macos-sys.
 - *State:* in force.
 
+**tb-R73. PR #476 lands under tb-R69 and tb-R71, with no CI rerun** (19:56Z, 2026-09-30).
+- *Evidence:* #476 (TASK-260929-20xo9i, the critical agents-management pin) went CI-green at 19:54Z on b5e2877a over f6e21436. The Record 83651038 landed during infra-exit's window (tb-R68), and infra-exit rebased the PR to c8084c4b. tb-keeper checked it on ivmbp, and ivan-ci-isolation checked it independently on the mini:
+  - tb-R71's form of `git diff` from b5e2877a to c8084c4b lists 12 paths, all under .task-board/;
+  - the range-diff prints '1: b5e2877a = 1: c8084c4b';
+  - c8084c4b is signed G, and main 83651038 is its ancestor.
+- *Decision:* the landing may proceed. Both outputs go into the landing note. The lander fetches again right before the push and stops if main has moved. The fallback CI on the PR branch is cancelled after the landing, since the push to main runs its own. No board-only publishes happen until the window ends.
+- *State:* in force. It is the first landing under tb-R69.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
