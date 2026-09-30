@@ -854,3 +854,22 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     - 3l276k's CR scheduling, reuse and config consumption, alongside #478.
   - **A prerequisite for any full-green claim:** BUG-261001-33ave8, repaired and actually executed.
 - *State:* in force.
+
+**tb-R87. Ivan's decisions on the AX speed audit (card #15), and a public-access audit** (23:47Z, 2026-09-30).
+- *Source:* Ivan on ivan-desk.
+  - 23:42Z, verbatim: «по ax почти все пункты да кроме ревью - если реально гитхаб бесплатный для публичных проектов, то надо этим пользоваться и еще заодно проверить что мы еще можем перевести в публичный доступ (кроме ядра доски - это переносим к 16-му октября.»
+  - The clarification at 23:47Z, verbatim: «(оставить «нет» без границ)». It is the first alternative of the desk's question «Только (c) (оставить «нет» без границ), а (a), (b) и (d) принять?».
+- *Decisions for AX, applied at resume. AX stays paused.*
+  - Lever 1, the suite diet, is YES. It is AX's first config commit at resume:
+    - one combined `go test ./... -race -cover -json` with an explicit -timeout;
+    - the producer runs targeted packages only;
+    - the reviewer reuses the construction result.
+  - Lever 2 is YES for (a), (b) and (d):
+    - (a) a pre-spawn surface table;
+    - (b) the whole class of a finding, with every site, in one verdict;
+    - (d) no acceptance criteria that demand a checker complete against adversarial code shapes.
+    (c) is REJECTED: evidence-only findings get no bound, and #7's «нет» stands with no bounds.
+  - Lever 3A is YES: AX's heavy lanes move to GitHub-hosted runners. Standard hosted runners are free for public repositories. This reverses the 09-08 local-only CI rule for AX. The task-board side is skill-project-management#487; until it lands, the local gate stays.
+- *Instruction:* audit which other repositories can go public, excluding the board core (skill-project-management), which moves on 2026-10-16. ax-speed-audit is running it read-only. Ivan decides per repository, and no visibility changes without his answer.
+- *Done since:* AX main carries R80 as 5712474 (PR #67), which Ivan confirmed in ax's session.
+- *State:* in force.
