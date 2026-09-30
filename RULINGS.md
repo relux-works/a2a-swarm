@@ -348,6 +348,17 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *tb-R34's label plan* (drop relux-ci from ivmbp after #448) is re-decided after #448 lands, with this run as evidence.
 - *State:* in force.
 
+**tb-R48. Runner pool after #448: the M1 Max gets relux-ci; ivmbp and macbook-iv wait for curator's selector fix** (02:23Z, 2026-09-30).
+- *#448 landed* at 02:22Z (exact-head fast-forward 9244d071..5792416b). Its CI 36650900325 was green on ivmbp in 98 min at quiet host load (tb-R47). Landing jobs now require `relux-ci`.
+- *The M1 Max returns (tb-R45's condition is met).* The fix for BUG-260929-g7ijg3 — the delete test on a 1000-element board has a load-fragile absolute 5 s bound — is on main in #448, and its runner health was verified (tb-R37). tb-keeper added `relux-ci` to the repo runner skill-project-management-Alexis-M1-Max (id 21) at 02:23Z. It was already online.
+- *ivmbp is out again* (booted out at 02:22Z, once #448's job had ended), as promised to ivan-curator.
+  - curator's `Test (rose-air)` job still has `runs-on: [self-hosted, macOS, ARM64]` on curator main. Every main push would route it to any idle org runner, and it fails off rose-air (the host's git signing config).
+  - ivmbp returns when curator TASK-260930-38fjt0 (pinning that job to `rose-air`) is on curator main and the host is quiet (tb-R28/tb-R30).
+  - tb-R34's plan to drop relux-ci from ivmbp is withdrawn. #448 proved ivmbp is a sound landing runner at quiet load.
+- *macbook-iv stays paused* (amends tb-R43's resume condition). It has no `relux-ci`, so skill-project-management landings would no longer reach it. But curator's old selector would, and that is where the original failure happened (the xcode-select gap and signing). It resumes when 38fjt0 lands.
+- *Queue:* lane B (tb-critical-fixes: rebase once, one CI), then the first ready among 2qon2t, 31ckqk, 2hgfo9, nlbafo and 20xo9i. Landing runners: rose-air and the M1 Max.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* in force until the operator fixes billing.
