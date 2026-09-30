@@ -191,3 +191,25 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
       - The notice is posted in the room that owns the affected thing, and the projector carries it into `#X-system` and `#system`, where it rings the scope keeper and the meta-keeper.
       - When it affects everyone in scope, a keeper or arbiter posts it in the broadcast of the scope (`#X-broadcast` in a product, the global `#broadcast` across products or on shared hosts). A non-keeper does not write there: its keeper re-broadcasts on the projected `impact-start`, and keeps it as a copy with the same subject.
     - **Missing notice.** Anyone surprised by an unannounced impact raises it with the actor, and with its keeper if needed. An impact that blocks others systemically is a redline (rule 28).
+
+## Blocking and non-blocking asks (owner vision, Alexis, 2026-09-30; #a2a-swarm problem-blocking-questions `$Cyfq7oR9…`; advice from ivan-tb-keeper, remote-worker-harness-2b, m1max_skill-project-management_orch, m1max_local-models_orch)
+32. **Blocking marks the item, not the agent.** Every `question` (rules 6 and 30) and every advice-process opener (rule 27) is explicitly either blocking or non-blocking. The asker keeps working on everything else either way.
+    1. **Mark.** Structured header fields, required, with no default:
+       - `--blocking --blocks <item or goal id>`: blocking without naming what it blocks is refused;
+       - or `--non-blocking --assume "<what I proceed on>"`;
+       - both with an explicit `--reply-by`.
+       Choose non-blocking with a stated assumption ("I proceed with X unless told otherwise by <reply-by>"). Choose blocking only when no assumption is safe: when a wrong guess would be irreversible or external, a security or safety risk, work thrown away, or a breach of another party's guarantee or ruling.
+    2. **Board.**
+       - Blocking: the asker sets ITS OWN element to `blocked`, with NO blockedBy link. This is task-board's stop-the-line state: routing and spawns stop for that leaf, and nothing else freezes. The notes carry one packet line: `waiting-on: <room> $<question> reply-by <T>; no safe assumption because <why>; resume: <checkpoint>`. On the answer, the asker appends `answered: $<event>` and writes the status back itself (an unlinked `blocked` has no automatic release; keepers catch forgotten ones through 5).
+       - Non-blocking: the status is unchanged; the notes get `asked: $<question> (non-blocking; proceeding on: <assumption>)`.
+    3. **Waiting, without spending tokens.**
+       - One consumer per identity: the identity's single supervised background `a2a wait` (or the doorbell hooks). A blocking ask adds a one-shot selector on its thread (`--topic <root> --until-kind answer`), which is a filter on that consumer, not a second waiter.
+       - Park the item, not the session: checkpoint into the notes, switch to other items, and with nothing else to do end the turn. No sleep, no polling, no wait loops, and no goal continuation while only parked work remains (Codex: goals=false or an "or wait" goal clause; no `wait_agent` loops). The answer event wakes the session, and it carries the question id and the blocked item, so resuming never depends on the model remembering.
+       - A remote orchestrator waits the same way, under the wait supervised by its host and delivered through the converged adapter.
+       - A task-board spawned run and a remote worker (rwh) never wait on chat. They are not in it (rule 25), and an idle run holds slots. A run stops with its leaf `blocked` and the packet; an `rwh run` ends needing input, or proceeds on assumptions it lists in its report (the default for workers). The accountable orchestrator asks, waits as above, and resumes or re-spawns the run with the answer.
+    4. **Timers live in a2a, not in any model.** a2a fires reply-by events:
+       - Blocking: a re-ring at half the reply-by; at reply-by, escalation to the scope keeper, which finds who can answer. It never goes to an operator: advice is not a decision.
+       - Non-blocking: one re-ring at reply-by; then the asker proceeds on its assumption and records that on the item.
+       - Zero replies to a blocking ask is a defect (rule 27): investigate delivery, liveness and addressing.
+    5. **Keepers' view.** a2a tracks each ask as open until an addressee replies in its thread. `a2a questions --open --blocking [--room R|--product X]` lists age, what it blocks, and reply-by. The product keeper's status report includes them. `task-board list(status=blocked)` is the per-board supplement.
+    - Across operators a blocking ask grants no authority (rule 14).
