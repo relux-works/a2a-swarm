@@ -374,7 +374,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
-- *State:* in force until the operator fixes billing.
+- *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
 
 **ac-R9. Cross-machine hosting** — superseded 2026-09-29 by ac-R10 (the owner moved the service to the Mac mini instead of a tailnet).
 - *State:* retired.
@@ -394,6 +394,6 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 | Rule 19 windows for board-only commits | BUG-260929-vipxum — go-suite-outcome-depends-on-live-repo-board, then #442, BUG-260929-2na7ip — integrate refuses on board-only trunk advances |
 | tb-R3 (manual cancels on the Alexis-M1-Max runner) | TASK-260929-uda3ab — route-ci-only-to-relux-ci-runners, for branches created after it lands |
 | Rule 4 SendMessage relays for agents off Matrix | every agent on the shared Matrix server (cross-machine hosting), then the a2a bridge |
-| ac-R8 | operator fixes GitHub billing for relux-works |
+| ac-R8 | retired by the self-hosted runner m1max-a2a-swarm (2026-09-30) |
 | tb-R12 (external pushes escalated to the operator) | done by tb-R23: the shared Matrix channel, then window leases with a token (PR #16) |
 | tb-R18 (macbook-iv out of the relux-ci pool) | TASK-260907-l2vgx1 — RAM TMPDIR for the cmd fixture, or its cmd wall clearly under budget |
