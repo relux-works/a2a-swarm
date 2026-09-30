@@ -10,7 +10,7 @@ In this swarm the decider is the orchestrator or keeper ACCOUNTABLE for the resu
 |---|---|---|
 | A project | its orchestrator | the project's code, docs, board and conventions |
 | A product | its product keeper | cross-project order, product-wide changes, the product's decision log |
-| Common rules (Alexis's side) | the meta-keeper; the a2a orchestrator owns the protocol text | swarm-wide protocol and conventions |
+| Common rules (Alexis's side) | the meta-keeper, which may delegate a part: it delegated the a2a protocol text to the a2a orchestrator (2026-09-30) | swarm-wide protocol and conventions |
 | A shared resource's windows and disputes | its named arbiter (RULINGS.md) | landing order on a shared main |
 | Shared two-operator artifacts (the shared protocol, shared-repository policy) | both operators, each in their own session | any agent may take up and propose; both operators decide |
 
@@ -19,24 +19,24 @@ Each decides through the advice process within its scope. Rule 14 limits hold in
 ## Sources
 
 - Dennis Bakke, *Joy at Work: A Revolutionary Approach to Fun on the Job* (2005), AES decision-making and self-management practice. The discussion below paraphrases Bakke’s account of how AES distributes decisions and responsibility.
-- Frederic Laloux, *Reinventing Organizations* (2014), Part II, chapter “Self-management (processes)”, section on decision making (“the advice process”), with the AES and Buurtzorg examples. Chapter and page references are from memory of the structure and should be checked against the print edition (see Open points).
+- Frederic Laloux, *Reinventing Organizations* (2014), Part II, chapter “Self-management (processes)”, section on decision making (“the advice process”), with the AES and Buurtzorg examples. UNVERIFIED: chapter and section references come from a remote worker and from memory of the book's structure, not from the text. Do not quote them as checked (see Open points).
 - Reinventing Organizations Wiki, [Decision Making](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process” and Buurtzorg case (public summary).
 
 ## Core
 
-(a) **Who decides.** The initiator (often the person who first notices the issue, or the one most affected) makes the decision. The process does not reserve decisions to a manager or require group consensus. (Bakke, *Joy at Work* (2005), AES decision-making practice; Laloux, *Reinventing Organizations* (2014), Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
+(a) **Who decides.** The initiator (often the person who first notices the issue, or the one most affected) makes the decision. The process does not reserve decisions to a manager or require group consensus. (UNVERIFIED book reference: Bakke, *Joy at Work* (2005), AES decision-making practice; Laloux, *Reinventing Organizations* (2014), Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
 
-(b) **Whom to ask.** Before acting, the initiator seeks advice from people who will be meaningfully affected and people with relevant expertise. AES and Buurtzorg are presented as examples of distributing decisions with this responsibility. (Bakke, *Joy at Work*, AES practice; Laloux, *Reinventing Organizations*, ch. 2, “The Advice Process,” and AES and Buurtzorg examples; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process” and Buurtzorg case.)
+(b) **Whom to ask.** Before acting, the initiator seeks advice from people who will be meaningfully affected and people with relevant expertise. AES and Buurtzorg are presented as examples of distributing decisions with this responsibility. (UNVERIFIED book reference: Bakke, *Joy at Work*, AES practice; Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process, and AES and Buurtzorg examples; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process” and Buurtzorg case.)
 
-(c) **What advice obliges.** The initiator must take advice into consideration; they remain free to decide differently. The process is not a vote and does not require consensus. (Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
+(c) **What advice obliges.** The initiator must take advice into consideration; they remain free to decide differently. The process is not a vote and does not require consensus. (UNVERIFIED book reference: Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
 
-(d) **What an objection can do.** In the classic process, an objection is advice to consider, not a veto: no formal objection category blocks the initiator’s decision. The severe-objection stop defined below is a swarm adaptation, not a rule attributed to Bakke or Laloux. (Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “It’s not consensus.”)
+(d) **What an objection can do.** In the classic process, an objection is advice to consider, not a veto: no formal objection category blocks the initiator’s decision. The severe-objection stop defined below is a swarm adaptation, not a rule attributed to Bakke or Laloux. (UNVERIFIED book reference: Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “It’s not consensus.”)
 
-(e) **Record and communication.** Explain the decision and its reasoning to the people consulted, especially when their advice is not taken; this makes responsibility and consequences visible. The sources describe this accountability in practice rather than prescribing a universal log format. (Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; AES example; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
+(e) **Record and communication.** Explain the decision and its reasoning to the people consulted, especially when their advice is not taken; this makes responsibility and consequences visible. The sources describe this accountability in practice rather than prescribing a universal log format. (UNVERIFIED book reference: Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; AES example; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
 
-(f) **Escalation.** The classic process has no required escalation or appeal ladder: the initiator owns the decision after consulting. Further consultation is possible, but escalation is not a veto mechanism. (Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
+(f) **Escalation.** The classic process has no required escalation or appeal ladder: the initiator owns the decision after consulting. Further consultation is possible, but escalation is not a veto mechanism. (UNVERIFIED book reference: Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process.”)
 
-(g) **Failure risks.** The process can become a formality if people decide before seeking advice, consult only convenient allies, or treat consultation as approval-seeking. Excessive consultation can delay action; an initiator with too little context can misjudge advice; silently overriding advice undermines trust. These are practical failure risks implied by the process’s consultation and accountability requirements, not a separate taxonomy quoted from the books. (Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process” and “It’s not consensus.”)
+(g) **Failure risks.** The process can become a formality if people decide before seeking advice, consult only convenient allies, or treat consultation as approval-seeking. Excessive consultation can delay action; an initiator with too little context can misjudge advice; silently overriding advice undermines trust. These are practical failure risks implied by the process’s consultation and accountability requirements, not a separate taxonomy quoted from the books. (UNVERIFIED book reference: Laloux, *Reinventing Organizations*, Part II, “Self-management (processes)”, the advice process; [Wiki, “Decision Making”](https://reinventingorganizationswiki.com/en/theory/decision-making/), “The advice process” and “It’s not consensus.”)
 
 ## Our adaptation
 
@@ -71,7 +71,7 @@ An advice process is state that a2a tracks, not free text in a thread.
   - `answer --subtype response` for the decider's explicit answer to an objection.
 - **Close:** the decider's `kind=decision --subtype advice-decision`. It records each objection with its resolution, and each piece of advice with followed or overridden and why. The decision also goes to the operator as information (a `kind=system` summary) unless it is an insurmountable case.
 - **CLI:**
-  - `a2a advice open --subject S --decider D --head H --reply-by T --ask a,b,c [--shared]`;
+  - `a2a advice open --subject S --decider D --head H --reply-by T --ask a,b,c [--shared]` (`--reply-by` is required: no implicit default in the CLI);
   - `a2a advice reply <id> no-objections|objection|advice ...`;
   - `a2a advice respond <id> <objection-id> ...`;
   - `a2a advice decide <id> @record.md`;
@@ -80,7 +80,7 @@ An advice process is state that a2a tracks, not free text in a thread.
   - it re-rings silent stakeholders once at reply-by;
   - a new head re-rings only the stakeholders whose sections changed;
   - `decide` is refused while any objection has no response;
-  - on a `--shared` subject, `decide` is refused unless the record cites both operators' decisions (rule 14).
+  - on a `--shared` subject, `decide` is refused unless the record cites the EVENT IDS of both operators' decisions, each relayed by that operator's own keeper (for Ivan: tb-keeper's relay plus its RULINGS or tb-log entry; rule 24). A decision relayed by a third agent does not count. Until waggle signatures exist, this is a check on event ids and senders, not on signatures.
 - **Until the CLI knows the kind:** open with `kind=proposal` and an `advice-process: <subject>` title prefix, and use the same reply forms, so nothing waits on a release.
 
 ## Failure modes and guards
@@ -96,6 +96,6 @@ An advice process is state that a2a tracks, not free text in a thread.
 
 ## Open points
 
-- Rule 27 gives a reply deadline but no default duration; the decider must set one appropriate to the scope.
+- Reply-by: the CLI requires an explicit `--reply-by`. A hand-written opener without one falls back to rule 6's 12 h, so questions and advice stay consistent.
 - There is no explicit independent review for whether all affected parties were found, or whether the decider has adequate context. These remain judgment calls under the current protocol.
 - The book citations were written by a remote worker from the public wiki and from memory of the books' structure. Chapter and page references need a check against the print editions.
