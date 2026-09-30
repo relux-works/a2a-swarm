@@ -359,6 +359,18 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Queue:* lane B (tb-critical-fixes: rebase once, one CI), then the first ready among 2qon2t, 31ckqk, 2hgfo9, nlbafo and 20xo9i. Landing runners: rose-air and the M1 Max.
 - *State:* in force.
 
+**tb-R49. F1 stacks on lane B inside lane B's window** (02:37Z, 2026-09-30). This is the tb-R42 pattern.
+- *Request (tb-critical-fixes):* F1 is STORY-260922-2ijdmn / TASK-260922-108dhm — move/create atomicity prevention (#336/#342/#339). It is critical, on the operator's goal, and accepted as rev23 (reviewer RUN-260930-cd00da). It shares no paths with lane B or with main's advance, and it is stacked on lane B's head 6c063c7a as a0a3a3fc.
+- *Decision:* yes.
+  - F1's stacked CI is queued now and runs on whichever relux-ci runner frees first. At 02:36Z both were busy: lane B's CI 36660403841, and main's post-push CI 36660212832.
+  - If both CIs come back green, lane B lands, then F1 lands at once on its exact, already validated head.
+  - Lane B's window stretches to cover F1's landing, but never past its cap of 05:35Z.
+- *Otherwise:*
+  - Lane B red: F1 waits and is rebased with lane B's fix.
+  - F1 red, or not green by 05:35Z: lane B lands alone, the window closes, and F1 goes back into the first-ready queue.
+- *Fairness:* F1 goes next only because its CI validates the exact head that follows lane B. Nobody else can be validated on that head before lane B lands. After F1 comes the first ready among 2qon2t, 31ckqk, 2hgfo9, nlbafo and 20xo9i.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* in force until the operator fixes billing.
