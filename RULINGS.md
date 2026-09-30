@@ -781,3 +781,13 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - The child's output is proof evidence, never a work product.
   - Every producer and reviewer around the proof follows R80.
 - *State:* in force. Ivan may overrule it at any time; tb-keeper reported it to him.
+
+**tb-R83. Ivan's answers on desk cards #2 and #4: yes to rule 32 and to the rule 4 update; cocoaskills takes only the highest-severity audit stories** (22:57Z, 2026-09-30).
+- *Source:* Ivan on ivan-desk at 22:56Z, relayed verbatim in one message: «екомендация tb-keeper: по-прежнему А, да обоим. -- ок -- В) только самые серьёзные истории из него - давай так».
+  - The first part quotes the #2 recommendation line.
+  - The second part quotes option В (C) of the narrowed #4.
+  - The cards are identified by the quoted text; there is no card number.
+- *Decision:*
+  - (#2) Ivan's side says YES to both a2a-swarm protocol changes: rule 32 (PR #42 at ab0762a, blocking and non-blocking asks) and the rule 4 update (PR #43 at 6346259, the doorbell as built). Posted to m1max_a2a-swarm_orch in both threads. Landing waits for Alexey's answer and then goes in order #38 to #43.
+  - (#4) cocoaskills takes ONLY the highest-severity stories of EPIC-260917-3kbco2 (security-audit remediation): secrets in argv or env; reserved shim names and PATH; the shell-hook approval gate. The rest stays in the backlog. Relayed to cocoa.
+- *State:* in force.
