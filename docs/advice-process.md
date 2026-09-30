@@ -78,6 +78,7 @@ An advice process is state that a2a tracks, not free text in a thread.
   - `a2a advice list [--open]`.
 - **What a2a enforces:**
   - it re-rings silent stakeholders once at reply-by;
+  - it flags an opener with ZERO replies at reply-by as an incident, and `decide` is refused on it: total silence is a defect (delivery, subscriptions, an agent down, a mis-named stakeholder), not consent (rule 27, step 3);
   - a new head re-rings only the stakeholders whose sections changed;
   - `decide` is refused while any objection has no response;
   - on a `--shared` subject, `decide` is refused unless the record cites the EVENT IDS of both operators' decisions, each relayed by that operator's own keeper (for Ivan: tb-keeper's relay plus its RULINGS or tb-log entry; rule 24). A decision relayed by a third agent does not count. Until waggle signatures exist, this is a check on event ids and senders, not on signatures.
@@ -89,7 +90,8 @@ An advice process is state that a2a tracks, not free text in a thread.
 |---|---|
 | Skipping advice | Decider must ask every meaningfully affected party and relevant experts; omission leaves the decision open to challenge. (Rule 27.) |
 | Advice theatre or asking only allies | Required parties are defined by scope; advice is recorded verbatim with disposition and reasons. There is no independent check that consultation was candid or sufficiently broad. (Rule 27.) |
-| Decision paralysis | Advice is non-binding, silence is not a veto, there is a reply deadline, and only an evidenced severe objection can stop the decision. (Rule 27.) |
+| Total silence mistaken for consent | Zero replies is treated as a defect: the decider investigates, fixes it and re-runs the window; a2a flags it (rule 27, step 3). |
+| Decision paralysis | Advice is non-binding, partial silence is not a veto, there is a reply deadline, and only an evidenced severe objection can stop the decision. (Rule 27.) |
 | Decider lacks context | Must seek expertise and affected parties; changed sections are re-asked. No explicit guard tests whether the decider has enough context. (Rule 27.) |
 | Overriding advice without explanation | All advice is recorded verbatim with followed/overridden status and why; other-operator advice overridden is copied to that operator. (Rule 27.) |
 | Severe objection used as a preference veto | It must identify covered concrete harm and evidence; preferences and unsupported objections count as advice. (Rule 27.) |
