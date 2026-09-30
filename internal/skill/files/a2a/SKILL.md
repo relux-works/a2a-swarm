@@ -176,12 +176,17 @@ they were created. Others may `sub-request` you; nothing is live until you
 
 - A redline is a systemic obstacle: moving on is impossible, hard or slow for more than one agent's item.
 - If you hit one, raise it at once:
-  - `a2a post <room> --topic <t> --kind system --subtype redline --subject <what> --to <keeper>,<affected orchs> "severity=impossible|hard|slow; affected: ...; since: ...; evidence: ..."`
-- If you are the keeper:
-  - convene the affected in a redline topic with reply-by;
-  - post the plan as a decision;
-  - close it with `--subtype redline-closed` and the fix refs.
-- If you are named as affected, ack the plan and the closure.
+  - `a2a post <room> --topic <t> --kind system --subtype redline --subject <root cause> --to <convener> "severity=impossible|hard|slow; affected: ...; since: ...; evidence: ..."`
+  - If a redline with that subject is already open, add your evidence to its topic instead of raising a new one.
+- The convener is the product keeper, or the named arbiter for a shared resource. The convener:
+  - broadcasts it in the scope's broadcast room;
+  - convenes the affected in a topic with reply-by;
+  - posts the plan as a decision;
+  - sends owner-needed at once for operator acts;
+  - verifies that the effect is gone (measured evidence, not just "landed");
+  - announces the resume plan;
+  - then posts `--subtype redline-closed`.
+- If you are affected, ack the plan and the closure.
 
 ## Hard rules
 
