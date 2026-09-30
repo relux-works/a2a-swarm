@@ -896,3 +896,16 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     - 22921, «Task-board корневые цели и запуски»;
     - 55355, tb-muse's live primary.
 - *State:* in force.
+
+**tb-R89. Claude Code prompt suggestions are off in every session started through our launchers** (23:58Z, 2026-09-30).
+- *Source:* Ivan on ivan-desk at 23:57Z, card #16, verbatim: «Переменная окружения CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false. Она важнее настройки, и её удобно ставить в лаунчерах: tmux, task-board claude, curator run. -- и нужно взять в работу задачи что бы через task-board claude, curator run всегда прикладывались эти параметры (и потом через keeper up)».
+- *Why:* tonight tb-keeper misread Claude Code's grey prompt suggestions in the Mac mini panes as unsent operator text. Nothing was sent in Ivan's name, but a suggestion was relayed once as his instruction before the correction.
+- *Decision:* `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` is set as a literal in every Claude Code launch.
+  - task-board: skill-agents-management#46, the claude plugin's childEnv for every mode. Offered to infra-exit, with ivan-model-routing as the fallback owner.
+  - curator run: curator#102, routed to ivan-curator after curator#100.
+  - keeper up: curator-keeper#6, a line in the spec.
+  - Until the launchers carry it:
+    - tb-keeper's own tmux launchers (ax-speed-audit, the ivan-desk recipe) export it now;
+    - macmini-infra adds it to every NEW session it starts on the mini.
+  Running sessions are not restarted for this.
+- *State:* in force.
