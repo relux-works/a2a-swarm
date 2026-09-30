@@ -469,7 +469,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Structural:* cmd at 53 of its 90 min on the fastest runner leaves too little margin. tb-tests moves TASK-260907-2ik6zw (split the slow job) and TASK-260910-1okxol (shards) up its list; both are supported.
 - *State:* in force until #469 lands or is withdrawn.
 
-**tb-R60. 27oqgd goes next; the cmd CI timeout is treated as a redline** (14:30Z, 2026-09-30).
+**tb-R60. 27oqgd goes next; the cmd CI timeout is treated as a redline** (14:22Z, 2026-09-30).
 - *Order:* TASK-260922-27oqgd — F1 historical diagnostics (critical lane A, accepted at 14:20Z, landing commit b177a769 on 99485d86) takes the next window now. It is critical and ready, while #469's re-run waits for rose-air under tb-R59. Its gate push goes now, so its CI queues first for the next free relux-ci runner. If that runner is ivmbp and the cmd package times out, tb-R26 allows one re-run on rose-air. After it: #469, then first-ready (nlbafo). 20xo9i, being critical, goes first when it is ready at the same moment.
 - *Redline, informal until rule 28 is adopted by both operators:*
   - *Subject:* 'cmd package exceeds the 90-min CI timeout off rose-air'. *Severity:* slow. *Affected:* every lander on spm main.
@@ -481,6 +481,25 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - *Owner of the fix:* tb-tests, who splits the slow job (TASK-260907-2ik6zw) and shards it (TASK-260910-1okxol), at the top of its list.
 - *Main CI triage (tb-tests):* run 36707300749 at c8821efe also shows `--- FAIL: TestRunManagedClaudeTerminalOwnsLastPTYRowThroughManagerClient (0.52s)` right before the timeout panic. Is it real on main, or a runner/PTY artifact? Check it against the in-progress main run on ivmbp.
 - *Waste (proposal to tb-tests, shared seam):* every board-only Record push to main runs the full CI, about 90 min of a relux-ci runner, on code already tested at the landing head. Proposal: skip or narrow CI for pushes whose diff touches only `.task-board/**`, with a heads-up under rule 18 and ciguard kept green.
+- *State:* in force.
+
+**tb-R61. The swap #3 regression in 'worktree integrate'; a targeted workaround, no global rollback** (14:24Z, 2026-09-30).
+- *Regression (tb-critical-fixes, lane B 6c063c7a, live since swap #3 at 12:53Z):*
+  - On a repository whose task-board.config.json is gitignored, every `worktree integrate` with a configured validation suite refuses `validation_suite_changed` even though nothing drifted. selectReviewedValidationSuiteAt() reads the policy from the trunk tree, where an untracked config is absent.
+  - Leaves stick in integrating. nlbafo reproduced it, and 20xo9i will hit it.
+  - The swap was tb-keeper's (standing go, tb-R55) and the code is lane B's. It is owned openly.
+- *No global rollback:* F1 (move/create atomicity), F3, 2qon2t and 39rnkn stay live.
+- *Workaround until the fix lands:*
+  - (a) Land through the PR path plus close-landed, which does not call integrate. tb-critical-fixes does this.
+  - (b) Otherwise, run THAT ONE `worktree integrate` of an accepted leaf with the previous build by its explicit path: /Users/iv/.curator/cache/build/go-v1/0348fd5914b7290ee5798c87126344681a2db4e6ba031937288b158536ce79ba/bin/task-board (cache key 0348fd59, verified present and without lane B's check). Announce it in #skill-project-management. No other command runs on the old binary.
+- *Fix:* tb-critical-fixes takes it as critical. When the policy source is absent from the authoritative tree, it compares against the loaded config (the no-path branch), with a regression test on an untracked config.
+  - It lands ahead of everything, and tb-critical-fixes may stack it on 27oqgd in one window.
+  - Swap #4 follows at once under the standing go, batching 20xo9i if it is ready.
+  - tb-keeper runs no `curator global upgrade` before then, so the old build stays in the cache.
+- *Redline, informal, convened by tb-keeper:*
+  - *Subject:* 'worktree integrate refuses validation_suite_changed on untracked config'. *Severity:* hard.
+  - *Affected:* campaigns on ivmbp that integrate: infra-exit, and possibly codex-fix and tb-tests.
+  - *Close:* only after swap #4, when a real integrate succeeds on the new build.
 - *State:* in force.
 
 ## a2a-swarm (arbiter a2a-swarm-ac)
