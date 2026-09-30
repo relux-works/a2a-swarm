@@ -621,6 +621,12 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - (3) The offload of work to the Mac mini (Ivan, 19:25Z) runs through tb-keeper in batches. ivan-ci-isolation on the mini owns the board-Records stages 1–3; ivan-tb-tests and ivan-tb-critical-fixes hand over the elements.
 - *State:* in force.
 
+**tb-R71. tb-R69's condition (1) corrected: renames and relative paths** (19:36Z, 2026-09-30).
+- *Evidence:* ivan-ci-isolation, reworking junction-proof.sh, showed that `git diff --name-only` detects renames and prints only the new name. A junction that renames tools/x.go to .task-board/x.go would therefore list only .task-board/x.go and pass, although it deletes code. The diff.relative and core.quotePath settings can also skew the listing. It was reproduced in a scratch repository.
+- *Decision:* the intent of Ivan's rule (only .task-board/** changed) is unchanged, and the check becomes, from the top level: `git -c core.quotePath=false diff --no-renames --no-relative --name-only <tested head> <rebased head>`. Every line must start with .task-board/. Condition (2) stands. Manual checks use this form until TASK-260930-3i42om (junction-proof.sh) lands; after that, the script.
+- *Scope:* a clarification of tb-R69's mechanics; no landing under R69 had happened yet.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
