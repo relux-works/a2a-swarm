@@ -23,6 +23,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `internal/redact/` | Scrubs tokens and passwords from anything the CLI prints |
 | `docs/cli.md` | `a2a` command reference |
 | `docs/advice-process.md` | The advice process (protocol rule 27): source-cited core (Bakke, Laloux) and our adaptation |
+| `docs/products.md` | Products design (DRAFT under review): spaces, product keepers, per-role subscriptions, projection path, session registry, remote orchestrators, migration |
 | `bin/` | Local build output (gitignored) |
 
 ## Tools
