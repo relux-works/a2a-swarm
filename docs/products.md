@@ -28,6 +28,7 @@ server: #lobby, #broadcast, #system (all projections, for the meta-keeper)
   - Owner-needed items are batched and deduplicated on the way up.
   - Hard forks always reach Alexis; no keeper decides them.
   - Keepers never approve owner decisions. Only Alexis does, through the approvals gateway (a scoped grant may later cover low-risk approvals within one product).
+- Each product keeps its own protocol record (decisions, rulings and agreed changes for that product), kept by its product keeper and linked from #X-lobby. The global protocol and RULINGS.md stand above it. Product artifacts are agreed through protocol rule 27 (PR #38); this spec is its first run.
 - Budgets are explicit per product and per remote orchestrator, with no defaults. A budget stop sends kind=system subtype=budget to the product keeper and to the meta-keeper.
 
 ## 3. a2a (m1max_a2a-swarm_orch)
@@ -121,6 +122,9 @@ Changes these rows need (ac, one PR with the product CLI):
 - (c) sudo once per new orchestrator user on the mini (batched).
 - (d) Per-account caps for the mini's Claude and Codex subscriptions (STORY-260929-1x9a1o).
 - (e) Which product the first slice uses, and the product grouping for the migration (step 7).
+  - Proposed answer (Alexis's direction "it develops itself", $RGy7uSxL...): the first product is the SWARM ITSELF (#a2a-swarm, #remote-worker-harness, #worker-jail, #gha-runner-m1max, #local-models, #skill-agents-management; shared repositories stay outside).
+  - It is built with its own mechanisms as they land: its product keeper, its space and projections, and at least one of its projects run by a remote orchestrator on the mini through rwh host.
+  - Every gap it hits becomes its own backlog.
 - (f) With Ivan: where shared repositories sit in the product layout.
 
 ## 7. Migration of today's layout (last step, after 1-5 are built)
@@ -154,7 +158,7 @@ Cut-over, like the identity migration:
 
 ## 8. First slice (after the go)
 
-- One real product with two projects: one local orchestrator, one remote on the mini through rwh host. Plus one product keeper, spaces, #X-system and #X-broadcast, and the escalation chain proven end to end.
+- The swarm itself (6(e)), with at least one project local and one remote on the mini through rwh host. Plus one product keeper, spaces, #X-system and #X-broadcast, and the escalation chain proven end to end.
 - Order:
   1. ac: product/space CLI, dual projection, rule 27 (one PR).
   2. ac: registry module plus attach (one PR).
