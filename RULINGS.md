@@ -382,6 +382,13 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - tb-R28/tb-R30 still govern ivmbp: it is paused at load peaks, and the tb-R30 guard stays armed.
 - *State:* in force.
 
+**tb-R51. BUG-260930-1rn0hw takes the next slot, after the gap closes** (04:44Z, 2026-09-30).
+- *Request (tb-tests):* BUG-260930-1rn0hw — mirrorgate child go test has no deadline and panics the package instead of failing the case. It was declared ready at 02:54Z: accepted, test-harness only, needing a rebase and one CI.
+- *First-ready check:* none of 2qon2t, 31ckqk, 2hgfo9, nlbafo or 20xo9i has declared itself ready in #skill-project-management, and no other ready claim is open. So 1rn0hw is first.
+- *Decision:* tb-tests opens its window at 04:52Z, or after the last gap-done post, whichever is later. The gap covers tb-critical-fixes' Records for lane B and F1 and its infra-exit root, then tb-agents-infra-exit's, if it publishes them in this gap. Nobody pushes Records into the window.
+- *Next:* first-ready again. If a critical item (20xo9i, the v0.5.30 pin with #453 and gpt-6.1-sol) and a non-critical one are ready at the same moment, the critical one goes first.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
