@@ -578,11 +578,11 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - Q3, ciguard's single-job contract: follows Q2. It changes in the same PR as the split, under rule 27.
   - The semaphore slot held while the remote gate waits on hosted CI: reported as a GitHub issue plus a heads-up to tb-critical-fixes, not as an element in its epic (rule 1).
   - Q2 (one more quiet runner) and Q4 (a cap on review rounds) are Ivan's calls, now on ivan-desk.
-- *macos-sys, about 18:40Z:* both items are Ivan's calls, now on ivan-desk.
+- *macos-sys, 18:33Z:* both items are Ivan's calls, now on ivan-desk.
   - The stale-daemon restarts are merged into desk card #1, with the process-tree facts: six of the eight managers host nothing, while 60087 and 22921 host live sessions.
   - A separate GOCACHE for the ivmbp runner.
   - macos-sys's own deletions and threshold changes stay in its own session, as tb-R66 requires.
-- *cocoa, about 18:40Z:* what cocoaskills does next is Ivan's call, desk card #4. tb-keeper recommends C.
+- *cocoa, 18:33Z:* what cocoaskills does next is Ivan's call, desk card #4. tb-keeper recommends C.
 - *State:* Q1 and Q3 are in force. The rest waits for Ivan; the reply-by for tb-tests and cocoa is 06:00Z.
 
 ## a2a-swarm (arbiter a2a-swarm-ac)
