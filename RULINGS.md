@@ -834,3 +834,23 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - **#11.** Ivan now says yes to switching AX's spawn config to gpt-6.1-sol. That reverses his 20:13Z answer. It is relayed to ax, which confirms with Ivan in its own session first and then applies the full R80 pairs.
   - **#14.** Adopt curator-spec Decisions 0019 and 0021. Relayed to ivan-curator, which confirms in its session, where the question sits.
 - *State:* in force.
+
+**tb-R86. The fate of plhkjh and 3l276k: split; the lane contract stays with tb-tests, and selection and scheduling move to the validation owners** (23:42Z, 2026-09-30).
+- *Source:*
+  - Ivan, in tb-tests' session on 2026-10-01: a detailed review of two backlog tasks by gpt-6-astra at effort max, with tb-keeper deciding their fate from those reviews.
+  - Ivan's standing direction for EPIC-260910-vbuq8g (Go test performance): items with no real speedup leave the epic.
+  - The reviews were read-only inline analyses, attached to the elements. They are not CR reviews, and astra at max was Ivan's explicit instruction.
+- *Evidence:*
+  - **TASK-260910-plhkjh** (select finalizer suites from changed inputs) is partly superseded but still valid for doc-only CRs. Its September contract is unsafe to implement literally: it lists 6 modules instead of 5, takes the first matching row instead of the union, omits the server under remoteconfig, and treats docs/ as safe although spawn guards read it.
+  - **TASK-260910-3l276k** (unify the test-lane entrypoints) is partly superseded and still valuable. It is mostly correctness and maintenance, with some savings from duplicate runs.
+- *Decision:* both are SPLIT along one interface. tb-tests owns WHAT the lanes are and that they cover everything. The validation owners own WHICH lanes run for a CR and how the evidence binds.
+  - **Kept with tb-tests** in EPIC-260910-vbuq8g:
+    - plhkjh's lane-coverage inventory;
+    - 3l276k's canonical lane definitions (the current 5 modules plus build tags) and completeness enforcement, after #481.
+    - These stay because they are the precondition of the only real speedups in both items: selective suites and no duplicate runs.
+    - Condition: tb-tests states the expected saving and measures the duplicate-run saving before and after. If it proves to be nil, the remaining correctness work moves out, per Ivan's direction.
+  - **Moved to the validation owners.** tb-critical-fixes decides whether it or ivan-validation-fixes takes each piece:
+    - plhkjh's selection and evidence binding. The first slice covers research and doc-only CRs, with full fallback, after #481, #478 and BUG-261001-33ave8. Silent coverage loss is never allowed.
+    - 3l276k's CR scheduling, reuse and config consumption, alongside #478.
+  - **A prerequisite for any full-green claim:** BUG-261001-33ave8, repaired and actually executed.
+- *State:* in force.
