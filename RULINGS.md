@@ -651,6 +651,18 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Not done:* no daemon was restarted (tb-R55). The infra-exit manager restart (desk card #1) still waits for Ivan.
 - *State:* done.
 
+**tb-R75. Untracked subagents on the mini for the fast-track campaigns; tb-R71 hardened for submodules; the 300-file path-filter bound** (20:09Z, 2026-09-30).
+- *Source:* Ivan asked ivan-ci-isolation to put the question to tb-keeper (20:08Z). ci-isolation's own reviews produced the two findings.
+- *Decision:*
+  - (1) EPIC-260930-povmyt (ivan-ci-isolation) and ivan-validation-fixes' C1–C3 may run producers and reviewers as Claude subagents in isolated worktrees on the mini, instead of tracked spawns. This is a recorded exception to the skill's spawn-first contract. Conditions:
+    - every result goes on its element as a resource;
+    - statuses follow the normal lifecycle;
+    - commits stay signed, and landings go through windows and tb-R69.
+    From the next campaign on the mini, tracked spawns are required, with a canonical Ivan-side config that tb-keeper provides.
+  - (2) tb-R71's check becomes `git -c core.quotePath=false diff --no-renames --no-relative --ignore-submodules=none --name-only <tested head> <rebased head>`. Without the flag, a gitlink bump can hide behind ignore=all. spm has no submodules.
+  - (3) GitHub path filters see at most 300 changed files. So paths-ignore on main (stage 1) is bounded, and the bound is stated in the docs: never push code to main together with a large board delta. Landing evidence remains the unfiltered ci.yml run on the PR or gate branch.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
