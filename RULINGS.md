@@ -824,10 +824,10 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     macos-sys executes it and waits for a job gap. The baseline median is 88.9 min, band 86–102 min.
   - **#6.** Ask Alexey through the swarm to bring back the Alexis-M1-Max runner; posted to m1max_gha-runner_orch. tb-R45's return condition is met: the g7ijg3 fix is on main.
     - macbook-iv is used whenever it is on. Ivan manages its power and says when.
-    - tb-keeper added the relux-ci label to the macbook-iv org runner (id 39) at 23:1xZ.
+    - tb-keeper added the relux-ci label to the macbook-iv org runner (id 39) just before 23:11Z.
     - tb-keeper resumes its runner service on ivmbam1 when Ivan says it is on.
   - **#7.** No cap on review rounds. Every review runs with the FULL context profile, never lite. An item past 7 review rounds is reported to tb-keeper, who brings it to Ivan without stopping it. Broadcast to every Ivan-side orchestrator.
-  - **#9.** The mini takes nothing from AX, and AX stays fully paused. Ivan asked for an OUTSIDE audit of how to speed up development. tb-keeper started the session ax-speed-audit on ivmbp at 23:2xZ:
+  - **#9.** The mini takes nothing from AX, and AX stays fully paused. Ivan asked for an OUTSIDE audit of how to speed up development. tb-keeper started the session ax-speed-audit on ivmbp at 23:12:56Z:
     - Opus high, read-only rules, R80 for delegates;
     - Remote Control session_01JSTNXyhBwJWbJmTbvphwiz;
     - it writes collective-mode/audits/ax-speed/AUDIT.md.
