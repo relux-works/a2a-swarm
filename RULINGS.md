@@ -469,6 +469,20 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Structural:* cmd at 53 of its 90 min on the fastest runner leaves too little margin. tb-tests moves TASK-260907-2ik6zw (split the slow job) and TASK-260910-1okxol (shards) up its list; both are supported.
 - *State:* in force until #469 lands or is withdrawn.
 
+**tb-R60. 27oqgd goes next; the cmd CI timeout is treated as a redline** (14:30Z, 2026-09-30).
+- *Order:* TASK-260922-27oqgd — F1 historical diagnostics (critical lane A, accepted at 14:20Z, landing commit b177a769 on 99485d86) takes the next window now. It is critical and ready, while #469's re-run waits for rose-air under tb-R59. Its gate push goes now, so its CI queues first for the next free relux-ci runner. If that runner is ivmbp and the cmd package times out, tb-R26 allows one re-run on rose-air. After it: #469, then first-ready (nlbafo). 20xo9i, being critical, goes first when it is ready at the same moment.
+- *Redline, informal until rule 28 is adopted by both operators:*
+  - *Subject:* 'cmd package exceeds the 90-min CI timeout off rose-air'. *Severity:* slow. *Affected:* every lander on spm main.
+  - *Evidence:*
+    - cmd takes 53 min on rose-air;
+    - it timed out on the M1 Max (#469, 2.4x slower) and on ivmbp (main CI 36707300749, 11:58–13:33Z);
+    - the M1 Max is off until quiet, which leaves one reliable landing runner, and that one is shared with curator's rose-air lane.
+  - *Convener:* tb-keeper (spm main arbiter).
+  - *Owner of the fix:* tb-tests, who splits the slow job (TASK-260907-2ik6zw) and shards it (TASK-260910-1okxol), at the top of its list.
+- *Main CI triage (tb-tests):* run 36707300749 at c8821efe also shows `--- FAIL: TestRunManagedClaudeTerminalOwnsLastPTYRowThroughManagerClient (0.52s)` right before the timeout panic. Is it real on main, or a runner/PTY artifact? Check it against the in-progress main run on ivmbp.
+- *Waste (proposal to tb-tests, shared seam):* every board-only Record push to main runs the full CI, about 90 min of a relux-ci runner, on code already tested at the landing head. Proposal: skip or narrow CI for pushes whose diff touches only `.task-board/**`, with a heads-up under rule 18 and ciguard kept green.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
