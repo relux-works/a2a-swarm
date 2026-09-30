@@ -672,6 +672,17 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - (4) M7 starts ahead of the 2026-09-23 sequencing, for the library only. The integration into task-board and curator-run (N-B, N-C) keeps its dependencies.
 - *State:* in force.
 
+**tb-R77. Recovering 2p2vgp from a stale refresh intent: preserve, abort and discard, rebuild** (20:39Z, 2026-09-30).
+- *Evidence:* refresh-candidate for TASK-260927-2p2vgp (STORY-260927-c1bxri, tb-muse) replayed the branch, but its metadata phase did not complete. Trunk then moved (PR #479), and refresh_apply.go:35 refuses because authority is not intent.TrunkOID. No command retargets or retires the intent (#392; tb-critical-fixes filed BUG-261001-2lexj6 in STORY-260929-331a2j, to be implemented after odansk, which does not add retirement).
+- *Decision:* adopt tb-critical-fixes' recommendation, executed by tb-muse in this order:
+  - (1) preserve the 12-path tar and patch, plus backup refs for 52fd48d8 and 3ea89aa5 (update-ref refs/backup/260930-2p2vgp/…), and verify both;
+  - (2) the supported abort --discard of the Story workspace, then a fresh workspace from main;
+  - (3) vz22an rev 3 as a new signed revision (a cherry-pick of 3ea89aa5), re-reviewed, since its acceptance does not carry;
+  - (4) re-apply 2p2vgp from the patch and republish;
+  - (5) no hand edits to the intent or the registry records.
+  The procedure and evidence go on 2p2vgp as a resource.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
