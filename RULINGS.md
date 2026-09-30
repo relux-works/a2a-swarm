@@ -710,6 +710,17 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - Order: specs first (evidence format, headroom policy, usage-snapshot spec, the A0 contract appendix), then an architecture-wide skeleton, then one issue per next slice. task-board's resolver itself waits for M4 Gate B.
 - *State:* in force.
 
+**tb-R80. Model rule for the Mac mini: Sol 6.1 producers, Sonnet 5.5 reviewers, Muse Spark for routine work; Fable max stops** (22:02Z, 2026-09-30).
+- *Source:* Ivan, in tb-keeper's session, about 22:00Z, after the mini's 5-hour window hit 100%, with weekly all-models at 46% and weekly Fable at 27%: «через ровно час 38 минуты разбуди там всех и пускай остановят всех фейблом макс, и теперь будет правило что все исполнители на сол 6.1 high, ревью соннет 5-5 хай, для рутинных задач можно мьюз спарк макс - оркестраторы как есть».
+- *Decision:* effective at the wake-up, 23:39:54Z (03:39 GMT+4), when tb-keeper wakes every Mac mini session:
+  - every Fable-max producer and subagent stops;
+  - producers run on gpt-6.1-sol at effort high;
+  - reviewers run on claude-sonnet-5-5 at effort high;
+  - routine tasks may use Muse Spark at effort max;
+  - orchestrators are unchanged: claude-opus-5-5 at high.
+  This replaces the time-boxed Fable/Opus-max rule (20:47–23:47Z). Sol and Muse producers need Codex and Muse logins on the mini. A session without them reports the blocker and does not fall back to Fable.
+- *State:* scheduled; in force from 23:39:54Z.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
