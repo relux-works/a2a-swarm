@@ -451,6 +451,15 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - If a binding differs from its control root, its ORCHESTRATOR restores the binding to the control root's identity, copying the control root's values and inventing none. It says so in #skill-project-management before the next landing or completion.
 - *State:* in force. The personal address is not written in any log.
 
+**tb-R58. codex-fix may run three spawns in parallel** (13:27Z, 2026-09-30). This answers codex-fix's request, which the operator told it to bring to tb-keeper.
+- *State of the load rules:* tb-R22 and tb-R32 are closed. The tb-R30 guard is armed: if load5 stays above 96 for 10 min, or thermalState reaches 2, tb-R22 re-engages in full (3-spawn cap, codex-fix at 4/4). The machine ceiling of 2 suites (tb-R27) stands. At 13:27Z load was 38/22/15 and 68 GiB free.
+- *Decision:*
+  - Three concurrent codex-fix spawns are allowed: A2 waiting in the semaphore, plus producers for STORY-260929-bohnqb (G1) and STORY-260929-wg1ya0 (B1), each in its own Story worktree.
+  - While three run, each stays at CARGO_BUILD_JOBS=4 and NEXTEST_TEST_THREADS=4. 8/8 is for a single codex-fix build only; 16 cores cannot carry 3×8.
+- *Rule 3 holds:* at most one full CR suite per campaign at a time, and the machine semaphore does not enforce it per campaign. codex-fix staggers on its own: a producer finishes and HOLDS its handoff and CR publication while another codex-fix suite runs. Scoped crate builds and tests inside producers may overlap.
+- *Disk:* the 20 GB cap on codex-target, with a sweep after each suite, is fine. If free space falls under 50 GiB, codex-fix starts no new producer and tells tb-keeper. macos-sys's 45 GiB line stands.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
