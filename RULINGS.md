@@ -552,6 +552,23 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
     - Recommendation: one restart after swap #4, at an idle point of infra-exit's primary, on Ivan's per-event go. The board's other daemons are handled in the same window: 30676, 96815 and 97313 on older builds, and 10911 on the current build with no children.
 - *State:* (1)–(3) done; (4) waits for Ivan.
 
+**tb-R66. ivan-desk: one channel for questions to Ivan** (18:33Z, 2026-09-30).
+- *Source:* Ivan, in tb-keeper's session, at about 18:27Z: «давай да. и подними в нем сразу еще rc». That is a yes to the desk scheme, with Remote Control.
+- *Decision:*
+  - (1) ivan-desk is a dedicated Claude session: Opus 5.5 with Remote Control, in the tmux session `ivan-desk`, working in `collective-mode/desk` (CLAUDE.md, QUEUE.md, DECISIONS.md). It keeps the queue of questions for Ivan and relays Ivan's answers verbatim. It decides nothing, acts on nothing, and talks only to Ivan and to tb-keeper.
+  - (2) Routing. Orchestrators no longer wait on Ivan in their own sessions.
+    - Questions for Ivan go to tb-keeper, marked owner-needed (on Matrix or by SendMessage).
+    - tb-keeper settles what is within its authority and forwards the rest to ivan-desk, with context and a recommendation.
+    - Answers come back through tb-keeper, which acts on them or relays them, and records them.
+  - (3) Authority. An answer that ivan-desk relays verbatim with its card number counts as Ivan's decision in tb-keeper's session. Excluded, and confirmed by Ivan in the acting session:
+    - secrets and the Keychain;
+    - sudo and other system changes;
+    - deleting what cannot be restored.
+
+    A session that needs Ivan's answer as permission for a risky action of its own still gets it in its own session.
+  - (4) Ivan can still write to any session directly.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
