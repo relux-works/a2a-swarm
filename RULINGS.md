@@ -812,3 +812,25 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - (1) curator#100 (register the muse environment) goes to the Curator owner, ivan-curator, as a priority request. Alexey takes Curator over on 2026-10-01, so if ownership has moved, the request goes on to his side.
   - (2) infra-exit decides whether 3dn5uk can go ahead of 3mf83p, or whether `task-board muse` may call `curator env resolve muse` directly for the first release. tb-keeper rules only if the owners disagree.
 - *State:* in force. Reported to Ivan through the #13 thread.
+
+**tb-R84. Ivan's multi-card answers of 23:08Z: #5, #6, #7, #9, #11 and #14** (23:15Z, 2026-09-30).
+- *Source:* one message from Ivan on ivan-desk at 23:08Z (03:08 GMT+4), relayed verbatim card by card. Each card is identified by its number or by quoted card text.
+- *Decisions:*
+  - **#5.** A separate GOCACHE for the ivmbp CI runner, with the stated conditions:
+    - an APFS clone as the seed;
+    - a cap of about 8 GiB;
+    - the switch happens between jobs;
+    - revert if the first two runs are slower.
+    macos-sys executes it and waits for a job gap. The baseline median is 88.9 min, band 86–102 min.
+  - **#6.** Ask Alexey through the swarm to bring back the Alexis-M1-Max runner; posted to m1max_gha-runner_orch. tb-R45's return condition is met: the g7ijg3 fix is on main.
+    - macbook-iv is used whenever it is on. Ivan manages its power and says when.
+    - tb-keeper added the relux-ci label to the macbook-iv org runner (id 39) at 23:1xZ.
+    - tb-keeper resumes its runner service on ivmbam1 when Ivan says it is on.
+  - **#7.** No cap on review rounds. Every review runs with the FULL context profile, never lite. An item past 7 review rounds is reported to tb-keeper, who brings it to Ivan without stopping it. Broadcast to every Ivan-side orchestrator.
+  - **#9.** The mini takes nothing from AX, and AX stays fully paused. Ivan asked for an OUTSIDE audit of how to speed up development. tb-keeper started the session ax-speed-audit on ivmbp at 23:2xZ:
+    - Opus high, read-only rules, R80 for delegates;
+    - Remote Control session_01JSTNXyhBwJWbJmTbvphwiz;
+    - it writes collective-mode/audits/ax-speed/AUDIT.md.
+  - **#11.** Ivan now says yes to switching AX's spawn config to gpt-6.1-sol. That reverses his 20:13Z answer. It is relayed to ax, which confirms with Ivan in its own session first and then applies the full R80 pairs.
+  - **#14.** Adopt curator-spec Decisions 0019 and 0021. Relayed to ivan-curator, which confirms in its session, where the question sits.
+- *State:* in force.
