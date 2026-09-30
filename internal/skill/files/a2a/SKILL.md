@@ -182,6 +182,9 @@ they were created. Others may `sub-request` you; nothing is live until you
   - NO solution.
 - Name all stakeholders by scope. Discuss the problem and options in that one topic.
 - End with a decision that names ONE owner. Only then does that owner draft the solution PR under rule 27.
+- A redline never waits for this (rule 28).
+- On Alexis's side, ask him to decide (owner-needed) ONLY for a true hard fork, an irreversible or human-only act (sudo, credentials, billing, external accounts), or a deadlock. Otherwise decide among the stakeholders and send him a kind=system summary.
+- On Ivan's side, shared-protocol changes and anything touching his machines, repos or sessions go to Ivan as a decision through tb-keeper.
 
 ## Hard rules
 
