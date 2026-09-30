@@ -372,6 +372,15 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Fairness:* F1 goes next only because its CI validates the exact head that follows lane B. Nobody else can be validated on that head before lane B lands. After F1 comes the first ready among 2qon2t, 31ckqk, 2hgfo9, nlbafo and 20xo9i.
 - *State:* in force.
 
+**tb-R50. ivmbp and macbook-iv are back** (04:39Z, 2026-09-30). This follows up tb-R48.
+- curator TASK-260930-38fjt0 landed at about 04:37Z. curator main's `Test (rose-air)` now uses `runs-on: [self-hosted, macOS, ARM64, rose-air]`, checked on main. The host is quiet: load about 10, thermal 0, 100 GiB free.
+- tb-keeper bootstrapped ivmbp's runner locally and macbook-iv's on ivmbam1 at 04:39Z. Both are online.
+  - Landing runners (relux-ci): rose-air, the M1 Max and ivmbp.
+  - macbook-iv has no relux-ci. It serves only generic jobs.
+- *Stale job:* ivmbp at once took curator's run 36665690768, the `Test (rose-air)` of a push made before the pin (cbe52078 at 03:43Z, which had waited for rose-air). ivan-curator was told and decides whether it runs or is cancelled; tb-keeper does not touch it.
+- tb-R28/tb-R30 still govern ivmbp: it is paused at load peaks, and the tb-R30 guard stays armed.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
