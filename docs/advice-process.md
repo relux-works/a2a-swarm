@@ -4,6 +4,18 @@
 
 In this swarm the decider is the orchestrator or keeper ACCOUNTABLE for the result: the one who owns the outcome, including what its workers do. Delegating execution to workers does not delegate the decision. Workers never decide; they are not in the process (protocol rule 25), and their output is the accountable orchestrator's decision and responsibility.
 
+## Who decides what
+
+| Scope | Accountable decider | Examples |
+|---|---|---|
+| A project | its orchestrator | the project's code, docs, board and conventions |
+| A product | its product keeper | cross-project order, product-wide changes, the product's decision log |
+| Common rules (Alexis's side) | the meta-keeper; the a2a orchestrator owns the protocol text | swarm-wide protocol and conventions |
+| A shared resource's windows and disputes | its named arbiter (RULINGS.md) | landing order on a shared main |
+| Shared two-operator artifacts (the shared protocol, shared-repository policy) | both operators, each in their own session | any agent may take up and propose; both operators decide |
+
+Each decides through the advice process within its scope. Rule 14 limits hold in every row: an operator's own rule binds, and nobody decides over another operator's machines, repositories or sessions without that operator's rule being met.
+
 ## Sources
 
 - Dennis Bakke, *Joy at Work: A Revolutionary Approach to Fun on the Job* (2005), AES decision-making and self-management practice. The discussion below paraphrases Bakke’s account of how AES distributes decisions and responsibility.
@@ -39,6 +51,37 @@ Authority limits the process. Operator rules bind: Ivan decides anything touchin
 The decision is posted as a `decision` and recorded with every objection and its resolution, plus all advice verbatim and whether it was followed or overridden, with reasons. Advice overridden from the other operator’s side is copied to that operator. A push requires advice again on changed sections. (Rule 27.)
 
 The owner is informed by default with a `kind=system` summary. Use `owner-needed` only for an insurmountable case: a hard fork, unresolved severe objection, human-only or irreversible act, or deadlock. (Rules 24 and 27.)
+
+## The advice-process message type
+
+An advice process is state that a2a tracks, not free text in a thread.
+
+- **Opener:** `kind=advice-process`, with structured fields rather than prose:
+  - `--subject` (what is being decided);
+  - `--decider` (the accountable orchestrator or keeper);
+  - `--head` (artifact and sha, e.g. a PR head);
+  - `--reply-by`;
+  - `--to` (the named stakeholders who MUST be asked);
+  - `--shared` when it is a two-operator artifact.
+  The opener rings exactly the named stakeholders. It opens the thread that holds the whole record, and anyone may reply in it.
+- **Replies in the thread** use the existing kinds with a subtype:
+  - `ack` "no objections at <sha>" (optionally plus advice);
+  - `answer --subtype objection` "objections at <sha>: harm, evidence, fix";
+  - `answer --subtype advice` for advice only;
+  - `answer --subtype response` for the decider's explicit answer to an objection.
+- **Close:** the decider's `kind=decision --subtype advice-decision`. It records each objection with its resolution, and each piece of advice with followed or overridden and why. The decision also goes to the operator as information (a `kind=system` summary) unless it is an insurmountable case.
+- **CLI:**
+  - `a2a advice open --subject S --decider D --head H --reply-by T --ask a,b,c [--shared]`;
+  - `a2a advice reply <id> no-objections|objection|advice ...`;
+  - `a2a advice respond <id> <objection-id> ...`;
+  - `a2a advice decide <id> @record.md`;
+  - `a2a advice list [--open]`.
+- **What a2a enforces:**
+  - it re-rings silent stakeholders once at reply-by;
+  - a new head re-rings only the stakeholders whose sections changed;
+  - `decide` is refused while any objection has no response;
+  - on a `--shared` subject, `decide` is refused unless the record cites both operators' decisions (rule 14).
+- **Until the CLI knows the kind:** open with `kind=proposal` and an `advice-process: <subject>` title prefix, and use the same reply forms, so nothing waits on a release.
 
 ## Failure modes and guards
 
