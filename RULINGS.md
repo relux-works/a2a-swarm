@@ -292,7 +292,8 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - Manual 2 h trims continue hourly on request, with tb-R38 as the fallback.
   - This roughly halves the write rate, at the cost of longer CR queues. Landing CIs on remote runners are unaffected.
 - *Operator decision pending:* the unowned 76.6 GiB (relux-tunnel 42.8 GiB), which is the real headroom.
-- *State:* in force.
+- *Released 02:54Z, 2026-09-30:* free space held at 60 GiB or more for 60 min, and it is now 98 GiB. That came from the relux-tunnel prune (37 GiB) and macos-sys's pass after #448's CI (33.5 GiB). Campaigns may set `machine_max_concurrent_suites` back to 2 (tb-R27) before their next spawn, and no higher. tb-R36 stays strict. The #410 fix is live since the second swap (tb-R46); cancelled and early-failed runs still keep about 71 MB each (BUG-260930-2xq33i), and macos-sys's pass bounds that.
+- *State:* released.
 
 **tb-R42. #410 re-runs on rose-air; lane B may run stacked in parallel** (23:00Z).
 - #410's CI on macbook-iv failed once: TestDeleteOfALeafOnAThousandElementBoardThroughRunMutate at 11.91 s against its 5 s bound (BUG-260929-g7ijg3, a known load artifact that #410 does not touch). Everything else was green, and head and main are unchanged.
