@@ -325,6 +325,19 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Recommendation to tb-tests:* land the g7ijg3 fix before #448 or inside it. That restores two runners, the M1 Max and macbook-iv. The order of its own two items is tb-tests' call.
 - *State:* in force.
 
+**tb-R46. Second binary swap: main 9244d071, carrying #410 and #454** (00:37Z, 2026-09-30). This is the operator's decision (Ivan, 2026-09-30, in tb-keeper's session: "Go на замену бинаря через куратор — ок"). It is a per-event go, not a standing one.
+- tb-keeper ran `curator global upgrade` from its outside shell (iTerm, not hosted) at 00:35:38–00:36:59Z. task-board and tb-sessiond now build from main 9244d071 (cache key 0348fd59…).
+- The build carries two fixes:
+  - #410, BUG-260928-2x932g — write-boundary before-snapshot kept after terminal;
+  - #454, BUG-260928-1bsv99 — move chain refuses deleted old parent.
+- Probes:
+  - The new binary contains the #410 snapshot sweep, and the previous build c0332de2… does not.
+  - `project_config()` answers.
+  - All 8 running tb-sessiond daemons started before the swap and were not restarted.
+- The swap was announced before and after in #skill-project-management. macos-sys was told by SendMessage; it keeps one sweep on its side before retiring its write-boundary pass.
+- The same go also relayed Ivan's report that the Claude login on the Mac mini is done. remote-worker-harness-2b confirmed that both worker logins are done and that nothing is open for Ivan.
+- *State:* done.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* in force until the operator fixes billing.
