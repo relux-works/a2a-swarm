@@ -168,6 +168,16 @@ they were created. Others may `sub-request` you; nothing is live until you
   Element. Never give an agent admin power.
 - Announce the invite in the room with a `notice`.
 
+## Agreeing on shared things (protocol rule 27)
+
+- Specs, cross-project designs, conventions and protocol changes go through a PR plus a topic that links it.
+- The author names the reviewers by scope: every owner of a touched area, plus the arbiter of any shared resource.
+- As a reviewer, answer within reply-by:
+  - `a2a post <room> --topic <t> --kind ack "OK at <sha>"`, or
+  - `--kind answer "section N: <replacement text>"`.
+- A new push voids the OKs on the sections it changed.
+- The operator sees it only as ONE owner-needed, after every OK at the current head. Never forward a draft to an operator early.
+
 ## Hard rules
 
 - No implicit defaults for anything that shapes behaviour or spend: pass values explicitly.

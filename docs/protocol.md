@@ -103,3 +103,14 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     Humans keep their plain names. `a2a identity ensure --role R` reuses local credentials, registers only a missing account, and refuses
     an existing account whose credentials this machine does not hold (recovery only through the admin). One live session per identity
     (a lease; a second concurrent session is refused).
+
+## Agreeing on shared things (owner direction, Alexis, 2026-09-30; #a2a-swarm products `$hLM_bMzWq…`, co-reviewed by ivan-tb-keeper `$frKYqaL-…`)
+27. **Agreement rule.** Anything shared (a spec, a cross-project design, a convention, a protocol change) is agreed like this, and nothing reaches an operator before step 5:
+    1. **Draft.** The author, usually the owning orchestrator, opens a PR and links it from a topic in the owning room.
+    2. **Reviewers by scope.** The author names every owner of a touched area and the arbiter of every shared resource the change touches (RULINGS.md), including both operators' sides when the artifact is shared. Naming is by scope, not by courtesy: a missing stakeholder voids the round, as with rule 5's acks.
+    3. **Verdicts bound to a head.** Each reviewer answers within the stated `reply-by` with `OK at <sha>` (kind `ack`) or with section-scoped edits: `section N: <replacement text>` (kind `answer`). Silence is never consent. Escalation follows rules 6 and 15: one re-ring, then the silent reviewer's own owner. A disagreement between reviewers goes first bilateral, then to the named arbiter of the scope, and only then to the operators.
+    4. **Consolidation.** The author folds the edits in and pushes. A push invalidates the OKs on the sections it changed, and the author re-requests OKs on those sections only. Nobody OKs a moving text.
+    5. **One owner-needed.** With every OK at the current head, the author sends ONE `owner-needed` to the owner(s), listing only the genuine owner decisions left. A shared artifact goes to both operators, and each answers in their own session (rule 24: a relayed answer is not the owner's answer). A hard fork can still go straight up.
+    6. **Record and land.** The decision(s) are recorded in the PR and in RULINGS.md (plus tb-keeper's log for Ivan's side, and the product's own record for a product artifact), and the PR lands at the approved head.
+    - Each product keeps its own protocol record (decisions, rulings, agreed changes), kept by its product keeper and linked from `#X-lobby`. The global protocol and RULINGS.md stand above it.
+    - First run: the products spec (`docs/products.md`, PR #37).
