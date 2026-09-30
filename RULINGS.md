@@ -748,3 +748,24 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 | ac-R8 | retired by the self-hosted runner m1max-a2a-swarm (2026-09-30) |
 | tb-R12 (external pushes escalated to the operator) | done by tb-R23: the shared Matrix channel, then window leases with a token (PR #16) |
 | tb-R18 (macbook-iv out of the relux-ci pool) | TASK-260907-l2vgx1 — RAM TMPDIR for the cmd fixture, or its cmd wall clearly under budget |
+
+**tb-R81. One-time retirement of the orphaned c1bxri base-refresh intent, as an exception to R77 (5)** (22:33Z, 2026-09-30).
+- *Evidence:*
+  - After the R77 rebuild, provisioning refuses every producer on STORY-260927-c1bxri with `worktree_stale: preserved candidate intent does not bind this workspace checkpoint`.
+  - The base-refresh intent is keyed by Story, and `worktree abort --discard` never retires it (#392, BUG-261001-2lexj6). The workspace id is deterministic per Story, so an id-based orphan test cannot fire.
+  - tb-muse ran tb-critical-fixes' revised checks read-only at 22:30Z, and all of them hold:
+    - (1') the intent's created_at (20:07:16Z) is earlier than the workspace record's created_at (20:44:10Z);
+    - (2') neither 52fd48d8 nor 3ea89aa5 is an ancestor of the branch tip;
+    - (3') the branch tip, checkpoint, current base and selected base are all 8f10a12b;
+    - (4') refs/backup/260930-2p2vgp/prepared-replay resolves to 52fd48d8, and vz22an-checkpoint to 3ea89aa5.
+- *Decision:* approved as a one-time exception to R77 (5), for this one file only. tb-muse executes these steps:
+  - (1) Immediately before the move:
+    - re-run (1')–(4') and confirm the file's sha256 is still 43ab66dc…;
+    - back up the CURRENT dirty candidate as a fresh tar plus a `git diff --binary` patch, with their sha256. The earlier tar holds the 12-path candidate; the rebuild left 14 paths.
+  - (2) Run `mv -n` on the file into .temp/TASK-260927-2p2vgp/archive/. Never delete it and never overwrite anything. Then verify the sha256 at the new path, and verify that the old path is gone.
+  - (3) Change no other record, ref or worktree. replay-340 stays, because #338's cleanup owns it.
+  - (4) Respawn the 2p2vgp r13 producer under R80. If provisioning refuses for any other reason, or would clean or reset the dirty candidate, STOP and report. This ruling authorises no further manual step.
+  - (5) Rollback: `mv -n` the file back to its original path; its sha256 must match.
+  - (6) Put the evidence on TASK-260927-2p2vgp as a resource beside R77's: the check outputs, every sha256, the move and the respawn result.
+  R77 (5) otherwise stays in force. The structural fix remains BUG-261001-2lexj6: abort retires the intent, and provisioning detects an orphan by created_at and OIDs, not by workspace id.
+- *State:* in force.
