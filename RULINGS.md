@@ -427,6 +427,19 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *tb-muse:* go to restart its manager (the older tb-sessiond daemon of skill-project-management-muse). It runs from tb-keeper's outside shell after tb-muse is at a safe point, and then tb-muse's session is resumed.
 - *State:* in force. The standing go holds until Ivan withdraws it.
 
+**tb-R56. README and reference hunks are announced in the window; git identity is never changed by agents** (13:05Z, 2026-09-30). This follows tb-agents-infra-exit's two problems, raised on Ivan's request.
+- *README hotspot:*
+  - README.md and references/*.md on skill-project-management main go stale in almost every landing. Today TASK-260929-20xo9i went stale twice and STORY-260927-nlbafo once, each costing a republish, a 1–2 h validation wait and a re-review.
+  - *Now (process):* a window-open post names every README.md, references/** or .specs/** hunk the landing carries, by path and section. A campaign whose CR touches the same file rebases and re-verifies BEFORE review, not after acceptance.
+  - *Tool fix:* sent to tb-critical-fixes as a proposal. For doc-class paths (README.md, references/**, .specs/**, docs/**), a clean three-way merge, and trunk hunks that don't overlap the CR's own, task-board re-parents and revalidates instead of marking the revision stale, and records the junction diff for the next reviewer. Priority is theirs.
+  - *Restructuring README into include files:* that is a shared-repository structure change, so it goes to both operators under rule 27, later.
+- *Git identity:*
+  - Codex producer runs (RUN-260929-81ed80, RUN-260929-4da4a6) ran `git config` in a binding clone and changed the repository's user email and signing key. That produced a mis-signed snapshot and a `code_landing_identity_mismatch` refusal.
+  - *Rule for every campaign:* producers, reviewers and every spawned run never run `git config` to change identity or signing, in any scope. Briefs say so explicitly. Orchestrators check that the binding's identity equals the control root's before every landing and completion.
+  - *Tool guard:* sent to tb-critical-fixes as a proposal. A spawn postflight check flags any change to repo-local user.*, gpg.*, commit.gpgsign or includeIf during a run. The write boundary does not cover .git/config today.
+  - *Finding (read-only sweep, 13:00Z):* 34 of 192 clones on ivmbp already carry a repo-local identity that differs from ivan@relux.works, most with the 'ivanopcode' signing key. skill-project-management's main clone and the wiki are among them. Which identity is canonical per repository is Ivan's call, and he has been asked. Until he answers, nobody "fixes" an identity anywhere: use what the control root is configured with, consistently. The personal email address is not written in any log.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
