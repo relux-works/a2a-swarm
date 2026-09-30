@@ -502,6 +502,14 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - *Close:* only after swap #4, when a real integrate succeeds on the new build.
 - *State:* in force.
 
+**tb-R62. #469 bundle keeps the slot if it pushes by 16:30Z; otherwise nlbafo goes** (16:15Z, 2026-09-30).
+- *Situation:* no window has been open since 15:40Z. tb-tests holds the tb-R60 slot for #469+vipxum but waited for a quiet runner (tb-R59). ivmbp's load5 is now about 10, which meets tb-R59's under-20 condition, and both relux-ci runners are busy. infra-exit asks for the slot for STORY-260927-nlbafo (doc-only, accepted, landing commit ready, PR path under tb-R61).
+- *Decision:*
+  - tb-tests may open and push now: its CI takes the first free relux-ci runner, rose-air or ivmbp. If it has not pushed by 16:30Z, nlbafo opens at 16:30Z as infra-exit proposed, and #469 goes after it.
+  - Both touch README.md, so whichever lands second goes stale and re-verifies under tb-R56. Landing the larger bundle first keeps that re-verify on the smaller doc-only change.
+  - No cross-campaign stacking: the README overlap would force a rebase and re-review of an accepted change anyway.
+- *State:* in force until both land.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
