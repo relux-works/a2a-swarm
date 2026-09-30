@@ -645,6 +645,12 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Decision:* the landing may proceed. Both outputs go into the landing note. The lander fetches again right before the push and stops if main has moved. The fallback CI on the PR branch is cancelled after the landing, since the push to main runs its own. No board-only publishes happen until the window ends.
 - *State:* in force. It is the first landing under tb-R69.
 
+**tb-R74. Binary swap #4: Sol 6.1 is on ivmbp** (20:04Z, 2026-09-30).
+- *Evidence:* PR #476 (TASK-260929-20xo9i, agents-management v0.5.30) landed at 19:59Z as c8084c4b under tb-R73. infra-exit's Record followed at 8f13f626.
+- *Action:* under tb-R55's standing go, tb-keeper ran 'curator global upgrade' from its unhosted shell, 19:59:36Z–20:03:09Z, rc=0. task-board moved to build 4404b59c and tb-sessiond to 94691714, from main 8f13f626. The shims were republished, and the binary carries gpt-6.1-sol. IMPACT START and END were posted in #skill-project-management.
+- *Not done:* no daemon was restarted (tb-R55). The infra-exit manager restart (desk card #1) still waits for Ivan.
+- *State:* done.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
