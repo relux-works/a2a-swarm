@@ -597,6 +597,17 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - (4) infra-exit's window (opened 17:58Z) may extend to 21:30Z under amendment 7. It stays a push window for everyone, board Records included.
 - *State:* in force; (3) waits for Ivan.
 
+**tb-R69. Operator rule: a green CI result carries across board-only junctions** (19:14Z, 2026-09-30).
+- *Source:* Ivan, through ivan-desk on card #8, at 19:13Z, verbatim: «А) Разрешить для коммитов только с доской. Мержить по зелёному результату, если git diff --name-only между протестированным head и head после ребейза показывает только .task-board/** и range-diff идентичен. Правило действует и дальше, а таких коммитов в main примерно 9 из 20. -- да разрешить». Ivan quoted card #8's option A without the number. The desk mapped the answer to #8, because that text appears on no other card.
+- *Rule (standing, for Ivan-side landers on skill-project-management main):* after a rebase over commits that touch only .task-board/**, the lander may land on the tested head's green CI result without a rerun, when both of these hold:
+  - `git diff --name-only <tested head> <rebased head>` lists only paths under .task-board/;
+  - `git range-diff <old base>..<tested head> <new base>..<rebased head>` shows every commit as identical.
+
+  The lander records both outputs in its landing note. The review verdict carries along with the identical range-diff. Signing and the pre-landing checks (fetch, signatures, PR head equal to the local head, main an ancestor) still apply. This rule amends "repeat the checks on the new exact head" for this case only.
+- *Scope:* skill-project-management main, where BUG-260929-vipxum proved that no test or CI step reads .task-board. Another repository adopts the rule only after the same proof. Alexey's side applies it only under its own operator's rules.
+- *Applies now to:* PR #476 (TASK-260929-20xo9i). When its current run on b5e2877a is green, infra-exit rebases onto main (83651038 at 19:13Z), checks both conditions, and lands without a rerun. This resolves tb-R68 (3).
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
