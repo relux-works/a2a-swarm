@@ -585,6 +585,18 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *cocoa, 18:33Z:* what cocoaskills does next is Ivan's call, desk card #4. tb-keeper recommends C.
 - *State:* Q1 and Q3 are in force. The rest waits for Ivan; the reply-by for tb-tests and cocoa is 06:00Z.
 
+**tb-R68. Rule-7 breach at 19:01Z; landing PR #476 after a board-only junction** (19:04Z, 2026-09-30).
+- *Evidence:*
+  - tb-tests ran `worktree close-landed TASK-260907-bqdg51` inside infra-exit's window for #476. It published a board Record, and main moved f6e21436 → 83651038. The Record has 12 files, all under .task-board/.
+  - tb-tests self-reported it and cancelled its own two board-only main runs.
+  - #476's CI on b5e2877a started at 18:20Z and was still running at 19:03Z.
+- *Decision:*
+  - (1) The breach is acknowledged, with no further action. close-landed and colocated integrate publish the board chain, so run them only in a gap or in your own window.
+  - (2) #476's current run finishes first. If it is green, infra-exit rebases onto main (signed) and updates the branch with --force-with-lease.
+  - (3) Whether a green result carries across a board-only junction is Ivan's standing rule: checks repeat on the new exact head. It is put to Ivan through ivan-desk, recommending that it may carry when `git diff --name-only` from the tested head to the rebased head lists only .task-board/** and the range-diff is identical. Until Ivan answers, the rebased head gets its own CI run.
+  - (4) infra-exit's window (opened 17:58Z) may extend to 21:30Z under amendment 7. It stays a push window for everyone, board Records included.
+- *State:* in force; (3) waits for Ivan.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
