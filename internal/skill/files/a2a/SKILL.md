@@ -181,7 +181,7 @@ they were created. Others may `sub-request` you; nothing is live until you
   - what "solved" means;
   - NO solution.
 - Name all stakeholders by scope. Discuss the problem and options in that one topic.
-- The initiator decides the direction (advice process, docs/advice-process.md: no consensus, no veto; only an objection with evidence must be answered, and only an unresolved one escalates). It posts a decision that names ONE owner and records the objections and advice. Only then does that owner draft the solution PR under rule 27.
+- The orchestrator or keeper accountable for the result decides the direction (advice process, docs/advice-process.md: no consensus, no veto; only an objection with evidence must be answered, and only an unresolved one escalates). It posts a decision that names ONE owner and records the objections and advice. Only then does that owner draft the solution PR under rule 27.
 - A redline never waits for this (rule 28).
 - Operator involvement follows rule 27.
 
