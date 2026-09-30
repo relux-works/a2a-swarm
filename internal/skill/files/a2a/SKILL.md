@@ -173,6 +173,16 @@ they were created. Others may `sub-request` you; nothing is live until you
 - 27, the advice process: deciding anything shared (spec, cross-project design, convention, protocol change).
 - 28, redlines: a systemic obstacle that slows or blocks more than one agent's item.
 
+## Problem first (protocol rule 29)
+
+- A problem that touches several parties starts as a topic titled `problem: <slug>` (kind proposal):
+  - what hurts, with evidence;
+  - the constraints;
+  - what "solved" means;
+  - NO solution.
+- Name all stakeholders by scope. Discuss the problem and options in that one topic.
+- End with a decision that names ONE owner. Only then does that owner draft the solution PR under rule 27.
+
 ## Hard rules
 
 - No implicit defaults for anything that shapes behaviour or spend: pass values explicitly.

@@ -150,3 +150,17 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     5. **Operator acts.** If the fix needs an operator act (binary swap, sudo, credentials, billing), the convener sends `owner-needed` at once, when it convenes, to the owning operator or operators. It does not wait for the plan or for rule 27.
     6. **Verify.** Before closing, the convener verifies that the fix tasks are done and landed AND that the blocking effect is gone, with measured evidence per affected project. Examples: "runner back in the pool, landing CI green on it", or "post-fix runs no longer leave snapshots, N of N". A landed fix alone is not enough. If verification fails, the redline stays open.
     7. **Resume plan and close.** The convener notifies everyone affected with the plan for returning to normal: what resumes in which order, re-queued work, and follow-ups. Only then does it post `kind=system subtype=redline-closed` with the same `--subject`, the fix refs, the evidence and the resume plan, broadcast and projected like the redline. The affected parties ack. Until closure, the convener re-rings the plan owners at each `reply-by`.
+
+## Problem first (owner requirement, Alexis, 2026-09-30; #a2a-swarm products `$fM92O7-7…`)
+29. **Problem before solution.** A problem that touches several parties is stated as a problem before anyone drafts a solution under rule 27.
+    1. **Statement.** The poster opens a topic in the owning room with `kind=proposal` titled `problem: <slug>`. It gives:
+       - what hurts, with evidence;
+       - the constraints;
+       - what "solved" means (acceptance criteria).
+       It prescribes NO solution.
+    2. **Stakeholders by scope.** The poster names ALL stakeholders as in rule 27 step 2: every owner of a touched area and every arbiter of a touched shared resource, from both operators' sides when shared. A missing stakeholder is added as soon as anyone notices, and the discussion waits for them.
+    3. **Problem and options together.** The stakeholders discuss the problem and the options in that one topic, within a stated `reply-by`. Anyone may add a constraint or an option; silence is not consent (rule 6).
+    4. **Owner and direction.** The discussion ends with a `decision` (rule 5: acks from every named stakeholder). It names the chosen direction and the ONE owner who drafts the solution. Disagreement escalates as in rule 27 step 3.
+    5. **Hand-off to rule 27.** The owner drafts the solution PR, which then runs through rule 27 from step 1. It links the problem topic, and its reviewers are at least the stakeholders named here.
+    - A single-party problem, or a hard fork (rule 24), skips this rule.
+    - First case: provisioning remote orchestrators on the Mac mini without a per-orchestrator sudo, at tens scale.
