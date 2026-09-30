@@ -338,6 +338,16 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - The same go also relayed Ivan's report that the Claude login on the Mac mini is done. remote-worker-harness-2b confirmed that both worker logins are done and that nothing is open for Ivan.
 - *State:* done.
 
+**tb-R47. ivmbp back in the pool while the host is quiet; it runs #448's CI** (00:44Z, 2026-09-30). Amends tb-R34.
+- *Why now:*
+  - #448's CI 36650900325 requires relux-ci. It sat queued, because the only online relux-ci runner, rose-air, runs curator's `Test (rose-air)` (run 36626413154, since 00:21Z), and curator's gate run 36651575754 may queue another rose-air job behind it. The window caps at 03:34Z.
+  - The operator's decision covers pausing ivmbp at load peaks only (tb-R28, tb-R22's close). The host is quiet: load1 9–10, thermalState 0, 62 GiB free.
+- *Checked:* ivmbp's launchd plist already has `ProcessType=Interactive`, and so does macbook-iv's. tb-R31's timeouts on ivmbp were real host load, not the M1 Max's QoS cause.
+- *Done:* tb-keeper bootstrapped `actions.runner.relux-works.ivmbp` at 00:43Z. #448's job started on ivmbp at 00:44:02Z.
+- *Guards:* tb-R30 stays armed. If load5 stays above 96 for 10 min, or thermalState reaches 2, ivmbp is booted out again. tb-R26 applies: a red ivmbp job that fails on a timeout or a wall-clock bound is a load artifact and may be re-run once on rose-air.
+- *tb-R34's label plan* (drop relux-ci from ivmbp after #448) is re-decided after #448 lands, with this run as evidence.
+- *State:* in force.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* in force until the operator fixes billing.
