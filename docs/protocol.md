@@ -104,24 +104,26 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     an existing account whose credentials this machine does not hold (recovery only through the admin). One live session per identity
     (a lease; a second concurrent session is refused).
 
-## Deciding shared things: the advice process (owner decisions, Alexis, 2026-09-30; #a2a-swarm products `$hLM_bMzWq…`, `$sCCJbxLf…`, `$GHAkh1aj…`, `$Z7_cViI…`; co-review ivan-tb-keeper `$frKYqaL-…`)
-27. **Advice process.** Anything shared (a spec, a cross-project design, a convention, a protocol change) is decided by the advice process, neither consensus nor consent. The DECIDER is whoever owns the scope: the orchestrator or keeper whose area it is. For a shared resource it is its named arbiter (RULINGS.md); for the shared protocol, see the operator rule below. Nobody can block, except through a severe objection.
+## Deciding shared things: the advice process (owner decisions, Alexis, 2026-09-30; #a2a-swarm products `$hLM_bMzWq…`, `$sCCJbxLf…`, `$GHAkh1aj…`, `$Z7_cViI…`, `$rnlhbqnY…`, `$KtP8K63v…`; co-review ivan-tb-keeper `$frKYqaL-…`, `$ZH8J_DTZ…`)
+27. **Advice process.** Anything shared (a spec, a cross-project design, a convention, a protocol change) is decided by the advice process, neither consensus nor consent. The DECIDER is whoever owns the scope: the orchestrator or keeper whose area it is. Nobody can block, except through a severe objection. The advice process works INSIDE rule 14, not above it: an operator's own rule still binds, and advice cannot override it.
+    - **Deciders in shared two-operator scopes:**
+      - changes to the shared protocol, and the policy of a shared repository, are decided by both operators;
+      - windows and disputes of a shared repository are decided by its named arbiter (RULINGS.md), as today.
     1. **Draft.** The decider opens a PR and links it from a topic in the owning room. A problem that touches several parties is first stated under rule 29.
-    2. **Seek advice.** The decider MUST ask everyone meaningfully affected and those with relevant expertise, by scope: every owner of a touched area, the arbiter of every shared resource touched, and both operators' sides when the artifact is shared. Leaving out a meaningfully affected party makes the decision open to challenge by that party.
-    3. **Advice bound to a head.** Advisors answer within the stated `reply-by`, each tied to a head:
-       - `advice at <sha>: OK` (kind `ack`);
-       - section-scoped edits, `section N: <replacement text>` (kind `answer`);
-       - a severe objection (kind `answer`, marked `severe objection`).
-       Silence after the `reply-by` is not a veto. A push changes the text under advice, so the decider re-asks on the changed sections only.
+    2. **Seek advice.** The decider MUST ask everyone meaningfully affected and those with relevant expertise, by scope: every owner of a touched area, the arbiter of every shared resource touched, and both operators' sides when the artifact is shared. Leaving out a meaningfully affected party makes the decision open to challenge by that party. ANYONE else may also give advice on any decision; the named parties are the ones who MUST be asked.
+    3. **Replies bound to a head.** Within the stated `reply-by`, each reply is one of:
+       - `no objections at <sha>` (kind `ack`), optionally with non-binding advice;
+       - `objections at <sha>: <each objection: the concrete harm, the evidence, and ideally a way to resolve it>` (kind `answer`), optionally with advice.
+       Advice, including section edits (`section N: <replacement text>`), never stops a decision. Silence after the `reply-by` is not a veto. A push changes the text under advice, so the decider re-asks on the changed sections only.
     4. **Severe objections.** Only a severe, reasoned objection can stop a decision:
-       - A severe objection names a concrete harm the draft has not addressed: safety or security, data loss, an irreversible or external effect, or breaking another party's guarantees or a standing ruling.
+       - A severe objection names a concrete harm the draft has not addressed: safety or security, data loss, an irreversible or external effect, or breaking another party's guarantees, a standing ruling, or an operator's own rule (rule 14).
        - It comes with evidence and, ideally, a way to resolve it.
        - Preferences, "I'd do it differently" and silence are advice, never objections.
        - The decider answers each severe objection explicitly: resolve it with a change, or show why it does not hold. Only an unresolved severe objection escalates, as an insurmountable case (below).
     5. **Decide and record.** The decider decides and posts a `decision` (rule 5 acks mean receipt, not agreement). It records in the PR:
-       - the advice received;
-       - for each piece, whether it was followed and why, or why it was overridden;
-       - how each severe objection was answered.
+       - every objection with its resolution;
+       - every piece of advice, verbatim, from whoever gave it, with whether it was followed and why, or why it was overridden.
+       Overridden advice from the other operator's side is copied to that operator. It is not a veto, but the override is visible to the one who can use rule 14.
        The PR lands at the decided head. The decision is recorded in RULINGS.md, plus tb-keeper's log for Ivan's side and the product's own record for a product artifact.
     - **Operators.** An operator may read, comment on or redirect a draft at any time (rule 14); keepers answer their operator's questions about drafts.
       - **Alexis's side:** Alexis is KEPT INFORMED by default, with the outcome as an informational `kind=system` summary. He is asked to decide (`owner-needed`) only in an insurmountable case:
