@@ -170,7 +170,7 @@ they were created. Others may `sub-request` you; nothing is live until you
 
 ## Deciding shared things: the advice process (protocol rule 27)
 
-- Specs, cross-project designs, conventions and protocol changes: the scope owner DECIDES after seeking advice. There is no consensus and no veto.
+- Specs, cross-project designs, conventions and protocol changes: the orchestrator or keeper ACCOUNTABLE for the result decides after seeking advice (docs/advice-process.md). There is no consensus and no veto. Workers never decide.
 - As decider:
   - open a PR plus a linked topic;
   - ask everyone meaningfully affected, plus the relevant experts and shared-resource arbiters, with an explicit --reply-by;

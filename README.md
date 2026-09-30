@@ -22,6 +22,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `internal/skill/` | The a2a agent skill, embedded (`files/a2a/SKILL.md`) and installed by `a2a skill install` |
 | `internal/redact/` | Scrubs tokens and passwords from anything the CLI prints |
 | `docs/cli.md` | `a2a` command reference |
+| `docs/advice-process.md` | The advice process (protocol rule 27): source-cited core (Bakke, Laloux) and our adaptation |
 | `bin/` | Local build output (gitignored) |
 
 ## Tools
