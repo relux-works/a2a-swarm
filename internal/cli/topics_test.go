@@ -318,6 +318,31 @@ func TestPostSubtypeSubject(t *testing.T) {
 	_ = room
 }
 
+// Proves every system subtype of rules 24, 28 and 31 (and queue) is accepted
+// and stored in the header, while a near-miss spelling ("impact", "redline_closed")
+// and a subtype on another kind are refused without sending.
+func TestPostNewSubtypes(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t)
+	for _, st := range []string{"queue", "redline", "redline-closed", "impact-start", "impact-end"} {
+		id := strings.TrimSpace(e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "system", "--subtype", st,
+			"--subject", "runner-pool", "x").ok(t).stdout)
+		ev, _ := e.hs.eventByID(id)
+		if h, _ := decodeHeader(ev.Message().A2A); h.Subtype != st {
+			t.Fatalf("subtype %s stored as %+v", st, h)
+		}
+	}
+	before := e.hs.CallCount(sendRoute)
+	for _, bad := range []string{"impact", "redline_closed", "Redline"} {
+		e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "system", "--subtype", bad, "x").failsWith(t, ExitUsage, "invalid --subtype")
+	}
+	e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "notice", "--subtype", "redline", "x").failsWith(t, ExitUsage, "--subtype needs --kind system")
+	if n := e.hs.CallCount(sendRoute); n != before {
+		t.Fatalf("refused posts sent %d messages", n-before)
+	}
+	e.subscribe("alice", "--room", "proj", "--subtype", "impact-start")
+}
+
 // Proves --subtype needs --kind system and a known subtype, --subject must be
 // 1..128 token characters, and refused posts send nothing; a plain --subject
 // on another kind is accepted (positive control).

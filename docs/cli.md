@@ -204,7 +204,7 @@ also listed in `m.mentions.user_ids`. Prints the event id.
 | `--to` | `all` | comma-separated names or user ids |
 | `--reply-by` | question: now + 12 h | RFC3339 deadline (normalized to UTC) |
 | `--trunk` | - | git object id (hex, 7-64 chars) when the message talks about code |
-| `--subtype` | - | only with `--kind system`: landing, window, incident, blocker, ownership, budget (protocol rule 24) |
+| `--subtype` | - | only with `--kind system`: landing, window, incident, blocker, ownership, budget (protocol rule 24); queue (readiness claims, slot requests); redline, redline-closed (rule 28); impact-start, impact-end (rule 31) |
 | `--subject` | - | what the message is about, 1-128 chars of `[A-Za-z0-9#._/:@-]`, e.g. `relux-works/skill-project-management@main`, `BUG-260928-2qon2t`, `PR#12` |
 
 Empty bodies (after trimming), bodies over 32 KiB, and invalid UTF-8 are refused before anything is sent.

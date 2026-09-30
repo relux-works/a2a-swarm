@@ -33,8 +33,11 @@ var (
 	subjectRE = regexp.MustCompile(`^[A-Za-z0-9#._/:@-]{1,128}$`)
 )
 
-// Subtypes are the structured subtypes of kind=system (protocol rule 24).
-var Subtypes = []string{"landing", "window", "incident", "blocker", "ownership", "budget"}
+// Subtypes are the structured subtypes of kind=system: rule 24, plus queue
+// (readiness claims and slot requests), redline and redline-closed (rule 28),
+// and impact-start and impact-end (rule 31).
+var Subtypes = []string{"landing", "window", "incident", "blocker", "ownership", "budget",
+	"queue", "redline", "redline-closed", "impact-start", "impact-end"}
 
 func validSubtype(s string) bool {
 	for _, x := range Subtypes {
