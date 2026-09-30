@@ -370,7 +370,8 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - Lane B red: F1 waits and is rebased with lane B's fix.
   - F1 red, or not green by 05:35Z: lane B lands alone, the window closes, and F1 goes back into the first-ready queue.
 - *Fairness:* F1 goes next only because its CI validates the exact head that follows lane B. Nobody else can be validated on that head before lane B lands. After F1 comes the first ready among 2qon2t, 31ckqk, 2hgfo9, nlbafo and 20xo9i.
-- *State:* in force.
+- *Outcome:* lane B landed at 03:51Z (2c4de555..6c063c7a, CI green on the M1 Max). F1 landed at 04:42Z (PR #465, 6c063c7a..a0a3a3fc, CI green on rose-air), and the window closed at 04:42Z, inside its cap. Both are task-board CLI changes, so they take effect after the next operator binary swap.
+- *State:* done.
 
 **tb-R50. ivmbp and macbook-iv are back** (04:39Z, 2026-09-30). This follows up tb-R48.
 - curator TASK-260930-38fjt0 landed at about 04:37Z. curator main's `Test (rose-air)` now uses `runs-on: [self-hosted, macOS, ARM64, rose-air]`, checked on main. The host is quiet: load about 10, thermal 0, 100 GiB free.
