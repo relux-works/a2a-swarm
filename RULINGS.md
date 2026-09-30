@@ -632,6 +632,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Decision:*
   - (1) The machine ceiling is back to 2. tb-R70's priority-lane suite counts inside it.
   - (2) codex-fix stays at one build at a time, by its own guard, and keeps tb-R64's cap on codex-target: 15 GB, with a sweep after each suite. tb-keeper's watcher alarms at 16 GiB, polling every 2 min.
+    - *Amended 20:45Z:* 15 GB is the post-suite level. One suite may peak transiently at about 30 GB: a gate build from scratch, which codex-fix measured at 26 GB mid-suite at 20:45Z with 73 GiB free. The sweep follows the suite, and tb-keeper's alarm is at 32 GiB.
   - (3) The re-engage line: under 45 GiB free, ceiling 1 returns at once, announced by tb-keeper. Running suites finish.
   - (4) Wiki PR #32 found that without -trimpath every worktree re-caches every main-module package. -trimpath for suites is a candidate lever, after a trial in one worktree and a rule-18 heads-up. It is not in force.
     - *Amended 19:40Z:* -trimpath is blocked. It makes runtime.Caller module-relative, and the spm guard tests derive the repository root from it (56 uses). The binding order is: the guard fix first, then -trimpath, then any cache size cap. Verified by macos-sys.
