@@ -769,3 +769,15 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - (6) Put the evidence on TASK-260927-2p2vgp as a resource beside R77's: the check outputs, every sha256, the move and the respawn result.
   R77 (5) otherwise stays in force. The structural fix remains BUG-261001-2lexj6: abort retires the intent, and provisioning detects an orphan by created_at and OIDs, not by workspace id.
 - *State:* in force.
+
+**tb-R82. R80 governs worker model choice; the Gate B live proof on the local Qwen engine continues** (22:51Z, 2026-09-30).
+- *Source:* tb-agents-infra-exit, after applying R80. Its Gate B live proof (TASK-260927-1ycuhl, TASK-260929-2zno29) launches a Codex child against the operator's LOCAL Qwen engine through the local-runtime binding. The question: does R80 stop that proof?
+- *Decision:* no. The proof may continue.
+  - R80 governs the model choice for work: producers, reviewers and routine tasks. A child whose runtime and model ARE the subject of an acceptance proof is not a worker choice. Here it is M4's own criterion, "spawn onto a local engine on this Mac through codex".
+  - The child runs on local compute and burns no subscription limit, which is what R80 protects.
+- *Conditions:*
+  - The exemption covers only these two proof tasks.
+  - The local-runtime ceiling is used for nothing else.
+  - The child's output is proof evidence, never a work product.
+  - Every producer and reviewer around the proof follows R80.
+- *State:* in force. Ivan may overrule it at any time; tb-keeper reported it to him.
