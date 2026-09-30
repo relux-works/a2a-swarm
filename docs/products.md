@@ -68,6 +68,7 @@ Principles:
 - Anything addressed to you (--to or a mention) ALWAYS rings, whatever its kind. The one exception is ack: acks are collected by the decision's author through `a2a inbox` and never wake anyone.
 - Replies in threads you are in ring unless you muted the thread.
 - owner-needed rings keepers, not every orchestrator (2b: it was most of today's noise).
+- A redline (protocol rule 28, PR #39: `system/redline` and `redline-closed`) rings the keeper of that product or resource, the meta-keeper, and every orchestrator named as affected. It is part of every keeper row, the meta-keeper included, and orchestrators receive it through --to.
 - Onboarding creates exactly the row's set and prints it, with no hidden extras. `subs sync` reconciles to it and prints each add and remove.
 
 | Role | Joins | Rings (besides anything addressed to it) | Only readable | Why |
