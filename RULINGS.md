@@ -440,6 +440,17 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - *Finding (read-only sweep, 13:00Z):* 34 of 192 clones on ivmbp already carry a repo-local identity that differs from ivan@relux.works, most with the 'ivanopcode' signing key. skill-project-management's main clone and the wiki are among them. Which identity is canonical per repository is Ivan's call, and he has been asked. Until he answers, nobody "fixes" an identity anywhere: use what the control root is configured with, consistently. The personal email address is not written in any log.
 - *State:* in force.
 
+**tb-R57. Operator decision on git identity in relux-works repositories** (13:12Z, 2026-09-30). Ivan in tb-keeper's session, answering tb-R56's open question: option B, «Годятся обе личности, лишь бы внутри одной задачи клон-источник и рабочие клоны совпадали».
+- *Both identities are valid for relux-works repositories:*
+  - the relux identity from `~/.gitconfig`'s includeIf, `.gitconfig-thexflow` (ivan@relux.works with the relux signing key);
+  - the ivanopcode identity (Ivan Oparin, his personal address, the ivanopcode key), as set locally in 34 clones.
+- *The requirement is consistency within one task.* The control root and its binding clones use the same identity.
+- *Nothing changes globally.* ~/.gitconfig and the existing local overrides stay as they are.
+- *Mismatch handling:*
+  - Spawned runs, producers and reviewers never run `git config` for identity or signing (tb-R56).
+  - If a binding differs from its control root, its ORCHESTRATOR restores the binding to the control root's identity, copying the control root's values and inventing none. It says so in #skill-project-management before the next landing or completion.
+- *State:* in force. The personal address is not written in any log.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
