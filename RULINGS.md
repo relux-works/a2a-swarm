@@ -634,6 +634,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
   - (2) codex-fix stays at one build at a time, by its own guard, and keeps tb-R64's cap on codex-target: 15 GB, with a sweep after each suite. tb-keeper's watcher alarms at 16 GiB, polling every 2 min.
   - (3) The re-engage line: under 45 GiB free, ceiling 1 returns at once, announced by tb-keeper. Running suites finish.
   - (4) Wiki PR #32 found that without -trimpath every worktree re-caches every main-module package. -trimpath for suites is a candidate lever, after a trial in one worktree and a rule-18 heads-up. It is not in force.
+    - *Amended 19:40Z:* -trimpath is blocked. It makes runtime.Caller module-relative, and the spm guard tests derive the repository root from it (56 uses). The binding order is: the guard fix first, then -trimpath, then any cache size cap. Verified by macos-sys.
 - *State:* in force.
 
 ## a2a-swarm (arbiter a2a-swarm-ac)
