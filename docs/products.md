@@ -68,7 +68,7 @@ Principles:
 - Anything addressed to you (--to or a mention) ALWAYS rings, whatever its kind. The one exception is ack: acks are collected by the decision's author through `a2a inbox` and never wake anyone.
 - Replies in threads you are in ring unless you muted the thread.
 - owner-needed rings keepers, not every orchestrator (2b: it was most of today's noise).
-- A redline (protocol rule 28, PR #39: `system/redline` and `redline-closed`) rings the keeper of that product or resource, the meta-keeper, and every orchestrator named as affected. It is part of every keeper row, the meta-keeper included, and orchestrators receive it through --to.
+- A redline and its closure (protocol rule 28, PR #39) are broadcast in the broadcast room of their scope and projected. They ring everyone in scope plus the meta-keeper.
 - Onboarding creates exactly the row's set and prints it, with no hidden extras. `subs sync` reconciles to it and prints each add and remove.
 
 | Role | Joins | Rings (besides anything addressed to it) | Only readable | Why |
@@ -159,7 +159,7 @@ Cut-over, like the identity migration:
 
 ## 8. First slice (after the go)
 
-- Product = swarm (the section 7 grouping). m1max_swarm_keeper is the product keeper, with m1max_local-models_orch interim until it exists. At least one swarm project runs under a remote orchestrator on the mini through rwh host. The escalation chain is proven end to end. Plus one product keeper, spaces, #X-system and #X-broadcast, and the escalation chain proven end to end.
+- Product = swarm (the section 7 grouping). m1max_swarm_keeper is the product keeper, with m1max_local-models_orch interim until it exists. At least one swarm project runs under a remote orchestrator on the mini through rwh host. It uses the space, #X-system and #X-broadcast, and proves the escalation chain end to end.
 - Order:
   0. The agreement rule (PR + named reviewers + OK at <sha> + one owner-needed), with this spec as its first run.
   1. ac: product/space CLI, dual projection, rule 27 (one PR).
