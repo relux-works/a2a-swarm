@@ -22,13 +22,14 @@ server: #lobby, #broadcast, #system (all projections, for the meta-keeper)
   - resolves in-product conflicts and windows;
   - runs #X-broadcast (the only one with PL 50 there);
   - watches #X-system and the budgets of its projects;
-  - reports status to the meta-keeper only when something changes.
-- Meta-keeper (local-models-e9): across products; the global #broadcast stays with the global keepers.
+  - reports status to the meta-keeper only when something changes;
+  - keeps the product's own decision log (rulings and agreed changes for X, linked from #X-lobby), under the global protocol and RULINGS (Alexis: the product protocols itself).
+- Meta-keeper (m1max_local-models_orch): across products; the global #broadcast stays with the global keepers.
 - Escalation: orchestrator -> product keeper -> meta-keeper -> Alexis.
   - Owner-needed items are batched and deduplicated on the way up.
   - Hard forks always reach Alexis; no keeper decides them.
   - Keepers never approve owner decisions. Only Alexis does, through the approvals gateway (a scoped grant may later cover low-risk approvals within one product).
-- Each product keeps its own protocol record (decisions, rulings and agreed changes for that product), kept by its product keeper and linked from #X-lobby. The global protocol and RULINGS.md stand above it. Product artifacts are agreed through protocol rule 27 (PR #38); this spec is its first run.
+- Product artifacts are agreed through protocol rule 27 (PR #38); this spec is its first run.
 - Budgets are explicit per product and per remote orchestrator, with no defaults. A budget stop sends kind=system subtype=budget to the product keeper and to the meta-keeper.
 
 ## 3. a2a (m1max_a2a-swarm_orch)
@@ -97,6 +98,7 @@ Changes these rows need (ac, one PR with the product CLI):
   - its own signing key;
   - budget stops go to the product keeper;
   - resume after a restart.
+- (tb-keeper's addition, e7's call) The "remote host" section goes into skill-project-management's SKILL.md, a shared repository, through its normal review and landing queue.
 
 ## 5. Hosting (remote-worker-harness-2b)
 
@@ -106,7 +108,7 @@ Changes these rows need (ac, one PR with the product CLI):
   - a signing key, non-extractable where possible, plus git author config;
   - skills and HOME from a curator profile (both operators are leaving agents-infra; agents-infra only until Alexis's curator migration, planned 2026-10-01);
   - the subscription login from the token agent;
-  - a LaunchDaemon running the session in tmux, for the owner's human-only attach, never for waking. Waking follows the converged wake design (research/waking-sessions-converged.md, PR #22): the doorbell hooks plus one supervised background `a2a wait` per identity now, then a pinned Claude channel adapter, and app-server turn/start for Codex. It never uses `a2a bridge tmux` or any terminal typing;
+  - a LaunchDaemon running the session in tmux, for the owner's human-only attach, never for waking. Waking follows the converged wake design (research/waking-sessions-converged.md, PR #22): the doorbell-only hooks (the fixed template, 52e4f80) and/or one supervised background `a2a wait` per identity now, with exactly ONE consumer advancing the cursor (converged §3.2: no hook or second waiter reads the same cursor), then a pinned Claude channel adapter, and for Codex, the managed app-server turn/start with toolOutput: peer notices enter with tool authority, never as user input, and the raw app-server is never exposed to a bridge (converged §2.1, §3.6). It never uses `a2a bridge tmux` or any terminal typing;
   - resume on restart.
 - Teardown revokes the key and deactivates the account in the same action.
 - Isolation v1: the user boundary plus Seatbelt on writes outside home; a jail comes later.
@@ -122,9 +124,7 @@ Changes these rows need (ac, one PR with the product CLI):
 - (c) sudo once per new orchestrator user on the mini (batched).
 - (d) Per-account caps for the mini's Claude and Codex subscriptions (STORY-260929-1x9a1o).
 - (e) Which product the first slice uses, and the product grouping for the migration (step 7).
-  - Proposed answer (Alexis's direction "it develops itself", $RGy7uSxL...): the first product is the SWARM ITSELF (#a2a-swarm, #remote-worker-harness, #worker-jail, #gha-runner-m1max, #local-models, #skill-agents-management; shared repositories stay outside).
-  - It is built with its own mechanisms as they land: its product keeper, its space and projections, and at least one of its projects run by a remote orchestrator on the mini through rwh host.
-  - Every gap it hits becomes its own backlog.
+  - Proposed answer: the first product is the swarm itself (Alexis: the swarm develops itself). It is built with its own mechanisms as they land, and every gap becomes its own backlog.
 - (f) With Ivan: where shared repositories sit in the product layout.
 
 ## 7. Migration of today's layout (last step, after 1-5 are built)
@@ -158,8 +158,9 @@ Cut-over, like the identity migration:
 
 ## 8. First slice (after the go)
 
-- The swarm itself (6(e)), with at least one project local and one remote on the mini through rwh host. Plus one product keeper, spaces, #X-system and #X-broadcast, and the escalation chain proven end to end.
+- Product = swarm (the section 7 grouping). m1max_swarm_keeper is the product keeper, with m1max_local-models_orch interim until it exists. At least one swarm project runs under a remote orchestrator on the mini through rwh host. The escalation chain is proven end to end. Plus one product keeper, spaces, #X-system and #X-broadcast, and the escalation chain proven end to end.
 - Order:
+  0. The agreement rule (PR + named reviewers + OK at <sha> + one owner-needed), with this spec as its first run.
   1. ac: product/space CLI, dual projection, rule 27 (one PR).
   2. ac: registry module plus attach (one PR).
   3. 2b: rwh host (a few days, after (a) and (b)).
