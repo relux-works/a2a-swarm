@@ -460,6 +460,15 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *Disk:* the 20 GB cap on codex-target, with a sweep after each suite, is fine. If free space falls under 50 GiB, codex-fix starts no new producer and tells tb-keeper. macos-sys's 45 GiB line stands.
 - *State:* in force.
 
+**tb-R59. PR #469's single re-run goes to a quiet runner** (13:45Z, 2026-09-30).
+- *Evidence (tb-tests):* CI 36712178789 timed out the cmd package at 90 min on the M1 Max, which was also serving local models. Its integration package ran 2.4x slower than on rose-air (839 s against 343 s). #469 touches only tools/board-regress, so this is a runner-load artifact and tb-R26 allows one re-run.
+- *Decision:*
+  - tb-tests holds the re-run until rose-air is free, then posts before re-running.
+  - At that moment tb-keeper checks ivmbp. If its load5 is under 20, ivmbp is acceptable too; it passed #448 at quiet load. Otherwise tb-keeper boots ivmbp out until the job has started on rose-air, then brings it back.
+  - Pausing the M1 Max while it serves models is its owner's call (asked by tb-tests).
+- *Structural:* cmd at 53 of its 90 min on the fastest runner leaves too little margin. tb-tests moves TASK-260907-2ik6zw (split the slow job) and TASK-260910-1okxol (shards) up its list; both are supported.
+- *State:* in force until #469 lands or is withdrawn.
+
 ## a2a-swarm (arbiter a2a-swarm-ac)
 **ac-R8. Hosted CI of relux-works/a2a-swarm cannot start** (GitHub billing). PRs land on a local mirror of the job on the exact PR head, recorded in the review; the red hosted status is never edited or hidden.
 - *State:* RETIRED 2026-09-30: CI runs on the self-hosted repo-level runner m1max-a2a-swarm (set up by m1max_gha-runner_orch); first green hosted check landed PR #28 (main 87d5c6e). Landings again require a green hosted check on the exact head.
