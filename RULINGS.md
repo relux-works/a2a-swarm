@@ -1205,3 +1205,8 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *Evidence:* R2 rev3 touches README.md, a file tb-R109 holds, in exactly two single-line hunks: the skill-agents-management pin line near line 62 (v0.5.30 to v0.5.35) and one new row in the Tools table near line 1541. critical-fixes checked odansk's README hunks: about lines 408–414 and 3442–3510. The two sets are line-disjoint, with more than 300 lines of margin. Under tb-R116, odansk re-validates once on top of R2 in any case.
 - *Decision:* R2 may land with exactly those two README.md hunks. The 3-way merge check (git merge-tree) moves to critical-fixes' rebase onto R2, as part of its trunk-line verification. If the merge had conflicted, R2 would have waited for odansk or the tb-R116 cap, without stripping the hunks. The other three held files stay held.
 - *State:* in force until odansk lands.
+
+**tb-R118. odansk rev8 takes one R1 lane suite after R2 lands** (21:28Z, 2026-10-01).
+- *Evidence:* odansk's round-4 review asked for one narrow fix: the temp-file ownership gate did not cover deletions. The rev8 rework is done. critical-fixes cancelled the queued shared validation, because R2 lands first under tb-R116 and the validation would have gone stale.
+- *Decision:* one lane suite by the tb-R101–tb-R112 mechanism, launched after R2 lands, as tb-R116(1)'s single re-validation on top. It starts only at 45 GiB or more free AND CPU idle at 25% or more, and counts inside the ceiling. Only one spm-sized lane suite runs at a time. A paired trim follows. tb-R110's routing applies to round 5.
+- *State:* granted in advance; it starts after R2 lands.
