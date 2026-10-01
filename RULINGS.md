@@ -1008,3 +1008,4 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - board-only: absorb, with no suite (ci-isolation's stage 3);
   - doc-class: re-parent AND revalidate, keeping the acceptance and attaching the junction diff (#472). Doc-class never skips the suite, because the docs guards read README.md and references/**.
   ci-isolation keeps the key shape open for the second class. #472 is not started; it comes after odansk, #408 and #392, and the target for a reviewed CR is 2026-10-03.
+- *Settled 01:32Z:* TWO sibling booleans instead of one key with classes, as ci-isolation proposed: `absorb_board_only_advances` (board-only, no suite) and `reparent_doc_only_advances` (doc-class, re-parent plus revalidate). A reader then sees which key skips the suite. #472 refactors the stage-3 predicate to take a path class.
