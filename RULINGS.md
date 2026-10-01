@@ -1062,3 +1062,14 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Under 45 GiB everything else holds, and this suite finishes.
   - A go-build trim at the 2 h floor follows.
 - *State:* in force until the suite ends.
+**tb-R102. R30's load trigger reads CPU idle, not load average alone** (07:12Z, 2026-10-01).
+- *Evidence (macos-sys, 07:05Z, several samples):*
+  - At load1 35–46, the CPU was 20–47% idle with 9–16 runnable threads, and only one process was in uninterruptible wait.
+  - macOS load counts threads. Parallel `go test` (-p 2, t.Parallel) raises it without matching CPU demand. tb-keeper's sample at 07:10Z read 59% idle.
+  - Last night's R22 event (load 112–168 at 90 °C) was real. A pure thread-count rise can still cross load5 96 while the machine has headroom.
+- *Decision:* R30 fires when, for 10 consecutive minutes, either:
+  - CPU idle is under 10%; or
+  - load5 is above 96 and CPU idle is under 25%.
+  - thermalState serious or critical still fires at once.
+  - Its action is unchanged: R22 in full, plus pausing the ivmbp runner, which is the operator's standing decision for load peaks (R28).
+- *State:* in force. The watcher samples `top` CPU idle and load5 every minute.
