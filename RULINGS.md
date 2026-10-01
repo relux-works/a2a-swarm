@@ -1200,3 +1200,8 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Cap: point 3 lapses at 2026-10-02 06:00Z if neither has landed.
 - *Grounds:* in a serial queue every candidate after the first re-tests once. This order costs no more suites than any other, and puts the critical fix and Ivan's Muse path first.
 - *State:* in force until odansk and R2 have landed, or the cap.
+
+**tb-R117. A narrow exception to tb-R109's doc hold for R2's two README hunks** (21:27Z, 2026-10-01; in force from 21:28Z).
+- *Evidence:* R2 rev3 touches README.md, a file tb-R109 holds, in exactly two single-line hunks: the skill-agents-management pin line near line 62 (v0.5.30 to v0.5.35) and one new row in the Tools table near line 1541. critical-fixes checked odansk's README hunks: about lines 408–414 and 3442–3510. The two sets are line-disjoint, with more than 300 lines of margin. Under tb-R116, odansk re-validates once on top of R2 in any case.
+- *Decision:* R2 may land with exactly those two README.md hunks. The 3-way merge check (git merge-tree) moves to critical-fixes' rebase onto R2, as part of its trunk-line verification. If the merge had conflicted, R2 would have waited for odansk or the tb-R116 cap, without stripping the hunks. The other three held files stay held.
+- *State:* in force until odansk lands.
