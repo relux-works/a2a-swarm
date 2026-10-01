@@ -1018,3 +1018,16 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - tb-muse's MSP client and pin qualification (vz22an) ADAPT: a new version or schema fingerprint triggers a fast re-qualification run, not a standing block. 1.4.2 is the current target, and ivmbp gets it at the launcher's next hourly check.
   - tb-keeper's own read-only probes still pass the variable, so that they never start an update at an arbitrary moment. Updates come through the normal calls.
 - *State:* in force.
+
+**tb-R97. KV-cache orchestration research: Fable max, then Astra max, then tb-keeper aggregates (an explicit exception to R80)** (02:27Z, 2026-10-01).
+- *Source:* Ivan, directly in tb-keeper's session at about 02:20Z.
+  - He sent a prior conversation and a draft spec for a multi-backend KV-cache branching and model-swapping gateway (llama.cpp, antirez/ds4).
+  - Verbatim: «нам это нужно что бы мы могли через нашу системы оркестрации управлять движками инференса для эффективного переиспользования kv-cache. Передай ресерч в фейбл макс, одновременно передав ему еще вводные на тему нашего роадмапа и модулей куда это должно быть встроено. Результат от фейбла передай в астру Макс, и потом с агрегирую все в финальную архитектуру и как оно вписывается а нашу инфраструктуру и роадмап её построения».
+- *Decision and execution:*
+  - **Fable max.** An explicit operator exception to R80's "no Fable max", for this research only. Session kv-research on ivmbp, started 02:27Z: claude-fable-5-1, effort max, read-only rules, Remote Control session_01NgjQK3e8VRMP84bqKNXUzg.
+    - Inputs: Ivan's two documents, saved verbatim under collective-mode/research/inference-kv/inputs/.
+    - Context: CONTEXT.md, covering LP-D7, D9 and D10; task-board shared contexts and context-builder; tb-sessiond; curator-inference-manager; the model router; the agents-management launch plane; network profiles; roadmap M4, M5b, M8 and AR.
+    - Deliverable: RESEARCH.md, covering claim verification with citations, the architecture, placement per module, the measurements to run, and a roadmap.
+  - **Astra max.** Its result goes to gpt-6-astra at effort max, for an adversarial review. This is the same operator exception, since R80a otherwise allows astra at high only.
+  - **Aggregation.** tb-keeper turns both into the final architecture, its fit with the infrastructure, and the build roadmap.
+- *State:* in progress.
