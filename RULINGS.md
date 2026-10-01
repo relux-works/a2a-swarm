@@ -1222,3 +1222,18 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   3. Rotation covers refusals only. Capacity limits keep their own handling, and quality escalation stays a workflow decision.
   4. A rotated review stays independent of its producer.
 - *State:* in force.
+
+**tb-R120. Fork PRs locked down; public repositories leave our self-hosted runners** (22:05Z, 2026-10-01; Ivan's go in tb-keeper's session: «короче да, давай все что ты предлагаешь … пр вообще не мог делать никто кроме членов организации … переводим все на публичные. на личных маках оставляем пока только то что строго приватное»).
+- *Evidence:* public repos (curator, curator-agent-launcher, curator-spec, runner-control) could use the runner groups on Ivan's Macs. tgfs and relux-proxy have repo-level self-hosted runners. The org's fork-PR approval policy was first-time contributors only. A fork PR runs its own workflow, so code from outside could reach ivmbp, macbook-iv or rose-air.
+- *Applied by tb-keeper and verified:*
+  1. Fork-PR workflow approval is now all_external_contributors, org-wide; repos inherit it.
+  2. An org interaction limit makes public repos collaborators-only (issues, PRs, comments) until 2027-04-01T22:05:33Z. It must be renewed before then.
+  3. Runner groups ivmbp-manual, macbook-iv-manual, rose-air-projects and runner-control-release-1-2-0 have allows_public_repositories=false and serve only private repos (skill-project-management; licenses on macbook-iv). Default already refused public repos. Fork-PR workflows in private repos stay disabled, and private forking stays off.
+  4. curator's ROSE_AIR_RUNNER variable is now false, so its main-push self-hosted job is skipped.
+  5. Migration issues: tgfs#65, relux-proxy#2, runner-control#3, curator#104. Until relux-proxy and tgfs migrate, their repo-level runners stay behind points 1 and 2.
+- *Rule from now:* public repositories use GitHub-hosted runners only. A private repo leaves self-hosted runners before it goes public, and the groups enforce this.
+- *State:* in force. Renew the interaction limit before 2027-04-01.
+
+**tb-R121. Work never stops for lack of another vendor; same-provider review as a last resort** (22:07Z, 2026-10-01; Ivan's rule, relayed verbatim by tb-muse: «в крайнем случае ревью может быть той же провайдера что и продьюсер, останавливать работу нельзя просто из за отсутствия другого вендора»).
+- *Decision (extends tb-R80, tb-R110 and tb-R119):* work never stops only because no other vendor is available: a refusal, capacity, an outage or a missing login. After tb-R119's rotation, a review may run on the producer's own provider as a last resort. It stays a separate run and session with a fresh context, and the reason is recorded in the run notes. The next round returns to the normal tb-R80 pairing once another vendor is available.
+- *State:* in force.
