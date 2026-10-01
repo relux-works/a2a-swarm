@@ -423,12 +423,13 @@ func (c *Client) Invite(ctx context.Context, roomID, userID string) error {
 
 // CreateRoomRequest is the body of POST /createRoom (the subset a2a sets).
 type CreateRoomRequest struct {
-	Preset        string   `json:"preset,omitempty"`
-	Visibility    string   `json:"visibility,omitempty"`
-	RoomAliasName string   `json:"room_alias_name,omitempty"`
-	Name          string   `json:"name,omitempty"`
-	Topic         string   `json:"topic,omitempty"`
-	Invite        []string `json:"invite,omitempty"`
+	Preset          string         `json:"preset,omitempty"`
+	Visibility      string         `json:"visibility,omitempty"`
+	CreationContent map[string]any `json:"creation_content,omitempty"`
+	RoomAliasName   string         `json:"room_alias_name,omitempty"`
+	Name            string         `json:"name,omitempty"`
+	Topic           string         `json:"topic,omitempty"`
+	Invite          []string       `json:"invite,omitempty"`
 	// PowerLevelContentOverride is merged over the preset's m.room.power_levels.
 	PowerLevelContentOverride map[string]any `json:"power_level_content_override,omitempty"`
 }
@@ -449,6 +450,13 @@ func (c *Client) CreateRoom(ctx context.Context, req CreateRoomRequest) (string,
 // GetState reads one state event's content into out.
 func (c *Client) GetState(ctx context.Context, roomID, evType, stateKey string, out any) error {
 	return c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType)+"/"+seg(stateKey), nil, nil, out)
+}
+
+// GetStateEvents lists a room's state events.
+func (c *Client) GetStateEvents(ctx context.Context, roomID, evType string) ([]Event, error) {
+	var out []Event
+	err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType), nil, nil, &out)
+	return out, err
 }
 
 // PutState sends a state event and returns its event id.

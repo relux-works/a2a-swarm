@@ -87,7 +87,7 @@ func cmdHost(ctx context.Context, a *App, args []string) error {
 	return usagef("%s", hostUsage)
 }
 
-const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper] | a2a identity release [--force]"
+const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper] [--product X --preset P] [--resource ROOM] | a2a identity release [--force]"
 
 // cmdIdentity: a2a identity ensure|release
 func cmdIdentity(ctx context.Context, a *App, args []string) error {
@@ -113,12 +113,33 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 	dir := fs.String("dir", "", "the project directory: its git remote names the project, its hooks file is written (the current directory when omitted)")
 	runtime := fs.String("runtime", "", "agent runtime whose hooks are installed: "+runtimeNames+" (detected only from an unambiguous CLAUDECODE=1)")
 	keeper := fs.Bool("keeper", false, "also subscribe to every event of #system (keepers and the meta-orchestrator)")
+	product := fs.String("product", "", "product name for a preset identity")
+	preset := fs.String("preset", "", "explicit preset(s), comma-separated: orch, keeper, meta-keeper, arbiter, service")
+	resource := fs.String("resource", "", "arbiter resource room")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 0 {
 		return usagef("%s", identityUsage)
+	}
+	if *product != "" && !productNameRE.MatchString(*product) {
+		return usagef("invalid product name %q: use [a-z0-9-]{1,40}", sanitizeLine(*product))
+	}
+	if *product != "" && *preset == "" {
+		return usagef("--product requires an explicit --preset")
+	}
+	presets, err := parsePresets(*preset, *product, *resource)
+	if err != nil {
+		return err
+	}
+	if contains(presets, "service") && *runtime != "none" {
+		return usagef("--preset service requires --runtime none")
+	}
+	// A keeper lives in its product folder, which is not a git repository
+	// (owner, 2026-10-01): its project is the explicitly given product.
+	if *project == "" && contains(presets, "keeper") {
+		*project = *product
 	}
 	if *role == "" {
 		return usagef("--role is required; %s", identityUsage)
@@ -202,6 +223,9 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	a.printf("export %s=%s\n", config.EnvAgent, name)
+	if len(presets) > 0 {
+		return a.onboardPreset(ctx, s, presets, *product, proj, *resource, projDir, rt, rtSource)
+	}
 	return a.onboard(ctx, s, onboarding{host: host, project: proj, role: *role, dir: projDir, rt: rt, rtSource: rtSource, keeper: *keeper})
 }
 

@@ -25,7 +25,7 @@ const (
 	roomVisibility = "private"
 )
 
-const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b]"
+const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X]"
 
 // roomSpec is one room to create with the standard policy.
 type roomSpec struct {
@@ -43,6 +43,7 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 	name := fs.String("name", "", "room name (m.room.name)")
 	topic := fs.String("topic", "", "room topic (m.room.topic)")
 	invite := fs.String("invite", "", "comma-separated extra invitees, besides "+MetaOrchestrator+" and "+ProjectorAgent)
+	product := fs.String("product", "", "product space to adopt the new room into")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
@@ -53,6 +54,9 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 	local, err := roomLocal(pos[0])
 	if err != nil {
 		return err
+	}
+	if *product != "" && !productNameRE.MatchString(*product) {
+		return usagef("invalid product name %q: use [a-z0-9-]{1,40}", sanitizeLine(*product))
 	}
 	for _, u := range splitList(*invite) {
 		if _, err := normalizeUser(u, "x"); err != nil {
@@ -68,8 +72,16 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 		id, _ := normalizeUser(u, s.server)
 		spec.invite = append(spec.invite, id)
 	}
-	_, _, err = s.newRoom(ctx, spec)
-	return err
+	if *product != "" {
+		if _, _, err := s.productSpace(ctx, *product); err != nil {
+			return err
+		}
+	}
+	id, _, err := s.newRoom(ctx, spec)
+	if err != nil || *product == "" {
+		return err
+	}
+	return s.adoptProductRoom(ctx, *product, id, true)
 }
 
 // roomLocal validates a new room's alias: #alias or alias on this server.

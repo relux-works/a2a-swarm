@@ -49,7 +49,7 @@ until it is set. `a2a host show` prints the slug.
 a2a host init mini
 ```
 
-### `a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper]`
+### `a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper] [--preset P[,P...] [--product X] [--resource ROOM]]`
 Onboards a new orchestrator in one command (owner requirement, 2026-09-29): it provisions this session's stable identity
 `<host>_<project>_<role>`, then joins the swarm rooms, creates the onboarding subscriptions, installs the notification hooks and prints a
 summary. Every step is printed; nothing is a hidden default; a re-run changes nothing and says `already` / `unchanged`.
@@ -93,12 +93,31 @@ summary. Every step is printed; nothing is a hidden default; a re-run changes no
 
 - Usage errors (exit 2, before any traffic): a missing or invalid `--role`, an invalid `--project`, a composite longer than 64 characters, an
   unknown, ambiguous or undetectable runtime. A session already bound to another identity (`--as`, `A2A_AGENT`) is refused (usage error).
+
+Preset onboarding is selected explicitly with `--preset`, a comma-separated list of `orch`, `keeper`, `meta-keeper`, `arbiter` and
+`service`. One identity may hold several rows, e.g. `--preset keeper,meta-keeper`. `orch`, `keeper` and `service` are product-scoped and need
+`--product X` (`[a-z0-9-]{1,40}`); `--product` without `--preset` is refused. `arbiter` and `--resource ROOM` go together. `service` requires
+`--runtime none`. A duplicate or unknown preset is refused before anything is joined.
+A keeper lives in its product folder, which is not a git repository: with `keeper` in the list and no `--project`, the project is the product
+(e.g. `a2a identity ensure --role keeper --product swarm --preset keeper,meta-keeper` in `~/src/swarm` gives `<host>_swarm_keeper`).
+Each row's subscriptions are tagged `orch:X`, `keeper:X`, `arbiter:ROOM` or `meta-keeper`; reconciling one tag never touches another tag or a
+hand-made subscription. The rooms of all rows are joined; each row creates its own subscriptions:
+
+| Preset | Rooms and subscriptions |
+| --- | --- |
+| `orch` | Joins `#lobby`, `#broadcast`, `#X-lobby`, `#X-broadcast`, and `#<project>`. Subscribes in the project room to system subtypes `incident,blocker,budget,impact-start,impact-end` and to `decision`; in `#X-lobby` to `decision,question`; in `#lobby` to `decision`. |
+| `keeper` | Joins the global rooms, `#X-lobby`, `#X-broadcast`, `#X-system`, and every child room of X. Subscribes in `#X-system` to `owner-needed` and system subtypes `incident,blocker,budget,window,queue,impact-start,impact-end`; also subscribes to `decision` in `#X-lobby` and `#lobby`. |
+| `meta-keeper` | Joins `#lobby`, `#broadcast`, `#system`, and each product lobby it can discover among its joined spaces. Subscribes in `#system` to `owner-needed` and system subtypes `incident,blocker,budget,impact-start,impact-end`, and in `#lobby` to `decision`. |
+| `arbiter` | Joins `--resource ROOM`; subscribes there to system subtypes `window,landing,incident,blocker,queue` and to `decision`. |
+| `service` | Joins `#lobby`, `#broadcast`, `#X-lobby`, and `#X-broadcast`; creates no subscriptions and installs no hooks. |
+
+Without `--product`, `identity ensure` keeps its standard onboarding behavior above.
 ```bash
 a2a host init mini                                         # once per machine
 a2a identity ensure --role orch --runtime claude           # in the project checkout (codex: --runtime codex)
 ```
 
-### `a2a room new <alias> [--name N] [--topic T] [--invite a,b]`
+### `a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X]`
 Creates a room with the standard policy (owner decision, 2026-09-29; protocol rule 24) and prints each step:
 - `POST /createRoom` with preset `public_chat` (anyone on the server can join by alias), visibility `private` (not listed in the room
   directory), `room_alias_name` = the alias, `name` / `topic` when given, and
@@ -114,6 +133,35 @@ Creates a room with the standard policy (owner decision, 2026-09-29; protocol ru
   (exit 2, before any traffic).
 ```bash
 a2a room new skill-foo --name "skill-foo" --invite mini_skill-foo_orch
+```
+
+`--product X` adopts the created (or already existing) room into product space X, setting the space child link and the room parent link when
+the caller has power to send it. X must be an existing product space.
+
+### `a2a product new X [--keeper NAME] [--projector NAME]` / `product adopt X <room>` / `product list` / `product show X`
+
+Products are Matrix spaces named `#X`; `X` matches `[a-z0-9-]{1,40}`. `new` creates the space and its `#X-lobby`, `#X-broadcast`, and
+`#X-system` rooms when absent. It adds reciprocal `m.space.child` / `m.space.parent` links and invites the named keeper and projector.
+The lobby follows `room new` policy. The broadcast room sets `events_default` to 50 and gives the optional keeper level 100 (the creator has
+admin power). The system projection room sets `events_default` to 50 and gives the optional projector level 50. Re-running prints `already`
+and does not change existing rooms or links.
+
+`adopt` adds an existing room to X without creating or renaming it. It prints `already` for an existing child. If the caller cannot send the
+parent state event in that room, it prints `parent link skipped: no power in <room>` after adding the child link. `list` prints joined spaces;
+`show X` prints child aliases and room ids.
+```bash
+a2a product new alpha --keeper mini_alpha_keeper --projector a2a-projector
+a2a product adopt alpha tooling-room
+a2a product list
+a2a product show alpha
+```
+
+### `a2a broadcast-room init`
+
+Creates the global `#broadcast` if absent, with `events_default` 50 so joined members can read while only the creator's admin power permits
+posting. An existing room prints `already` and is left unchanged.
+```bash
+a2a broadcast-room init
 ```
 
 ### `a2a identity release [--force]`
@@ -612,16 +660,17 @@ Every agent manages its own subscriptions at runtime (protocol rules 10 and 24).
 
 ```json
 {"v": 1, "subs": [{"id": "sub-1a2b3c4d", "room": "!roomid", "topic": "$root", "from": "@bob:a2a.local", "subject": "BUG-1",
-  "subtype": "landing", "kinds": ["system"], "until": "2026-10-01T00:00:00Z", "until_kind": "system",
+  "subtypes": ["landing", "incident"], "kinds": ["system"], "until": "2026-10-01T00:00:00Z", "until_kind": "system",
   "created_at": "2026-09-29T12:00:00.000Z", "source": "$request"}]}
 ```
 
 Optional fields are omitted when unset; `all_events`, `since` and `since_ts` are stored for `--all-events` and `--since`.
+Subtype selectors are stored as `subtypes: ["landing", "incident"]`; readers accept the former single `subtype` field for existing account data.
 Pre-v2 kind subscriptions from the local state file (`subscriptions: {room: [kinds]}`) are moved into account data by the first command that touches subscriptions
 (`subscribe`, `unsubscribe`, `subs`, `wait`, `watch`, `inbox`, `sub-accept`): one subscription per room entry with its kinds, `source: "legacy"`,
 `created_at` 1970 (they keep matching every new event); the local map is dropped only after the account data was written.
 
-`a2a subscribe [--room R|all] [--topic slug|$root] [--from AGENT] [--subject X] [--subtype S] [--kind k1,k2] [--until RFC3339] [--until-kind K] [--since $event] [--all-events]`
+`a2a subscribe [--room R|all] [--topic slug|$root] [--from AGENT] [--subject X] [--subtype a,b] [--kind k1,k2] [--until RFC3339] [--until-kind K] [--since $event] [--all-events]`
 creates one subscription and prints `sub-<8 hex><TAB><summary>`:
 
 | Flag | Matches when |
@@ -630,7 +679,7 @@ creates one subscription and prints `sub-<8 hex><TAB><summary>`:
 | `--topic slug\|$root` | the event is a reply in that thread (needs a concrete `--room`) |
 | `--from AGENT` | the sender is that agent (name or user id) |
 | `--subject X` | the structured `subject` equals X, or X occurs in the body as a whole token (`BUG-1` does not match `BUG-12`) |
-| `--subtype S` | the structured `subtype` is S |
+| `--subtype a,b` | the structured subtype is one of these values; every value must be known |
 | `--kind k1,k2` | the kind is one of these (the PR #7 syntax `a2a subscribe --kind k [--room R]` is just this selector) |
 | `--all-events` | every message of the concrete `--room` (explicit opt-in to room-wide delivery) |
 
@@ -717,5 +766,17 @@ never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name
 
 `--runtime none` onboards a service account (e.g. the projector): rooms and subscriptions as usual, no hooks file (there is no session to notify).
 
-### `a2a subs sync`
-Ensures the room subscription (kinds system, owner-needed, decision) for every joined room, idempotently, and prints it; #system and #broadcast are skipped with the reason. `a2a join` creates the same subscription for the joined room and `a2a leave` removes the room's subscriptions.
+### `a2a subs sync [--preset P[,P...] [--product X] [--resource ROOM]]`
+
+Without a preset, ensures the room subscription (kinds system, owner-needed, decision) for every joined room, idempotently, and prints it;
+`#system` and `#broadcast` are skipped with the reason. `a2a join` creates the same subscription for the joined room and `a2a leave` removes
+the room's subscriptions.
+
+With `--preset`, reconciles the subscriptions of each listed row (tag `orch:X`, `keeper:X`, `arbiter:ROOM` or `meta-keeper`) to exactly that
+row; `--product` is required for product-scoped presets. Other tags are never touched; sync prints each addition and removal, leaves manually created subscriptions untouched, and prints
+`unchanged` when the preset row already matches. `arbiter` also takes `--resource ROOM`. Preset room and selector details are listed under
+`identity ensure` above.
+```bash
+a2a subs sync --preset keeper --product alpha
+a2a subs sync --preset arbiter --product alpha --resource board-room
+```

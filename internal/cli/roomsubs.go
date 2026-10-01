@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -70,6 +71,11 @@ func (s *session) unsubscribeRoom(ctx context.Context, a *App, roomID, label str
 // cmdSubsSync: a2a subs sync. Ensures the room subscription for every joined
 // room (idempotent) and prints what it created or found.
 func cmdSubsSync(ctx context.Context, a *App, args []string) error {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--preset") {
+			return cmdSubsPresetSync(ctx, a, args)
+		}
+	}
 	if len(args) != 0 {
 		return usagef("usage: a2a subs sync")
 	}

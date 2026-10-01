@@ -84,6 +84,7 @@ type createRoomReq struct {
 	Creator                   string         `json:"-"`
 	Preset                    string         `json:"preset"`
 	Visibility                string         `json:"visibility"`
+	CreationContent           map[string]any `json:"creation_content"`
 	RoomAliasName             string         `json:"room_alias_name"`
 	Name                      string         `json:"name"`
 	Topic                     string         `json:"topic"`
@@ -177,6 +178,7 @@ func newFakeHS(t *testing.T) *fakeHS {
 	route("POST "+v3+"/rooms/{room}/invite", true, hs.invite)
 	route("PUT "+v3+"/rooms/{room}/send/{type}/{txn}", true, hs.send)
 	route("GET "+v3+"/rooms/{room}/state/{type}/{key...}", true, hs.getState)
+	route("GET "+v3+"/rooms/{room}/state/{type}", true, hs.getStateEvents)
 	route("PUT "+v3+"/rooms/{room}/state/{type}/{key...}", true, hs.putState)
 	route("GET "+v3+"/rooms/{room}/messages", true, hs.messages)
 	route("GET "+v3+"/rooms/{room}/event/{event}", true, hs.event)
@@ -247,9 +249,14 @@ func (hs *fakeHS) addRoom(alias string, members ...string) string {
 	id := "!" + alias + "RoomID"
 	full := "#" + alias + ":" + hs.server
 	r := &fakeRoom{id: id, alias: full, name: alias, members: map[string]string{}, state: map[string]json.RawMessage{}}
+	creator := ""
 	for _, m := range members {
 		r.members[m] = "join"
+		if creator == "" {
+			creator = m
+		}
 	}
+	r.state["m.room.create|"], _ = json.Marshal(map[string]string{"creator": creator})
 	r.state["m.room.canonical_alias|"], _ = json.Marshal(map[string]string{"alias": full})
 	r.state["m.room.name|"], _ = json.Marshal(map[string]string{"name": alias + " room"})
 	hs.rooms[id] = r
@@ -565,6 +572,11 @@ func (hs *fakeHS) createRoom(w http.ResponseWriter, r *http.Request, u string) {
 	id := "!" + req.RoomAliasName + "RoomID"
 	room := &fakeRoom{id: id, alias: full, name: req.Name, members: map[string]string{u: "join"}, state: map[string]json.RawMessage{}}
 	room.state["m.room.canonical_alias|"], _ = json.Marshal(map[string]string{"alias": full})
+	create := map[string]any{"creator": u}
+	for k, v := range req.CreationContent {
+		create[k] = v
+	}
+	room.state["m.room.create|"], _ = json.Marshal(create)
 	if req.Name != "" {
 		room.state["m.room.name|"], _ = json.Marshal(map[string]string{"name": req.Name})
 	}
@@ -617,6 +629,26 @@ func (hs *fakeHS) invite(w http.ResponseWriter, r *http.Request, u string) {
 	writeJSON(w, 200, map[string]any{})
 }
 
+// mayPost applies the room's power levels like a homeserver: a message needs
+// events_default, a state event state_default, and the creator counts as 100.
+func mayPost(room *fakeRoom, u string, state bool) bool {
+	var pl struct {
+		EventsDefault int            `json:"events_default"`
+		StateDefault  int            `json:"state_default"`
+		Users         map[string]int `json:"users"`
+	}
+	_ = json.Unmarshal(room.state["m.room.power_levels|"], &pl)
+	need := pl.EventsDefault
+	if state {
+		need = pl.StateDefault
+	}
+	have := pl.Users[u]
+	if u == roomCreator(room) {
+		have = 100
+	}
+	return have >= need
+}
+
 func (hs *fakeHS) send(w http.ResponseWriter, r *http.Request, u string) {
 	var content map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&content); err != nil {
@@ -627,6 +659,10 @@ func (hs *fakeHS) send(w http.ResponseWriter, r *http.Request, u string) {
 	defer hs.mu.Unlock()
 	room := hs.roomFor(w, r, u, true)
 	if room == nil {
+		return
+	}
+	if !mayPost(room, u, false) {
+		writeErr(w, 403, "M_FORBIDDEN", "You don't have permission to post that to the room.")
 		return
 	}
 	key := u + "|" + room.id + "|" + r.PathValue("txn")
@@ -665,6 +701,25 @@ func (hs *fakeHS) getState(w http.ResponseWriter, r *http.Request, u string) {
 	w.Write(c)
 }
 
+func (hs *fakeHS) getStateEvents(w http.ResponseWriter, r *http.Request, u string) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	room := hs.roomFor(w, r, u, true)
+	if room == nil {
+		return
+	}
+	var out []matrix.Event
+	typ := r.PathValue("type") + "|"
+	for key, raw := range room.state {
+		if strings.HasPrefix(key, typ) {
+			stateKey := strings.TrimPrefix(key, typ)
+			k := stateKey
+			out = append(out, matrix.Event{Type: r.PathValue("type"), StateKey: &k, Content: append(json.RawMessage(nil), raw...)})
+		}
+	}
+	writeJSON(w, 200, out)
+}
+
 func (hs *fakeHS) putState(w http.ResponseWriter, r *http.Request, u string) {
 	var content json.RawMessage
 	_ = json.NewDecoder(r.Body).Decode(&content)
@@ -679,9 +734,21 @@ func (hs *fakeHS) putState(w http.ResponseWriter, r *http.Request, u string) {
 		writeErr(w, 403, "M_FORBIDDEN", "You don't have permission to post that to the room.")
 		return
 	}
+	if !mayPost(room, u, typ != "m.room.message") {
+		writeErr(w, 403, "M_FORBIDDEN", "You don't have permission to post that to the room.")
+		return
+	}
 	room.state[typ+"|"+r.PathValue("key")] = content
 	hs.seq++
 	writeJSON(w, 200, map[string]string{"event_id": fmt.Sprintf("$state%03d", hs.seq)})
+}
+
+func roomCreator(room *fakeRoom) string {
+	var create struct {
+		Creator string `json:"creator"`
+	}
+	_ = json.Unmarshal(room.state["m.room.create|"], &create)
+	return create.Creator
 }
 
 // roomMessages returns message events of a room in stream order.

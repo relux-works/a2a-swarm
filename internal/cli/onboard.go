@@ -265,7 +265,7 @@ func mustNormalize(alias, server string) string {
 // equal reports whether two selectors deliver the same events (kinds are a set).
 func (sel SubSelector) equal(o SubSelector) bool {
 	return sel.Room == o.Room && sel.Topic == o.Topic && sel.From == o.From && sel.Subject == o.Subject &&
-		sel.Subtype == o.Subtype && sel.Until == o.Until && sel.UntilKind == o.UntilKind && sel.AllEvents == o.AllEvents &&
+		strings.Join(sel.subtypeList(), ",") == strings.Join(o.subtypeList(), ",") && sel.Until == o.Until && sel.UntilKind == o.UntilKind && sel.AllEvents == o.AllEvents &&
 		kindSet(sel.Kinds) == kindSet(o.Kinds)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"strings"
@@ -31,23 +32,87 @@ type SubSelector struct {
 	Topic     string   `json:"topic,omitempty"` // thread root event id
 	From      string   `json:"from,omitempty"`  // sender user id
 	Subject   string   `json:"subject,omitempty"`
-	Subtype   string   `json:"subtype,omitempty"`
+	Subtypes  []string `json:"subtypes,omitempty"`
+	Subtype   string   `json:"-"` // source compatibility for in-package legacy selectors
 	Kinds     []string `json:"kinds,omitempty"`
 	Until     string   `json:"until,omitempty"`      // RFC3339; inactive afterwards
 	UntilKind string   `json:"until_kind,omitempty"` // removed after the first delivered event of this kind
 	AllEvents bool     `json:"all_events,omitempty"` // every event of Room (explicit opt-in)
 }
 
+func (sel SubSelector) subtypeList() []string {
+	if len(sel.Subtypes) > 0 {
+		return sel.Subtypes
+	}
+	if sel.Subtype != "" {
+		return []string{sel.Subtype}
+	}
+	return nil
+}
+
+// UnmarshalJSON accepts the former single subtype field while writing the
+// current list representation.
+func (sel *SubSelector) UnmarshalJSON(data []byte) error {
+	type plain SubSelector
+	var raw struct {
+		plain
+		Subtype string `json:"subtype"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*sel = SubSelector(raw.plain)
+	if len(sel.Subtypes) == 0 && raw.Subtype != "" {
+		sel.Subtypes = []string{raw.Subtype}
+	}
+	return nil
+}
+
 // Sub is one stored subscription.
 type Sub struct {
 	ID string `json:"id"`
 	SubSelector
+	Preset string `json:"preset,omitempty"`
 	// Since, when set, replaces the created_at gate: events after this event match.
 	Since     string `json:"since,omitempty"`
 	SinceTS   int64  `json:"since_ts,omitempty"`
 	CreatedAt string `json:"created_at"`
 	// Source is the accepted sub-request event id ("legacy" for migrated subscriptions).
 	Source string `json:"source,omitempty"`
+}
+
+// UnmarshalJSON keeps subscriptions readable when account data still uses the
+// former single subtype field. The explicit fields also prevent the embedded
+// SubSelector decoder from consuming the surrounding subscription object.
+func (sub *Sub) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID        string   `json:"id"`
+		Room      string   `json:"room,omitempty"`
+		Topic     string   `json:"topic,omitempty"`
+		From      string   `json:"from,omitempty"`
+		Subject   string   `json:"subject,omitempty"`
+		Subtypes  []string `json:"subtypes,omitempty"`
+		Subtype   string   `json:"subtype,omitempty"`
+		Kinds     []string `json:"kinds,omitempty"`
+		Until     string   `json:"until,omitempty"`
+		UntilKind string   `json:"until_kind,omitempty"`
+		AllEvents bool     `json:"all_events,omitempty"`
+		Preset    string   `json:"preset,omitempty"`
+		Since     string   `json:"since,omitempty"`
+		SinceTS   int64    `json:"since_ts,omitempty"`
+		CreatedAt string   `json:"created_at"`
+		Source    string   `json:"source,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Subtypes) == 0 && raw.Subtype != "" {
+		raw.Subtypes = []string{raw.Subtype}
+	}
+	*sub = Sub{ID: raw.ID, SubSelector: SubSelector{Room: raw.Room, Topic: raw.Topic, From: raw.From, Subject: raw.Subject,
+		Subtypes: raw.Subtypes, Kinds: raw.Kinds, Until: raw.Until, UntilKind: raw.UntilKind, AllEvents: raw.AllEvents},
+		Preset: raw.Preset, Since: raw.Since, SinceTS: raw.SinceTS, CreatedAt: raw.CreatedAt, Source: raw.Source}
+	return nil
 }
 
 // SubList is the account data content of SubsType.
@@ -57,7 +122,7 @@ type SubList struct {
 }
 
 func (sel SubSelector) hasSelector() bool {
-	return sel.Topic != "" || sel.From != "" || sel.Subject != "" || sel.Subtype != "" || len(sel.Kinds) > 0
+	return sel.Topic != "" || sel.From != "" || sel.Subject != "" || len(sel.subtypeList()) > 0 || len(sel.Kinds) > 0
 }
 
 // validate checks a selector that is already resolved to ids (a stored or a
@@ -78,8 +143,12 @@ func (sel SubSelector) validate() error {
 		return fmt.Errorf("invalid --from %q", sanitizeLine(sel.From))
 	case sel.Subject != "" && !subjectRE.MatchString(sel.Subject):
 		return fmt.Errorf("invalid --subject %q: 1-128 chars of A-Z a-z 0-9 # . _ / : @ -", sanitizeLine(sel.Subject))
-	case sel.Subtype != "" && !validSubtype(sel.Subtype):
-		return fmt.Errorf("invalid --subtype %q (one of: %s)", sanitizeLine(sel.Subtype), strings.Join(Subtypes, ", "))
+	case len(sel.subtypeList()) > 0:
+		for _, subtype := range sel.subtypeList() {
+			if !validSubtype(subtype) {
+				return fmt.Errorf("invalid --subtype %q (one of: %s)", sanitizeLine(subtype), strings.Join(Subtypes, ", "))
+			}
+		}
 	case sel.UntilKind != "" && !validKind(sel.UntilKind):
 		return fmt.Errorf("invalid --until-kind %q (one of: %s)", sanitizeLine(sel.UntilKind), strings.Join(Kinds, ", "))
 	}
@@ -99,8 +168,12 @@ func (sel SubSelector) validate() error {
 // sanitized returns a copy whose text fields are safe to print.
 func (sel SubSelector) sanitized() SubSelector {
 	out := sel
-	for _, p := range []*string{&out.Room, &out.Topic, &out.From, &out.Subject, &out.Subtype, &out.Until, &out.UntilKind} {
+	for _, p := range []*string{&out.Room, &out.Topic, &out.From, &out.Subject, &out.Until, &out.UntilKind} {
 		*p = sanitizeLine(*p)
+	}
+	out.Subtypes = append([]string(nil), sel.subtypeList()...)
+	for i := range out.Subtypes {
+		out.Subtypes[i] = sanitizeLine(out.Subtypes[i])
 	}
 	out.Kinds = nil
 	for _, k := range sel.Kinds {
@@ -154,7 +227,7 @@ func (sub Sub) matches(ev matrix.Event, roomID string, h Header, hasHeader bool)
 	if sub.From != "" && ev.Sender != sub.From && !(projected && originSender(sub.From, h.From)) {
 		return false
 	}
-	if sub.Subtype != "" && h.Subtype != sub.Subtype {
+	if len(sub.subtypeList()) > 0 && !contains(sub.subtypeList(), h.Subtype) {
 		return false
 	}
 	if len(sub.Kinds) > 0 && !contains(sub.Kinds, h.Kind) {
@@ -219,8 +292,8 @@ func (sub Sub) summary(roomLabel, server string) string {
 	if sub.Subject != "" {
 		parts = append(parts, "subject="+sub.Subject)
 	}
-	if sub.Subtype != "" {
-		parts = append(parts, "subtype="+sub.Subtype)
+	if len(sub.subtypeList()) > 0 {
+		parts = append(parts, "subtype="+strings.Join(sub.subtypeList(), ","))
 	}
 	if len(sub.Kinds) > 0 {
 		parts = append(parts, "kinds="+strings.Join(sub.Kinds, ","))
@@ -390,7 +463,7 @@ func addSelectorFlags(fs *flag.FlagSet, roomFlag, topicFlag, roomDefault string)
 		topic:     fs.String(topicFlag, "", "topic slug or root event id (needs a concrete room)"),
 		from:      fs.String("from", "", "sender (name or user id)"),
 		subject:   fs.String("subject", "", "structured subject or whole token in the body"),
-		subtype:   fs.String("subtype", "", "system subtype"),
+		subtype:   fs.String("subtype", "", "comma-separated system subtypes"),
 		kind:      fs.String("kind", "", "comma-separated kinds"),
 		until:     fs.String("until", "", "RFC3339 expiry"),
 		untilKind: fs.String("until-kind", "", "remove after the first delivered event of this kind"),
@@ -402,7 +475,7 @@ func addSelectorFlags(fs *flag.FlagSet, roomFlag, topicFlag, roomDefault string)
 // effective room argument ("all" or "" for every joined room).
 func (f *selectorFlags) check(now time.Time, room string) error {
 	concrete := room != "" && room != "all"
-	sel := SubSelector{Subject: *f.subject, Subtype: *f.subtype, Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
+	sel := SubSelector{Subject: *f.subject, Subtypes: splitList(*f.subtype), Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
 	if concrete {
 		sel.Room = "!placeholder"
 	}
@@ -437,7 +510,7 @@ func (f *selectorFlags) check(now time.Time, room string) error {
 // resolve turns checked flags into a stored selector: room and topic become
 // ids, from a user id. roomLabel is the room's display label ("all" for every room).
 func (f *selectorFlags) resolve(ctx context.Context, s *session, room string) (sel SubSelector, roomLabel string, err error) {
-	sel = SubSelector{Subject: *f.subject, Subtype: *f.subtype, Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
+	sel = SubSelector{Subject: *f.subject, Subtypes: splitList(*f.subtype), Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
 	roomLabel = "all"
 	if room != "" && room != "all" {
 		if sel.Room, roomLabel, err = s.resolveRoom(ctx, room); err != nil {
