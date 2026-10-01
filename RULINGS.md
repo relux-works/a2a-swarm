@@ -1080,3 +1080,9 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   2. Landers touching the same files as odansk hold until its review starts, at the latest 10:15Z. Non-overlapping hunks, references/** included, land normally. critical-fixes posts odansk's full doc file list.
   3. After 10:15Z the hold lapses.
 - *State:* ended at 10:01Z, when odansk's final review started (RUN-261001-a92965, astra high). The rev4 suite was green and the lane is closed.
+**tb-R104. R1b (2xr7e6) takes a one-off lane for its short suite, under the disk hold** (10:03Z, 2026-10-01).
+- *Evidence (tb-muse, 10:03Z):* TASK-261001-2xr7e6 makes the Muse plugin able to launch the offline echo provider. v0.5.34 always emits --model, and Muse 1.4.1 refuses --model with echo. It blocks R2 (the Muse PTY primary host) and so Ivan's Muse root-session goal. Its suite is the minutes-long agents-management set. Free space was 45 GiB and CPU about 61% idle.
+- *Decision:* it runs now in a private lane by R99's mechanism. The disk hold targets spm-sized go-build growth, which this is not.
+  - It starts only with free space at 43 GiB or more.
+  - One suite only, and the dir is deleted after.
+- *State:* in force until the suite ends.
