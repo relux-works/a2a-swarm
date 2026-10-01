@@ -1032,3 +1032,10 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - **Aggregation.** tb-keeper turns both into the final architecture, its fit with the infrastructure, and the build roadmap.
 - *State:* done (see the outcome).
 - *Outcome 04:09Z:* aggregated. ARCHITECTURE.md was published with the research, the review and the diagrams in wiki research/kv-cache-orchestration/ (main 972e151). The roadmap gained track 4c, K0–K5. The operator decisions Q1–Q10 went to the desk. K0 and K1 need no decision.
+**tb-R98. C1 (#478) goes first-ready after #488; private-repo CI stays manual until publication** (04:53Z, 2026-10-01).
+- (1) validation-fixes' C1 (#478): BUG-261001-21mxun and BUG-261001-358zsz are accepted. 3ib9pa and 6qyhbh have posted no READY for about 8 h. C1 relieves ceiling-1 slot starvation.
+  - It goes first-ready after #488 (which landed at 04:49Z, 279e570e). R95's priority for 3ib9pa stands if 3ib9pa is READY first.
+  - The last review is a final astra-high review on the rebased head.
+  - m1max is offered validation-fixes' clean 3-way resolution of 6qyhbh over C1.
+- (2) CI for curator-model-router (and curator-network-profiles) stays on manual dispatch with local verification, per the 09-24 decision that private repos use only our own runners. It switches to hosted CI on publication (card #19).
+- *State:* in force.
