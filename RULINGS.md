@@ -909,3 +909,16 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     - macmini-infra adds it to every NEW session it starts on the mini.
   Running sessions are not restarted for this.
 - *State:* in force.
+
+**tb-R90. CI queue reordered so that the R61 critical fix #485 gets the next relux-ci runner** (00:05Z, 2026-10-01).
+- *Evidence:*
+  - #485's CI (36790030838, BUG-260930-1dh28f) had been queued since 23:14Z with no runner: the M1 Max and macbook-iv are off.
+  - rose-air was running a push CI on main for the board-only Record 640b6017 (36779099396). That is not landing evidence for anything; R60 calls it the waste class, and Stage 1 removes it.
+  - #480's run (36780419548, Alexey's branch) was queued ahead. It lands after 06:00Z, so it had hours of slack.
+  - GitHub does not hand out queued jobs FIFO: when rose-air was freed, it picked #483's rerun (36792710809, queued 23:45Z) instead of #485.
+- *Decision (tb-keeper as spm main arbiter), at the request of tb-critical-fixes:*
+  - cancel the board-only main CI 36779099396;
+  - cancel the queued #480 run 36780419548 and #483's just-started rerun 36792710809, so that #485 is the only queued job when rose-air frees;
+  - re-run both cancelled runs as soon as #485 has a runner.
+  - The cancelled #483 rerun does NOT count against ci-isolation's single tb-R26 rerun.
+- *State:* executed; #485 in_progress on rose-air at 00:05:49Z; #483 and #480 runs requeued.
