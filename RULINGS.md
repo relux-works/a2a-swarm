@@ -985,3 +985,13 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     - Which of the 7 "public now" repos help CI? Answered: none of them helps the local CI load. Six have no workflows, and swift-realtime-openai-local runs only on hosted runners with no recent runs.
     - More detail on the history risk. Answered in session.
 - *State:* in force.
+**tb-R94. Binary swap #5 on ivmbp: the 1dh28f integrate fix** (01:22Z, 2026-10-01).
+- *Trigger:* PR #485 (BUG-260930-1dh28f, the R61 critical fix) landed at c5ff3d19 at about 01:19Z. The standing go of R55 applies.
+- *Done:* `curator global upgrade` from tb-keeper's outside, unhosted shell, 01:20:05Z–01:21:59Z, rc=0.
+  - task-board is build 1361260b and tb-sessiond is build 8457d455, both from main 10c4b582.
+  - The old builds were 4404b59c and 94691714.
+  - Probe: the new binary carries validationPolicyFilePresentAt, and the old one does not (negative control).
+  - IMPACT START was posted at 01:19:57Z and IMPACT END after the run.
+  - Daemons were not restarted (R55, R88).
+- *Open:* the R61 redline closes after the first real `worktree integrate` on the new build succeeds.
+- *State:* done.
