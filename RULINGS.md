@@ -1032,21 +1032,21 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - **Aggregation.** tb-keeper turns both into the final architecture, its fit with the infrastructure, and the build roadmap.
 - *State:* done (see the outcome).
 - *Outcome 04:09Z:* aggregated. ARCHITECTURE.md was published with the research, the review and the diagrams in wiki research/kv-cache-orchestration/ (main 972e151). The roadmap gained track 4c, K0–K5. The operator decisions Q1–Q10 went to the desk. K0 and K1 need no decision.
-**tb-R98. C1 (#478) goes first-ready after #488; private-repo CI stays manual until publication** (04:53Z, 2026-10-01).
+**tb-R98. C1 (#478) goes first-ready after #488; private-repo CI stays manual until publication** (04:52Z, 2026-10-01).
 - (1) validation-fixes' C1 (#478): BUG-261001-21mxun and BUG-261001-358zsz are accepted. 3ib9pa and 6qyhbh have posted no READY for about 8 h. C1 relieves ceiling-1 slot starvation.
   - It goes first-ready after #488 (which landed at 04:49Z, 279e570e). R95's priority for 3ib9pa stands if 3ib9pa is READY first.
   - The last review is a final astra-high review on the rebased head.
   - m1max is offered validation-fixes' clean 3-way resolution of 6qyhbh over C1.
 - (2) CI for curator-model-router (and curator-network-profiles) stays on manual dispatch with local verification, per the 09-24 decision that private repos use only our own runners. It switches to hosted CI on publication (card #19).
 - *State:* in force.
-**tb-R99. yiw33v rev 4 takes a one-off priority lane for its short suite** (05:06Z, 2026-10-01).
+**tb-R99. yiw33v rev 4 takes a one-off priority lane for its short suite** (05:03Z, 2026-10-01).
 - *Evidence (tb-muse, 05:02Z):* TASK-260930-yiw33v rev 4 (skill-agents-management, RUN-261001-c8b9f0) adds the interactive Muse launch mode, and it is now the blocker for interactive `curator run muse` (curator TASK-261001-3fgu9f). Its suite (make vet, make regress, the agents-management go tests) takes minutes, but it was queued behind tb-muse's own 2p2vgp spm suite (8/14, hours) at ceiling 1. Free space was 61 GiB and load1 about 19.
 - *Decision:* it runs now in a private priority-state dir, by R70 (1)'s mechanism, as one suite only.
   - It does not start if free space is under 45 GiB.
   - The dir is deleted after the suite.
   - The review (astra high) and the window in #skill-agents-management follow, ordered with infra-exit's 2vfg79 (v0.5.34).
 - *State:* in force until the suite ends.
-**tb-R100. Order on skill-agents-management main: #49, then yiw33v, then 2vfg79** (05:31Z, 2026-10-01).
+**tb-R100. Order on skill-agents-management main: #49, then yiw33v, then 2vfg79** (05:28Z, 2026-10-01).
 - *Evidence:* ivan-model-routing's PR #49 (W3, pkg/providerquota, head 83d4bd9, accepted after 5 astra-high rounds) is ready.
   - yiw33v (tb-muse) is still in its R99 suite, with its review to follow; the ETA for a tagged plugin is 10:00–12:00Z. 2vfg79 (infra-exit) is not reviewed yet.
   - #49's overlap with yiw33v is new files only in pkg/agentic/systems/muse, plus CHANGELOG.md.
@@ -1055,17 +1055,17 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   2. yiw33v rebases onto it before its astra review. R99's lane is amended to allow one more short re-validation after that rebase.
   3. 2vfg79 follows yiw33v. infra-exit tags once yiw33v is in.
 - *State:* in force.
-**tb-R101. odansk rev3 takes R1's private priority lane** (05:32Z, 2026-10-01).
+**tb-R101. odansk rev3 takes R1's private priority lane** (05:29Z, 2026-10-01).
 - *Evidence:* TASK-260922-odansk rev3 (F2+F4 safe refresh; it reworks the 4 refresh defects that the astra final review reproduced) is the last of the seven R61-class critical fixes. Its CR validation (RUN-261001-adf817) was at queue position 7, roughly 8–12 h away. Free space was 66 GiB and load5 about 27.
 - *Decision:* it runs now in .temp/critical-260922/priority-state, one suite only (R70's mechanism). adf817's queued validation is cancelled and respawned there.
   - The lane counts inside the machine ceiling: when ceiling 2 returns, the shared queue runs one suite until odansk ends.
   - Under 45 GiB everything else holds, and this suite finishes.
   - A go-build trim at the 2 h floor follows.
 - *State:* in force until the suite ends.
-**tb-R102. R30's load trigger reads CPU idle, not load average alone** (07:12Z, 2026-10-01).
+**tb-R102. R30's load trigger reads CPU idle, not load average alone** (07:06Z, 2026-10-01).
 - *Evidence (macos-sys, 07:05Z, several samples):*
   - At load1 35–46, the CPU was 20–47% idle with 9–16 runnable threads, and only one process was in uninterruptible wait.
-  - macOS load counts threads. Parallel `go test` (-p 2, t.Parallel) raises it without matching CPU demand. tb-keeper's sample at 07:10Z read 59% idle.
+  - macOS load counts threads. Parallel `go test` (-p 2, t.Parallel) raises it without matching CPU demand. tb-keeper's own sample just before this ruling read 59% idle.
   - Last night's R22 event (load 112–168 at 90 °C) was real. A pure thread-count rise can still cross load5 96 while the machine has headroom.
 - *Decision:* R30 fires when, for 10 consecutive minutes, either:
   - CPU idle is under 10%; or
@@ -1073,7 +1073,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - thermalState serious or critical still fires at once.
   - Its action is unchanged: R22 in full, plus pausing the ivmbp runner, which is the operator's standing decision for load peaks (R28).
 - *State:* in force. The watcher samples `top` CPU idle and load5 every minute.
-**tb-R103. odansk rev4 takes one more lane suite; a narrow hold on overlapping doc hunks** (08:02Z, 2026-10-01).
+**tb-R103. odansk rev4 takes one more lane suite; a narrow hold on overlapping doc hunks** (07:59Z, 2026-10-01).
 - *Evidence (tb-critical-fixes, 07:54Z):* odansk rev3's lane suite was green. Then #483/#481 landed on README.md and references/change-request-lifecycle.md, which odansk also edits, so the reviewer freshness preflight would refuse. After the doc rebase (patch-id 683b9186 unchanged), the tree is new and needs one more suite.
 - *Decision:*
   1. One more R101-lane suite for rev4, started only with free space at 45 GiB or more.
