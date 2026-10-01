@@ -1086,3 +1086,9 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - It starts only with free space at 43 GiB or more.
   - One suite only, and the dir is deleted after.
 - *State:* in force until the suite ends.
+**tb-R105. odansk's alias-preflight rework takes one more R1 lane suite** (11:27Z, 2026-10-01; sent by SendMessage because Matrix was down).
+- *Evidence (tb-critical-fixes):* odansk's round-2 final review (astra) confirmed all four rev2 findings fixed and all 10 mutants killed. One blocker remained: a pairwise physical-alias variant of the destination preflight, where incoming paths that alias by case-fold or NFC/NFD must refuse before any mutation. The rework RUN-261001-c502c1 had handed off and was at queue position 10. Free space was 49 GiB.
+- *Decision:* one more R1 lane suite (R101/R103 mechanism), started only with free space at 45 GiB or more.
+  - A paired go-build trim follows.
+  - The lane closes after the suite.
+- *State:* in force until the suite ends.
