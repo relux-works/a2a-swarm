@@ -1046,3 +1046,12 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - The dir is deleted after the suite.
   - The review (astra high) and the window in #skill-agents-management follow, ordered with infra-exit's 2vfg79 (v0.5.34).
 - *State:* in force until the suite ends.
+**tb-R100. Order on skill-agents-management main: #49, then yiw33v, then 2vfg79** (05:31Z, 2026-10-01).
+- *Evidence:* ivan-model-routing's PR #49 (W3, pkg/providerquota, head 83d4bd9, accepted after 5 astra-high rounds) is ready.
+  - yiw33v (tb-muse) is still in its R99 suite, with its review to follow; the ETA for a tagged plugin is 10:00–12:00Z. 2vfg79 (infra-exit) is not reviewed yet.
+  - #49's overlap with yiw33v is new files only in pkg/agentic/systems/muse, plus CHANGELOG.md.
+- *Decision:*
+  1. #49 lands first-ready now, in a window that infra-exit (the area owner) names, as an exact-head plain ff.
+  2. yiw33v rebases onto it before its astra review. R99's lane is amended to allow one more short re-validation after that rebase.
+  3. 2vfg79 follows yiw33v. infra-exit tags once yiw33v is in.
+- *State:* in force.
