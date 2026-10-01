@@ -1163,3 +1163,12 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *Evidence:* the round-3 rework (RUN-261001-1f8476: temp-file ownership proof and per-install parent-namespace re-verification) handed off. Its CR validation was at queue position 8. Disk was 67 GiB. CPU idle was about 19%, with ceiling 2 back and the shared slots busy.
 - *Decision:* one lane suite by the R101–R109 mechanism. It starts only with free space at 45 GiB or more AND CPU idle at 25% or more at launch, because the lane counts inside ceiling 2. A paired trim follows. The R110 routing and the R109 doc hold apply.
 - *State:* in force until the suite ends.
+**tb-R113. A standing short-suite lane for module repositories (trial until Gate A)** (18:54Z, 2026-10-01).
+- *Evidence (infra-exit; Ivan asked it to cut the infra-exit timeline):* CR suites for skill-agents-management and curator-inference-manager take minutes but waited 3–5 h behind 60–90-min spm suites. They went stale and paid a converge, a republish and a second queue lap: 1ycuhl, 3txv44, 2vr6t8 and 2vfg79.
+- *Decision:* one private lane per module binding, open to any campaign landing there.
+  - Only suites expected under 15 min run there; anything past 20 min goes back to the shared queue.
+  - At most one module-lane suite at a time machine-wide, counted inside the ceiling.
+  - Start only with free space at 45 GiB or more and CPU idle at 25% or more.
+  - spm suites are excluded.
+  - At the trial's end, a report: the number of lane suites, their wall time and the stale laps avoided.
+- *State:* trial, in force until Gate A lands.
