@@ -1187,3 +1187,16 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - tb-R113's limits are unchanged: one module-lane suite at a time machine-wide, counted inside the ceiling; suites under 15 min only, and past 20 min back to the shared queue; launch at 45 GiB or more free AND CPU idle at 25% or more; never an spm suite.
   - The Gate A trial report covers all three bindings.
 - *State:* trial, in force until Gate A lands.
+
+**tb-R116. The spm main landing order for the night of 2026-10-01** (21:25Z, 2026-10-01).
+- *Evidence:* three code candidates were heading for spm main at once, and each landing makes the others' tested heads stale:
+  - odansk: rev7 lane suite green at 20:36Z, round-4 review running;
+  - R2 rev3: tb-R114 lane suite running since about 21:02Z;
+  - #496 (BUG-261001-fb662e, the validationsuite flake fix): reviewed and accepted, hosted CI queued at 21:24Z.
+- *Decision:*
+  1. Whichever of odansk and R2 is READY first lands first. The other rebases, re-validates once on top of it, then lands. tb-R114's grant carries over to that re-run.
+  2. #496 lands after both, with one CI run on top of both. Cancelling its queued CI now is validation-fixes' call.
+  3. Until odansk and R2 have both landed, no other code or doc landing on spm main. Board-only gap publishes stay allowed under tb-R69, and tb-R109's doc hold continues.
+  - Cap: point 3 lapses at 2026-10-02 06:00Z if neither has landed.
+- *Grounds:* in a serial queue every candidate after the first re-tests once. This order costs no more suites than any other, and puts the critical fix and Ivan's Muse path first.
+- *State:* in force until odansk and R2 have landed, or the cap.
