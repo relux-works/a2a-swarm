@@ -125,10 +125,13 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 }
 
 func productPresetPlan(ctx context.Context, s *session, preset, product, project, resource string, joinSpace bool) ([]presetRoom, []presetSub, error) {
+	// A project room inside product X is #X-<project> (docs/products.md), so the
+	// identity keeps its git-derived project while the room carries the product.
+	projectRoom := "#" + product + "-" + project
 	var aliases []string
 	switch preset {
 	case "orch":
-		aliases = []string{"#lobby", "#broadcast", "#" + product + "-lobby", "#" + product + "-broadcast", "#" + project}
+		aliases = []string{"#lobby", "#broadcast", "#" + product + "-lobby", "#" + product + "-broadcast", projectRoom}
 	case "keeper":
 		aliases = []string{"#lobby", "#broadcast", "#" + product + "-lobby", "#" + product + "-broadcast", "#" + product + "-system"}
 	case "meta-keeper":
@@ -249,8 +252,8 @@ func productPresetPlan(ctx context.Context, s *session, preset, product, project
 	}
 	switch preset {
 	case "orch":
-		add("#"+project, []string{"system"}, []string{"incident", "blocker", "budget", "impact-start", "impact-end"})
-		add("#"+project, []string{"decision"}, nil)
+		add(projectRoom, []string{"system"}, []string{"incident", "blocker", "budget", "impact-start", "impact-end"})
+		add(projectRoom, []string{"decision"}, nil)
 		add("#"+product+"-lobby", []string{"decision", "question"}, nil)
 		add("#lobby", []string{"decision"}, nil)
 	case "keeper":

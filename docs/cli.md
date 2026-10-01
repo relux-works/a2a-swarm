@@ -105,7 +105,7 @@ hand-made subscription. The rooms of all rows are joined; each row creates its o
 
 | Preset | Rooms and subscriptions |
 | --- | --- |
-| `orch` | Joins `#lobby`, `#broadcast`, `#X-lobby`, `#X-broadcast`, and `#<project>`. Subscribes in the project room to system subtypes `incident,blocker,budget,impact-start,impact-end` and to `decision`; in `#X-lobby` to `decision,question`; in `#lobby` to `decision`. |
+| `orch` | Joins `#lobby`, `#broadcast`, `#X-lobby`, `#X-broadcast`, and its project room `#X-<project>` (the project as derived above; a plain `#<project>` room is not joined). Subscribes in the project room to system subtypes `incident,blocker,budget,impact-start,impact-end` and to `decision`; in `#X-lobby` to `decision,question`; in `#lobby` to `decision`. |
 | `keeper` | Joins the global rooms, `#X-lobby`, `#X-broadcast`, `#X-system`, and every child room of X. Subscribes in `#X-system` to `owner-needed` and system subtypes `incident,blocker,budget,window,queue,impact-start,impact-end`; also subscribes to `decision` in `#X-lobby` and `#lobby`. |
 | `meta-keeper` | Joins `#lobby`, `#broadcast`, `#system`, and each product lobby it can discover among its joined spaces. Subscribes in `#system` to `owner-needed` and system subtypes `incident,blocker,budget,impact-start,impact-end`, and in `#lobby` to `decision`. |
 | `arbiter` | Joins `--resource ROOM`; subscribes there to system subtypes `window,landing,incident,blocker,queue` and to `decision`. |

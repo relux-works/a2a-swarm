@@ -224,21 +224,28 @@ func TestSubtypeList(t *testing.T) {
 
 // Proves an explicit product preset joins its exact rooms and creates tagged
 // subscriptions; sync is unchanged on a repeat and preserves hand-made rows.
+// The orch's project room is #<product>-<project>: a legacy plain #<project>
+// room on the same server is neither joined nor subscribed.
 func TestIdentityProductPresetAndSubsSync(t *testing.T) {
 	e := newEnv(t)
 	alice := e.agent("alice")
 	// Swarm rooms are public_chat (joinable), as the real room policy makes them.
 	e.hs.makePublic(e.hs.addRoom("lobby", alice))
 	e.as("alice", "broadcast-room", "init").ok(t)
-	projectRoom := e.hs.addRoom("proj", alice)
+	legacyRoom := e.hs.addRoom("proj", alice)
+	e.hs.makePublic(legacyRoom)
+	projectRoom := e.hs.addRoom("alpha-proj", alice)
 	e.hs.makePublic(projectRoom)
 	e.as("alice", "product", "new", "alpha").ok(t)
 	e.as("alice", "host", "init", "mini").ok(t)
 	e.run("identity", "ensure", "--role", "orch", "--project", "proj", "--runtime", "none", "--product", "alpha").failsWith(t, ExitUsage, "requires an explicit --preset")
 	e.run("identity", "ensure", "--role", "orch", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "unknown").failsWith(t, ExitUsage, "unknown preset")
 	out := e.run("identity", "ensure", "--role", "orch", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "orch").ok(t).stdout
-	for _, room := range []string{"#lobby", "#broadcast", "#alpha-lobby", "#alpha-broadcast", "#proj"} {
+	for _, room := range []string{"#lobby", "#broadcast", "#alpha-lobby", "#alpha-broadcast", "#alpha-proj"} {
 		tuitestestContains(t, out, "joined "+room)
+	}
+	if strings.Contains(out, "joined #proj ") {
+		t.Fatalf("orch preset joined the legacy #proj room:\n%s", out)
 	}
 	name := "mini_proj_orch"
 	list := e.serverSubs(name)
@@ -249,8 +256,11 @@ func TestIdentityProductPresetAndSubsSync(t *testing.T) {
 		if sub.Preset != "orch:alpha" {
 			t.Fatalf("unmarked preset subscription: %+v", sub)
 		}
+		if sub.Room == legacyRoom {
+			t.Fatalf("preset subscribed in the legacy #proj room: %+v", sub)
+		}
 	}
-	e.as(name, "subscribe", "--room", "proj", "--kind", "question").ok(t)
+	e.as(name, "subscribe", "--room", "alpha-proj", "--kind", "question").ok(t)
 	manual := e.serverSubs(name)
 	manual.Subs = append(manual.Subs, Sub{ID: "sub-stale", SubSelector: SubSelector{Room: "!projRoomID", Kinds: []string{"notice"}}, Preset: "orch:alpha", CreatedAt: "2026-01-01T00:00:00Z"})
 	e.hs.setAccountData("@"+name+":"+testServer, SubsType, manual)
@@ -261,7 +271,7 @@ func TestIdentityProductPresetAndSubsSync(t *testing.T) {
 	}
 	e.run("--as", name, "identity", "ensure", "--role", "orch", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "orch").ok(t)
 	// Product child adoption makes every project room visible to the keeper.
-	e.as("alice", "product", "adopt", "alpha", "proj").ok(t)
+	e.as("alice", "product", "adopt", "alpha", "alpha-proj").ok(t)
 	keeperName := "mini_proj_keeper"
 	e.agent(keeperName)
 	keeperOut := e.run("--as", keeperName, "identity", "ensure", "--role", "keeper", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "keeper").ok(t).stdout
