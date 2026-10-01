@@ -1264,3 +1264,32 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   4. Train 1 is R2 plus odansk: one CI on the top head; critical-fixes pushes.
   5. Lane order: odansk, then R2's re-run, then l2vgx1.
 - *State:* in force until Train 1 lands.
+
+**tb-R126. The desk contract: a digest every 6 hours, with optimistic defaults** (23:33Z, 2026-10-01; Ivan: «пускай просто каждые 6 часа копит не отвеченные вопросы + сводка по оптимистично принятым решениям»).
+- *Decision:*
+  - The desk sends Ivan one digest at 00:00, 06:00, 12:00 and 18:00Z: unanswered cards, plus decisions taken optimistically since the last digest.
+  - Reversible cards carry a default that acts at reply-by. Security, legal, money, sudo or reboot, and irreversible cards wait for Ivan.
+  - Urgent items still go out at once.
+- *State:* in force on the orchestrator side. The desk switches its own delivery once Ivan confirms in the desk session, as its brief requires.
+
+**tb-R127. Soft work-in-progress limits for two weeks** (23:33Z, 2026-10-01; Ivan: «правило берем но правило не строгое, если будет срочно нужно запустить что-то я дам знать»).
+- *Decision:*
+  - Code campaigns producing spm CRs on ivmbp:
+    - tb-critical-fixes, until odansk lands;
+    - tb-muse, until R3 lands;
+    - tb-agents-infra-exit.
+  - Test and capacity work (tb-tests, ci-isolation, validation-fixes) rides the tb-R123 lane. Ivan wants the tests in shape first.
+  - No suites on the Mac mini until its reboot.
+  - At most 8 orchestrators awake on ivmbp.
+  - No new campaign until the median queue wait stays under 30 min for two days.
+  - Ivan overrides case by case.
+- *State:* in force until 2026-10-16.
+
+**tb-R128. Host hygiene is approved once** (23:33Z, 2026-10-01; Ivan: «давай, берем»).
+- *Decision:*
+  - Desk #22: the go-build auto-trim under 50 GiB goes live (macos-sys).
+  - An fseventsd memory-threshold restart daemon on ivmbp and the Mac mini, prepared by macos-sys and installed by Ivan.
+  - A standing maintenance slot for reboots and sudo installs; its time is to be confirmed with Ivan.
+  - The Mac mini reboot (#28) goes into the first slot.
+  - tb-R55 swaps need no slot.
+- *State:* in force.
