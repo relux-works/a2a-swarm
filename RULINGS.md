@@ -1073,3 +1073,10 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - thermalState serious or critical still fires at once.
   - Its action is unchanged: R22 in full, plus pausing the ivmbp runner, which is the operator's standing decision for load peaks (R28).
 - *State:* in force. The watcher samples `top` CPU idle and load5 every minute.
+**tb-R103. odansk rev4 takes one more lane suite; a narrow hold on overlapping doc hunks** (08:02Z, 2026-10-01).
+- *Evidence (tb-critical-fixes, 07:54Z):* odansk rev3's lane suite was green. Then #483/#481 landed on README.md and references/change-request-lifecycle.md, which odansk also edits, so the reviewer freshness preflight would refuse. After the doc rebase (patch-id 683b9186 unchanged), the tree is new and needs one more suite.
+- *Decision:*
+  1. One more R101-lane suite for rev4, started only with free space at 45 GiB or more.
+  2. Landers touching the same files as odansk hold until its review starts, at the latest 10:15Z. Non-overlapping hunks, references/** included, land normally. critical-fixes posts odansk's full doc file list.
+  3. After 10:15Z the hold lapses.
+- *State:* in force until odansk's review starts or 10:15Z.
