@@ -995,3 +995,12 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Daemons were not restarted (R55, R88).
 - *Open:* the R61 redline closes after the first real `worktree integrate` on the new build succeeds.
 - *State:* done.
+
+**tb-R95. BUG-260927-3ib9pa gets the next free landing slot once it is READY; the README restale loop** (01:29Z, 2026-10-01).
+- *Evidence (m1max_skill-project-management_orch, 01:29Z):* BUG-260927-3ib9pa (close-landed records use wall-clock time, not the configured commit-time policy) went stale four times today, each time on README.md. Each lap costs a CR suite, a review and a landing suite: about 2 h and three Opus runs.
+- *Decision:*
+  - When its refreshed revision is accepted and posted READY, 3ib9pa takes the NEXT free window. It goes ahead of every non-critical item that is not yet in a window, and after any window already open and any R61-class critical item.
+  - Its window post lists its README hunks per R56.
+  - Until it lands, other landers that carry README.md hunks post a one-line heads-up before opening their window, so 3ib9pa's owner can rebase BEFORE its review, not after acceptance.
+  - The tool fix of R56 (re-parent and revalidate clean doc-only junctions instead of marking stale) goes back to tb-critical-fixes for a status and a date. It shares machinery with ci-isolation's stage 3 (absorbing board-only trunk advances), so tb-critical-fixes and ci-isolation decide together whether stage 3's fail-closed opt-in can extend to doc-class paths.
+- *State:* in force.
