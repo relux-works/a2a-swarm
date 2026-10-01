@@ -1141,3 +1141,11 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   2. A doc hold on odansk's four files (README.md, references/change-request-lifecycle.md, references/file-formats.md, references/tracked-background-spawn.md) until odansk lands, capped at 2026-10-02 06:00Z.
   3. R2 takes the next lane suite after odansk's, from 45 GiB. Only one spm-sized lane suite runs at a time.
 - *State:* in force.
+**tb-R110. A provider content-policy refusal during an R80 review** (16:40Z, 2026-10-01).
+- *Evidence:* tb-critical-fixes' codex gpt-6-astra review of odansk's filesystem-race code (RUN-261001-26559b) ended at 16:35Z with OpenAI's "flagged for possible cybersecurity risk" filter, after its verdict was written. The transcript-substring classifier mislabelled the exit as provider_capability_unavailable (spm#493). codex-fix diagnosed the false positive; critical-fixes found the real line.
+- *Decision:*
+  1. Briefs for security-adjacent defensive work use neutral, accurate regression-test language.
+  2. If astra is refused by policy again on such code, that review goes to claude-sonnet-5-5 high, R80's standard reviewer pair. It counts as an allowed pair, not a fallback, and the refusal line is recorded.
+  3. A refused producer rephrases and retries once, then reports.
+  4. OpenAI "Daybreak" access is an org-level act and goes to Ivan's desk, not urgent.
+- *State:* in force.
