@@ -939,3 +939,23 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     - Enforcement, meaning hard switches that turn native subagents off, comes from research L2 part A.
   - **Research:** L2 part B (macmini-infra) maps every harness's alias table, and how the registry pins it, for Claude, Codex, Muse and agy.
 - *State:* in force. Broadcast to every Ivan-side orchestrator.
+
+**tb-R92. Recovering yiw33v (STORY-260930-1lfkbh) from an "already combined" candidate: R77's procedure, conditionally** (00:11Z, 2026-10-01).
+- *Evidence (tb-muse, 00:11Z):*
+  - CR rev 2 is `ready`, but its review was refused with revision_base_superseded: main moved to e53de69 and overlaps on README.md.
+  - The r3 producer could not refresh. It combined e53de69's 20 paths into the uncommitted candidate, and all checks are green with 4 mutants killed.
+  - Operator converge fails in two ways. First as conflicted. Then, after the two overlapping files were set to trunk, with worktree_git_command_failed, because merged_tree_oid == dirty_tree_oid (44f5f267): converge does not handle a delta that already contains the incoming authority.
+  - The candidate was restored and verified, with 0 mismatches across 30 paths.
+  - No base-refresh intent exists for this Story.
+- *Decision:*
+  - (a) goes to tb-critical-fixes: is there a supported command for the "already combined" case?
+  - (b) If tb-critical-fixes answers that there is none, tb-muse may apply R77's procedure to 1lfkbh without asking again. The steps:
+    1. Verified backups: a tar plus a `git diff --binary` patch of the 30-path candidate, each with its sha256, and refs/backup/… for every commit of rev 2 on the Story branch.
+    2. The supported `abort --discard`.
+    3. A fresh workspace from current main.
+    4. Re-apply the candidate, then producer re-validation.
+    5. Hand off as rev 3, with a full re-review: Sonnet 5.5 high, and Astra high for the final review (R80a). Acceptance does not carry over.
+    6. R77 (5) stays in force: no hand edits to intent or registry records.
+    7. The evidence goes on yiw33v as a resource.
+  - tb-critical-fixes files the converge gap (merged == dirty) as a bug in the #392 family.
+- *State:* in force.
