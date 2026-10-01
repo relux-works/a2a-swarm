@@ -1172,3 +1172,11 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - spm suites are excluded.
   - At the trial's end, a report: the number of lane suites, their wall time and the stale laps avoided.
 - *State:* trial, in force until Gate A lands.
+
+**tb-R114. R2 rev3 takes the next spm lane suite after odansk rev7's** (19:53Z, 2026-10-01).
+- *Evidence:* tb-muse asked at 19:41Z. R2 rev3 (RUN-261001-f3425e, TASK-261001-3hz2af, the Muse PTY primary host) fixes the round-2 review findings and sat 8th in the shared queue. R2 is the last code leaf before the Muse orchestrator (R3). curator#100 is complete on the curator side, and R1c lands with v0.5.37. odansk rev7's lane suite (RUN-261001-f95be9, tb-R112) was still running. Free space was 55 GiB and CPU idle about 50%.
+- *Decision:* one lane suite by the tb-R101–tb-R109 mechanism, launched after odansk rev7's suite ends.
+  - It starts only with free space at 45 GiB or more AND CPU idle at 25% or more (tb-R112). It counts inside the machine ceiling (tb-R72), and only one spm-sized lane suite runs at a time.
+  - If R2's shared-queue turn comes first, it takes that turn and the grant lapses.
+  - A paired go-build trim follows. The tb-R109 doc hold still applies.
+- *State:* in force until the suite ends.
