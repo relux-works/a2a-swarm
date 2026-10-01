@@ -142,8 +142,8 @@ the caller has power to send it. X must be an existing product space.
 
 Products are Matrix spaces named `#X`; `X` matches `[a-z0-9-]{1,40}`. `new` creates the space and its `#X-lobby`, `#X-broadcast`, and
 `#X-system` rooms when absent. It adds reciprocal `m.space.child` / `m.space.parent` links and invites the named keeper and projector.
-The lobby follows `room new` policy. The broadcast room sets `events_default` to 50 and gives the optional keeper level 100 (the creator has
-admin power). The system projection room sets `events_default` to 50 and gives the optional projector level 50. Re-running prints `already`
+The lobby follows `room new` policy. The broadcast room sets `events_default` to 50 and gives the optional keeper level 50 (enough to
+post; the creator keeps admin power). The system projection room sets `events_default` to 50 and gives the optional projector level 50. Re-running prints `already`
 and does not change existing rooms or links.
 
 `adopt` adds an existing room to X without creating or renaming it. It prints `already` for an existing child. If the caller cannot send the

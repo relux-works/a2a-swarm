@@ -423,3 +423,48 @@ func TestSubtypeLegacyFieldOnWrite(t *testing.T) {
 		}
 	}
 }
+
+// Proves the #X-system policy for real: a non-projector agent's post is refused
+// while the projector's post goes through (positive control); unknown products
+// are refused by show and adopt; and repeating product new, broadcast-room init
+// and a preset sync performs zero room creations and zero state writes.
+func TestProductPolicyNegativesAndIdempotence(t *testing.T) {
+	e := newEnv(t)
+	alice := e.agent("alice")
+	e.agent("bob")
+	e.agent("projector")
+	e.hs.makePublic(e.hs.addRoom("lobby", alice))
+	e.hs.makePublic(e.hs.addRoom("system", alice))
+	e.as("alice", "broadcast-room", "init").ok(t)
+	e.as("alice", "product", "new", "alpha", "--projector", "projector").ok(t)
+	e.as("alice", "topic", "new", "alpha-system", "root", "Root").ok(t)
+	e.as("bob", "join", "alpha-system").ok(t)
+	e.as("bob", "post", "alpha-system", "--topic", "root", "--kind", "notice", "no").failsWith(t, ExitError, "M_FORBIDDEN")
+	e.as("projector", "join", "alpha-system").ok(t)
+	e.as("projector", "post", "alpha-system", "--topic", "root", "--kind", "notice", "yes").ok(t)
+
+	e.as("alice", "product", "show", "nope").failsWith(t, ExitError, "nope")
+	e.as("alice", "product", "adopt", "nope", "lobby").failsWith(t, ExitError, "nope")
+
+	e.as("alice", "host", "init", "mini").ok(t)
+	e.run("identity", "ensure", "--role", "keeper", "--runtime", "none", "--dir", t.TempDir(), "--product", "alpha", "--preset", "keeper").ok(t)
+	creates := e.hs.CallCount("POST /_matrix/client/v3/createRoom")
+	states := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}")
+	accountWrites := e.hs.CallCount("PUT /_matrix/client/v3/user/{user}/account_data/{type}")
+	if creates == 0 || states == 0 || accountWrites == 0 {
+		t.Fatalf("a counter did not move on the first run (creates %d, states %d, account %d): the zero checks below would be vacuous", creates, states, accountWrites)
+	}
+	e.as("alice", "product", "new", "alpha", "--projector", "projector").ok(t)
+	e.as("alice", "broadcast-room", "init").ok(t)
+	out := e.as("mini_alpha_keeper", "subs", "sync", "--preset", "keeper", "--product", "alpha").ok(t).stdout
+	tuitestestContains(t, out, "unchanged")
+	if n := e.hs.CallCount("POST /_matrix/client/v3/createRoom") - creates; n != 0 {
+		t.Fatalf("repeat created %d rooms", n)
+	}
+	if n := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}") - states; n != 0 {
+		t.Fatalf("repeat wrote %d state events", n)
+	}
+	if n := e.hs.CallCount("PUT /_matrix/client/v3/user/{user}/account_data/{type}") - accountWrites; n != 0 {
+		t.Fatalf("unchanged sync wrote account data %d times", n)
+	}
+}
