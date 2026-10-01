@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -87,24 +88,11 @@ func cmdProduct(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		children, err := s.client.GetStateEvents(ctx, space, "m.space.child")
+		children, err := s.spaceChildren(ctx, space)
 		if err != nil {
 			return err
 		}
-		sort.Slice(children, func(i, j int) bool {
-			if children[i].StateKey == nil {
-				return true
-			}
-			if children[j].StateKey == nil {
-				return false
-			}
-			return *children[i].StateKey < *children[j].StateKey
-		})
-		for _, ev := range children {
-			id := ""
-			if ev.StateKey != nil {
-				id = *ev.StateKey
-			}
+		for _, id := range children {
 			a.printf("%s\t%s\n", s.roomLabel(ctx, id, nil), id)
 		}
 		return nil
@@ -255,10 +243,35 @@ func (s *session) inviteProductUser(ctx context.Context, room, label, user strin
 	return nil
 }
 
+// liveChild reports whether m.space.child content links a child. A child event
+// whose content has no non-empty "via" is a removed link (Matrix spec, spaces).
+func liveChild(content map[string]any) bool {
+	via, ok := content["via"].([]any)
+	return ok && len(via) > 0
+}
+
+// spaceChildren lists the room ids a space links as live children.
+func (s *session) spaceChildren(ctx context.Context, space string) ([]string, error) {
+	events, err := s.client.GetStateEvents(ctx, space, "m.space.child")
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, ev := range events {
+		var c map[string]any
+		if ev.StateKey == nil || json.Unmarshal(ev.Content, &c) != nil || !liveChild(c) {
+			continue
+		}
+		ids = append(ids, *ev.StateKey)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
 func (s *session) linkSpace(ctx context.Context, space, room string) error {
 	content := map[string]any{"via": []string{s.server}}
 	var old map[string]any
-	if err := s.client.GetState(ctx, space, "m.space.child", room, &old); err == nil {
+	if err := s.client.GetState(ctx, space, "m.space.child", room, &old); err == nil && liveChild(old) {
 		s.app.printf("already child %s\n", room)
 	} else {
 		if _, err := s.client.PutState(ctx, space, "m.space.child", room, content); err != nil {
@@ -302,7 +315,7 @@ func (s *session) adoptProductRoom(ctx context.Context, name, roomArg string, kn
 		return fmt.Errorf("room %s does not exist", sanitizeLine(roomArg))
 	}
 	var old map[string]any
-	if err := s.client.GetState(ctx, space, "m.space.child", room, &old); err == nil {
+	if err := s.client.GetState(ctx, space, "m.space.child", room, &old); err == nil && liveChild(old) {
 		s.app.printf("already child %s\n", label)
 		return nil
 	}

@@ -130,6 +130,38 @@ func TestProductListShow(t *testing.T) {
 	}
 }
 
+// Proves a space child whose m.space.child content is empty (a removed link, per
+// the Matrix spaces spec) is not listed by show, is not joined by the keeper
+// preset, and is linked again by adopt instead of reported as "already"; a live
+// sibling child stays listed (positive control).
+func TestProductRemovedChildIgnored(t *testing.T) {
+	e := newEnv(t)
+	alice := e.agent("alice")
+	e.hs.makePublic(e.hs.addRoom("lobby", alice))
+	e.as("alice", "broadcast-room", "init").ok(t)
+	e.as("alice", "product", "new", "alpha").ok(t)
+	gone := e.hs.addRoom("gone", alice)
+	e.hs.makePublic(gone)
+	e.as("alice", "product", "adopt", "alpha", "gone").ok(t)
+	tuitestestContains(t, e.as("alice", "product", "show", "alpha").ok(t).stdout, "#gone")
+	e.hs.mu.Lock()
+	space := e.hs.aliases["#alpha:"+testServer]
+	e.hs.rooms[space].state["m.space.child|"+gone] = json.RawMessage(`{}`)
+	e.hs.mu.Unlock()
+	show := e.as("alice", "product", "show", "alpha").ok(t).stdout
+	if strings.Contains(show, "#gone") || strings.Contains(show, gone) {
+		t.Fatalf("show lists a removed child:\n%s", show)
+	}
+	tuitestestContains(t, show, "#alpha-lobby")
+	e.as("alice", "host", "init", "mini").ok(t)
+	keeper := e.run("identity", "ensure", "--role", "keeper", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "keeper").ok(t).stdout
+	if strings.Contains(keeper, "#gone") {
+		t.Fatalf("keeper preset joined a removed child:\n%s", keeper)
+	}
+	tuitestestContains(t, e.as("alice", "product", "adopt", "alpha", "gone").ok(t).stdout, "linked child")
+	tuitestestContains(t, e.as("alice", "product", "show", "alpha").ok(t).stdout, "#gone")
+}
+
 // Proves adopting an existing room adds both reciprocal space links exactly
 // once; a non-space and a missing room are refused alongside the valid control.
 func TestProductAdopt(t *testing.T) {

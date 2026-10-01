@@ -183,7 +183,7 @@ func productPresetPlan(ctx context.Context, s *session, preset, product, project
 			return nil, nil, err
 		}
 		rooms = append(rooms, presetRoom{space, label})
-		children, err := s.client.GetStateEvents(ctx, space, "m.space.child")
+		children, err := s.spaceChildren(ctx, space)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -191,10 +191,10 @@ func productPresetPlan(ctx context.Context, s *session, preset, product, project
 		for _, r := range rooms {
 			seen[r.id] = true
 		}
-		for _, ev := range children {
-			if ev.StateKey != nil && !seen[*ev.StateKey] {
-				rooms = append(rooms, presetRoom{*ev.StateKey, s.roomLabel(ctx, *ev.StateKey, nil)})
-				seen[*ev.StateKey] = true
+		for _, id := range children {
+			if !seen[id] {
+				rooms = append(rooms, presetRoom{id, s.roomLabel(ctx, id, nil)})
+				seen[id] = true
 			}
 		}
 	}
@@ -212,7 +212,7 @@ func productPresetPlan(ctx context.Context, s *session, preset, product, project
 			if s.client.GetState(ctx, id, "m.room.create", "", &c) != nil || c["type"] != "m.space" {
 				continue
 			}
-			children, err := s.client.GetStateEvents(ctx, id, "m.space.child")
+			children, err := s.spaceChildren(ctx, id)
 			if err != nil {
 				continue
 			}
@@ -223,8 +223,8 @@ func productPresetPlan(ctx context.Context, s *session, preset, product, project
 				continue
 			}
 			linked := false
-			for _, ev := range children {
-				if ev.StateKey != nil && *ev.StateKey == lobbyID {
+			for _, child := range children {
+				if child == lobbyID {
 					linked = true
 					break
 				}
