@@ -1009,3 +1009,12 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - doc-class: re-parent AND revalidate, keeping the acceptance and attaching the junction diff (#472). Doc-class never skips the suite, because the docs guards read README.md and references/**.
   ci-isolation keeps the key shape open for the second class. #472 is not started; it comes after odansk, #408 and #392, and the target for a reviewed CR is 2026-10-03.
 - *Settled 01:32Z:* TWO sibling booleans instead of one key with classes, as ci-isolation proposed: `absorb_board_only_advances` (board-only, no suite) and `reparent_doc_only_advances` (doc-class, re-parent plus revalidate). A reader then sees which key skips the suite. #472 refactors the stage-3 predicate to take a path class.
+
+**tb-R96. Muse keeps auto-updating; the tooling adapts to new versions instead of pinning them** (02:21Z, 2026-10-01).
+- *Source:* Ivan, directly in tb-keeper's session at about 02:00Z, verbatim: «Нет пускай обновляется - надо адаптироваться под изменения». He answered tb-keeper's question whether to disable Muse auto-update host-wide on ivmbp, as had been done on the mini.
+- *Decision:*
+  - Muse auto-update stays ON on ivmbp. macmini-infra reverts its 01:55Z host-wide disable on the Mac mini: the MUSE_NO_AUTO_UPDATE line in ~/.zshenv, and launchctl unsetenv.
+  - The agents-management muse plugin keeps setting the variable for task-board CHILDREN, so a running child does not change binaries mid-run. New launches pick up the updated launcher binary.
+  - tb-muse's MSP client and pin qualification (vz22an) ADAPT: a new version or schema fingerprint triggers a fast re-qualification run, not a standing block. 1.4.2 is the current target, and ivmbp gets it at the launcher's next hourly check.
+  - tb-keeper's own read-only probes still pass the variable, so that they never start an update at an arbitrary moment. Updates come through the normal calls.
+- *State:* in force.
