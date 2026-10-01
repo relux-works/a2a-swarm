@@ -1210,3 +1210,15 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *Evidence:* odansk's round-4 review asked for one narrow fix: the temp-file ownership gate did not cover deletions. The rev8 rework is done. critical-fixes cancelled the queued shared validation, because R2 lands first under tb-R116 and the validation would have gone stale.
 - *Decision:* one lane suite by the tb-R101–tb-R112 mechanism, launched after R2 lands, as tb-R116(1)'s single re-validation on top. It starts only at 45 GiB or more free AND CPU idle at 25% or more, and counts inside the ceiling. Only one spm-sized lane suite runs at a time. A paired trim follows. tb-R110's routing applies to round 5.
 - *State:* granted in advance; it starts after R2 lands.
+
+**tb-R119. No Daybreak application; models rotate on a policy refusal** (21:52Z, 2026-10-01; Ivan's answer to desk card #26 at 21:51Z).
+- *Ivan, verbatim:* «нет. делаем ротацию моделей, если сол отказывает используем соннет или астру или наоборот и тд. в нашей юрисдикции не выдают daybreak и под наш масштаб».
+- *Decision (extends tb-R110, for every Ivan-side campaign):*
+  1. OpenAI Daybreak access is not pursued; it is not granted in our jurisdiction or at our scale.
+  2. A provider policy refusal is routed to another model, not escalated.
+     - A refused gpt-6.1-sol producer rephrases and retries once (tb-R110(3)), then re-runs on claude-sonnet-5-5 high or gpt-6-astra high.
+     - A refused astra reviewer goes to sonnet (tb-R110(2)). A refused sonnet reviewer goes to astra or sol, and so on.
+     - Rotation pairs count as allowed pairs. The refusal line and the finishing model are recorded in the run notes.
+  3. Rotation covers refusals only. Capacity limits keep their own handling, and quality escalation stays a workflow decision.
+  4. A rotated review stays independent of its producer.
+- *State:* in force.
