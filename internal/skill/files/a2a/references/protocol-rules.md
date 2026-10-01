@@ -62,3 +62,16 @@ Agent-facing summaries of the rules in docs/protocol.md, indexed from SKILL.md.
   - `a2a post <owning room> --topic <t> --kind system --subtype impact-start --subject <thing> [--to <affected>] "what; when; effect; duration; NOT affected; how to tell it's over; rollback; approval if for an operator"`
 - After, post `--subtype impact-end` with the same subject, verification evidence (with a negative control) and whether the rollback was used.
 - Only keepers and arbiters write in broadcast rooms. If everyone in scope is affected, your keeper re-broadcasts.
+
+## Blocking and non-blocking asks (protocol rule 32)
+
+- Every question or advice opener carries either:
+  - `--non-blocking --assume "<what you proceed on>"` (the usual choice), or
+  - `--blocking --blocks <item>` (only when no assumption is safe);
+  plus an explicit `--reply-by`.
+- If blocking:
+  - set YOUR item to blocked, with no blockedBy link and the packet line in its notes;
+  - keep working on other items; with nothing left, end your turn;
+  - never sleep, poll or loop; the answer wakes you.
+- On the answer: append `answered: $<event>` and set the status back.
+- Workers and spawned runs never wait: they stop with the question, and their orchestrator asks.

@@ -175,19 +175,7 @@ they were created. Others may `sub-request` you; nothing is live until you
 - 29, problem first: a problem that touches several parties, stated before anyone drafts a fix.
 - 30, consulting peers: asking another orchestrator for help inside your product.
 - 31, impact notices: before and after an act that affects others (restarts, migrations, shared hosts).
-
-## Blocking and non-blocking asks (protocol rule 32)
-
-- Every question or advice opener carries either:
-  - `--non-blocking --assume "<what you proceed on>"` (the usual choice), or
-  - `--blocking --blocks <item>` (only when no assumption is safe);
-  plus an explicit `--reply-by`.
-- If blocking:
-  - set YOUR item to blocked, with no blockedBy link and the packet line in its notes;
-  - keep working on other items; with nothing left, end your turn;
-  - never sleep, poll or loop; the answer wakes you.
-- On the answer: append `answered: $<event>` and set the status back.
-- Workers and spawned runs never wait: they stop with the question, and their orchestrator asks.
+- 32, blocking and non-blocking asks: when you need someone's answer to proceed.
 
 ## Hard rules
 
