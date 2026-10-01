@@ -1092,3 +1092,10 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - A paired go-build trim follows.
   - The lane closes after the suite.
 - *State:* in force until the suite ends.
+**tb-R106. cocoa's three option-C security suites take a one-off sequential lane** (11:52Z, 2026-10-01; sent by SendMessage).
+- *Evidence (cocoa):* the three option-C security CRs (Ivan's card #4: K3 1ax76u, K4 39mn8b, K24 2u0otf) lost their queued tickets twice, after 5h50m and 6h40m, to the #446 idle-deadline expiry under ceiling 1. Each suite is 15–20 min of Python with no Go build cache. Free space was 42 GiB and CPU about 52% idle.
+- *Decision:* a private lane runs them ONE AT A TIME, in the order K3, K4, K24.
+  - Each starts only with free space at 40 GiB or more and CPU idle at 25% or more.
+  - cocoa pauses and reports if free space falls under 40 GiB.
+  - The lane dir is deleted after the third suite.
+- *State:* in force until the third suite ends.
