@@ -100,7 +100,12 @@ Changes these rows need (ac, one PR with the product CLI):
 
 ## 4. Task-board (skill-project-management-e7)
 
-- One product board per product, owned by the product keeper: the product goal and cross-project epics. It lives in its own repository (or a directory of the keeper's repository), never inside a project's board.
+- Board layout is NOT fixed (Alexis, 2026-10-01, `$VFii2QUH…`). A product may have:
+  - one board at the product folder covering all of its repositories;
+  - a board per project repository, with the keeper coordinating across them;
+  - or a mix.
+  Curator, task-board, Keeper and a2a assume no single layout, and a product space is never tied to one board. The bullets below describe the per-project-board layout.
+- In that layout, one product board per product, owned by the product keeper: the product goal and cross-project epics. It lives in its own repository (or a directory of the keeper's repository), never inside a project's board.
 - Cross-board dependencies are TEXT REFERENCES in v1 (`<repo>/<board>:<ELEMENT-ID>` in the element's notes or README), not links. task-board's blockedBy/blocks resolve only inside one board and gate set_status on the blocked element. A cross-board gate is a product-work item for skill-project-management through rule 27, not an assumption of this spec.
 - Per-project boards stay owned by their orchestrators, unchanged.
 - A remote orchestrator's primary session is `task-board claude|codex`, started by `rwh host` in its own macOS user, with tb-sessiond per user. Its board lives with its checkout. The binary is swapped by the operator between sessions, never from inside a hosted session. The native goal budget is explicit (`budget.kind=tokens` with a value, or `none`), with no default.
