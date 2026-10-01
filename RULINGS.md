@@ -1293,3 +1293,12 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - The Mac mini reboot (#28) goes into the first slot.
   - tb-R55 swaps need no slot.
 - *State:* in force.
+
+**tb-R129. Narrow targeted builds on the Mac mini after its reboot** (23:35Z, 2026-10-01; amends tb-R127).
+- *Decision:*
+  - No builds on the mini until its reboot.
+  - After IMPACT END, with syspolicyd stable: `go test -p 1` on selected packages, one run at a time across validation-fixes and ci-isolation, and at most two worker runs at once.
+  - "One at a time" is the mkdir lock `~/.mini-build-lock` (agreed 23:36Z): owner, run id and start time in `owner`, released by a trap, and breakable after 2 h with a dead PID, with a one-line notice.
+  - No full spm or CR validation suites on the mini.
+  - Stop and report if load goes above 2x the cores or swap grows.
+- *State:* in force until tb-R127 ends.
