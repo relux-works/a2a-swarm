@@ -922,3 +922,20 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - re-run both cancelled runs as soon as #485 has a runner.
   - The cancelled #483 rerun does NOT count against ci-isolation's single tb-R26 rerun.
 - *State:* executed; #485 in_progress on rose-air at 00:05:49Z; #483 and #480 runs requeued.
+
+**tb-R91. Model aliases: the registry is the one source of "latest", and delegation goes only through task-board spawn** (00:07Z, 2026-10-01).
+- *Source:* Ivan, directly in tb-keeper's session at about 00:08Z, answering tb-keeper's options A and B. Verbatim: «да оба сразу и а и б», and to the alias research: «ок».
+- *Background:*
+  - task-board resolves its registry aliases to exact ids in argv. In agents-management, `sonnet` has AliasOf claude-sonnet-5-5 and `opus` has AliasOf claude-opus-5-5.
+  - Claude Code's OWN table (2.1.286) maps `sonnet` to claude-sonnet-5 by default, and to 4-6 through AWS or a gateway. Agent-tool subagents and a raw `claude --model sonnet` therefore drift.
+- *Decision:*
+  - **A.** The harnesses' default-model overrides are generated from the agents-management registry:
+    - for task-board launches, by the claude plugin's child env: skill-agents-management#47, beside #46;
+    - for Curator-managed homes and `curator run`: curator#103;
+    - for keeper up, later, the same rule.
+    The variables are ANTHROPIC_DEFAULT_{SONNET,OPUS,FABLE,HAIKU}_MODEL. Claude Code 2.1.286 reads all four.
+  - **B.** All delegated work goes through `task-board spawn`. Harness-native subagents and harness aliases are not used for delegated work.
+    - Interim for sessions whose control root has no task-board config yet (the R75 exception on the Mac mini): direct launches with EXACT ids only (`codex exec -m gpt-6.1-sol`, `claude -p --model claude-sonnet-5-5`), never the Agent tool and never an alias, until the root gets a config.
+    - Enforcement, meaning hard switches that turn native subagents off, comes from research L2 part A.
+  - **Research:** L2 part B (macmini-infra) maps every harness's alias table, and how the registry pins it, for Claude, Codex, Muse and agy.
+- *State:* in force. Broadcast to every Ivan-side orchestrator.
