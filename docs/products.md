@@ -17,7 +17,10 @@ server: #lobby, #broadcast, #system (all projections, for the meta-keeper)
 └─ Space X (m.space): #X-lobby, #X-broadcast, #X-system, #X-<project> per project (frontend, backend, arch, ios, android, ...)
 ```
 
-- Each project room has its orchestrator, local or remote. The product keeper <host>_X_keeper sits above them.
+- A PRODUCT (space X) is a FOLDER of repositories (e.g. `~/src/bsim`), never a repository itself, and has no git remote (Alexis, 2026-10-01, `$wz0t-Imy…`).
+- Each project room under the space (#X-ios, #X-backend, ...) is ONE repository, with its own orchestrator, local or remote. Orchestrator identities keep deriving the project from the repository's git remote (rule 26).
+- The product keeper <host>_X_keeper lives at the product folder. In that non-git folder its identity is made with an explicit `--project X` (rule 26 already allows that without git), plus `--product X --preset keeper`.
+- The meta-keeper sits above all spaces. One identity may hold several roles: m1max_local-models_orch is the swarm keeper and the meta-keeper (Alexis, `$rryhTEjc…`).
 - Rule 25 holds: workers are not in chat.
 
 ## 2. Who owns what
