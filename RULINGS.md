@@ -967,3 +967,4 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   5. Verify that the temporary-index write-tree equals 44f5f267, and that the diff against e53de69 holds only the producer's paths.
   6. Do the r3 handoff under the R80 pairs, with the full re-review of R92.
   The workspace record and the CR history stay intact. The case is added to #443.
+- *Outcome 00:13Z:* the primary path worked with no abort. The snapshot tree is 3658ff1d (44f5f267 was a temporary state, verified by recomputing). converge moved 2dff98f to e53de69, and the delta is the producer's 13 paths only. The r3 handoff is RUN-261001-c7eb97 under R80. The evidence is converge-r3-evidence.md on TASK-260930-yiw33v.
