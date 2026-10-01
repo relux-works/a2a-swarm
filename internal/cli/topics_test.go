@@ -314,7 +314,7 @@ func TestPostSubtypeSubject(t *testing.T) {
 	if p := projectionOf(t, got[0]); p.Subtype != "landing" || p.Subject != subject {
 		t.Fatalf("projection = %+v", p)
 	}
-	tuitestkit.ContainsStr(t, got[0].Message().Body, "[system/landing] #proj from bob subject "+subject+" (topic alpha):")
+	tuitestkit.ContainsStr(t, got[0].Message().Body, "[system/landing] from bob · #proj › topic alpha › "+id+" · subject "+subject+"\n")
 	_ = room
 }
 

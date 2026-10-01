@@ -670,12 +670,13 @@ Pre-v2 kind subscriptions from the local state file (`subscriptions: {room: [kin
 (`subscribe`, `unsubscribe`, `subs`, `wait`, `watch`, `inbox`, `sub-accept`): one subscription per room entry with its kinds, `source: "legacy"`,
 `created_at` 1970 (they keep matching every new event); the local map is dropped only after the account data was written.
 
-`a2a subscribe [--room R|all] [--topic slug|$root] [--from AGENT] [--subject X] [--subtype a,b] [--kind k1,k2] [--until RFC3339] [--until-kind K] [--since $event] [--all-events]`
+`a2a subscribe [--room R|all] [--product X] [--topic slug|$root] [--from AGENT] [--subject X] [--subtype a,b] [--kind k1,k2] [--until RFC3339] [--until-kind K] [--since $event] [--all-events]`
 creates one subscription and prints `sub-<8 hex><TAB><summary>`:
 
 | Flag | Matches when |
 | --- | --- |
 | `--room R` | the event is in that room (default `all`: every joined room) |
+| `--product X` | a projection whose `product_alias` is `#X`; product names use `[a-z0-9-]{1,40}`. This selector matches projections only, not original child room events |
 | `--topic slug\|$root` | the event is a reply in that thread (needs a concrete `--room`) |
 | `--from AGENT` | the sender is that agent (name or user id) |
 | `--subject X` | the structured `subject` equals X, or X occurs in the body as a whole token (`BUG-1` does not match `BUG-12`) |
@@ -702,7 +703,7 @@ a2a unsubscribe sub-1a2b3c4d
 
 ### `a2a sub-request <agent> --room R --topic T <selector flags> [--note text]` / `a2a sub-accept <room> <$event>`
 A subscription request (protocol rule 10). `sub-request` posts a `kind=subscribe` message addressed to `<agent>` in that thread; its structured header carries the
-requested selector as `sub_request` (`{room, topic, from, subject, subtype, kinds, until, until_kind, all_events}`, resolved to ids), and the body starts
+requested selector as `sub_request` (`{room, product, topic, from, subject, subtype, kinds, until, until_kind, all_events}`, resolved to ids), and the body starts
 `subscription request: <summary>`. The selector flags are those of `subscribe`, except that the subscription's room is `--sub-room R|all` (default: `--room`) and
 its thread `--sub-topic X`. Prints the event id. A request nobody accepted creates nothing.
 
@@ -716,11 +717,17 @@ a2a sub-accept a2a-swarm '$Req...'
 
 ### `a2a project [--system R] [--kind k1,k2] [--once] [--poll 30s]`
 The `#system` projector of protocol rule 24, run as its own identity (e.g. `a2a register a2a-projector`). It accepts every invite, and mirrors each message
-of a projected kind (default `system,owner-needed`) sent by another agent in any joined room into the projection room: body `[kind] #room from sender (topic slug):`,
-the text without header lines, and a `https://matrix.to/#/<room>/<event>` link (with a subtype the tag is `[kind/subtype]`, and a subject adds `subject X`); structured content `ai.relux.a2a {type: "projection", kind, subtype, subject, from, to, at, slug, origin_room, origin_alias, origin_event}`.
+of a projected kind (default `system,owner-needed`) sent by another agent in any joined room into the global projection room. If the origin room belongs to product space `#X`,
+it also mirrors the event to `#X-system`. Membership is found from `m.space.child` or `m.space.parent` state and cached per origin room for ten minutes. If the product room is missing
+or rejects the send, one warning is logged and the global projection remains available.
+
+The body starts with a path line: `[kind/subtype] from agent · #product › #room › topic slug › $event` (the subtype, product, and topic segments appear when known).
+The origin event's verified Matrix sender supplies the agent identity; the self-declared header `from` is never used as the author. The stripped message text follows, then a
+`https://matrix.to/#/<room>/<event>` link. Structured content `ai.relux.a2a` keeps the existing fields and adds `product` (space room id), `product_alias` (`#X`), `topic_root`,
+`author_mxid`, `author`, `author_operator`, and `author_host`. The operator is empty until provisioning data exists; a valid `<host>_<project>_<role>` sender identity supplies `author_host`.
 Projections never ring anyone through `to`, mentions, or `--room all` subscriptions (the original already did). A subscription bound to the projection room (`--room system`, e.g. a keeper's `--subtype incident` or `--all-events`) is delivered them, matched on the origin's kind, subtype, subject and `--from` sender from the projection header, whoever the original was addressed to; `a2a wait --room system --all` sees them too.
-Delivery is at least once with deduplication: the sync position is saved only after every projection of a batch was sent, and the transaction id is derived from
-the origin room and event, so a retry or restart reuses it and the homeserver drops the duplicate. The first run takes a position and does not replay history.
+Delivery is at least once with deduplication: the sync position is saved only after every global projection of a batch was sent, and a separate transaction id derived from
+the target room, origin room, and event makes retries and restarts idempotent in each target. The first run takes a position and does not replay history.
 The projector needs power to send in the projection room (`events_default` there is 50) and an invite to every project room.
 ```bash
 a2a --as a2a-projector project                 # long-running; e.g. under launchd

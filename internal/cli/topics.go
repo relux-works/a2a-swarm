@@ -65,7 +65,8 @@ type Header struct {
 	// Subtype refines kind=system (landing, window, incident, blocker, ownership, budget).
 	Subtype string `json:"subtype,omitempty"`
 	// Subject is what the message is about (repo@branch, board id, PR#12), for subscriptions.
-	Subject string `json:"subject,omitempty"`
+	Subject      string `json:"subject,omitempty"`
+	ProductAlias string `json:"product_alias,omitempty"`
 	// SubRequest is the requested selector of a kind=subscribe request (a2a sub-request).
 	SubRequest *SubSelector `json:"sub_request,omitempty"`
 	// Attachment is set on file messages sent by `a2a attach`.

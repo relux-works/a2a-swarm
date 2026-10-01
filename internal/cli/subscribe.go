@@ -28,9 +28,10 @@ const createdAtLayout = "2006-01-02T15:04:05.000Z07:00"
 // SubSelector says which events a subscription delivers. Every set field must
 // match (AND). It is also the structured payload of a subscription request.
 type SubSelector struct {
-	Room      string   `json:"room,omitempty"`  // room id; empty = every joined room
-	Topic     string   `json:"topic,omitempty"` // thread root event id
-	From      string   `json:"from,omitempty"`  // sender user id
+	Room      string   `json:"room,omitempty"`    // room id; empty = every joined room
+	Product   string   `json:"product,omitempty"` // canonical product alias local part
+	Topic     string   `json:"topic,omitempty"`   // thread root event id
+	From      string   `json:"from,omitempty"`    // sender user id
 	Subject   string   `json:"subject,omitempty"`
 	Subtypes  []string `json:"subtypes,omitempty"`
 	Subtype   string   `json:"-"` // source compatibility for in-package legacy selectors
@@ -88,6 +89,7 @@ func (sub *Sub) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		ID        string   `json:"id"`
 		Room      string   `json:"room,omitempty"`
+		Product   string   `json:"product,omitempty"`
 		Topic     string   `json:"topic,omitempty"`
 		From      string   `json:"from,omitempty"`
 		Subject   string   `json:"subject,omitempty"`
@@ -109,7 +111,7 @@ func (sub *Sub) UnmarshalJSON(data []byte) error {
 	if len(raw.Subtypes) == 0 && raw.Subtype != "" {
 		raw.Subtypes = []string{raw.Subtype}
 	}
-	*sub = Sub{ID: raw.ID, SubSelector: SubSelector{Room: raw.Room, Topic: raw.Topic, From: raw.From, Subject: raw.Subject,
+	*sub = Sub{ID: raw.ID, SubSelector: SubSelector{Room: raw.Room, Product: raw.Product, Topic: raw.Topic, From: raw.From, Subject: raw.Subject,
 		Subtypes: raw.Subtypes, Kinds: raw.Kinds, Until: raw.Until, UntilKind: raw.UntilKind, AllEvents: raw.AllEvents},
 		Preset: raw.Preset, Since: raw.Since, SinceTS: raw.SinceTS, CreatedAt: raw.CreatedAt, Source: raw.Source}
 	return nil
@@ -139,7 +141,7 @@ type SubList struct {
 }
 
 func (sel SubSelector) hasSelector() bool {
-	return sel.Topic != "" || sel.From != "" || sel.Subject != "" || len(sel.subtypeList()) > 0 || len(sel.Kinds) > 0
+	return sel.Topic != "" || sel.Product != "" || sel.From != "" || sel.Subject != "" || len(sel.subtypeList()) > 0 || len(sel.Kinds) > 0
 }
 
 // validate checks a selector that is already resolved to ids (a stored or a
@@ -149,7 +151,7 @@ func (sel SubSelector) validate() error {
 	case sel.AllEvents && sel.Room == "":
 		return fmt.Errorf("--all-events needs a concrete --room")
 	case !sel.hasSelector() && !sel.AllEvents:
-		return fmt.Errorf("name at least one selector (--topic, --from, --subject, --subtype, --kind), or use --room R --all-events")
+		return fmt.Errorf("name at least one selector (--topic, --product, --from, --subject, --subtype, --kind), or use --room R --all-events")
 	case sel.Topic != "" && sel.Room == "":
 		return fmt.Errorf("--topic needs a concrete --room")
 	case sel.Room != "" && !strings.HasPrefix(sel.Room, "!"):
@@ -169,6 +171,9 @@ func (sel SubSelector) validate() error {
 	case sel.UntilKind != "" && !validKind(sel.UntilKind):
 		return fmt.Errorf("invalid --until-kind %q (one of: %s)", sanitizeLine(sel.UntilKind), strings.Join(Kinds, ", "))
 	}
+	if sel.Product != "" && !productNameRE.MatchString(sel.Product) {
+		return fmt.Errorf("invalid --product %q: use [a-z0-9-]{1,40}", sanitizeLine(sel.Product))
+	}
 	for _, k := range sel.Kinds {
 		if !validKind(k) {
 			return fmt.Errorf("invalid --kind %q (one of: %s)", sanitizeLine(k), strings.Join(Kinds, ", "))
@@ -185,7 +190,7 @@ func (sel SubSelector) validate() error {
 // sanitized returns a copy whose text fields are safe to print.
 func (sel SubSelector) sanitized() SubSelector {
 	out := sel
-	for _, p := range []*string{&out.Room, &out.Topic, &out.From, &out.Subject, &out.Until, &out.UntilKind} {
+	for _, p := range []*string{&out.Room, &out.Product, &out.Topic, &out.From, &out.Subject, &out.Until, &out.UntilKind} {
 		*p = sanitizeLine(*p)
 	}
 	out.Subtypes = append([]string(nil), sel.subtypeList()...)
@@ -231,7 +236,10 @@ func (sub Sub) matches(ev matrix.Event, roomID string, h Header, hasHeader bool)
 		return false
 	}
 	projected := hasHeader && h.Type == "projection"
-	if projected && sub.Room == "" {
+	if sub.Product != "" && (!projected || h.ProductAlias != "#"+sub.Product) {
+		return false
+	}
+	if projected && sub.Room == "" && sub.Product == "" {
 		// A room=all subscription already matched the original in its own
 		// room; only a subscription bound to the projection room itself
 		// (a keeper watching #system) is delivered the mirror, filtered by
@@ -302,6 +310,9 @@ func (sub Sub) summary(roomLabel, server string) string {
 	parts := []string{"room=" + firstNonEmpty(roomLabel, "all")}
 	if sub.Topic != "" {
 		parts = append(parts, "topic="+sub.Topic)
+	}
+	if sub.Product != "" {
+		parts = append(parts, "product="+sub.Product)
 	}
 	if sub.From != "" {
 		parts = append(parts, "from="+localpartIfLocal(sub.From, server))
@@ -470,13 +481,14 @@ func (s *session) updateSubsBy(ctx context.Context, deadline time.Time, fn func(
 
 // selectorFlags are the selector flags shared by subscribe and sub-request.
 type selectorFlags struct {
-	room, topic, from, subject, subtype, kind, until, untilKind *string
-	allEvents                                                   *bool
+	room, product, topic, from, subject, subtype, kind, until, untilKind *string
+	allEvents                                                            *bool
 }
 
 func addSelectorFlags(fs *flag.FlagSet, roomFlag, topicFlag, roomDefault string) *selectorFlags {
 	return &selectorFlags{
 		room:      fs.String(roomFlag, roomDefault, "room, or all"),
+		product:   fs.String("product", "", "product projections by canonical alias name"),
 		topic:     fs.String(topicFlag, "", "topic slug or root event id (needs a concrete room)"),
 		from:      fs.String("from", "", "sender (name or user id)"),
 		subject:   fs.String("subject", "", "structured subject or whole token in the body"),
@@ -492,7 +504,7 @@ func addSelectorFlags(fs *flag.FlagSet, roomFlag, topicFlag, roomDefault string)
 // effective room argument ("all" or "" for every joined room).
 func (f *selectorFlags) check(now time.Time, room string) error {
 	concrete := room != "" && room != "all"
-	sel := SubSelector{Subject: *f.subject, Subtypes: splitList(*f.subtype), Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
+	sel := SubSelector{Product: *f.product, Subject: *f.subject, Subtypes: splitList(*f.subtype), Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
 	if concrete {
 		sel.Room = "!placeholder"
 	}
@@ -527,7 +539,7 @@ func (f *selectorFlags) check(now time.Time, room string) error {
 // resolve turns checked flags into a stored selector: room and topic become
 // ids, from a user id. roomLabel is the room's display label ("all" for every room).
 func (f *selectorFlags) resolve(ctx context.Context, s *session, room string) (sel SubSelector, roomLabel string, err error) {
-	sel = SubSelector{Subject: *f.subject, Subtypes: splitList(*f.subtype), Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
+	sel = SubSelector{Product: *f.product, Subject: *f.subject, Subtypes: splitList(*f.subtype), Kinds: splitList(*f.kind), UntilKind: *f.untilKind, AllEvents: *f.allEvents}
 	roomLabel = "all"
 	if room != "" && room != "all" {
 		if sel.Room, roomLabel, err = s.resolveRoom(ctx, room); err != nil {
@@ -573,7 +585,7 @@ func (s *session) findSince(ctx context.Context, room, eventID string) (int64, e
 	return 0, fmt.Errorf("--since event %s not found in the subscription's rooms", sanitizeLine(eventID))
 }
 
-// cmdSubscribe: a2a subscribe [--room R|all] [--topic X] [--from A] [--subject X]
+// cmdSubscribe: a2a subscribe [--room R|all] [--product X] [--topic X] [--from A] [--subject X]
 // [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]
 func cmdSubscribe(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("subscribe")
@@ -584,7 +596,7 @@ func cmdSubscribe(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	if len(pos) != 0 {
-		return usagef("usage: a2a subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until RFC3339] [--until-kind K] [--since $event] [--all-events]")
+		return usagef("usage: a2a subscribe [--room R|all] [--product X] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until RFC3339] [--until-kind K] [--since $event] [--all-events]")
 	}
 	now := a.Now()
 	if err := f.check(now, *f.room); err != nil {

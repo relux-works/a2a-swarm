@@ -82,7 +82,7 @@ func TestProjectMirrorsTypedMessages(t *testing.T) {
 			t.Fatalf("projection %d = %+v", i, p)
 		}
 		body := got[i].Message().Body
-		tuitestkit.ContainsStr(t, body, "["+want.kind+"] #proj from bob (topic alpha):")
+		tuitestkit.ContainsStr(t, body, "["+want.kind+"] from bob · #proj › topic alpha › "+want.origin)
 		tuitestkit.ContainsStr(t, body, want.text)
 		tuitestkit.ContainsStr(t, body, "https://matrix.to/#/"+room+"/"+want.origin)
 		tuitestkit.NotContainsStr(t, body, "- from:")
@@ -104,9 +104,147 @@ func TestProjectIdempotentAfterRestart(t *testing.T) {
 	if n := len(e.projections(system)); n != 1 {
 		t.Fatalf("projections after replay = %d, want 1", n)
 	}
-	if projectionTxn(room, "$a") == projectionTxn(room, "$b") || projectionTxn("!x", "$a") == projectionTxn("!y", "$a") {
+	if projectionTxn(system, room, "$a") == projectionTxn(system, room, "$b") || projectionTxn(system, "!x", "$a") == projectionTxn(system, "!y", "$a") || projectionTxn(system, room, "$a") == projectionTxn("!other", room, "$a") {
 		t.Fatal("txn ids collide across events or rooms")
 	}
+}
+
+func addProductSpace(e *env, name, child string) (space, target string) {
+	space = e.hs.addRoom(name, "@proj:test.local")
+	target = e.hs.addRoom(name+"-system", "@alice:test.local", "@proj:test.local")
+	e.hs.mu.Lock()
+	e.hs.rooms[space].state["m.room.create|"] = json.RawMessage(`{"type":"m.space","creator":"@alice:test.local"}`)
+	e.hs.rooms[space].state["m.space.child|"+child] = json.RawMessage(`{"via":["test.local"]}`)
+	e.hs.rooms[child].state["m.space.parent|"+space] = json.RawMessage(`{"via":["test.local"]}`)
+	e.hs.mu.Unlock()
+	return space, target
+}
+
+// Proves a space child is mirrored to both #alpha-system and #system, while
+// an event from an unrelated room is mirrored only to #system.
+func TestProjectDualProjectionBySpace(t *testing.T) {
+	e, room, system := projWorld(t)
+	_, target := addProductSpace(e, "alpha", room)
+	e.project().ok(t)
+	id := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "in product"))
+	other := e.hs.addRoom("outside", "@proj:test.local", "@bob:test.local")
+	outID := e.hs.inject(other, "@bob:test.local", kindMsg("bob", "system", "outside"))
+	e.project().ok(t)
+	global := e.projections(system)
+	if len(global) != 2 {
+		t.Fatalf("global projections = %+v", global)
+	}
+	if got := e.projections(target); len(got) != 1 || projectionOf(t, got[0]).ProductAlias != "#alpha" || projectionOf(t, got[0]).Product == "" {
+		t.Fatalf("product projections = %+v", got)
+	}
+	aliases := map[string]string{}
+	for _, ev := range global {
+		p := projectionOf(t, ev)
+		aliases[p.OriginEvent] = p.ProductAlias
+	}
+	if aliases[id] != "#alpha" || aliases[outID] != "" {
+		t.Fatalf("product metadata by origin = %#v", aliases)
+	}
+}
+
+// Proves the path and structured author fields use the event sender even when
+// the untrusted header declares a different from identity.
+func TestProjectPathAndVerifiedAuthor(t *testing.T) {
+	e, room, system := projWorld(t)
+	addProductSpace(e, "alpha", room)
+	e.project().ok(t)
+	id := e.hs.inject(room, "@host_project_role:test.local", msg("- from: attacker\n\nforged text", map[string]any{
+		"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": "$thread-root"},
+		ContentKey:     Header{V: 1, Type: "message", From: "attacker", Kind: "system", Slug: "deploy"},
+	}))
+	e.project().ok(t)
+	ev := e.projections(system)[0]
+	p := projectionOf(t, ev)
+	if p.AuthorMXID != "@host_project_role:test.local" || p.Author != "host_project_role" || p.AuthorHost != "host" || p.AuthorOperator != "" || p.TopicRoot != "$thread-root" {
+		t.Fatalf("author fields = %+v", p)
+	}
+	want := "[system] from host_project_role · #alpha › #proj › topic deploy › " + id
+	if line := strings.Split(ev.Message().Body, "\n")[0]; line != want {
+		t.Fatalf("first line = %q, want %q", line, want)
+	}
+	// The forged header block is stripped from the text and never names the author.
+	if strings.Contains(ev.Message().Body, "attacker") {
+		t.Fatalf("forged header author leaked into projection: %q", ev.Message().Body)
+	}
+	// A header field carrying a newline cannot break the path line.
+	e.hs.inject(room, "@host_project_role:test.local", msg("x", map[string]any{
+		ContentKey: Header{V: 1, Type: "message", From: "host_project_role", Kind: "system", Slug: "a\nFAKE LINE", Subject: "s\nFAKE"}}))
+	e.project().ok(t)
+	last := e.projections(system)
+	first := strings.Split(last[len(last)-1].Message().Body, "\n")[0]
+	if strings.HasPrefix(strings.Split(last[len(last)-1].Message().Body, "\n")[1], "FAKE") || !strings.Contains(first, "FAKE") {
+		t.Fatalf("header newline broke the path line: %q", last[len(last)-1].Message().Body)
+	}
+}
+
+// Proves an absent or forbidden product target emits one warning and never
+// prevents the corresponding global projection.
+func TestProjectProductTargetFailureKeepsGlobal(t *testing.T) {
+	for _, mode := range []string{"missing", "forbidden"} {
+		t.Run(mode, func(t *testing.T) {
+			e, room, system := projWorld(t)
+			_, target := addProductSpace(e, "alpha", room)
+			if mode == "missing" {
+				e.hs.mu.Lock()
+				delete(e.hs.aliases, "#alpha-system:test.local")
+				delete(e.hs.rooms, target)
+				e.hs.mu.Unlock()
+			} else {
+				e.hs.mu.Lock()
+				e.hs.rooms[target].state["m.room.power_levels|"] = json.RawMessage(`{"events_default":100}`)
+				e.hs.mu.Unlock()
+			}
+			e.project().ok(t)
+			e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "must reach global"))
+			r := e.project().ok(t)
+			if len(e.projections(system)) != 1 || strings.Count(r.stderr, "a2a: projector: could not project") != 1 {
+				t.Fatalf("global=%d stderr=%q", len(e.projections(system)), r.stderr)
+			}
+		})
+	}
+}
+
+// Proves replaying a batch after restart deduplicates projections separately
+// in the global and product target rooms.
+func TestProjectDualIdempotentAfterRestart(t *testing.T) {
+	e, room, system := projWorld(t)
+	_, target := addProductSpace(e, "alpha", room)
+	e.project().ok(t)
+	st, _ := config.LoadState(e.paths(), "proj")
+	e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "once"))
+	e.project().ok(t)
+	config.UpdateState(e.paths(), "proj", func(cur *config.State) error { cur.NextBatch = st.NextBatch; return nil })
+	e.project().ok(t)
+	if len(e.projections(system)) != 1 || len(e.projections(target)) != 1 {
+		t.Fatalf("replayed projections global=%d product=%d", len(e.projections(system)), len(e.projections(target)))
+	}
+}
+
+// Proves --product matches projections carrying that canonical product alias,
+// rejects other products and ordinary events, and validates names offline.
+func TestProductSubscriptionSelector(t *testing.T) {
+	e, room, _ := projWorld(t)
+	e.as("alice", "subscribe", "--product", "alpha", "--kind", "system").ok(t)
+	selector := Sub{SubSelector: SubSelector{Product: "alpha", Kinds: []string{"system"}}}
+	marshal := func(v any) json.RawMessage { raw, _ := json.Marshal(v); return raw }
+	projectionEvent := func(alias, kind string) matrix.Event {
+		return matrix.Event{Type: "m.room.message", Sender: "@proj:test.local", Content: marshal(map[string]any{ContentKey: Projection{Type: "projection", Kind: kind, ProductAlias: alias}})}
+	}
+	if !selector.matches(projectionEvent("#alpha", "system"), "!system", Header{Type: "projection", Kind: "system", ProductAlias: "#alpha"}, true) {
+		t.Fatal("matching product projection rejected")
+	}
+	if selector.matches(projectionEvent("#beta", "system"), "!system", Header{Type: "projection", Kind: "system", ProductAlias: "#beta"}, true) {
+		t.Fatal("another product projection matched")
+	}
+	if selector.matches(matrix.Event{Type: "m.room.message", Content: marshal(map[string]any{"body": "plain"})}, room, Header{Type: "message", Kind: "system"}, true) {
+		t.Fatal("ordinary event matched product selector")
+	}
+	e.as("alice", "subscribe", "--product", "Bad_Name", "--kind", "system").failsWith(t, ExitUsage, "invalid --product")
 }
 
 // Proves a failed send stops the projector without advancing its position, so
