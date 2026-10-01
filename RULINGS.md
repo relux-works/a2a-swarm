@@ -1031,3 +1031,4 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - **Astra max.** Its result goes to gpt-6-astra at effort max, for an adversarial review. This is the same operator exception, since R80a otherwise allows astra at high only.
   - **Aggregation.** tb-keeper turns both into the final architecture, its fit with the infrastructure, and the build roadmap.
 - *State:* in progress.
+- *Outcome 04:09Z:* aggregated. ARCHITECTURE.md was published with the research, the review and the diagrams in wiki research/kv-cache-orchestration/ (main 972e151). The roadmap gained track 4c, K0–K5. The operator decisions Q1–Q10 went to the desk. K0 and K1 need no decision.
