@@ -1254,3 +1254,13 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - **Fallback.** If odansk is not READY within 1 h of the other two, R2 and #496 go as a two-car train.
   - **Red top CI.** Drop the failing member and re-run once.
 - *State:* in force until Train 1 lands.
+
+**tb-R125. #496 lands first and alone; Train 1 becomes R2 plus odansk** (23:30Z, 2026-10-01; amends tb-R124).
+- *Evidence:* R2's lane suite ended red at 23:29Z, on the flake TestRemotePhaseHeartbeatCannotReReleaseAfterReacquire. That is the flake #496 fixes, not R2's code. #496's earlier hosted CI was cancelled under tb-R116. Its head 01df3e24 is a fast-forward of main b4dd25c8 apart from board records. validation-fixes, tb-muse and critical-fixes all proposed the same order.
+- *Decision:*
+  1. odansk rev8 takes the lane now. A failure only on the known flake re-runs once on main with #496.
+  2. #496 lands alone on a fresh hosted CI of 01df3e24, under tb-R69.
+  3. R2 converges onto main with #496 and re-runs its suite after odansk's lane suite. A free shared slot may take it earlier.
+  4. Train 1 is R2 plus odansk: one CI on the top head; critical-fixes pushes.
+  5. Lane order: odansk, then R2's re-run, then l2vgx1.
+- *State:* in force until Train 1 lands.
