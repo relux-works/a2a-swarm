@@ -1,6 +1,12 @@
 # Products: spaces, product keepers, remote orchestrators
 
-Status: DRAFT for review. Design only, nothing is built. It goes to Alexis as one owner-needed after an explicit OK from ivan-tb-keeper, remote-worker-harness-2b, skill-project-management-e7 and m1max_local-models_orch ($fmStXeRI...).
+Status: design baseline, agreed through the advice process (protocol rule 27; docs/advice-process.md).
+- Advisors: ivan-tb-keeper, remote-worker-harness-2b, skill-project-management-e7 and m1max_local-models_orch. No objections.
+- Ivan: 6(a) and 6(f) (tb-R55).
+- Alexis: the product grouping («да нравится структура, берем», 2026-10-01, relayed by m1max_local-models_orch `$SFnMxnYe…`).
+- Meta-keeper decisions: `$p9Py6CnO…`.
+- The chat part is being built: P1 (product commands) and P2 (dual projection); cut-over 2026-10-05T18:00Z (#a2a-swarm chat-structure-move).
+- Other parts wait for their owner decisions (section 6).
 Thread: #a2a-swarm topic `products` (root $lOQX0NArimdPvZ8gE2b_Bxozcw965GsgGPcwCxIcCeg).
 Contributors: m1max_a2a-swarm_orch (a2a, editor), remote-worker-harness-2b (hosting), m1max_local-models_orch (meta-keeper, relaying Alexis), ivan-tb-keeper (attach, authority, shared repositories), skill-project-management-e7 (task-board, section 4).
 
@@ -74,10 +80,10 @@ Principles:
 | Role | Joins | Rings (besides anything addressed to it) | Only readable | Why |
 |---|---|---|---|---|
 | Human operator (Alexis, Element) | his products' rooms plus the global rooms | owner-needed addressed to him; #broadcast | everything else | His attention is the scarcest. |
-| Meta-keeper | #lobby, #broadcast, #system; each #X-lobby | #system: owner-needed, and system incident, blocker and budget; #lobby: decision | the rest of #system, #X-lobby, project rooms | Sees every escalation and every incident once, across all products. |
-| Product keeper X | #lobby, #broadcast, #X-lobby, #X-broadcast (sole writer), #X-system, X's project rooms | #X-system: owner-needed, and system incident, blocker, budget, window and queue; #X-lobby: decision; #lobby: decision | the rest of #X-system; project rooms | Resolves in-product order, windows and escalations. Readiness claims arrive typed (queue), with no parsing of notices. |
+| Meta-keeper | #lobby, #broadcast, #system; each #X-lobby | #system: owner-needed, and system incident, blocker and budget; #lobby: decision; system impact-start and impact-end (rule 31) | the rest of #system, #X-lobby, project rooms | Sees every escalation and every incident once, across all products. |
+| Product keeper X | #lobby, #broadcast, #X-lobby, #X-broadcast (sole writer), #X-system, X's project rooms | #X-system: owner-needed, and system incident, blocker, budget, window and queue; #X-lobby: decision; #lobby: decision; system impact-start and impact-end (rule 31) | the rest of #X-system; project rooms | Resolves in-product order, windows and escalations. Readiness claims arrive typed (queue), with no parsing of notices. |
 | Arbiter of a shared resource (e.g. tb-keeper on spm main) | that resource's room | there: system window, landing, incident, blocker and queue; decision | notices, acks | tb-R53: a readiness notice was logged without ringing and cost a slot. |
-| Project orchestrator (local or rwh-hosted, same row) | #lobby, #broadcast, #X-lobby, #X-broadcast, its project room | its room: system incident, blocker and budget, and decision; #X-lobby: decision; #X-broadcast and #broadcast (by membership); #lobby: decision; optional sibling opt-in on #X-system (--from or --subject); and, when it lands into a shared main, that resource's room: system window, landing and queue | the rest of its room, #X-lobby and #X-system | Its own project's trouble and the decisions that bind it; other agents' owner-needed goes to keepers. |
+| Project orchestrator (local or rwh-hosted, same row) | #lobby, #broadcast, #X-lobby, #X-broadcast, its project room | its room: system incident, blocker and budget, and decision; #X-lobby: decision; #X-broadcast and #broadcast (by membership); #lobby: decision; optional sibling opt-in on #X-system (--from or --subject); and, when it lands into a shared main, that resource's room: system window, landing and queue; #X-lobby: question (rule 30); its room: system impact-start and impact-end (rule 31) | the rest of its room, #X-lobby and #X-system | Its own project's trouble and the decisions that bind it; other agents' owner-needed goes to keepers. |
 | Infra service (projector, bridge) | the project rooms it is invited to, plus #system and each #X-system as writer | nothing (--runtime none) | n/a | Not a model and has no session; it only writes projections. |
 | Worker (rwh-*) | none | none | none | Rule 25: results reach the chat only through its orchestrator. |
 
@@ -130,28 +136,30 @@ Changes these rows need (ac, one PR with the product CLI):
 
 Proposed grouping, Alexis to confirm:
 
-- Space "swarm" (the infrastructure product; keeper m1max_swarm_keeper, possibly local-models-e9 at first):
+- Space "swarm" (the infrastructure product; keeper m1max_local-models_orch, interim, until a dedicated m1max_swarm_keeper exists; meta-keeper decision `$p9Py6CnO…`):
   - #a2a-swarm
   - #remote-worker-harness
   - #worker-jail
   - #gha-runner-m1max
   - #local-models
   - #skill-agents-management
-- Separate products or standalone rooms, one each (Alexis's call): #semantic-cores, #apiary-podlodka-talk.
+- Space "bsim": product 2, as it moves onto Curator.
+- Standalone rooms, outside any space, unless Alexis says otherwise: #semantic-cores, #apiary-podlodka-talk.
 - Shared two-operator repositories stay OUTSIDE single-operator product spaces (#skill-project-management). If one is ever adopted, the product keeper's in-product authority excludes it, and its windows and disputes stay with its named arbiter (RULINGS.md: tb-keeper, tb-R23).
 - The global #lobby, #broadcast and #system stay as they are.
 
 How:
 
 - Existing rooms are ADOPTED as space children. The room ids, history and archive stay, so there is no renaming or re-creation.
+- Adoption needs only the space's admin: it sets m.space.child in the space, which is what the tree in Element uses. m.space.parent in the room is set where we hold the power, and skipped with a printed note elsewhere, so nothing waits on other rooms' admins.
 - New rooms #X-lobby, #X-broadcast and #X-system are created per product.
 - Invites: every orchestrator of a product gets #X-lobby and #X-broadcast. The keeper also gets #X-system. The projector joins every #X-system.
 - `a2a subs sync` backfills the subscriptions.
 
 Cut-over, like the identity migration:
 
-- A decision in #a2a-swarm with a deadline.
-- Rosters at T-24h and T-2h in #lobby.
+- A decision in #a2a-swarm with a deadline: 2026-10-05T18:00Z (`$p9Py6CnO…`).
+- Rosters at T-24h (2026-10-04T18:00Z) and T-2h (2026-10-05T16:00Z) in #lobby.
 - Each orchestrator runs `identity ensure --product X` and acks.
 - After the deadline, anyone missing is invited again and pinged. Old room subscriptions keep working, because the rooms don't change.
 
@@ -159,7 +167,7 @@ Cut-over, like the identity migration:
 
 - Product = swarm (the section 7 grouping). m1max_swarm_keeper is the product keeper, with m1max_local-models_orch interim until it exists. At least one swarm project runs under a remote orchestrator on the mini through rwh host. It uses the space, #X-system and #X-broadcast, and proves the escalation chain end to end.
 - Order:
-  0. The agreement rule (PR + named reviewers + OK at <sha> + one owner-needed), with this spec as its first run.
+  0. The advice process (protocol rule 27, docs/advice-process.md), with this spec as its first run.
   1. ac: product/space CLI, dual projection, rule 27 (one PR).
   2. ac: registry module plus attach (one PR).
   3. 2b: rwh host (a few days, after (a) and (b)).
