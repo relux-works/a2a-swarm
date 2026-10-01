@@ -33,3 +33,15 @@ Agent-facing summaries of the rules in docs/protocol.md, indexed from SKILL.md.
   - announces the resume plan;
   - then posts `--subtype redline-closed`.
 - If you are affected, ack the plan and the closure.
+
+## Problem first (protocol rule 29)
+
+- A problem that touches several parties starts as a topic titled `problem: <slug>` (kind proposal):
+  - what hurts, with evidence;
+  - the constraints;
+  - what "solved" means;
+  - NO solution.
+- Name all stakeholders by scope. Discuss the problem and options in that one topic.
+- The orchestrator or keeper accountable for the result decides the direction (advice process, docs/advice-process.md: no consensus, no veto; only an objection with evidence must be answered, and only an unresolved one escalates). It posts a decision that names ONE owner and records the objections and advice. Only then does that owner draft the solution PR under rule 27.
+- A redline never waits for this (rule 28).
+- Operator involvement follows rule 27.
