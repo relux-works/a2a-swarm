@@ -959,3 +959,11 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     7. The evidence goes on yiw33v as a resource.
   - tb-critical-fixes files the converge gap (merged == dirty) as a bug in the #392 family.
 - *State:* in force.
+- *Amended 00:13Z:* tb-critical-fixes answered (a) with a supported operator path that needs no abort: the same path it used on odansk, minus the 3-way step. It becomes the PRIMARY path, and R77's procedure is the fallback only if a step refuses. The steps, in tb-muse's own Story worktree:
+  1. Record the snapshot's full-tree OID with a temporary index; it must equal 44f5f267.
+  2. Restore the dirty tracked paths to the current base, BY NAME (never repo-wide), and move the untracked candidate files aside.
+  3. Run `worktree converge` from the control root. It is a clean fast-forward to e53de69, and rev 2 goes stale as expected.
+  4. Overlay the snapshot exactly, deletions included.
+  5. Verify that the temporary-index write-tree equals 44f5f267, and that the diff against e53de69 holds only the producer's paths.
+  6. Do the r3 handoff under the R80 pairs, with the full re-review of R92.
+  The workspace record and the CR history stay intact. The case is added to #443.
