@@ -178,7 +178,8 @@ func newFakeHS(t *testing.T) *fakeHS {
 	route("POST "+v3+"/rooms/{room}/invite", true, hs.invite)
 	route("PUT "+v3+"/rooms/{room}/send/{type}/{txn}", true, hs.send)
 	route("GET "+v3+"/rooms/{room}/state/{type}/{key...}", true, hs.getState)
-	route("GET "+v3+"/rooms/{room}/state/{type}", true, hs.getStateEvents)
+	route("GET "+v3+"/rooms/{room}/state/{type}", true, hs.getState) // state key "", as on a real server
+	route("GET "+v3+"/rooms/{room}/state", true, hs.getStateEvents)
 	route("PUT "+v3+"/rooms/{room}/state/{type}/{key...}", true, hs.putState)
 	route("GET "+v3+"/rooms/{room}/messages", true, hs.messages)
 	route("GET "+v3+"/rooms/{room}/event/{event}", true, hs.event)
@@ -708,14 +709,12 @@ func (hs *fakeHS) getStateEvents(w http.ResponseWriter, r *http.Request, u strin
 	if room == nil {
 		return
 	}
-	var out []matrix.Event
-	typ := r.PathValue("type") + "|"
+	// The full room state (GET /rooms/{room}/state): every type, every state key.
+	out := []matrix.Event{}
 	for key, raw := range room.state {
-		if strings.HasPrefix(key, typ) {
-			stateKey := strings.TrimPrefix(key, typ)
-			k := stateKey
-			out = append(out, matrix.Event{Type: r.PathValue("type"), StateKey: &k, Content: append(json.RawMessage(nil), raw...)})
-		}
+		typ, stateKey, _ := strings.Cut(key, "|")
+		k := stateKey
+		out = append(out, matrix.Event{Type: typ, StateKey: &k, Content: append(json.RawMessage(nil), raw...)})
 	}
 	writeJSON(w, 200, out)
 }

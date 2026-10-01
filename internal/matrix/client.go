@@ -452,11 +452,21 @@ func (c *Client) GetState(ctx context.Context, roomID, evType, stateKey string, 
 	return c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType)+"/"+seg(stateKey), nil, nil, out)
 }
 
-// GetStateEvents lists a room's state events.
+// GetStateEvents lists a room's state events of one type. The client-server API
+// has no per-type listing (GET /state/{type} is the event with state key ""), so
+// it reads the full room state and filters.
 func (c *Client) GetStateEvents(ctx context.Context, roomID, evType string) ([]Event, error) {
+	var all []Event
+	if err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state", nil, nil, &all); err != nil {
+		return nil, err
+	}
 	var out []Event
-	err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType), nil, nil, &out)
-	return out, err
+	for _, ev := range all {
+		if ev.Type == evType {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
 }
 
 // PutState sends a state event and returns its event id.
