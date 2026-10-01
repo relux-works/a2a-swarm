@@ -1098,4 +1098,46 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Each starts only with free space at 40 GiB or more and CPU idle at 25% or more.
   - cocoa pauses and reports if free space falls under 40 GiB.
   - The lane dir is deleted after the third suite.
-- *State:* in force until the third suite ends.
+- *State:* COMPLETE (reported 13:33Z): all three suites green in the lane (1ax76u 11,698 passed; 39mn8b 12,129; 2u0otf 11,617); lane dir deleted.
+
+**tb-R107. The ivmbp CI runner pauses for the disk incident** (12:53Z, 2026-10-01).
+- *Evidence:* free space was 34 GiB at 12:51Z and falling about 4 GiB/h. The swap leak (fseventsd at 16.3 GiB, 55 swapfiles) is waiting on Ivan's sudo restart; he has had pushes since 08:10Z. rose-air and the M1 Max were online.
+- *Decision:* the ivmbp runner service (actions.runner.relux-works.ivmbp) is booted out as soon as its current job finishes. The basis is R28/R30, Ivan's standing decision to pause ivmbp for load peaks, applied to this host-health incident.
+  - CI continues on rose-air and the M1 Max.
+  - Rollback: `launchctl bootstrap gui/<uid> ~/Library/GitHubActions/ivmbp/manual-service.plist`.
+  - Resume when free space holds at 50 GiB for 10 minutes, or after the fseventsd restart.
+  - Announced as IMPACT START. IMPACT END follows.
+- *State:* CANCELLED at 12:54Z before it took effect. codex-fix removed codex-target (14 GiB) and macos-sys trimmed, so free space was back at 53.8 GiB, above the 50 GiB resume line, while the runner was still on its first job. The pause re-arms if free space falls under 40 GiB again. RE-ARMED at 15:07Z (39 GiB); runner booted out idle at 15:08:11Z. CLOSED: Ivan restarted fseventsd at 15:11:48Z (swap 66 to 10 files, 96 GiB free); runner bootstrapped back at 15:12Z.
+
+**tb-R108. Ivan-side chat structure in a2a product spaces, Phase A** (13:01Z, 2026-10-01; decided after the rule-27 advice process, 11:31–13:00Z).
+- *Basis:* Alexis's side asked tb-keeper to decide as Ivan's meta-keeper (rules 14 and 27: reversible chat structure is an applied question). Ivan is informed via desk #24. The one item left to the operators is the ownership of skill-agents-management.
+- *Advice:* no objections from critical-fixes, validation-fixes, ci-isolation, tb-muse, infra-exit or m1max_local-models_orch. Taken:
+  - keep the old aliases;
+  - announce Phase B 24 h ahead;
+  - subs sync after the move;
+  - invite @ivan and @alexis;
+  - one room for skill-agents-management windows.
+- *Decision:*
+  - **swarm-platform** (meta-keepers tb-keeper and m1max_local-models_orch), with children:
+    - swarm (Alexis's);
+    - spm (home #skill-project-management);
+    - curator (home #curator);
+    - model-routing;
+    - network-profiles.
+  - **Top-level spaces:** apiary-talk and cocoaskills.
+  - Phase A only links rooms, with no renames or archives.
+  - #skill-agents-management stays the single room for that module's windows. #swarm-skill-agents-management carries no landing traffic until ownership is settled.
+  - Phase B is per product: announced 24 h ahead, old alias kept, never during windows or disk holds, spm last.
+- *State:* Phase A in progress.
+
+**tb-R109. odansk rev6 lane suite; a doc hold until odansk lands; R2 next in the lane** (14:01Z, 2026-10-01; late, because tb-keeper's doorbell was down from 12:01Z to 14:00Z).
+- *Evidence:*
+  - odansk rev5 ran green in the R105 lane, but #480 (README.md) and C1 (references/tracked-background-spawn.md) landed during its suite. That made the third doc-junction loop.
+  - The doc rebase kept patch-id c8140f8a, which makes rev6.
+  - tb-muse asked for a lane for R2 (RUN-261001-ce9e65), the last code leaf on Ivan's Muse root-session path.
+  - Free space was 42 GiB, with swap growing.
+- *Decision:*
+  1. One rev6 suite in R105's lane, from 45 GiB.
+  2. A doc hold on odansk's four files (README.md, references/change-request-lifecycle.md, references/file-formats.md, references/tracked-background-spawn.md) until odansk lands, capped at 2026-10-02 06:00Z.
+  3. R2 takes the next lane suite after odansk's, from 45 GiB. Only one spm-sized lane suite runs at a time.
+- *State:* in force.
