@@ -1140,7 +1140,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   1. One rev6 suite in R105's lane, from 45 GiB.
   2. A doc hold on odansk's four files (README.md, references/change-request-lifecycle.md, references/file-formats.md, references/tracked-background-spawn.md) until odansk lands, capped at 2026-10-02 06:00Z.
   3. R2 takes the next lane suite after odansk's, from 45 GiB. Only one spm-sized lane suite runs at a time.
-- *State:* in force.
+- *State:* in force for the doc hold. The lane part is done: odansk rev6 was green at 16:08Z, and R2 was green at 18:06Z (RUN-261001-28370c, 14/14); the lane is closed.
 **tb-R110. A provider content-policy refusal during an R80 review** (16:40Z, 2026-10-01).
 - *Evidence:* tb-critical-fixes' codex gpt-6-astra review of odansk's filesystem-race code (RUN-261001-26559b) ended at 16:35Z with OpenAI's "flagged for possible cybersecurity risk" filter, after its verdict was written. The transcript-substring classifier mislabelled the exit as provider_capability_unavailable (spm#493). codex-fix diagnosed the false positive; critical-fixes found the real line.
 - *Decision:*
@@ -1158,3 +1158,8 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - It lands after l2vgx1, and tb-tests owns it.
   - Alexis's side may object by 2026-10-02 09:00Z.
 - *State:* in force.
+
+**tb-R112. odansk rev7 takes one R1 lane suite, launched only when CPU idle is 25% or more** (18:07Z, 2026-10-01).
+- *Evidence:* the round-3 rework (RUN-261001-1f8476: temp-file ownership proof and per-install parent-namespace re-verification) handed off. Its CR validation was at queue position 8. Disk was 67 GiB. CPU idle was about 19%, with ceiling 2 back and the shared slots busy.
+- *Decision:* one lane suite by the R101–R109 mechanism. It starts only with free space at 45 GiB or more AND CPU idle at 25% or more at launch, because the lane counts inside ceiling 2. A paired trim follows. The R110 routing and the R109 doc hold apply.
+- *State:* in force until the suite ends.
