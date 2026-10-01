@@ -1039,3 +1039,10 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - m1max is offered validation-fixes' clean 3-way resolution of 6qyhbh over C1.
 - (2) CI for curator-model-router (and curator-network-profiles) stays on manual dispatch with local verification, per the 09-24 decision that private repos use only our own runners. It switches to hosted CI on publication (card #19).
 - *State:* in force.
+**tb-R99. yiw33v rev 4 takes a one-off priority lane for its short suite** (05:06Z, 2026-10-01).
+- *Evidence (tb-muse, 05:02Z):* TASK-260930-yiw33v rev 4 (skill-agents-management, RUN-261001-c8b9f0) adds the interactive Muse launch mode, and it is now the blocker for interactive `curator run muse` (curator TASK-261001-3fgu9f). Its suite (make vet, make regress, the agents-management go tests) takes minutes, but it was queued behind tb-muse's own 2p2vgp spm suite (8/14, hours) at ceiling 1. Free space was 61 GiB and load1 about 19.
+- *Decision:* it runs now in a private priority-state dir, by R70 (1)'s mechanism, as one suite only.
+  - It does not start if free space is under 45 GiB.
+  - The dir is deleted after the suite.
+  - The review (astra high) and the window in #skill-agents-management follow, ordered with infra-exit's 2vfg79 (v0.5.34).
+- *State:* in force until the suite ends.
