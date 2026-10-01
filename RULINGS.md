@@ -1055,3 +1055,10 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   2. yiw33v rebases onto it before its astra review. R99's lane is amended to allow one more short re-validation after that rebase.
   3. 2vfg79 follows yiw33v. infra-exit tags once yiw33v is in.
 - *State:* in force.
+**tb-R101. odansk rev3 takes R1's private priority lane** (05:32Z, 2026-10-01).
+- *Evidence:* TASK-260922-odansk rev3 (F2+F4 safe refresh; it reworks the 4 refresh defects that the astra final review reproduced) is the last of the seven R61-class critical fixes. Its CR validation (RUN-261001-adf817) was at queue position 7, roughly 8–12 h away. Free space was 66 GiB and load5 about 27.
+- *Decision:* it runs now in .temp/critical-260922/priority-state, one suite only (R70's mechanism). adf817's queued validation is cancelled and respawned there.
+  - The lane counts inside the machine ceiling: when ceiling 2 returns, the shared queue runs one suite until odansk ends.
+  - Under 45 GiB everything else holds, and this suite finishes.
+  - A go-build trim at the 2 h floor follows.
+- *State:* in force until the suite ends.
