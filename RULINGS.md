@@ -1237,3 +1237,20 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 **tb-R121. Work never stops for lack of another vendor; same-provider review as a last resort** (22:07Z, 2026-10-01; Ivan's rule, relayed verbatim by tb-muse: «в крайнем случае ревью может быть той же провайдера что и продьюсер, останавливать работу нельзя просто из за отсутствия другого вендора»).
 - *Decision (extends tb-R80, tb-R110 and tb-R119):* work never stops only because no other vendor is available: a refusal, capacity, an outage or a missing login. After tb-R119's rotation, a review may run on the producer's own provider as a last resort. It stays a separate run and session with a fresh context, and the reason is recorded in the run notes. The next round returns to the normal tb-R80 pairing once another vendor is available.
 - *State:* in force.
+
+**tb-R122. The short-suite lane is standing for every Ivan-side root** (23:03Z, 2026-10-01; a quick win of the process-efficiency analysis, approved by Ivan).
+- *Evidence:* the analysis (collective-mode/research/process-efficiency) found that suites running for minutes waited 2–5 h in the shared queue, and each needed a ruling of its own (tb-R99, tb-R104, tb-R106, tb-R113, tb-R115). Under tb-R113, nine lane suites ran in 2.4–21 min.
+- *Decision:* any root may run a validation suite in the shared short lane when the last run of that suite took under 15 min. The lane is infra-exit's lane root, `skill-project-management-infra-exit/.temp/module-lane`, with machine_max_concurrent_suites=1, and preflight is computed under the same state home. tb-R113's limits are unchanged: one at a time machine-wide, inside the ceiling; over 20 min back to the shared queue; launch at 45 GiB or more free AND CPU idle at 25% or more; never spm-sized. No ruling per suite.
+- *State:* in force; the Gate A trial report covers it.
+
+**tb-R123. Capacity work goes first** (23:03Z, 2026-10-01; approved quick win).
+- *Decision:* after the critical fix, the next spm-sized lane suites go to work that shortens the suite or CI or removes stale laps: l2vgx1, #472, #495, 19eu3m, and ranqpb after its ruling. The grant is standing, under tb-R112's launch conditions. The ivmbp swap carrying C1 runs in the morning gap between lane suites and does not wait for odansk.
+- *State:* in force.
+
+**tb-R124. Train 1: R2 rev3, #496, odansk rev8** (23:03Z, 2026-10-01; approved quick win; amends tb-R116 and tb-R118).
+- *Decision:*
+  - **Stacking.** Staleness is per file. #496 overlaps neither R2 nor odansk and stacks without re-validation. odansk's tb-R118 lane suite runs on the stacked base (R2 plus #496) as soon as R2's lane suite ends.
+  - **Landing.** When all three are accepted: one hosted CI run on the exact top head, one window, and one plain fast-forward push, which lands all three. critical-fixes pushes.
+  - **Fallback.** If odansk is not READY within 1 h of the other two, R2 and #496 go as a two-car train.
+  - **Red top CI.** Drop the failing member and re-run once.
+- *State:* in force until Train 1 lands.
