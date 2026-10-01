@@ -968,3 +968,20 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   6. Do the r3 handoff under the R80 pairs, with the full re-review of R92.
   The workspace record and the CR history stay intact. The case is added to #443.
 - *Outcome 00:13Z:* the primary path worked with no abort. The snapshot tree is 3658ff1d (44f5f267 was a temporary state, verified by recomputing). converge moved 2dff98f to e53de69, and the delta is the producer's 13 paths only. The r3 handoff is RUN-261001-c7eb97 under R80. The evidence is converge-r3-evidence.md on TASK-260930-yiw33v.
+
+**tb-R93. Ivan's in-session answers on the public-repo audit (card #17)** (01:04Z, 2026-10-01).
+- *Source:* Ivan, directly in tb-keeper's session, between 01:01Z and 01:03Z.
+- *Decisions:*
+  - **The codex fork's heavy CI lanes move to GitHub-hosted runners: YES** («давай», «да»).
+    - Routed to codex-fix, whose plan is: a hosted relux-ci.yml; the CR candidate pushed to ci/<story>/rev<N>, so that the hosted result on the exact head is the evidence; a local fast lane only.
+    - It reverses an earlier "no CI" instruction in codex-fix's own session, so codex-fix confirms with Ivan there first.
+  - **The duplicate ivanopcode/skill-git-filter-repo is archived: YES.** Done at 01:03:34Z; it remains private and archived.
+  - **The curator specification family's legal gate:** «отправь в опус 55 макс на решение - он в роли юриста. другого у нас нет».
+    - Session relux-legal started at 01:04Z (claude-opus-5-5, effort max, Remote Control session_01HMG5o9FDhopwAknSmzdtHb, read-only).
+    - It decides the open RCL 1.0 §1.2 question and the per-repo terms for the five repos (model-router, network-profiles, inference-manager, playbook, trust).
+    - It also checks the Adoption Notice, and authorship and consent.
+    - The memo goes to collective-mode/audits/legal/LEGAL-MEMO.md, and the publication itself still goes through Ivan.
+  - **Asked, not yet decided:**
+    - Which of the 7 "public now" repos help CI? Answered: none of them helps the local CI load. Six have no workflows, and swift-realtime-openai-local runs only on hosted runners with no recent runs.
+    - More detail on the history risk. Answered in session.
+- *State:* in force.
