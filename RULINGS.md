@@ -1079,4 +1079,4 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   1. One more R101-lane suite for rev4, started only with free space at 45 GiB or more.
   2. Landers touching the same files as odansk hold until its review starts, at the latest 10:15Z. Non-overlapping hunks, references/** included, land normally. critical-fixes posts odansk's full doc file list.
   3. After 10:15Z the hold lapses.
-- *State:* in force until odansk's review starts or 10:15Z.
+- *State:* ended at 10:01Z, when odansk's final review started (RUN-261001-a92965, astra high). The rev4 suite was green and the lane is closed.
