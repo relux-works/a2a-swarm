@@ -1162,7 +1162,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 **tb-R112. odansk rev7 takes one R1 lane suite, launched only when CPU idle is 25% or more** (18:07Z, 2026-10-01).
 - *Evidence:* the round-3 rework (RUN-261001-1f8476: temp-file ownership proof and per-install parent-namespace re-verification) handed off. Its CR validation was at queue position 8. Disk was 67 GiB. CPU idle was about 19%, with ceiling 2 back and the shared slots busy.
 - *Decision:* one lane suite by the R101–R109 mechanism. It starts only with free space at 45 GiB or more AND CPU idle at 25% or more at launch, because the lane counts inside ceiling 2. A paired trim follows. The R110 routing and the R109 doc hold apply.
-- *State:* in force until the suite ends.
+- *State:* done. The rev7 suite was green at 20:36Z (RUN-261001-f95be9), and the lane passed to R2 under tb-R114. The tb-R109 doc hold stays until odansk lands.
 **tb-R113. A standing short-suite lane for module repositories (trial until Gate A)** (18:54Z, 2026-10-01).
 - *Evidence (infra-exit; Ivan asked it to cut the infra-exit timeline):* CR suites for skill-agents-management and curator-inference-manager take minutes but waited 3–5 h behind 60–90-min spm suites. They went stale and paid a converge, a republish and a second queue lap: 1ycuhl, 3txv44, 2vr6t8 and 2vfg79.
 - *Decision:* one private lane per module binding, open to any campaign landing there.
@@ -1180,3 +1180,10 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - If R2's shared-queue turn comes first, it takes that turn and the grant lapses.
   - A paired go-build trim follows. The tb-R109 doc hold still applies.
 - *State:* in force until the suite ends.
+
+**tb-R115. The tb-R113 module lane also covers curator-agent-launcher** (21:01Z, 2026-10-01).
+- *Evidence (infra-exit, which owns the launcher):* 5 lane suites under tb-R113 ran 2.4–12.8 min each, against 3–5 h waits in the shared queue earlier the same day. TASK-260927-2gp7vz (curator run through the agents-management construction API, Gate A) waited 1h50m in the shared queue for a minutes-long Go module suite.
+- *Decision:* the curator-agent-launcher binding joins the tb-R113 lane for the rest of the trial.
+  - tb-R113's limits are unchanged: one module-lane suite at a time machine-wide, counted inside the ceiling; suites under 15 min only, and past 20 min back to the shared queue; launch at 45 GiB or more free AND CPU idle at 25% or more; never an spm suite.
+  - The Gate A trial report covers all three bindings.
+- *State:* trial, in force until Gate A lands.
