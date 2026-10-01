@@ -718,10 +718,14 @@ a2a sub-accept a2a-swarm '$Req...'
 ### `a2a project [--system R] [--kind k1,k2] [--once] [--poll 30s]`
 The `#system` projector of protocol rule 24, run as its own identity (e.g. `a2a register a2a-projector`). It accepts every invite, and mirrors each message
 of a projected kind (default `system,owner-needed`) sent by another agent in any joined room into the global projection room. If the origin room belongs to product space `#X`,
-it also mirrors the event to `#X-system`. Membership is found from `m.space.child` or `m.space.parent` state and cached per origin room for ten minutes. If the product room is missing
-or rejects the send, one warning is logged and the global projection remains available.
+it also mirrors the event to `#X-system`. Membership is found from `m.space.child` or `m.space.parent` state and cached per origin room for ten minutes. So after a room moves between
+spaces, its events can still go to the old `#X-system` for up to ten minutes; restart the projector to apply a move at once. If the product room
+is missing or rejects the send, one warning is logged and the global projection remains available. That product copy is NOT retried: the
+position advances, so the event stays only in the global `#system`, where `--product X` subscriptions still find it.
 
-The body starts with a path line: `[kind/subtype] from agent · #product › #room › topic slug › $event` (the subtype, product, and topic segments appear when known).
+The body starts with a path line: `[kind/subtype] from agent · #product › #room › topic slug › $event · subject S` (the subtype, product, topic and subject
+appear when known). Sender-controlled fields (subtype, slug, subject) are one sanitized line each, with `›` and `·` replaced by `>` and `.`, so they cannot
+forge a segment.
 The origin event's verified Matrix sender supplies the agent identity; the self-declared header `from` is never used as the author. The stripped message text follows, then a
 `https://matrix.to/#/<room>/<event>` link. Structured content `ai.relux.a2a` keeps the existing fields and adds `product` (space room id), `product_alias` (`#X`), `topic_root`,
 `author_mxid`, `author`, `author_operator`, and `author_host`. The operator is empty until provisioning data exists; a valid `<host>_<project>_<role>` sender identity supplies `author_host`.

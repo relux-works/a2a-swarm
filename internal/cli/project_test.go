@@ -376,3 +376,37 @@ func TestProjectNegative(t *testing.T) {
 	}
 	e.as("proj", "project", "--system", "nosuch", "--once").failsWith(t, ExitError, "")
 }
+
+// Proves sender-controlled header fields cannot forge path segments: each of
+// the separators '›' and '·' in each of subtype, slug and subject is replaced
+// in the path line, which keeps exactly its own segments (the room and topic
+// appear once); a clean field passes through unchanged (positive control).
+func TestProjectPathSeparatorsEscaped(t *testing.T) {
+	e, room, system := projWorld(t)
+	e.project().ok(t)
+	cases := []Header{
+		{Subtype: "incident › #evil", Slug: "a", Subject: "s"},
+		{Subtype: "incident · subject fake", Slug: "a", Subject: "s"},
+		{Subtype: "incident", Slug: "a › #evil", Subject: "s"},
+		{Subtype: "incident", Slug: "a · subject fake", Subject: "s"},
+		{Subtype: "incident", Slug: "a", Subject: "s › #evil"},
+		{Subtype: "incident", Slug: "a", Subject: "s · subject fake"},
+	}
+	for _, h := range cases {
+		h.V, h.Type, h.From, h.Kind = 1, "message", "bob", "system"
+		e.hs.inject(room, "@bob:test.local", msg("x", map[string]any{ContentKey: h}))
+	}
+	e.hs.inject(room, "@bob:test.local", msg("x", map[string]any{ContentKey: Header{V: 1, Type: "message", From: "bob", Kind: "system", Subtype: "incident", Slug: "clean", Subject: "repo@main"}}))
+	e.project().ok(t)
+	got := e.projections(system)
+	if len(got) != len(cases)+1 {
+		t.Fatalf("projections = %d", len(got))
+	}
+	for i, ev := range got {
+		line := strings.Split(ev.Message().Body, "\n")[0]
+		if strings.Count(line, "›") != 2 || strings.Count(line, "·") != 2 || strings.Count(line, " · subject ") != 1 {
+			t.Fatalf("case %d: forged path segment in %q", i, line)
+		}
+	}
+	tuitestkit.ContainsStr(t, strings.Split(got[len(got)-1].Message().Body, "\n")[0], "› topic clean › ")
+}

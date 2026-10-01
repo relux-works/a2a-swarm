@@ -133,6 +133,13 @@ func projectable(ev matrix.Event, roomID, systemRoom, me string, kinds map[strin
 	return h, true
 }
 
+// pathField renders a sender-controlled header field inside the path line:
+// one sanitized line, with the path separators '›' and '·' replaced, so a
+// forged field cannot fake a segment or a subject (e9's review of #46).
+func pathField(v string) string {
+	return strings.NewReplacer("›", ">", "·", ".").Replace(sanitizeLine(v))
+}
+
 // projection builds the mirrored message for ev.
 func projection(ev matrix.Event, h Header, roomID, roomLabel, server, product, productAlias string) map[string]any {
 	from := localpartIfLocal(ev.Sender, server)
@@ -152,7 +159,7 @@ func projection(ev matrix.Event, h Header, roomID, roomLabel, server, product, p
 	// Header fields are sender-controlled: each is one sanitized line here.
 	kind := sanitizeLine(h.Kind)
 	if h.Subtype != "" {
-		kind += "/" + sanitizeLine(h.Subtype)
+		kind += "/" + pathField(h.Subtype)
 	}
 	fmt.Fprintf(&b, "[%s] from %s", kind, agent)
 	if productAlias != "" {
@@ -162,11 +169,11 @@ func projection(ev matrix.Event, h Header, roomID, roomLabel, server, product, p
 	}
 	fmt.Fprintf(&b, " %s", roomLabel)
 	if h.Slug != "" {
-		fmt.Fprintf(&b, " › topic %s", sanitizeLine(h.Slug))
+		fmt.Fprintf(&b, " › topic %s", pathField(h.Slug))
 	}
 	fmt.Fprintf(&b, " › %s", ev.EventID)
 	if h.Subject != "" {
-		fmt.Fprintf(&b, " · subject %s", sanitizeLine(h.Subject))
+		fmt.Fprintf(&b, " · subject %s", pathField(h.Subject))
 	}
 	fmt.Fprintf(&b, "\n%s\n\norigin: https://matrix.to/#/%s/%s", sanitizeText(text), roomID, ev.EventID)
 	topicRoot := ev.ThreadRoot()
