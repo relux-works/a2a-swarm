@@ -115,6 +115,23 @@ func (sub *Sub) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON also writes the former single "subtype" field when the list has
+// exactly one entry, so a binary from before subtype lists still filters the
+// same way (downgrade fidelity, tb-keeper's advice on #45). With more entries
+// an old binary sees no subtype and matches more broadly: extra wakes, never
+// missed ones.
+func (sub Sub) MarshalJSON() ([]byte, error) {
+	type plain Sub // no methods: avoids recursion
+	out := struct {
+		plain
+		Subtype string `json:"subtype,omitempty"`
+	}{plain: plain(sub)}
+	if len(sub.Subtypes) == 1 {
+		out.Subtype = sub.Subtypes[0]
+	}
+	return json.Marshal(out)
+}
+
 // SubList is the account data content of SubsType.
 type SubList struct {
 	V    int   `json:"v"`

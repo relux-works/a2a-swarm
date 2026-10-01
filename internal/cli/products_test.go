@@ -403,3 +403,23 @@ func TestPresetListNegative(t *testing.T) {
 		t.Fatal("the join counter did not move on the positive control: the negative check above would be vacuous")
 	}
 }
+
+// Proves a stored subscription with exactly one subtype also carries the
+// legacy "subtype" field (so an older binary filters the same way), one with
+// two subtypes does not, and both round-trip to the same selector.
+func TestSubtypeLegacyFieldOnWrite(t *testing.T) {
+	one, _ := json.Marshal(Sub{ID: "a", SubSelector: SubSelector{Room: "!r", Kinds: []string{"system"}, Subtypes: []string{"landing"}}})
+	two, _ := json.Marshal(Sub{ID: "b", SubSelector: SubSelector{Room: "!r", Kinds: []string{"system"}, Subtypes: []string{"landing", "window"}}})
+	if !strings.Contains(string(one), `"subtype":"landing"`) || !strings.Contains(string(one), `"subtypes":["landing"]`) {
+		t.Fatalf("single subtype written as %s", one)
+	}
+	if strings.Contains(string(two), `"subtype":`) {
+		t.Fatalf("two subtypes wrote a legacy field: %s", two)
+	}
+	for _, raw := range [][]byte{one, two} {
+		var back Sub
+		if err := json.Unmarshal(raw, &back); err != nil || len(back.Subtypes) == 0 || back.Room != "!r" {
+			t.Fatalf("round trip of %s = %+v, %v", raw, back, err)
+		}
+	}
+}
