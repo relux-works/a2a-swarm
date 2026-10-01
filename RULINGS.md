@@ -1004,3 +1004,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Until it lands, other landers that carry README.md hunks post a one-line heads-up before opening their window, so 3ib9pa's owner can rebase BEFORE its review, not after acceptance.
   - The tool fix of R56 (re-parent and revalidate clean doc-only junctions instead of marking stale) goes back to tb-critical-fixes for a status and a date. It shares machinery with ci-isolation's stage 3 (absorbing board-only trunk advances), so tb-critical-fixes and ci-isolation decide together whether stage 3's fail-closed opt-in can extend to doc-class paths.
 - *State:* in force.
+- *Amended 01:31Z:* the shape of the tool fix is agreed with tb-critical-fixes. One opt-in key carries two classes:
+  - board-only: absorb, with no suite (ci-isolation's stage 3);
+  - doc-class: re-parent AND revalidate, keeping the acceptance and attaching the junction diff (#472). Doc-class never skips the suite, because the docs guards read README.md and references/**.
+  ci-isolation keeps the key shape open for the second class. #472 is not started; it comes after odansk, #408 and #392, and the target for a reviewed CR is 2026-10-03.
