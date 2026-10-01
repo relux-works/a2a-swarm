@@ -1149,3 +1149,12 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   3. A refused producer rephrases and retries once, then reports.
   4. OpenAI "Daybreak" access is an org-level act and goes to Ivan's desk, not urgent.
 - *State:* in force.
+**tb-R111. The standalone CI guard steps are removed; the broad step runs every guard uncached once** (17:05Z, 2026-10-01).
+- *Evidence (tb-tests, TASK-260910-19eu3m_guard-duplicate-wall-261001.md):* since the prelude runs go clean -testcache, the broad 'go test -p 2 -timeout 90m ./...' step already runs ciguard, testsupport, mirrorgate and spawn uncached. The standalone -count=1 steps ran them a second time, serially: 315 s of wall on the M1 Max and 142 s on rose-air. ci-isolation, owner of the steps, agrees.
+- *Decision:* option (a), with ci-isolation's conditions:
+  - ciguard pins the exact broad command after the prelude;
+  - CLAUDE.md is updated;
+  - the local Makefile prerequisites stay.
+  - It lands after l2vgx1, and tb-tests owns it.
+  - Alexis's side may object by 2026-10-02 09:00Z.
+- *State:* in force.
