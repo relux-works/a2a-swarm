@@ -1507,7 +1507,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     - from round 2, a delta reviewer, also sol medium;
     - then one recording reviewer, also sol medium.
     Producer and reviewers are now different providers, so tb-R121's concern does not arise.
-  - When ivmbp's codex limit runs out (reset at about 17:18Z), all review roles switch to claude-sonnet-5-5, effort high. The reason goes in the run notes.
+  - Before each review round, check that ivmbp's codex account still has quota. If it does not, every review role of that round goes to claude-sonnet-5-5, effort high, until the codex reset at about 17:18Z; after the reset, sol medium again. The reason goes in the run notes. (Wording clarified at 04:20Z: 17:18Z is the reset, not the moment the quota runs out.)
   - When Muse refuses or fails, the producer rotates under tb-R119 (sol high first), with the reason noted.
   - Runs already spawned finish as they are; new spawns follow this ruling.
   - On the Mac mini, tb-R138 and tb-R139 stand unchanged.
