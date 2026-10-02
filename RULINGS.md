@@ -1498,3 +1498,17 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - On the Mac mini, tb-R138 and tb-R139 stand unchanged.
   - Runs already spawned under tb-R138 on ivmbp finish undisturbed; new spawns follow this ruling.
 - *State:* in force on ivmbp until Ivan changes it. Review it after ivmbp's codex reset at about 17:18Z.
+
+**tb-R147. ivmbp trial: Muse max producers, sol 6.1 medium reviews** (04:19Z, 2026-10-02; Ivan, directly in tb-arbiter's session: «давай попробуем код на muse max, ревью на sol 6.1 medium, если закончатся лимиты на кодексе то ревью включаем на соннет 5-5 хай»; supersedes tb-R146 on ivmbp).
+- *Decision:* on ivmbp, from now, as a trial:
+  - Producers: Muse, effort max.
+  - Reviews keep tb-R132's structure and tb-R141's mechanics, on codex gpt-6.1-sol, effort MEDIUM:
+    - two parallel full fresh reviews, each a separate session;
+    - from round 2, a delta reviewer, also sol medium;
+    - then one recording reviewer, also sol medium.
+    Producer and reviewers are now different providers, so tb-R121's concern does not arise.
+  - When ivmbp's codex limit runs out (reset at about 17:18Z), all review roles switch to claude-sonnet-5-5, effort high. The reason goes in the run notes.
+  - When Muse refuses or fails, the producer rotates under tb-R119 (sol high first), with the reason noted.
+  - Runs already spawned finish as they are; new spawns follow this ruling.
+  - On the Mac mini, tb-R138 and tb-R139 stand unchanged.
+- *State:* a trial on ivmbp until Ivan changes it. tb-keeper reports the first results (refusals, round counts, findings) to Ivan.
