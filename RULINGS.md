@@ -1302,3 +1302,64 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - No full spm or CR validation suites on the mini.
   - Stop and report if load goes above 2x the cores or swap grows.
 - *State:* in force until tb-R127 ends.
+
+**tb-R130. Tiered validation** (01:22Z, 2026-10-02; analysis item T1; Ivan, in the dispatcher's session at about 01:10Z: «берем!»).
+- *Decision:*
+  - A CR's validation becomes two tiers:
+    - the fast tier, about 10 min, runs before review: vet, the guards, the short packages, and the tests of the packages the CR touches, selected with `go list`;
+    - the full run happens once, as hosted CI on the landing head.
+  - The exact-head rule (tb-R69) is unchanged.
+  - Owner: validation-fixes, which owns validationsuite. Design, config and scripts start now, ahead of the C2 and C3 builds that wait for the mini reboot. Builds and tests on the mini only after the reboot, under tb-R135.
+  - Before any root switches, validation-fixes posts the design as a rule-27 proposal. A switch that changes the SuiteSHA happens only when the root has no CR ready, in validation, or accepted and unlanded (critical-fixes' constraint of 20:10Z). Otherwise it uses a key outside the SuiteSHA, as hmt6xa (a) does.
+- *State:* in force.
+
+**tb-R131. CI sharding and the test-optimization epic go first** (01:22Z, 2026-10-02; analysis item T12; Ivan: «надо начинать максимально быстро это один из первых приоритетов», «эпик по оптимизации тестов нужно завершить как можно скорее вместе с выходом из инфры»).
+- *Decision:*
+  - The test-optimization epic and the infra exit are the two top priorities on the Ivan side.
+  - When they compete with other work for a lane or the ceiling, they go first. Train 1 and the critical fix still come before them.
+  - T12, CI sharding for the hosted runners, starts now, not by 10-06. Owner: tb-tests. Producer codex gpt-6.1-sol high.
+  - tb-tests declares its rule-18 files. It agrees its ci.yml hunks with ci-isolation, whose Train 2 items touch CI, in the orchestrator-channel thread.
+  - Landing waits for tb-R116 point 3 to end: after Train 1 lands, or at the 06:00Z cap.
+  - l2vgx1 rev3 keeps its lane place after R2's re-run (tb-R125).
+- *State:* in force.
+
+**tb-R132. The review policy** (01:22Z, 2026-10-02; analysis item T9, Ivan's version: «дефолт два», «ревью для нас очень важная часть - нужно её проходить полностью»).
+- *Decision:*
+  - Every review round is two parallel full fresh reviews: claude-sonnet-5-5 high and gpt-6-astra high. Up to three reviewers may be configured when needed.
+  - From round 2, add one separate delta reviewer, in its own fresh run (default claude-sonnet-5-5 high). It checks:
+    1. that the previous round's findings were fixed correctly;
+    2. whether the same class of problem appears anywhere else in the code;
+    3. whether the rework broke anything.
+  - The orchestrator merges the verdicts. Identical findings (same file, same class) collapse into one; everything else is unioned. Any changes_requested sends the CR back to rework.
+  - No cap on rounds. The suite result still gates acceptance. Reviews may start in parallel with validation.
+  - tb-R119 (rotate the model on a refusal) and tb-R121 (same-provider review as a last resort) still apply.
+  - Rounds already running finish under the old policy; every round started after this ruling follows it.
+- *State:* in force.
+
+**tb-R133. Standing rules instead of per-case rulings, as a trial** (01:22Z, 2026-10-02; analysis item T6; Ivan: «ок давай попробуем»).
+- *Decision:*
+  - Routine grants become condition → action standing rules that orchestrators apply themselves, as tb-R122 and tb-R123 do.
+  - When a standing rule covers a case, the orchestrator does not ask. It posts what it does and under which rule.
+  - tb-keeper rules only on disputes and exceptions.
+  - tb-keeper posts the first set of conversions with the -trimpath ruling at 12:00Z: lane queue order, board-only gap publishes, next-in-order windows.
+  - The trial is reviewed against the daily flow report (T11, owned by the dispatcher).
+- *State:* trial, until 2026-10-16.
+
+**tb-R134. The spm README becomes a storefront and the CHANGELOG becomes fragments** (01:22Z, 2026-10-02; Ivan decided alone, as routine: «это рутинный вопрос я могу принять решение без согласия. ответ да»).
+- *Decision:*
+  - The spm README becomes short: what it is, install, links. Its sections move to docs/, one topic per file.
+  - The CHANGELOG moves to fragments in changelog.d/<id>.md. The aggregate is generated at release and not committed between releases. Any shared logbook does the same.
+  - The doc guards that read README follow in the same CR.
+  - Owner: ci-isolation, as a capacity item. It lands after Train 1, once tb-R109's hold has ended, and rebases onto odansk's and R2's doc hunks.
+  - Alexey's side gets this as information, not as a question.
+- *State:* in force.
+
+**tb-R135. tb-R129 covers every Mac mini campaign; idle mini campaigns resume** (01:22Z, 2026-10-02; extends tb-R129; Ivan: «нужно будить оркестраторов»).
+- *Decision:*
+  - tb-R129's rules cover every campaign on the mini, not only validation-fixes and ci-isolation: network-profiles, model-routing and any other.
+    - No builds or tests on the mini until its reboot.
+    - After IMPACT END, one build or test at a time across the whole mini, through the mkdir lock ~/.mini-build-lock. At most two worker runs at once.
+  - Design, spec and doc work may go ahead now.
+  - network-profiles resumes with 11b (confirm takes the edit lock), 15 (the RU translations), the integration-contract card C and N-B planning. Desk #20 stays open; its landed defaults stand.
+  - model-routing resumes with curator-model-router issues #13–#18. W4 and W5 follow after M4 Gate B.
+- *State:* in force until tb-R127 ends.
