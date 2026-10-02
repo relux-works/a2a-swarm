@@ -1470,3 +1470,31 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - If complete fails on suite drift, or on anything other than the known #429 failure after a successful complete, codex-fix stops and asks. It does NOT apply an tb-R142-style suite window without a new ruling.
   - Per codex-fix's own rule, the validation suite stays frozen while any CR revision is ready, reviewing or accepted.
 - *State:* standing, until BUG-261002-whijfm lands.
+
+**tb-R145. Binary swap #6 on ivmbp: C1 and everything landed since 10c4b582** (04:16Z, 2026-10-02; under tb-R55 and tb-R123).
+- *Done:* `curator global upgrade` from tb-arbiter's unhosted shell, 04:13:29Z–04:15:18Z, rc=0, from spm main 44d672a8.
+  - task-board 1361260b → 68193c03; tb-sessiond 8457d455 → 13e5cb00.
+  - It carries C1 (#491, remote_only_commands), #496, #494, #492, #488, #483 and #481, and #480.
+  - Probe: the new task-board has remote_only_commands (7 hits). The old one had 0, checked at 04:12Z before the swap.
+  - Daemons were not restarted (tb-R55, tb-R88).
+- *Deviations:*
+  1. The IMPACT START post failed, because the a2a CLI rejects the "impact-start" subtype that rule 31 names. The swap ran anyway, because the commands were chained with ';'. Disclosed in a combined incident post at 04:16Z.
+  2. curator's build-cache sweep deleted the old task-board build 1361260b while 24 live processes still executed it. Re-execs of that absolute path (successor runner launches, printed observation commands) now fail. Rollback needs a rebuild at 10c4b582.
+- *Follow-ups:*
+  - The sweep bug goes to ivan-curator: do not sweep a build that a live process executes.
+  - The rule-31 subtype gap goes to a2a-swarm.
+  - tb-tests may set remote_only_commands.
+  - Swaps now post the impact notice and run the upgrade only if the post succeeded (&&, never ';').
+- *State:* done.
+
+**tb-R146. ivmbp returns to the old model rule; tb-R138 stays on the Mac mini only** (04:18Z, 2026-10-02; Ivan, directly in tb-arbiter's session: «я поспешил с переходом на кодекс на машине ivmbp - нужно вернуть старое правило - ресет будет только через 13 часов с этого момента»; amends tb-R138).
+- *Evidence:* the codex limit of ivmbp's account resets only at about 17:18Z (13 h from 04:18Z). tb-R138 moved every ivmbp review onto codex as well. The Mac mini has its own account (67% left, tb-R139).
+- *Decision:*
+  - On ivmbp, from now: the model rule before tb-R138 is back.
+    - Producers: codex gpt-6.1-sol high.
+    - Reviews follow tb-R132 as written: two parallel full fresh reviews, claude-sonnet-5-5 high and gpt-6-astra high, plus a delta reviewer from round 2 (default claude-sonnet-5-5 high), run with tb-R141's non-recording mechanics.
+    - tb-R121 applies again: same-provider review is the last resort.
+  - When ivmbp's codex limit runs out before the reset, codex roles rotate to Claude under tb-R119 and tb-R121 (work never stops), with the reason in the run notes.
+  - On the Mac mini, tb-R138 and tb-R139 stand unchanged.
+  - Runs already spawned under tb-R138 on ivmbp finish undisturbed; new spawns follow this ruling.
+- *State:* in force on ivmbp until Ivan changes it. Review it after ivmbp's codex reset at about 17:18Z.
