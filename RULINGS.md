@@ -1270,7 +1270,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - The desk sends Ivan one digest at 00:00, 06:00, 12:00 and 18:00Z: unanswered cards, plus decisions taken optimistically since the last digest.
   - Reversible cards carry a default that acts at reply-by. Security, legal, money, sudo or reboot, and irreversible cards wait for Ivan.
   - Urgent items still go out at once.
-- *State:* in force on the orchestrator side. The desk switches its own delivery once Ivan confirms in the desk session, as its brief requires.
+- *State:* in force on the orchestrator side. The desk switches its own delivery once Ivan confirms in the desk session, as its brief requires. Confirmed by Ivan in the desk session at 05:49Z, 2026-10-02 («дайджест раз в 6 часов — да»); the desk runs digests at 00/06/12/18Z, and urgent cards go out at once.
 
 **tb-R127. Soft work-in-progress limits for two weeks** (23:33Z, 2026-10-01; Ivan: «правило берем но правило не строгое, если будет срочно нужно запустить что-то я дам знать»).
 - *Decision:*
