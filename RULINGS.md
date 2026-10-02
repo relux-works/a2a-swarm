@@ -1352,6 +1352,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - The doc guards that read README follow in the same CR.
   - Owner: ci-isolation, as a capacity item. It lands after Train 1, once tb-R109's hold has ended, and rebases onto odansk's and R2's doc hunks.
   - Alexey's side gets this as information, not as a question.
+- *Clarified* (01:30Z, ci-isolation's fact check): spm commits no CHANGELOG. goreleaser builds its release notes at release, which already meets the rule, so spm gets no changelog.d. The fragment rule applies where several campaigns append to a committed CHANGELOG or logbook; skill-agents-management comes first (9 CHANGELOG commits in 7 days), routed separately.
 - *State:* in force.
 
 **tb-R135. tb-R129 covers every Mac mini campaign; idle mini campaigns resume** (01:22Z, 2026-10-02; extends tb-R129; Ivan: «нужно будить оркестраторов»).
