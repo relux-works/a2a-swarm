@@ -1518,3 +1518,32 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Runs already spawned finish as they are; new spawns follow this ruling.
   - On the Mac mini, tb-R138 and tb-R139 stand unchanged.
 - *State:* a trial on ivmbp until Ivan changes it. tb-keeper reports the first results (refusals, round counts, findings) to Ivan.
+
+**tb-R148. Card C, the network-profiles integration contract rev 2: Ivan's decisions** (05:17Z, 2026-10-02; Ivan, directly in tb-arbiter's session; rule 27, the accountable decider).
+- *Decided:*
+  - **D1 adopt** rev 2 as the contract for N-B and N-C1 (it stays DRAFT until implemented). Ivan adds: «неплохо бы уже иметь задачи на связку библиотеки и потребителей». network-profiles creates the wiring tasks now (N-B, N-C1, N-C2 and the spec amendments) and files module asks with each consumer owner.
+  - **D2 (a)** «ок берем а и правим спеки». A new `inherited` origin, with precedence explicit → inherited → runtime → project → operator, and the reference persisted at reservation. N3/N4 are amended before N-C1.
+  - **D4** a typed `Network{Patch, Record}` field on LaunchRequest/SpawnRequest, applied after ChildEnv («точно не колбеки»).
+  - **D5** record the route in suite evidence (profile ref and digest, or "ambient"), never the value.
+  - **D7** role-based ownership, unchanged.
+  - **D8** Muse is `network_scope_unsupported` until verified. Ivan wants the verification started as early as possible, and the decision taken on its result.
+  - **D9** fix the spec erratum.
+  - **D10** sign tag v0.1.0.
+- *Decided later the same morning:*
+  - **D3 (b) NOW** (05:26Z, «давай сейчас да»). A named `kind=direct` profile ships in v0.2.0 together with D2 (issue #17). Estimate: about 400–600 lines, 3–4 h, low risk.
+  - **D6 deferred** (05:36Z, «да»). The carrier for tracked launches through ax is chosen when ax implements session launch; until then, tracked mode with `--network` refuses (N9). The context is recorded in relux-works/agent-session-manager#68. The direct `curator run --network` path (N-B) and the task-board / tb-sessiond paths (N-C1) do not depend on it.
+  - **MCP:** Ivan wants the MCP env behaviour verified in the other harnesses too («про mcp нужно убедиться про поведение и в других средах»).
+  - **D8 (A)** (05:44Z, «ок … да»). Muse 1.4.1-R4503.1 and 1.4.2-R4684.1 are SUPPORTED with adapter `muse-env-v1`: the generic patch, plus the set half injected into each MCP server's env block, plus hook-command wrapping. Evidence:
+    - R0–R3, R5 and R6 pass;
+    - R6 with an unreachable proxy was closed by a calibrated SIGKILL sandbox detector: no direct fallback;
+    - R4 and R7a (scrubbed child env) are fixed by the adapter.
+    Shell and tool children (R7b) are a documented gap until a PTY row after R2 lands. Ivan: «не забыть».
+- *State:* in force.
+
+**tb-R149. skill-agents-management is developed jointly by both operators** (06:08Z, 2026-10-02; desk #24, Ivan via ivan-desk at 06:06Z, verbatim: «мы разрабатываем его совместно с алексеем - друг с другом согласуем видение, критические вопросы дизайна решаем вместе, рутинные и баги - по отдельности, много текущих решений принято и должно быть записано в вики.»).
+- *Decision (Ivan's position; ownership needs both operators, rule 24):*
+  - relux-works/skill-agents-management is JOINT: the two operators agree its vision with each other and decide critical design questions together. Each side handles routine work and bugs on its own.
+  - Its placement under Alexis's "swarm" space (tb-R108) is placement, not ownership. Its windows and landings stay in shared #skill-agents-management.
+  - This matches Ivan's general scope of 2026-10-01: routine repository and process changes are his alone, with Alexey informed; significant architecture needs both.
+  - The decisions already taken go into a decision record in relux-works/wiki (the dispatcher compiles it; Alexis's side adds or corrects entries there).
+- *State:* Ivan's side in force. Confirmation from Alexis's side requested.
