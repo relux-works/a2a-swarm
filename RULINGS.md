@@ -1439,6 +1439,12 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   3. Only then, ONE recording CR reviewer run records the merged verdict, citing the outcome resources. It records accept only when every merged verdict is accept.
   4. A CR already holding a lone accept that the merge contradicts is superseded by a successor CR, and closes with close-landed --superseded-by, as infra-exit did with 2xj2l5. It is never landed.
   5. critical-fixes' issue on the tool gap becomes a BUG on the spm board, with capacity priority under tb-R123.
+- *Clarified* (04:00Z, codex-fix's check): a research panel with review=none publishes an evidence-only CR (kind story_final, empty repository delta, state ready), and its task waits at to-review. Leave those CRs as they are:
+  - nobody accepts, completes or lands them;
+  - they carry 'R141 panel' in the title;
+  - flow and WIP counts exclude them;
+  - one sweep closes them all after #499 / BUG-261002-whijfm lands.
+  This avoids a recording reviewer and a complete per panel.
 - *State:* standing, until the task-board fix lands.
 
 **tb-R142. codex P1: complete against the exact rev-6 suite, then restore** (03:35Z, 2026-10-02; extends tb-R140; codex-fix's request R140b).
