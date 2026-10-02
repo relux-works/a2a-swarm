@@ -1398,3 +1398,24 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Claude (sonnet, opus) and Muse subagents are fallback only: for a GPT refusal, failure, capacity limit, outage or rate limit. The reason goes in the run notes. tb-R119's rotation on a refusal stays.
   - Orchestrator sessions are unchanged. In-flight runs finish undisturbed; new spawns follow this ruling.
 - *State:* in force from 03:00Z for the next few days, until Ivan's next instruction (Ivan, 03:01Z: «это будет правило на несколько ближайших дней до моего следующего указания»). It supersedes tb-R137, including tb-R137's reviewer effort.
+
+**tb-R139. Research on gpt-6-astra max on the Mac mini, to use its weekly limit** (03:05Z, 2026-10-02; Ivan, directly in tb-arbiter's session: «на мини тачке 70% недельного лимита - можем нагрузить её какими нибудь ресерчами или большой работой через астру макс на ресерчь», then «по всем можно, и можно еще взять что то про нетворк профили например - в обшем все что там в работе»).
+- *Decision:*
+  - Mini campaigns may run research tasks on codex gpt-6-astra, effort max, on the mini's own account, for anything in their current work. tb-R138 still governs producers and reviewers.
+  - Assigned now:
+    1. validation-fixes: test-suite profiling for T1 and T12 (tb-R130, tb-R131). Per-package times from recent validation records and CI logs, the fast-tier package set by `go list`, and a shard plan sized for an 8 GB runner. Hand it to tb-tests.
+    2. ivan-curator: a read-only pre-release audit of every repository planned for the open-source release, git history included:
+       - secrets;
+       - references to the employer, BSim and clients;
+       - personal addresses;
+       - LICENSE, NOTICE and SPDX consistency.
+       The report goes to oss-release, Ivan and relux-legal.
+    3. ivan-curator: the curator-spec owner-review triage (#101, #106–#112). Ivan delegates it (desk #27 item 3). Only the flagged issues go to Ivan, through the desk. #106 and #108 are not implemented before his decision.
+    4. model-routing: design research for curator-model-router #13–#18.
+    5. network-profiles: research for N-B planning and the integration-contract card C.
+    6. ci-isolation: the tb-R134 README inventory, a topic map of the 3535-line README into docs/ with the guards that read it.
+  - Rules:
+    - Research is read-only: no commits beyond the task's own research artifacts, no pushes, and no builds outside ~/.mini-build-lock (tb-R136).
+    - Sensitive findings (secrets, the employer, BSim, clients, personal data) never go into shared rooms. They stay in the local report file. Rooms see only counts and the file path. Details go to Ivan through the dispatcher, and to relux-legal.
+    - Budget guard: stop starting new research when the mini's weekly limit falls to 25% remaining, so that producers and reviews keep their capacity. macmini-infra posts the remaining limit in #macmini-infra every 6 h while research runs.
+- *State:* in force until the mini's weekly limit resets, or until Ivan changes it.
