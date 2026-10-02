@@ -1440,3 +1440,33 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   4. A CR already holding a lone accept that the merge contradicts is superseded by a successor CR, and closes with close-landed --superseded-by, as infra-exit did with 2xj2l5. It is never landed.
   5. critical-fixes' issue on the tool gap becomes a BUG on the spm board, with capacity priority under tb-R123.
 - *State:* standing, until the task-board fix lands.
+
+**tb-R142. codex P1: complete against the exact rev-6 suite, then restore** (03:35Z, 2026-10-02; extends tb-R140; codex-fix's request R140b).
+- *Evidence:* tb-R140's run RUN-261002-e91c74 re-checked 35af013 (an ancestor of relux/main, tree ece69834, signature good). Its `worktree complete` then failed with validation_suite_changed. The separate-owner path in spm's selectReviewedValidationSuite accepts evidence only when the evidence suite digest equals the current one. codex-fix added two app-server websocket flake quarantines to its untracked control-root config at 00:41Z on 2026-10-01, after rev 6 was validated. The current digest is 582bc3d0…; the evidence digest is 4bf6b859…. The evidence suite is the stricter one: it ran without those quarantines. Nothing was written.
+- *Decision:*
+  1. Before the run, codex-fix sets the config's validation commands to the exact rev-6 suite (the current one minus the two quarantine terms) and verifies that the SuiteSHA256 is 4bf6b85935c1…. No other codex-fix run may be active, and none starts until step 3.
+  2. ONE developer/implementer integration run with tb-R140's brief: re-check, `worktree complete … --landed-commit 35af013…`, exit.
+  3. Immediately afterwards, codex-fix restores the current suite and verifies its digest is 582bc3d0… again.
+  4. It posts both digest checks and the board result (done or board_published; any successor cancelled) to tb-keeper. No other config change goes into the window.
+  5. A repeat needs a new ruling. BUG-261002-whijfm should also cover suite drift that only quarantines after the evidence (the evidence suite is a strict superset).
+- *State:* a one-time exception.
+
+**tb-R143. The tb-R116 cap moves to 07:00Z, for Train 1 only** (03:40Z, 2026-10-02; amends tb-R116 point 3).
+- *Evidence:* tb-muse, 03:40Z: R2's lane suite (RUN-261002-2d72a7) ran slower under the double load from 02:00Z to 03:00Z. Its LANE ENDED is now expected at about 04:25Z. The R141 non-recording panels (3r9tem, 3l6y11, delta 1ry8f7) and the one recording reviewer then make R2 READY at about 05:10Z. With about 70 min of train CI on ivmbp's runner (rose-air is down), Train 1 lands at about 06:20Z, past the 06:00Z cap. If other code or doc landings resumed at 06:00Z, they would stale Train 1's tested top head in mid-CI and waste the run.
+- *Decision:*
+  - tb-R116 point 3 holds until 07:00Z, and only for Train 1 (R2 plus odansk). It lapses at once when Train 1 lands.
+  - If Train 1's top-head CI is not green by 07:00Z, the hold lapses anyway and normal first-READY order resumes. Train 1 then re-tests once, as tb-R125 provides.
+  - Board-only gap publishes stay allowed under tb-R69. tb-R109's doc hold continues until odansk lands.
+  - The ivmbp swap still waits for the first gap between lane suites after 05:00Z. Train 1's CI builds from source on the runner, so it does not collide with the swap.
+- *State:* in force until Train 1 lands, or until 07:00Z.
+
+**tb-R144. Explicit-complete integration runs become standing for codex-fix stories** (03:55Z, 2026-10-02; a standing rule under tb-R133; generalizes tb-R140; codex-fix's request).
+- *Evidence:* every codex-fix story closes through `worktree complete` on a separate-owner board, and each close hits the runner gap (BUG-261002-whijfm) until it is fixed. tb-R140 and tb-R142 showed that the explicit-complete run is safe when it checks the landed commit first.
+- *Decision:* until BUG-261002-whijfm lands, codex-fix may close each landed story with ONE developer/implementer integration run under tb-R138's models. Its brief:
+  1. re-check that the landed commit is an ancestor of the target main, that its tree equals the accepted revision's candidate_tree_oid, and that its signature is good;
+  2. run `task-board worktree complete <story> --cr <cr> --revision <n> --landed-commit <sha>` once;
+  3. exit.
+  - Cancel any recovery successor first, and afterwards report one line per close to tb-keeper.
+  - If complete fails on suite drift, or on anything other than the known #429 failure after a successful complete, codex-fix stops and asks. It does NOT apply an tb-R142-style suite window without a new ruling.
+  - Per codex-fix's own rule, the validation suite stays frozen while any CR revision is ready, reviewing or accepted.
+- *State:* standing, until BUG-261002-whijfm lands.
