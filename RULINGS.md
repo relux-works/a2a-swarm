@@ -1374,3 +1374,27 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Stop and report if load goes above 2x the cores or swap grows.
   - Desk #28 is deferred by Ivan until the new machine. Before any mini reboot or retirement, Matrix and the critical services move to the new machine or are freshly backed up. Backup status is asked of macmini-infra now, read-only, with no reboot and nothing destructive.
 - *State:* in force until the mini is rebooted or retired; tb-R127's end date still applies to the WIP limits.
+
+**tb-R137. GPT-only subagents on the Mac mini today** (02:57Z, 2026-10-02; Ivan, in macmini-infra's session, relayed verbatim at 02:57Z: «передай всем оркестраторам тут на машине что сегодня используем только gpt субагентов / остальных только как резерв в случае отказа»; applies tb-R132 on the mini for the day).
+- *Decision:* for every Ivan-side orchestrator on the Mac mini, for 2026-10-02:
+  - Producers: codex gpt-6.1-sol high.
+  - Reviews keep tb-R132's structure, with GPT models:
+    - two parallel full fresh reviews, each a separate codex gpt-6-astra high session;
+    - from round 2, a delta reviewer, also gpt-6-astra high in its own session;
+    - each is noted as 'same-provider review (operator rule, tb-R137)'.
+  - Claude (sonnet, opus) and Muse subagents are fallback only: for a GPT refusal, failure, capacity limit, outage or rate limit. The reason goes in the run notes.
+  - Orchestrator sessions are unchanged. In-flight runs finish undisturbed; new spawns follow this ruling.
+  - Off the mini (ivmbp), tb-R132 stands as written unless Ivan extends this ruling.
+- *State:* in force for 2026-10-02 (UTC).
+
+**tb-R138. GPT models first for every Ivan-side orchestrator; astra low for reviews** (03:00Z, 2026-10-02; Ivan, directly in tb-arbiter's session: «передай всем оркестраторам что сейчас используем активно и в первую очередь chatgpt модели - код на сол 6-1 ревью на астра лоу - клод и мьюз только как разервные в случае отказа»; extends tb-R137 beyond the mini and amends tb-R132 and tb-R121).
+- *Decision:* for every Ivan-side orchestrator, on every host:
+  - Producers: codex gpt-6.1-sol, effort high.
+  - Reviewers: codex gpt-6-astra, effort LOW. tb-R132's structure stays:
+    - two parallel full fresh reviews, each a separate astra session;
+    - from round 2, a delta reviewer, also astra low in its own session;
+    - the verdicts merged as tb-R132 says.
+  - Same-provider review is now the default, not tb-R121's last resort. Note each review as 'same-provider review (operator rule, tb-R138)'.
+  - Claude (sonnet, opus) and Muse subagents are fallback only: for a GPT refusal, failure, capacity limit, outage or rate limit. The reason goes in the run notes. tb-R119's rotation on a refusal stays.
+  - Orchestrator sessions are unchanged. In-flight runs finish undisturbed; new spawns follow this ruling.
+- *State:* in force from 03:00Z for the next few days, until Ivan's next instruction (Ivan, 03:01Z: «это будет правило на несколько ближайших дней до моего следующего указания»). It supersedes tb-R137, including tb-R137's reviewer effort.
