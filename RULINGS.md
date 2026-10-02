@@ -1547,3 +1547,61 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - This matches Ivan's general scope of 2026-10-01: routine repository and process changes are his alone, with Alexey informed; significant architecture needs both.
   - The decisions already taken go into a decision record in relux-works/wiki (the dispatcher compiles it; Alexis's side adds or corrects entries there).
 - *State:* Ivan's side in force. Confirmation from Alexis's side requested.
+
+**tb-R150. The whole Matrix server is backed up to ivmbp every 6 h** (07:02Z, 2026-10-02; desk #32 area; Ivan via his dispatcher at about 07:00Z, verbatim: «настроить надо бекапы матрикс - всех сообщений аккаунт и вот этого всего на мою машину (и потом на машину алексея тоже). досутп по ssh и бекап куда нибудь в директорию бекапов»).
+- *Decision (Ivan's):*
+  - The scope is the tuwunel database (all messages, accounts, rooms and keys), the media store and the server config.
+  - Mini side (macmini-infra): an online RocksDB backup if tuwunel supports one, else a short pause. A restart or pause is B4. It needs Alexis's side's AGREEMENT in #a2a-swarm › matrix-backup (macmini-infra's 02:24Z proposal, re-pinged 07:03Z), plus a 30-minute notice in #a2a-swarm and #lobby. Notice alone is not enough. A launchd job every 6 h writes ~/backups/matrix/matrix-<UTC ts>.tar.zst with a .sha256 and a MANIFEST, in a 0700 directory, keeping 8.
+  - Access: read-only pull by ivmbp's own key, restricted to rrsync -ro or an equivalent forced read command, limited by from= to ivmbp's tailnet address. The authorized_keys line went to the mini as a file, not through a room.
+  - ivmbp side (the dispatcher): a LaunchAgent pull every 6 h, sha256 verification, keeping 28 in ~/Backups/matrix-a2a (0700), with a last-ok file for freshness checks.
+  - The archives are secret-bearing and never pass through rooms.
+  - Alexey's machine gets the same pull model with his own key, after his go.
+- *Not decided:* desk #32's restic/R2 offsite finding (one age recipient, on the mini only) stays open with Ivan.
+- *State:* requested of macmini-infra at 07:02Z, reply by 09:00Z.
+- *Amended 07:05Z:* step 3 (the read-only pull) is installed. rrsync is unavailable (openrsync only), so a forced-command guard admits only an rsync --server --sender read of backups/matrix; fingerprint SHA256:vO949/bf…. Step 2 (the backup script, keep 8) is ready but not scheduled. Step 1 waits for Alexis's side to choose (a) a one-time container recreate with the backup path set, about 1 min down, after which every backup is online (preferred), or (b) a pause of a few seconds on every run.
+
+**tb-R151. Network-profile consumers get priority, right after tb-R131** (07:21Z, 2026-10-02; Ivan via ivan-network-profiles' session, 07:xxZ, verbatim: «узнай у моего кипера можем ли приоритезировать»; Ivan wants a root session started on a profile, and subagents spawned on a profile, soon).
+- *Evidence:* N-C1 (TASK-261002-re5ew4, critical-fixes, in backlog) waits on network-profiles' v0.2.0 (ETA 2.5–4 h) and on M2/M3, whose timing is unknown. Every task-board child is already built through vendorplugin.BuildLaunch (launch_plan.go:475 on main, verified), so subagent spawn needs only D4's typed carrier plus v0.2.0. The tb-sessiond hosts build env from os.Environ and do need M3. D4 (TASK-261002-143e84) is in development and N-B (TASK-261002-1g5dyh) in backlog, both on infra-exit's board.
+- *Decision:*
+  1. N-C1 splits into N-C1a, subagent spawn (D4 + v0.2.0), and N-C1b, the tb-sessiond hosts (after M3 / LP Phase 0). critical-fixes owns the split.
+  2. D4, N-B, N-C1a and v0.2.0 rank right after the two tb-R131 top priorities and the critical fix, ahead of other non-critical work, for ivmbp lanes, the ceiling and reviews. Ranking them above tb-R131 is Ivan's call.
+  3. infra-exit puts N-B next after D4 and posts ETAs by 08:30Z; any displaced tb-R131 item goes to Ivan with evidence.
+  4. critical-fixes starts N-C1a once D4 lands and v0.2.0 is tagged; Story-branch pre-work may start now.
+- *State:* in force unless objected to with evidence by 08:30Z.
+
+**tb-R152. Short Matrix downtime is tb-keeper's call; notice, not agreement** (07:25Z, 2026-10-02; Ivan directly in tb-arbiter's session, verbatim: «если речь об одной минуте простоя матрикса то может брать это решение без доп согласования»).
+- *Decision (Ivan's):*
+  - A planned Matrix server downtime of about one minute (a container recreate, restart or pause for maintenance or backups) needs no further agreement from either operator's side. tb-keeper decides it.
+  - Each one still gets a notice in #a2a-swarm and #lobby at least 30 minutes ahead, so that doorbells and orchestrators expect the gap. The notice gates the action (&&).
+  - Anything longer than a few minutes, or anything that changes the server's image, data or federation, is not covered and still needs both operators.
+- *First use:* tb-R150 step 1, option (a): recreate a2a-matrix once with TUWUNEL_DATABASE_BACKUP_PATH (+ BACKUPS_TO_KEEP=2) set; image, env and ports otherwise identical; about 1 min down. This supersedes tb-R150's 07:05Z wording that B4 needs Alexis's side's agreement.
+- *State:* standing.
+- *Amended 07:26Z (tb-R150 + tb-R152):* option (a) is dropped. tuwunel 1.9.3's online backup runs only through the admin-room command, which needs a human server admin; agents never get admin. Instead: a one-time clean stop of under 1 min at 08:00–08:10Z for the baseline archive, then a 6-hourly 'docker pause' of seconds (capped at 60 s) for crash-consistent archives. A fixed, published UTC schedule counts as tb-R152's notice for every recurring run. A restore drill of one pause archive is owed.
+- *Amended 09:05Z:* the codex-env-v1 adapter joins tb-R151's priority set. network-profiles' harness check (08:50–08:56Z): codex-cli 0.159.0's MCP stdio children do not inherit the proxy variables, while an explicit env block works. codex is the primary producer harness (tb-R138), so subagents on a profile need it. claude-code 2.1.287 passes as generic-env-v1, and its allowlist tuple may land now.
+
+**tb-R153. The shared validation queue on ivmbp is unwedged; the empty-lock fix goes to infra-exit** (11:27Z, 2026-10-02).
+- *Evidence:* no shared-queue suite had started since 05:38Z. ~/Library/Application Support/task-board/provider-limits/validation-suites/state.lock was 0 bytes with mtime 05:38:23Z, and every state.json heartbeat was frozen at 05:38:23Z. Both recorded holders were dead PIDs (c8c69f/75132, 3644eb/99309). In semaphore.go on main, updateUntil creates the lock with O_CREATE|O_EXCL and writes the owner JSON afterwards; breakStaleLock fails json.Unmarshal on an empty file and never breaks it. A process that died between those two steps leaves a permanent machine-wide deadlock. Diagnosed by infra-exit, confirmed by validation-fixes, critical-fixes and tb-keeper.
+- *Action:* tb-keeper posted an IMPACT notice and removed the empty lock at 11:26:44Z (the notice gated the removal, with a check that the file was still 0 bytes and unchanged). At 11:27:09Z the queue was live: the dead holders swept, 6ce3fc holding, fresh heartbeats. The state.json snapshot is kept in keeper/state/evidence/ (sha256 dd34a2aa…).
+- *Decision:*
+  1. The queue keeps its recorded order under ceiling 1. A waiter whose run fails on re-exec of the deleted 1361260b build re-spawns through the shim and keeps its turn.
+  2. #408 runs in critical-fixes' private tb-R1 lane and drops its shared ticket at handoff.
+  3. The fix is owned by infra-exit and reviewed by validation-fixes: an empty or unparseable lock older than lockBreakAge counts as stale; lock creation becomes atomic with its content (a temp file plus os.Link); regression tests for an old empty lock, a simulated crash between create and write, and a fresh empty lock that must NOT be broken. It is critical-class and takes the tb-R1 lane right after #408.
+- *State:* the unwedge is done; the fix is in progress.
+
+**tb-R154. -trimpath for validation suites: option (a), the narrow key outside the SuiteSHA** (12:00Z, 2026-10-02; TASK-261001-hmt6xa; advice converged at 20:11Z, 2026-10-01: critical-fixes, validation-fixes, tb-tests, ci-isolation, with ci-isolation's 20:12Z amendment; no objection by the reply-by).
+- *Evidence:* ivmbp's go-build cache held 715 compiled-package archives in 6 sizes, 20.7 GiB or 72% of the cache (macos-sys, 08:45Z): the same packages re-cached per worktree. Ceiling 1 came back four times on 2026-10-02, with refill bursts of 13–50 GiB/h. The precondition is met: #495 (hmt6xa) landed in Train 2 at 07:01Z, main has zero first-party runtime.Caller call sites, and the ciguard sweep forbids new ones. #497 / TASK-261002-ranqpb: head 0b6c0996, CI 36986316352 green, review round 3 accepted, its base behind main only by board Records.
+- *Decision:*
+  1. A narrow opt-in key, spawn.validation.trimpath: true, outside the SuiteSHA. The runner appends GOFLAGS=-trimpath and sets GOROOT per command dir via SuiteStateHome.Environ. The flag is recorded in each validation record as provenance: outside identity, inside evidence. The command-prefix form (b) is a fallback only.
+  2. Author ci-isolation, reviewer validation-fixes (its optional seam review does not block). #497 lands in the next free window via junction-proof.
+  3. Opt-in comes only after the tb-R55 ivmbp swap carrying #497, because a pre-swap binary rejects the key and live runs re-read the frozen config. Then each root sets the key before its next spawn and announces it. No early opt-in. Switching strands no CR.
+  4. First opt-ins, by cache impact: tb-muse's clone, infra-exit, the spm main root, tb-tests' go-tests roots, and codex-fix where Go applies.
+  5. Hosted CI does not switch now; if later, after l2vgx1 and 19eu3m, keeping the ordering pins. tb-R69's tested-head evidence stays the plain hosted CI run.
+  6. The cache cap remains the step after (tb-R72(4)). macos-sys measures growth for 24 h after the first opt-ins.
+- *State:* in force.
+
+**tb-R155. The first tb-R133 standing rules** (12:00Z, 2026-10-02; trial until 2026-10-16). When one of these covers a case, the orchestrator does not ask: it posts what it does and cites the rule. tb-keeper rules only on disputes and exceptions.
+- *S1, lane order:* the next lane suite (module lane, tb-R122 short lane or shared queue) starts after the previous LANE ENDED, in queue-claim order, with no grant. It launches at 45 GiB or more free and CPU idle at 25% or more (tb-R112), inside the ceiling (tb-R72); a critical fix may go first (tb-R131). LANE START and LANE ENDED are posted with the run id, free space and duration. A slot that looks stuck is checked in the queue state before anything is cancelled (tb-R153).
+- *S2, board-only gap publishes:* a signed, fast-forward publish that touches only .task-board/ may go to spm main between landing windows under tb-R69, with no grant. Post the SHA and the git diff --name-only proof. Never during an open window, unless the window holder agrees.
+- *S3, next-in-order windows:* with CI green on the exact head to land, and being next in first-READY order or the only READY, the lander opens its own window (READY + WINDOW OPEN, base, until, 30 min by default). No grant. A base moved only by board Records lands via junction-proof (tb-R69/tb-R71). The window closes with LANDED or ABORTED.
+- *S4, review panels and post-landing CI:* tb-R141's mechanics are standing. Panel CRs stay untouched until the post-#499 sweep, and done panel workspaces may be released after a canary check. A changes_requested is resolved by rework or by a dispute to tb-keeper, never waived by the CR's owner (tb-R132). After a landing, cancel the land/* branch's push CI when 'CI main' covers the same SHA.
+- *State:* trial, reviewed against the daily flow report (T11).
