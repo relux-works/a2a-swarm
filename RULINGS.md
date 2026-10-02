@@ -1419,3 +1419,24 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
     - Sensitive findings (secrets, the employer, BSim, clients, personal data) never go into shared rooms. They stay in the local report file. Rooms see only counts and the file path. Details go to Ivan through the dispatcher, and to relux-legal.
     - Budget guard: stop starting new research when the mini's weekly limit falls to 25% remaining, so that producers and reviews keep their capacity. macmini-infra posts the remaining limit in #macmini-infra every 6 h while research runs.
 - *State:* in force until the mini's weekly limit resets, or until Ivan changes it.
+
+**tb-R140. One explicit-complete integration run closes codex P1** (03:27Z, 2026-10-02; an exception under tb-R133; codex-fix's request, via the dispatcher).
+- *Evidence:* STORY-260929-2urftk (p1-integer-tool-arguments) landed on relux-works/codex as 35af013 (signed, valid; authored by Ivan). Its tree, ece69834, equals CR-TASK-260929-17t419-6's candidate_tree_oid; checked on GitHub at 03:27Z. The board is a separate-owner board. The integration run RUN-260930-e0c3b9 was told that "the runner lands synchronously", so the model never ran `worktree complete`. The runner's `integrate` was then refused with board_owner_separate. task-board has no admitted path that routes a separate-owner landing to `complete --landed-commit`.
+- *Decision:*
+  - codex-fix spawns ONE developer/implementer integration run on TASK-260929-17t419 revision 6, under tb-R138's models.
+  - Its brief does only this: re-check that 35af013's tree equals ece69834 and that it is signed; run `task-board worktree complete STORY-260929-2urftk --cr TASK-260929-17t419 --revision 6 --landed-commit 35af013b901ed4be1b88416068f140e9ca5cc85d`; then exit. No code edits.
+  - Cancel any recovery successor first. Record the reason in the run notes: "tb-R140 workaround for the separate-owner complete gap".
+  - codex-fix files a BUG on the spm board: on a separate-owner board, the runner must route a verified external landing to `complete --landed-commit`, and the integration brief must not say that the runner lands. Attach the two logs.
+- *State:* a one-time exception; it does not repeat without a new ruling.
+
+**tb-R141. tb-R132 reviews record nothing until the verdicts are merged** (03:33Z, 2026-10-02; a standing rule under tb-R133; replaces the interim practice posted at 02:00Z).
+- *Evidence:* task-board records each reviewer's verdict as it arrives, and a lone recorded accept is irreversible: withdraw_cr refuses an accepted CR (change_request_state_conflict).
+  - On 2w6op9 round 2, a sonnet accept was recorded while two astra panels requested changes. A developer rework spawn then tried a runner landing of the accepted revision. Only the write-boundary gate stopped it (infra-exit, 03:33Z).
+  - The same tb-R132 panels found a real data-loss bug in the already-landed 28odl0. A re-import drops kv_context_size, prefill_chunk_size and reasoning_effort. It is being fixed in TASK-261002-3va9hn before 3hrwzn uses the importer.
+- *Decision,* until task-board supports parallel reviewers:
+  1. All of a round's tb-R132 reviewers (both full reviews, and the delta reviewer from round 2) run as NON-RECORDING research tasks. They replay the CR patch, check the write-tree, and write their verdicts as outcome resources. Start them at the same moment.
+  2. The orchestrator merges the verdicts as tb-R132 says.
+  3. Only then, ONE recording CR reviewer run records the merged verdict, citing the outcome resources. It records accept only when every merged verdict is accept.
+  4. A CR already holding a lone accept that the merge contradicts is superseded by a successor CR, and closes with close-landed --superseded-by, as infra-exit did with 2xj2l5. It is never landed.
+  5. critical-fixes' issue on the tool gap becomes a BUG on the spm board, with capacity priority under tb-R123.
+- *State:* standing, until the task-board fix lands.
