@@ -1364,3 +1364,13 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - network-profiles resumes with 11b (confirm takes the edit lock), 15 (the RU translations), the integration-contract card C and N-B planning. Desk #20 stays open; its landed defaults stand.
   - model-routing resumes with curator-model-router issues #13–#18. W4 and W5 follow after M4 Gate B.
 - *State:* in force until tb-R127 ends.
+
+**tb-R136. Narrow builds on the Mac mini are allowed now; the reboot is deferred** (02:19Z, 2026-10-02; amends tb-R127, tb-R129 and tb-R135; Ivan, in the dispatcher's session at about 02:10Z: «стремно перезагружать - это прям критично? есть риск вообще потерять его - я бы подождал первой недели октября - возьму в аренду еще одну тачку»).
+- *Evidence:* the mini's syspolicyd crash loop slows exec but does not stop the host. Ivan defers the reboot until a second rented machine is in place, around the first week of October. tb-R129 and tb-R135 tied every mini build to the reboot, so the four mini campaigns (validation-fixes, ci-isolation, network-profiles, model-routing) would stall for days.
+- *Decision:*
+  - Narrow targeted builds on the mini are allowed now: `go test -p 1` on selected packages, one build or test at a time across all mini campaigns, through the mkdir lock ~/.mini-build-lock, with at most two worker runs at once.
+  - Before each build, check that syspolicyd is up: `launchctl print system/com.apple.security.syspolicy | grep -E 'state|successive'`. If it is down or crash-looping, wait rather than retry, and release the lock while waiting.
+  - Full spm suites and CR validation suites stay on ivmbp (queue or lanes) and hosted CI.
+  - Stop and report if load goes above 2x the cores or swap grows.
+  - Desk #28 is deferred by Ivan until the new machine. Before any mini reboot or retirement, Matrix and the critical services move to the new machine or are freshly backed up. Backup status is asked of macmini-infra now, read-only, with no reboot and nothing destructive.
+- *State:* in force until the mini is rebooted or retired; tb-R127's end date still applies to the WIP limits.
