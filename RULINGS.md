@@ -1660,3 +1660,15 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *Posted:* $plBZj8SSOLdo67j33aRfa62TU9LNcDieBpCjwCd66aY.
 - *State:* in force.
 
+
+**tb-R161. A review carries over across a no-code base refresh** (05:15Z, 2026-10-03; standing; first case #408; critical-fixes' request).
+- *Evidence:* #408's round-6 merged tb-R141 ACCEPT (3/3 panels) was on CR rev4 over base ae40f13d. The recording reviewer was refused at spawn (revision_base_superseded): main had changed 4 of the CR's paths (README, spawnruntime/changerequest.go, worktree/presence_shape_test.go, worktree/registry.go) during six rounds. The rev4 delta 3-way-applies onto main 27841c01 with 0 conflicts; each of the 4 files has a per-file delta with a patch-id identical to the accepted one; the other 29 files are byte-identical blobs.
+- *Decision:* a tb-R141 merged ACCEPT on rev N carries over to rev N+1 (rev N refreshed onto a newer main, no code change) when all hold:
+  1. Identity: the recording reviewer proves per-file patch-id identity of the CR delta and byte-identical blobs elsewhere, with the commands and output attached to the CR.
+  2. Interaction: for every path main itself changed between the two bases, the recording reviewer reads main's base delta there and checks it touches nothing the CR relies on or changes. An interaction finding sends it to a delta-only round on rev N+1.
+  3. Evidence: rev N+1's CR suite is green, and the refresh uses the safe refresh-candidate, not converge.
+  4. The recording reviewer records ACCEPT citing this rule, or names the failed condition.
+  - Any code change beyond the 3-way refresh means a normal round. This is the review-side twin of tb-R69's board-only junction for CI.
+- *Posted:* $yJN0WcoXyuLaVikQW10NXr_RA6WLZBfCGOkUy6EXrPE.
+- *Amendment (07:15Z, 2026-10-03; $KArDfDatkSl7OujF1UabtCDzTEo2f3UOofCP8B1tOKk):* condition 3 is also met when the refresh used converge (refresh-candidate does not admit a 'ready' revision; a tooling gap critical-fixes files) AND the resulting Story tree is proven identical to an independent 3-way apply of the accepted delta onto the new main; the recording reviewer recomputes that proof itself. #408 rev6 (tree 3dd3a6d5 on 27841c01) proceeds under it.
+- *State:* in force (tb-R133 trial).
