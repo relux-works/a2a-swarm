@@ -1708,3 +1708,28 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   4. The host-known reds are a filed BUG with an owner.
   A red package that fails condition 3 must go green on another host before the merged verdict.
 - *State:* in force (tb-R133 trial).
+
+**tb-R167. Producer fan-out on a shared workstation** (16:55Z, 2026-10-03; standing).
+- *Decision:* one root may run up to 3 concurrent producers when all of these hold:
+  1. Free disk is at least 50 GiB at launch.
+  2. Producers run only targeted tests and builds. CR suites stay in the shared queue.
+  3. Under 40 GiB, no new producer launches until free disk is back at 45 GiB, and the youngest producer runs no local tests.
+  4. One review-panel set at a time per root.
+  5. Landings keep their standing order.
+  The heavy-suite ceiling stays at 2 at most.
+- *State:* in force (tb-R133 trial).
+
+**tb-R168. A vendor integrity field that cannot be verified is non-blocking, under conditions** (16:57Z, 2026-10-03; standing).
+- *Decision:* a review finding that a vendor-supplied integrity field (such as a content digest) is not verified is non-blocking when all of these hold:
+  1. There is evidence that the algorithm cannot be derived from the pinned artifacts.
+  2. The field is format-checked fail-closed and never treated as verified downstream.
+  3. The covered content is validated independently and carries no state that the guarded decision relies on.
+  4. A code comment names the residual risk. A follow-up BUG exists. An upstream question goes to the vendor's public tracker in neutral wording.
+- *State:* in force (tb-R133 trial).
+
+**tb-R169. A hosted red is diagnosed only from the attempt-specific complete job log** (22:01Z, 2026-10-03; standing).
+- *Decision:*
+  1. Any claim about why a hosted CI job failed must cite the complete log of that specific attempt (for GitHub: `gh api --allow-escape-sequences repos/<o>/<r>/actions/jobs/<job id>/logs`), with the failing test and its message. This covers claims used for a re-run, a queue position, a BUG link or a "waits for X" plan. A summary view or a copied log is not evidence; truncated views have misattributed failures.
+  2. A decision that already rested on a truncated view is re-checked against the complete log. If the real cause lies outside the change, the one re-run spent on the wrong diagnosis is restored, on a named runner. If the cause lies in the change, it is a real red.
+  3. Queue tickets and their order are unchanged.
+- *State:* in force (tb-R133 trial).
