@@ -1672,3 +1672,39 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *Posted:* $yJN0WcoXyuLaVikQW10NXr_RA6WLZBfCGOkUy6EXrPE.
 - *Amendment (07:15Z, 2026-10-03; $KArDfDatkSl7OujF1UabtCDzTEo2f3UOofCP8B1tOKk):* condition 3 is also met when the refresh used converge (refresh-candidate does not admit a 'ready' revision; a tooling gap critical-fixes files) AND the resulting Story tree is proven identical to an independent 3-way apply of the accepted delta onto the new main; the recording reviewer recomputes that proof itself. #408 rev6 (tree 3dd3a6d5 on 27841c01) proceeds under it.
 - *State:* in force (tb-R133 trial).
+
+*Notes added to earlier tb- rulings (2026-10-03):*
+- tb-R159, correction (08:36Z, addendum 08:41Z): "the rest matches new Story worktrees" was an inference and is withdrawn. macos-sys's 23:27–01:27Z run measured go-build as the largest consumer among the components it measured (+12.29 GiB). A worktree costs disk when it is created (about 2.28 GiB per new panel workspace). The tracker missed the spm main root, so the worktree total for that window is unknown, and about 30% of the drop stays unattributed. The rule stands: it fires on measured .temp size and on release after the verdict.
+- tb-R160, clarification (10:27Z): skill-agents-management has no GitHub Actions, so condition 2's "full module CI" means the module's full local suite (make vet + make test) on a clean checkout of exactly the maint head, with the log and SHA attached to the consumer's CR. The hosted gate is condition 4.
+
+**tb-R162. curator stays public: its history is cleaned and guarded** (11:06Z, 2026-10-03; Ivan's decision, without a GitHub Support request; supersedes tb-R156's end condition).
+- *Decision:* the second operator's product documents, which had entered curator's public task board, were archived privately. curator main was rewritten once, from the first commit that carried them (base 5ce440c2, 119 commits) to the then tip, and every commit was re-signed. The remaining mentions in board files were neutralised. The two candidate-check branches that held old commits were deleted. Repo-local pre-commit and pre-push hooks guard against a repeat, and tooling follows in spm#511.
+- *Verification:* ivan-curator's local check, then an independent check by relux-legal from a fresh mirror: 0 hits in HEAD, in main's history, and in every branch, tag and PR ref.
+- *Result:* force-push dfaa557f→f17ea733 at 11:55:59Z, announced with IMPACT START/END. tb-R156 was lifted after the independent pass. Accepted residual: old commits stay fetchable by SHA until GitHub's own cleanup.
+- *State:* done.
+
+**tb-R163. Another operator's product material never becomes a resource in a public board** (11:06Z, 2026-10-03; standing).
+- *Decision:* agents never put another operator's product material (briefs, requirements, reports, evidence, answers, or quotes of them) into a board resource, .research, README or progress file of a public repository. They store it privately and link to it with a neutral note; titles stay neutral. When unsure whether a repo is public, treat it as public. The tooling to enforce it is spm#511.
+- *Scope (11:09Z):* "another operator" means a party outside Ivan's own fleet (a second operator, a client, a company). References between Ivan's own orchestrators are not covered.
+- *State:* in force.
+
+**tb-R164. Mac mini model rule: codex first, astra medium reviews, Claude and Muse as reserve** (12:04Z, 2026-10-03; Ivan, in macmini-infra's session).
+- *Decision (Ivan-side orchestrators on the Mac mini; new spawns):*
+  - Producers: codex gpt-6.1-sol, effort high.
+  - Reviewers: codex gpt-6-astra, effort medium (amends tb-R138's low on the mini). Parallel fresh reviews are allowed, each noted "same-provider review (operator rule)".
+  - Claude and Muse are reserve only, used on a codex refusal, failure, limit or outage, with the reason recorded.
+  - Scope: the Mac mini. Whether it also applies on ivmbp is with Ivan.
+- *State:* in force on the mini.
+
+**tb-R165. Unpublished derived activity events that collide on sequence are dropped, not renumbered** (12:29Z, 2026-10-03; standing).
+- *Decision:* an unpublished activity event that only a rollup produced, whose sequence number another root has meanwhile published, is dropped. It is never renumbered by hand and never edited. It is kept in a tagged stash until the source item's next publication re-derives it, after which the parent's rollup must match (a mismatch is a BUG). Source events are never dropped under this rule; a colliding source event is a BUG to its owner.
+- *State:* in force (tb-R133 trial).
+
+**tb-R166. Host-known reds** (12:30Z, 2026-10-03; standing).
+- *Decision:* a CR's local suite counts as green on a host where clean main fails, when all four hold:
+  1. A clean-main baseline at the CR's base SHA, on the same host and the same day, shows the same red tests with the same messages.
+  2. The CR's run shows exactly that set of reds.
+  3. The CR touches neither the red packages nor anything those tests exercise (fixtures, vendor tables, pins, registries).
+  4. The host-known reds are a filed BUG with an owner.
+  A red package that fails condition 3 must go green on another host before the merged verdict.
+- *State:* in force (tb-R133 trial).
