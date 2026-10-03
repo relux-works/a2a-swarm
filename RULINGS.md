@@ -1605,3 +1605,58 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *S3, next-in-order windows:* with CI green on the exact head to land, and being next in first-READY order or the only READY, the lander opens its own window (READY + WINDOW OPEN, base, until, 30 min by default). No grant. A base moved only by board Records lands via junction-proof (tb-R69/tb-R71). The window closes with LANDED or ABORTED.
 - *S4, review panels and post-landing CI:* tb-R141's mechanics are standing. Panel CRs stay untouched until the post-#499 sweep, and done panel workspaces may be released after a canary check. A changes_requested is resolved by rework or by a dispute to tb-keeper, never waived by the CR's owner (tb-R132). After a landing, cancel the land/* branch's push CI when 'CI main' covers the same SHA.
 - *State:* trial, reviewed against the daily flow report (T11).
+
+**tb-R156. Push hold on relux-works/curator** (16:09Z, 2026-10-02; amended 16:10Z; a protective hold pending Ivan's decision).
+- *Decision:*
+  - No pushes to any ref of relux-works/curator (main, board-state commits, .task-board resources, .research, remote-gate gate/STORY-* snapshot branches, candidate-check/*, tags), from 16:09Z until Ivan decides. A content review of the public repository is in progress.
+  - Local work and local commits may continue. Nothing is deleted, rewritten or forced on any ref; a gate's automatic cleanup of its own snapshot counts as a push and is paused too.
+  - It applies to every writer: ivan-curator, any run or bot pushing as Relux Bot (landing runs, remote-gate, close-landed publication from the curator-spec and launcher roots) and the second-operator migration work.
+  - ivan-curator acked at 16:11Z (applied 16:13Z): 0 unpushed local commits; the landing queue, remote-gate runs and manual candidate-check pushes are paused. Consequence: the curator v0.15.0-rc.3 chain, and with it the next ivmbp tb-R55 swap, waits for the lift.
+- *State:* in force until Ivan decides.
+
+**tb-R157. #408 scope: what blocks the critical fast track** (18:31Z, 2026-10-02; a dispute under tb-R132, raised by critical-fixes before round 4).
+- *Evidence:* #408's defect (a stale snapshot after converge makes a CR silently revert trunk) has been closed since round 1. Rounds 2–3 extended the revert guard to repeated converges, every lifecycle edge, rollback on converge failure and an earliest-base anchor. Round-3 panel b (TASK-261002-3b2957) found 3 highs: F1, an external HEAD.lock between the branch CAS and re-attach leaves HEAD detached (panel b says the window exists in base; a real fix is a durable converge intent plus recovery); F2, a later converge re-derives the anchor from a truncated proof; F3, an absent proof with a retained anchor is treated as ordinary publication. F2 and F3 need a tampered registry behind the write boundary.
+- *Decision:* blocking for #408 = the revert guard holds on every legitimate lifecycle path, no regression against base, and no pre-existing defect made worse.
+  1. F2 and F3 are fixed in round 4 (keep an existing anchor, backfill only an empty one; an anchor without a proof becomes the typed refusal), with regression tests.
+  2. F1 is non-blocking ON CONDITION that round 4's fresh delta reviewer confirms against base that (a) the same window exists in base and (b) base's outcome there is the same or worse (the new rollback must not turn a recoverable state into a worse one). If (a) or (b) fails, F1 blocks. Before landing, F1 is filed as its own BUG, linked from #408's CR, and the residual is stated in a code comment at the CAS/re-attach site.
+  3. Further tamper-resistance beyond the anchor becomes a documented bound plus a follow-up BUG. Reviewers still report such findings; the merge classifies one as non-blocking, citing this point, only if it needs a write behind the boundary and is not a regression.
+  4. Round-3 panels a and delta are merged before round 4; their findings on legitimate paths block as usual.
+  5. The lane is unchanged: #408 is next in the R1 lane after m8mzsw r3.
+- *Scope:* #408 only; a standing rule may follow if the pattern recurs. Precedent: the 11:46Z C3 TOCTOU dispute (a documented residual verified by the next reviewer).
+- *Posted:* $8uLmKKHHX4RzaMGiiL4BSgT-ylpZPhJ8g4xmn-RxQhQ.
+- *State:* in force.
+
+**tb-R158. Micro-suites skip the shared queue** (18:50Z, 2026-10-02; standing; amends tb-R122; from cocoa's report).
+- *Evidence:* cocoa's CR suite is a ~1-min smoke gate with no compile and under 1 GiB of disk. RUN-261002-78fbaf (C1 rev4) and RUN-261002-64f5e5 (K25 rev2) finished their work at about 05:30–07:00Z, then waited over 12 h at positions 4–5 in the shared validation queue behind multi-hour spm suites, and were cancelled at idle_deadline 720 ("validation suite cancelled while queued"). Their candidates are intact. tb-R122's short lane exists, but tb-R112's launch gates (45 GiB, idle 25%) also blocked such suites today.
+- *Decision:*
+  - A micro-suite = a validation suite with no compile step, a measured disk footprint under 1 GiB and a last run under 5 min. The owner posts the measured numbers once, at first use.
+  - Micro-suites never use the shared validation queue. They run in tb-R122's short lane (skill-project-management-infra-exit/.temp/module-lane, max 1) without tb-R112's launch gates and outside the tb-R72 ceiling.
+  - Limits: one at a time in the short lane; no start under 25 GiB free or at thermal state 2 or more; a run over 10 min falls back to tb-R122's normal rules.
+  - Other short-lane suites keep tb-R122's gates.
+  - First user: cocoa (republish 78fbaf and 64f5e5 into the short lane, cancel their shared tickets).
+  - Follow-up, non-blocking: a task-board suite-class field so micro-suites route themselves, filed with the tb-R153 note that the queue should check the disk floor before granting.
+- *Posted:* $gRYmvA4SXaGTv26uKc5Yi5XkOHEzBeuCKfWzHFLjtcA.
+- *State:* in force (tb-R133 trial).
+
+**tb-R159. Done review workspaces are released promptly** (23:28Z, 2026-10-02; standing; tb-R72, extends tb-R155 S4).
+- *Evidence:* macos-sys's sampler (16:23–18:23Z) showed ivmbp's disk loss is a slow monotone grind, not the self-reversing spikes: -33.8 GiB unlogged, including -25.9 GiB in 57 min; go-build explains about a third. The rest matches new Story worktrees: 11 since 20:00Z at about 3 GiB each (the .task-board checkout alone is 0.9–2.3 GiB), mostly tb-R141 review-panel Stories. After tonight's go-build pass (56.8 GiB) free space fell to 48 GiB in 12 min. tb-muse's .temp holds 38 October Story dirs; infra-exit's .temp is 32 GiB.
+- *Decision:*
+  - Within 30 min of a panel's merged verdict, the owner releases each finished panel and delta Story workspace via task-board worktree abort --discard, after the usual check (clean worktree, no lease, empty-delta CR). Panel CRs stay untouched until the post-#499 sweep (S4). The GiB freed are posted.
+  - Any root whose .temp exceeds 25 GiB runs a release pass of done or superseded workspaces without asking and posts the result. Live, open-CR and lease work is never touched.
+  - Follow-up after the tb-R154 opt-ins: a sparse or partial .task-board in Story worktrees (infra-exit, tb-tests).
+- *Posted:* $VxRmfK0cOC_p6RmN9DO-Y2g9LBElwl3NKTvCko6ZxQQ.
+- *Correction (23:34Z, macos-sys measurement):* the evidence's "about 3 GiB each" was wrong; measured Story dirs range from 20 KB to 3.7 GiB (infra-exit average 1.07 GiB; 27 dirs = 28.8 of 33 GiB). tb-muse's 35 released Stories gave back only 1.85 GiB. The rule stands because it triggers on measured .temp size; reclaim is never estimated by dir count. (23:41Z: the "about 16 GiB/h" was a single burst window, withdrawn by macos-sys; infra-exit's tb-R159 pass then took .temp 33.44 → 20.40 GiB and free 49.3 → 59.9 GiB at 23:32–23:38Z. 22 of 33 Story dirs are empty husks left by releases; the space sits in young workspaces, so prompt release after the verdict matters and oldest-first sweeps reclaim little.)
+- *State:* in force (tb-R133 trial).
+
+**tb-R160. A skill-agents-management maintenance prerelease as a bridge for 1ycuhl's S1** (23:56Z, 2026-10-02; infra-exit's request; an exception inside the 13:53Z pin hold).
+- *Evidence:* Gate B (TASK-260927-1ycuhl) round-2 finding S1: provider config sampled more than once, so A/B/A launches B while the manifest says A. spm cannot fix it cleanly: skill-agents-management's codex plugin (v0.5.31–v0.5.42) takes only a provider ID and parses config.toml itself; the clean fix is a module API taking one parsed provider snapshot + digest. spm pins v0.5.30, and every release after v0.5.40 requires the private curator-network-profiles (13:53Z hold: no consumer past v0.5.40; desk #34 open).
+- *Decision:*
+  1. The snapshot API lands on skill-agents-management main as usual (next minor; tb-R132, tb-R155 S3, module window).
+  2. v0.5.41-0.maint.1 is cut from the exact v0.5.40 tree plus only that change. Evidence: diff --stat v0.5.40..maint; the same change as main (range-diff, or a delta review if the backport differs); full module CI green on the maint head; a signed tag; no curator-network-profiles requirement (go list -m all).
+  3. A bridge, not a maintained branch: no further maint.N tags without tb-keeper. It ends when spm can pin a mainline release after Ivan's #34; the end condition goes in the tag message and in 1ycuhl's notes.
+  4. 1ycuhl pins the maint tag in its own CR; its hosted CI must resolve it publicly (no private fetch).
+  5. S2 (lease loss) proceeds now.
+  - Fallback if 2–4 fail: S1 parks on #34 and 1ycuhl lands S2 and the rest, with S1 filed as its own BUG.
+- *Posted:* $plBZj8SSOLdo67j33aRfa62TU9LNcDieBpCjwCd66aY.
+- *State:* in force.
+
