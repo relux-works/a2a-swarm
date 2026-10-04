@@ -1733,3 +1733,64 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   2. A decision that already rested on a truncated view is re-checked against the complete log. If the real cause lies outside the change, the one re-run spent on the wrong diagnosis is restored, on a named runner. If the cause lies in the change, it is a real red.
   3. Queue tickets and their order are unchanged.
 - *State:* in force (tb-R133 trial).
+
+**tb-R170. Review panels carry a review contract, not a research-plan contract** (23:34Z, 2026-10-03; standing; amends tb-R141 point 1).
+- *Decision:* a non-recording review panel is a review run. A research contract's "one decision, exit when answered" does not apply to it.
+  - The brief carries a surface table: entry points × positions × forms, or the catalog rows that apply. The panel marks every row as held, finding or not walked.
+  - After a confirmed blocking reproduction, the panel records it and continues to the remaining rows.
+  - The budget is per row. At the marker the panel writes rows_not_walked. A verdict with unwalked rows is never accept.
+  - Briefs state each invariant's intent and its allowed cases, not only its literal form.
+- *Measured:* on a frozen candidate with four known defects, two runs per arm: the research shape found 2/4 and 4/4; the review contract found 4/4 in both runs.
+- *State:* in force (tb-R133 trial).
+
+**tb-R171. A CI runner pause on a loaded workstation** (23:44Z, 2026-10-03). The runner was paused after three cumulative-timeout deaths of one head under local load. The pause is CLOSED: the operator re-enabled the runner. Lesson: tell the operator plainly at the moment of any runner change.
+
+**tb-R172. A union of disjoint appended rows in a test-only table counts as a mechanical refresh** (01:07Z, 2026-10-04; standing; amends tb-R161 condition 1).
+- *Decision:* this applies when all of these hold:
+  1. The conflicted file is test-only, and both sides only append disjoint entries to the same table.
+  2. The resolved file's diff against the new base equals exactly the change's own added lines, and every other file keeps per-file patch-id identity.
+  3. The full suite passes on the exact landing head, and the recorder cites tb-R161 and tb-R172.
+- *State:* in force (tb-R133 trial).
+
+**tb-R173. A publication guard's blocking scope is every publication path** (01:07Z, 2026-10-04; scope ruling for one change).
+- *Decision:*
+  - Blocking: any push of any ref to any remote, plus every landing on a protected main.
+  - Each publication point scans the whole unpublished range.
+  - Internal local commits are a documented bound with a follow-up.
+  - "No commit object" reads as no reachable object and no ref move.
+
+**tb-R174. No spawn uses a reduced ("lite") agent-context profile** (02:36Z, 2026-10-04; standing). The reduced profile drops the role's normative sections, including the reviewer's no-early-exit contract. Configs use the full profile; a lite review is invalid evidence. Code removal is tracked separately.
+
+**tb-R176. Tools install from a release tree that excludes the board; no NUL-bearing files in tracked board resources** (03:26Z, 2026-10-04; standing).
+- *Decision:*
+  - A first-party tool whose repository carries a board is installed from a release ref or artifact without the board directory. The board is data, not product.
+  - New board evidence is plain text. An archive stays outside git, with its path, sha256 and size recorded in a text resource.
+  - A validate check refuses new NUL files in board resources. There is no mass move of historical archives.
+- *State:* in force (tb-R133 trial).
+
+**tb-R177. Both founders' explicit OK before any OSS publication** (06:02Z, 2026-10-04; standing).
+- *Decision:*
+  - No repository is made public, and no first public tag is pushed, without both founders' explicit OK, asked before the switch.
+  - The arbiter's publication gate re-reads the original prerequisites before any PASS.
+- *State:* in force.
+
+**tb-R178. Dependency bumps with unrelated behaviour changes ride in their own bump change; no context-budget raise inside a security fix** (10:23Z, 2026-10-04; standing).
+- *Decision:*
+  - A dependent change rebases on the bump, which lands as a documented migration.
+  - A gate or budget raise is always its own reviewed change.
+- *State:* in force (tb-R133 trial).
+
+**tb-R179. A model-budget throttle until the weekly reset** (12:02Z, 2026-10-04). The burn was projected to hit the stop line six days early. Until the reset:
+- research and new implementation run at medium effort;
+- high effort only for security or critical reviews and critical-fix producers;
+- no new research fan-out;
+- no producers on a host with exec stalls;
+- the reserve providers are used where the rotation rules allow.
+
+**tb-R180. A docs-only relocation refresh keeps the suite evidence** (12:25Z, 2026-10-04; standing).
+- *Decision:* a change made stale only because the base relocated documentation it touches keeps its queued suite when all of these hold:
+  1. Its doc hunks are moved verbatim.
+  2. Outside the relocated doc files, the trees are byte-identical.
+  3. Every test that reads the changed doc files re-runs green on the landing revision, as a micro-suite.
+  4. The recorder cites the rule with the proof.
+- *State:* in force (tb-R133 trial).
