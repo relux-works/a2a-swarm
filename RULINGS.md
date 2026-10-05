@@ -1794,3 +1794,54 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   3. Every test that reads the changed doc files re-runs green on the landing revision, as a micro-suite.
   4. The recorder cites the rule with the proof.
 - *State:* in force (tb-R133 trial).
+
+**tb-R181. Codex budgets per subscription** (14:03Z, 2026-10-04; operator decision).
+- *Decision:* each Codex account follows its own rules. The ivmbp account keeps its prior pace and stop line. The Mac mini account was used at full pace for a bounded window (it closed at 22:30Z), within the mini's run cap.
+- *State:* the mini window closed; the per-account principle stays.
+
+**tb-R182. A stale-tree check after every refresh** (19:45Z, 2026-10-04; standing).
+- *Decision:* after any refresh-candidate or converge, and before any handoff, recorder run or CR snapshot, `git diff --name-only HEAD` must list only the candidate's own paths, and check-no-revert must be clean against the current trunk. A failure stops the handoff. A refresh that silently leaves stale tracked paths is a critical bug (a silent trunk revert).
+- *State:* in force.
+
+**tb-R184. No `spawn wait` / `spawn --wait` until the busy-spin bug is fixed** (20:40Z, 2026-10-04; standing interim).
+- *Decision:* waiters busy-spun at up to 90% of a core and tripped the CPU guard. Poll `spawn status` every few minutes, or wait for the completion notice. The rule lifts when the fix lands with a regression test.
+- *State:* in force.
+
+**tb-R185. Storage hygiene by design** (20:49Z, 2026-10-04; operator decision).
+- *Decision:* automatic retention for Story workspaces and spawn-run logs, a content-addressed evidence store outside git, and research on reviving the remote board as cloud storage.
+- *State:* in force.
+
+**tb-R186. Disk recovery: archive before deletion, Story worktrees without the board, stale Stories closed through the board** (01:03Z, 2026-10-05; operator decision).
+- *Decision:*
+  1. Logs are archived before any deletion.
+  2. Managed Story worktrees exclude the git-tracked `.task-board/`, which is most of their roughly 0.9 GiB.
+  3. Stale live Stories are closed with `worktree abort`, finished, or closed-landed, never removed with `rm`.
+- *State:* in force.
+
+**tb-R187. Models after a budget reset: Muse writes code, sol medium reviews** (02:05Z, 2026-10-05; operator rule for the Mac mini).
+- *Decision:* producers use muse-spark-1.3-contributor at max effort; reviewers use gpt-6.1-sol at medium. If Muse fails, the fallback producer is sol medium or claude-sonnet medium/high; when the fallback producer is codex, the reviews move to Claude (cross-provider rule).
+- *State:* in force on the Mac mini.
+
+**tb-R188. The session-host extraction is built in a private fork** (02:24Z, 2026-10-05; operator direction).
+- *Decision:* the hybrid extraction happens in a PRIVATE relux-works fork that syncs main at least daily. Accepted, inert foundations land on live main first. Merging back is its own fully gated change. Module map: agent-session-host (supervisor, registry, park and restart, harness adapters), agent-session-bridge (providers plus a trust-gate front), and trust primitives in curator-trust plus mandates.
+- *State:* in force.
+
+**tb-R189. A test-only CR crosses a code junction with a package-scoped exact-head run** (02:42Z, 2026-10-05; standing).
+- *Decision:* a CR whose delta is only `_test.go` files and fixtures may land on a newer main without a fresh full hosted CI when all of these hold:
+  1. A full exact-head CI was green on the previous base.
+  2. Its patch-ids are identical after the rebase.
+  3. Main's interacting delta has been read.
+  4. If main changed a package the CR touches, `go vet` plus `go test` of those packages ran at the exact new head.
+- *State:* in force.
+
+**tb-R190. Only new module repos may go public** (02:43Z, 2026-10-05; operator direction, amended).
+- *Decision:* the private fork never goes public. A new module repo may go public only when all of these hold:
+  - it has a clean history (no session links, personal data, credentials or NUL resources);
+  - `.task-board/` is in `.gitignore` from the first commit;
+  - its CI runs on GitHub-hosted runners, or the repo joins the self-hosted groups only together with mandatory approval of external fork-PR workflows and no secrets for fork runs;
+  - both founders gave their OK (tb-R177).
+- *State:* in force. The first such repo (agent-session-bridge) went public on 2026-10-05. The operator's proposal that one founder's OK should suffice is PENDING the other operator's agreement, so tb-R177 stands.
+
+**tb-R191. An architecture review package comes before any extraction code** (02:49Z, 2026-10-05; operator direction).
+- *Decision:* the module repos are prepared as an architecture review package: overview, module map, trust-gate pipeline, injection and output paths, key lifecycle, open questions and diagrams, for both founders. No extraction code lands before the operator's separate go. The session-core study of comparable systems goes to the wiki, with its adopted ideas traced into the architecture.
+- *State:* in force.
