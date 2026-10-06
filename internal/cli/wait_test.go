@@ -23,9 +23,14 @@ func (e *env) waitAsync(name string, args ...string) <-chan result {
 
 // syncCalls waits until the fake server has seen at least n /sync requests, so
 // the test injects events only after `wait` has taken its position.
+// testDeadline bounds every wait-until in these tests. It is a ceiling for a
+// slow or shared CI host (the 5 s it replaced failed under load and on Linux),
+// never an expectation: a passing run returns as soon as its condition holds.
+const testDeadline = 60 * time.Second
+
 func (e *env) syncCalls(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testDeadline)
 	for e.hs.CallCount("GET /_matrix/client/v3/sync") < n {
 		if time.Now().After(deadline) {
 			t.Fatalf("wait never reached sync #%d", n)
@@ -34,12 +39,36 @@ func (e *env) syncCalls(t *testing.T, n int) {
 	}
 }
 
+// syncedParked waits until user has made sync request #n while the wait
+// behind done stays parked. A wait that returns first (it woke on something it
+// must not) fails at once with its output, instead of timing out on the count.
+func (e *env) syncedParked(t *testing.T, user string, n int, done <-chan result, what string) {
+	t.Helper()
+	deadline := time.Now().Add(testDeadline)
+	for e.hs.SyncCount(user) < n {
+		select {
+		case r := <-done:
+			t.Fatalf("%s: wait returned instead of staying parked: code %d %q", what, r.code, r.stdout)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: wait never reached sync #%d", what, n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	select {
+	case r := <-done:
+		t.Fatalf("%s: wait returned instead of staying parked: code %d %q", what, r.code, r.stdout)
+	default:
+	}
+}
+
 func recv(t *testing.T, ch <-chan result) result {
 	t.Helper()
 	select {
 	case r := <-ch:
 		return r
-	case <-time.After(5 * time.Second):
+	case <-time.After(testDeadline):
 		t.Fatal("wait did not return")
 		return result{}
 	}
@@ -170,24 +199,32 @@ func TestWaitLearnsThreadsFromSync(t *testing.T) {
 }
 
 // Proves --room restricts which rooms can wake me, without losing what it
-// filters out: the lobby mention does not wake a `--room proj` wait, but it is
-// in the mailbox, so a later wait that includes the lobby prints it (the old
-// wait moved the shared cursor past it and it was lost), and the proj mention
-// follows.
+// filters out: a `--room proj` wait processes the lobby mention without waking
+// (checked after the wait has synced past it, not after a wall-clock timeout),
+// the proj mention then wakes it, and a later wait that includes the lobby
+// prints the lobby mention from the mailbox (the old wait moved the shared
+// cursor past it and it was lost).
 func TestWaitRoomFilter(t *testing.T) {
 	e, room := world(t)
 	lobby := "!lobbyRoomID"
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	alice := "@alice:test.local"
+	calls := e.hs.SyncCount(alice)
+	done := make(chan result, 1)
+	go func() { done <- e.runCtx(ctx, "--as", "alice", "wait", "--room", "proj", "--timeout", "0") }()
+	e.syncedParked(t, alice, calls+1, done, "parked")
 	lid := e.hs.inject(lobby, "@bob:test.local", msg("@alice:test.local in lobby", nil))
-	r := e.as("alice", "wait", "--room", "proj", "--timeout", "60ms").ok(t)
-	if r.stdout != "timeout\n" {
-		t.Fatalf("filtered room woke wait: %q", r.stdout)
-	}
+	e.syncedParked(t, alice, calls+2, done, "filtered lobby mention") // its batch was processed
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local in proj", nil))
-	r = e.as("alice", "wait", "--room", "#proj", "--room", "lobby", "--timeout", "2s").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, "mention #lobby "+lid)
-	r = e.as("alice", "wait", "--room", "#proj", "--timeout", "2s").ok(t)
+	r := recv(t, done)
 	tuitestkit.ContainsStr(t, r.stdout, "mention #proj "+id)
+	if strings.Contains(r.stdout, lid) {
+		t.Fatalf("--room proj printed the lobby mention: %q", r.stdout)
+	}
+	r = e.as("alice", "wait", "--room", "#proj", "--room", "lobby", "--timeout", "10s").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "mention #lobby "+lid)
 }
 
 // Proves doorbell lines never carry more than 200 characters of body, never

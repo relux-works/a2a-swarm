@@ -67,6 +67,16 @@ type fakeHS struct {
 	uploadMax int64                // m.upload.size
 	// created records every accepted createRoom request body, in order.
 	created []createRoomReq
+	// syncsBy counts /sync requests per user, on arrival, so a test can wait
+	// for one agent's next sync while other agents (a projector) sync too.
+	syncsBy map[string]int
+}
+
+// SyncCount is the number of /sync requests user has made so far.
+func (hs *fakeHS) SyncCount(user string) int {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	return hs.syncsBy[user]
 }
 
 // createRoomReq is the part of a createRoom body the fake checks and records.
@@ -808,6 +818,12 @@ func (hs *fakeHS) relations(w http.ResponseWriter, r *http.Request, u string) {
 }
 
 func (hs *fakeHS) sync(w http.ResponseWriter, r *http.Request, u string) {
+	hs.mu.Lock()
+	if hs.syncsBy == nil {
+		hs.syncsBy = map[string]int{}
+	}
+	hs.syncsBy[u]++
+	hs.mu.Unlock()
 	q := r.URL.Query()
 	timeout, _ := strconv.Atoi(q.Get("timeout"))
 	since := -1

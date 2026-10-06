@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -156,9 +157,20 @@ func TestProjectionDoesNotRingTwice(t *testing.T) {
 		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "system", Slug: "alpha"}}))
 	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
 	tuitestkit.ContainsStr(t, r.stdout, "to #proj "+id)
+	// The projection must not ring: a parked wait processes the sync batch that
+	// carries it (checked by sync count, not a wall-clock timeout) and stays parked.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	alice := "@alice:test.local"
+	calls := e.hs.SyncCount(alice)
+	done := make(chan result, 1)
+	go func() { done <- e.runCtx(ctx, "--as", "alice", "wait", "--timeout", "0") }()
+	e.syncedParked(t, alice, calls+1, done, "parked")
 	e.project().ok(t)
-	if r := e.as("alice", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
-		t.Fatalf("projection rang again: %q", r.stdout)
+	e.syncedParked(t, alice, calls+2, done, "projection") // alice's batch with it was processed
+	cancel()
+	if r := recv(t, done); r.stdout != "" {
+		t.Fatalf("interrupted wait printed: %q", r.stdout)
 	}
 	e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "second"))
 	e.project().ok(t)
