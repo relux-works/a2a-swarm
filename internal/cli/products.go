@@ -118,10 +118,23 @@ func (s *session) productSpace(ctx context.Context, name string) (string, string
 
 func (s *session) newProduct(ctx context.Context, name, keeperArg, projectorArg string) error {
 	alias := "#" + name + ":" + s.server
+	keeper, projector := "", ""
+	if keeperArg != "" {
+		keeper, _ = normalizeUser(keeperArg, s.server)
+	}
+	if projectorArg != "" {
+		projector, _ = normalizeUser(projectorArg, s.server)
+	}
+	// The product keeper gets power 50 in its own space, enough to link its
+	// product's rooms (m.space.child); never 100 (e9's ack, 2026-10-06).
+	spaceUsers := map[string]int{}
+	if keeper != "" && keeper != strings.ToLower(s.creds.UserID) {
+		spaceUsers[keeper] = 50
+	}
 	space, err := s.client.ResolveAlias(ctx, alias)
 	if errors.Is(err, matrix.ErrUnknownAlias) {
 		space, err = s.client.CreateRoom(ctx, matrix.CreateRoomRequest{Preset: roomPreset, Visibility: roomVisibility, RoomAliasName: name,
-			CreationContent: map[string]any{"type": "m.space"}, PowerLevelContentOverride: map[string]any{"events_default": 50}})
+			CreationContent: map[string]any{"type": "m.space"}, PowerLevelContentOverride: map[string]any{"events_default": 50, "users": spaceUsers}})
 		racedAlias := matrix.IsCode(err, "M_ROOM_IN_USE")
 		if racedAlias {
 			space, err = s.client.ResolveAlias(ctx, alias)
@@ -143,13 +156,9 @@ func (s *session) newProduct(ctx context.Context, name, keeperArg, projectorArg 
 			return fmt.Errorf("#%s already exists and is not a space", name)
 		}
 		s.app.printf("already space #%s %s\n", name, space)
-	}
-	keeper, projector := "", ""
-	if keeperArg != "" {
-		keeper, _ = normalizeUser(keeperArg, s.server)
-	}
-	if projectorArg != "" {
-		projector, _ = normalizeUser(projectorArg, s.server)
+		if keeper != "" {
+			s.ensureKeeperPower(ctx, space, name, keeper)
+		}
 	}
 	rooms := []struct{ suffix, policy string }{{"lobby", "lobby"}, {"broadcast", "broadcast"}, {"system", "system"}}
 	for _, r := range rooms {
@@ -219,6 +228,34 @@ func (s *session) newProduct(ctx context.Context, name, keeperArg, projectorArg 
 		}
 	}
 	return nil
+}
+
+// ensureKeeperPower raises the keeper to power 50 in an existing product
+// space when it is below that; without the caller's power it prints a note.
+func (s *session) ensureKeeperPower(ctx context.Context, space, name, keeper string) {
+	if keeper == strings.ToLower(s.creds.UserID) {
+		return
+	}
+	var pl map[string]any
+	if err := s.client.GetState(ctx, space, "m.room.power_levels", "", &pl); err != nil {
+		s.app.printf("keeper power in #%s not checked: %v\n", name, err)
+		return
+	}
+	users, _ := pl["users"].(map[string]any)
+	if users == nil {
+		users = map[string]any{}
+	}
+	if lvl, ok := users[keeper].(float64); ok && lvl >= 50 {
+		s.app.printf("already keeper power %s in #%s\n", keeper, name)
+		return
+	}
+	users[keeper] = 50
+	pl["users"] = users
+	if _, err := s.client.PutState(ctx, space, "m.room.power_levels", "", pl); err != nil {
+		s.app.printf("keeper power for %s in #%s not set: %v (a space admin can set it)\n", keeper, name, err)
+		return
+	}
+	s.app.printf("keeper power %s 50 in #%s\n", keeper, name)
 }
 
 func (s *session) inviteProductUser(ctx context.Context, room, label, user string) error {
@@ -295,6 +332,43 @@ func (s *session) linkSpace(ctx context.Context, space, room string) error {
 	return nil
 }
 
+// spaceLinkers names the members whose power allows m.space.child in space,
+// for a refusal message; the creator of a room v12 space has it implicitly.
+func (s *session) spaceLinkers(ctx context.Context, space string) string {
+	var pl struct {
+		Users        map[string]int `json:"users"`
+		Events       map[string]int `json:"events"`
+		StateDefault *int           `json:"state_default"`
+	}
+	var create struct {
+		Sender string `json:"creator"`
+	}
+	if err := s.client.GetState(ctx, space, "m.room.power_levels", "", &pl); err != nil {
+		return "the space's admins"
+	}
+	need := 50
+	if pl.StateDefault != nil {
+		need = *pl.StateDefault
+	}
+	if v, ok := pl.Events["m.space.child"]; ok {
+		need = v
+	}
+	var names []string
+	for u, lvl := range pl.Users {
+		if lvl >= need {
+			names = append(names, localpartIfLocal(u, s.server))
+		}
+	}
+	if s.client.GetState(ctx, space, "m.room.create", "", &create) == nil && create.Sender != "" {
+		names = append(names, localpartIfLocal(create.Sender, s.server)+" (creator)")
+	}
+	if len(names) == 0 {
+		return "the space's admins"
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 func (s *session) adoptProductRoom(ctx context.Context, name, roomArg string, knownID bool) error {
 	space, _, err := s.productSpace(ctx, name)
 	if err != nil {
@@ -312,7 +386,13 @@ func (s *session) adoptProductRoom(ctx context.Context, name, roomArg string, kn
 	}
 	var create map[string]any
 	if err := s.client.GetState(ctx, room, "m.room.create", "", &create); err != nil {
-		return fmt.Errorf("room %s does not exist", sanitizeLine(roomArg))
+		if !knownID && !strings.HasPrefix(roomArg, "!") {
+			// The alias resolved, so the room exists; its state is just not
+			// readable to a non-member. Linking needs only the space's power.
+			s.app.printf("note: cannot read %s (not a member); linking it from the space anyway\n", label)
+		} else if !knownID {
+			return fmt.Errorf("room %s does not exist, or you are not a member and it cannot be verified: give its alias, or join it first", sanitizeLine(roomArg))
+		}
 	}
 	var old map[string]any
 	if err := s.client.GetState(ctx, space, "m.space.child", room, &old); err == nil && liveChild(old) {
@@ -320,6 +400,10 @@ func (s *session) adoptProductRoom(ctx context.Context, name, roomArg string, kn
 		return nil
 	}
 	if _, err := s.client.PutState(ctx, space, "m.space.child", room, map[string]any{"via": []string{s.server}}); err != nil {
+		if matrix.IsStatus(err, 403) {
+			return fmt.Errorf("%s is NOT linked into product %s: you lack power for m.space.child in #%s; %s can link it with: a2a product adopt %s %s",
+				label, name, name, s.spaceLinkers(ctx, space), name, label)
+		}
 		return fmt.Errorf("link child %s: %w", label, err)
 	}
 	s.app.printf("linked child %s\n", label)

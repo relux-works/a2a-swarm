@@ -135,8 +135,19 @@ Creates a room with the standard policy (owner decision, 2026-09-29; protocol ru
 a2a room new skill-foo --name "skill-foo" --invite mini_skill-foo_orch
 ```
 
+A newly created room subscribes its creator (the creator is joined by the creation), with the same kinds as `join` (`system`,
+`owner-needed`, `decision`); an alias that already exists creates no subscription.
+
 `--product X` adopts the created (or already existing) room into product space X, setting the space child link and the room parent link when
-the caller has power to send it. X must be an existing product space.
+the caller has power to send it. X must be an existing product space. If the space refuses the child link, the room exists but is NOT linked:
+the command exits 1 and names the space members who can link it, with the `a2a product adopt X <room>` command they would run.
+
+### `a2a room retire <alias>`
+
+Removes an EMPTY room created by mistake; Matrix cannot delete rooms. It unlinks the room from each parent space where the caller has the
+power (otherwise it names who can), deletes the alias and leaves; the empty room stays on the server without an alias. A room with any
+message is refused: its history is archived with `a2a archive` and the room is retired through the room-move checklist, never by this
+command.
 
 ### `a2a product new X [--keeper NAME] [--projector NAME]` / `product adopt X <room>` / `product list` / `product show X`
 
@@ -144,9 +155,11 @@ Products are Matrix spaces named `#X`; `X` matches `[a-z0-9-]{1,40}`. `new` crea
 `#X-system` rooms when absent. It adds reciprocal `m.space.child` / `m.space.parent` links and invites the named keeper and projector.
 The lobby follows `room new` policy. The broadcast room sets `events_default` to 50 and gives the optional keeper level 50 (enough to
 post; the creator keeps admin power). The system projection room sets `events_default` to 50 and gives the optional projector level 50. Re-running prints `already`
-and does not change existing rooms or links.
+and does not change existing rooms or links. The named keeper gets power 50 in the space itself (enough to link the product's rooms, never 100);
+on an existing space, a keeper below 50 is raised when the caller has the power, otherwise a note is printed.
 
-`adopt` adds an existing room to X without creating or renaming it. It prints `already` for an existing child. If the caller cannot send the
+`adopt` adds an existing room to X without creating or renaming it. It prints `already` for an existing child. A room given by alias whose
+state the caller cannot read (not a member) is still linked from the space, with a note; a bare `!roomid` that cannot be verified is refused. If the caller cannot send the
 parent state event in that room, it prints `parent link skipped: no power in <room>` after adding the child link. `list` prints joined spaces;
 `show X` prints child aliases and room ids.
 ```bash

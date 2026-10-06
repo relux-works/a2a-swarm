@@ -402,6 +402,11 @@ func (c *Client) ResolveAlias(ctx context.Context, alias string) (string, error)
 	return out.RoomID, err
 }
 
+// DeleteAlias removes a room alias from the directory (the room stays).
+func (c *Client) DeleteAlias(ctx context.Context, alias string) error {
+	return c.call(ctx, http.MethodDelete, v3+"/directory/room/"+seg(alias), nil, nil, nil)
+}
+
 // Join joins a room by id or alias and returns the room id.
 func (c *Client) Join(ctx context.Context, roomIDOrAlias string) (string, error) {
 	var out struct {

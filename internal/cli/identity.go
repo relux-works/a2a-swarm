@@ -127,7 +127,7 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 		return usagef("invalid product name %q: use [a-z0-9-]{1,40}", sanitizeLine(*product))
 	}
 	if *product != "" && *preset == "" {
-		return usagef("--product requires an explicit --preset")
+		return usagef("--product requires an explicit --preset (one of: %s)", strings.Join(productPresets, ", "))
 	}
 	presets, err := parsePresets(*preset, *product, *resource)
 	if err != nil {

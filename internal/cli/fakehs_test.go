@@ -172,6 +172,7 @@ func newFakeHS(t *testing.T) *fakeHS {
 	})
 	route("GET "+v3+"/joined_rooms", true, hs.joinedRooms)
 	route("GET "+v3+"/directory/room/{alias}", true, hs.directory)
+	route("DELETE "+v3+"/directory/room/{alias}", true, hs.deleteAlias)
 	route("POST "+v3+"/createRoom", true, hs.createRoom)
 	route("POST "+v3+"/join/{room}", true, hs.join)
 	route("POST "+v3+"/rooms/{room}/leave", true, hs.leave)
@@ -507,6 +508,25 @@ func (hs *fakeHS) directory(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, 200, map[string]any{"room_id": id, "servers": []string{hs.server}})
 }
 
+// deleteAlias removes an alias; like a real server it needs the room's
+// creator or a member with state power.
+func (hs *fakeHS) deleteAlias(w http.ResponseWriter, r *http.Request, u string) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	alias := r.PathValue("alias")
+	id, ok := hs.aliases[alias]
+	if !ok {
+		writeErr(w, 404, "M_NOT_FOUND", "Room alias not found.")
+		return
+	}
+	if room := hs.rooms[id]; room == nil || !mayPost(room, u, true) {
+		writeErr(w, 403, "M_FORBIDDEN", "You may not delete this alias.")
+		return
+	}
+	delete(hs.aliases, alias)
+	writeJSON(w, 200, map[string]any{})
+}
+
 // roomFor resolves the {room} path value and checks membership when needed.
 func (hs *fakeHS) roomFor(w http.ResponseWriter, r *http.Request, u string, needJoin bool) *fakeRoom {
 	room, ok := hs.rooms[r.PathValue("room")]
@@ -587,7 +607,13 @@ func (hs *fakeHS) createRoom(w http.ResponseWriter, r *http.Request, u string) {
 	if req.Preset == "public_chat" {
 		room.state["m.room.join_rules|"] = json.RawMessage(`{"join_rule":"public"}`)
 	}
-	room.state["m.room.power_levels|"], _ = json.Marshal(req.PowerLevelContentOverride)
+	// Like a real server, power_levels start from the spec defaults (state
+	// events need 50, messages 0) and the override is merged on top.
+	pl := map[string]any{"state_default": 50, "events_default": 0, "invite": 0}
+	for k, v := range req.PowerLevelContentOverride {
+		pl[k] = v
+	}
+	room.state["m.room.power_levels|"], _ = json.Marshal(pl)
 	hs.rooms[id] = room
 	hs.aliases[full] = id
 	for _, inv := range req.Invite {

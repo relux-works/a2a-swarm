@@ -25,7 +25,7 @@ const (
 	roomVisibility = "private"
 )
 
-const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X]"
+const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | a2a room retire <alias>"
 
 // roomSpec is one room to create with the standard policy.
 type roomSpec struct {
@@ -36,6 +36,9 @@ type roomSpec struct {
 
 // cmdRoom: a2a room new <alias> [--name N] [--topic T] [--invite a,b]
 func cmdRoom(ctx context.Context, a *App, args []string) error {
+	if len(args) == 2 && args[0] == "retire" {
+		return cmdRoomRetire(ctx, a, args[1])
+	}
 	if len(args) == 0 || args[0] != "new" {
 		return usagef("%s", roomUsage)
 	}
@@ -77,11 +80,23 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
-	id, _, err := s.newRoom(ctx, spec)
-	if err != nil || *product == "" {
+	id, created, err := s.newRoom(ctx, spec)
+	if err != nil {
 		return err
 	}
-	return s.adoptProductRoom(ctx, *product, id, true)
+	if created {
+		// The creator is joined by the creation; like `join`, it gets the
+		// room subscription, so it hears what is posted there (a parent keeper
+		// that created a child's room heard nothing before, 2026-10-05).
+		if err := s.subscribeRoom(ctx, a, id, s.shortAlias("#"+local+":"+s.server), a.Now()); err != nil {
+			return err
+		}
+	}
+	if *product == "" {
+		return nil
+	}
+	// Adopt by alias, so every message names the room as the caller typed it.
+	return s.adoptProductRoom(ctx, *product, "#"+local, false)
 }
 
 // roomLocal validates a new room's alias: #alias or alias on this server.
@@ -149,4 +164,60 @@ func (s *session) newRoom(ctx context.Context, spec roomSpec) (id string, create
 		}
 	}
 	return id, true, nil
+}
+
+// cmdRoomRetire: a2a room retire <alias>. It removes an EMPTY room created by
+// mistake (Matrix cannot delete a room): it unlinks the room from every parent
+// space where the caller has the power, deletes the alias, and leaves. A room
+// with any message is refused: history is archived with `a2a archive` and the
+// room is retired through the move checklist instead, never by this command.
+func cmdRoomRetire(ctx context.Context, a *App, arg string) error {
+	local, err := roomLocal(arg)
+	if err != nil {
+		return err
+	}
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	full := "#" + local + ":" + s.server
+	label := s.shortAlias(full)
+	id, err := s.client.ResolveAlias(ctx, full)
+	if err != nil {
+		if errors.Is(err, matrix.ErrUnknownAlias) {
+			return fmt.Errorf("room %s does not exist", label)
+		}
+		return err
+	}
+	page, err := s.client.Messages(ctx, id, "", "b", 1)
+	if err != nil {
+		return fmt.Errorf("read %s (join it first): %w", label, err)
+	}
+	if len(page.Chunk) > 0 {
+		return fmt.Errorf("%s has messages: it is not retired by this command; archive it (a2a archive %s) and follow the room-move checklist", label, local)
+	}
+	parents, err := s.client.GetStateEvents(ctx, id, "m.space.parent")
+	if err != nil {
+		return fmt.Errorf("read the parent spaces of %s: %w", label, err)
+	}
+	for _, ev := range parents {
+		if ev.StateKey == nil || *ev.StateKey == "" {
+			continue
+		}
+		space := *ev.StateKey
+		if _, err := s.client.PutState(ctx, space, "m.space.child", id, map[string]any{}); err != nil {
+			a.printf("not unlinked from %s: %v (%s can unlink it)\n", space, err, s.spaceLinkers(ctx, space))
+			continue
+		}
+		a.printf("unlinked from %s\n", space)
+	}
+	if err := s.client.DeleteAlias(ctx, full); err != nil {
+		return fmt.Errorf("delete alias %s: %w", label, err)
+	}
+	a.printf("deleted alias %s\n", label)
+	if err := s.client.Leave(ctx, id); err != nil {
+		return fmt.Errorf("leave %s: %w", id, err)
+	}
+	a.printf("left %s (the empty room stays on the server without an alias)\n", id)
+	return nil
 }
