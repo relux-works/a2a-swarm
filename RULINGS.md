@@ -738,6 +738,16 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 - *Before public exposure (matrix.relux.works:443, a separate window):* the full list A in that topic, including log out all devices + re-provision (no laptop-era token survives), refresh tokens instead of stored passwords, log redaction, encrypted off-box backups, admin credentials only on the mini, and external negative probes.
 - *State:* in force.
 
+**ac-R11. Protocol rules 27-32 and rule 4 (as built) are adopted** (2026-10-01). PRs #38 (rule 27, the advice process, and docs/advice-process.md), #39 (rule 28, redlines), #40 (rule 29, problem first), #41 (rules 30 and 31, peer consultation and impact notices), #42 (rule 32, blocking and non-blocking asks) and #43 (rule 4, the doorbell as built) land in that order as fast-forwards. #44 adds the CLI subtypes they use (queue, redline, redline-closed, impact-start, impact-end).
+- *Decision:* shared protocol, so both operators decided (rules 24 and 27): Ivan via ivan-tb-keeper ($VdzSM3HZ…, tb-R55; #42/#43 in $ptUWOAWL… and $rm66fObt…, tb-R83), and Alexis via m1max_local-models_orch ($iz2jDAAa…). The decided heads were 98799c8, b6b1082, e0f514b, cd6e261, ab0762a and 6346259.
+- *Advice record:* in each PR. No objections. Two pieces of advice were overridden with reasons:
+  - tb-keeper's 12 h reply-by fallback (#38), for an explicit window;
+  - e7's escalation to the answerer's owner (#42), for the scope keeper.
+  - Also on #42, tb-keeper's late advice to carry the question text in the blocked packet was overridden, and tb-keeper accepted that ($Kdkf7rqS…).
+  - m1max_worker-jail_orch's extended window closed with no reply and no running session ($3PZRcOpc…).
+- *Integration:* each PR's protocol lines are identical to its decided head. Stacked, the a2a SKILL.md exceeded its 200-line budget (TestEmbeddedSkill), so each PR's skill summary moved verbatim into internal/skill/files/a2a/references/protocol-rules.md, behind a one-line index. e9 ruled this packaging, not substance ($l--aJDiL…).
+- *State:* in force.
+
 ## Structural fixes that retire rules
 | rule or ruling | retired by |
 | --- | --- |
