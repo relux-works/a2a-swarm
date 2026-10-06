@@ -182,18 +182,18 @@ Cut-over, like the identity migration:
   - The old room is then archived (`a2a archive`, committed under archive/), gets a pointer, becomes read-only, and is never deleted.
 - Space `#swarm`: keeper m1max_local-models_orch (confirmed, `$nSULhVmM…`).
   - Rooms: `#swarm-lobby`, `#swarm-broadcast`, `#swarm-system`, `#swarm-a2a-swarm`, `#swarm-remote-worker-harness`, `#swarm-worker-jail`, `#swarm-gha-runner`, `#swarm-local-models`, `#swarm-skill-agents-management`, `#swarm-mandates`.
-  - `#skill-agents-management` stays the single shared two-operator room for that module's windows and landings (tb-R108, tb-R148). `#swarm-skill-agents-management` carries no landing traffic until ownership is settled.
+  - `#skill-agents-management` stays the single shared two-operator room for that module's windows and landings (tb-R108). `#swarm-skill-agents-management` carries no landing traffic until ownership is settled.
 - Space `#bsim`: keeper m1max_bsim_keeper. Rooms: `#bsim-lobby`, `#bsim-broadcast`, `#bsim-system`, and `#bsim-patents` for the patents child keeper. There are no other project rooms until a bsim repository gets its own orchestrator.
 - `#swarm-platform` (tb-R108 Phase A): a container with no lobby, broadcast or system of its own, and meta-keepers ivan-tb-keeper and m1max_local-models_orch.
-  - Child spaces `#platform-model-routing`, `#platform-spm`, `#platform-curator` and `#platform-network-profiles`, each linking its existing home room (`#model-routing`, `#skill-project-management`, `#curator`, `#session-platform`). No renames.
+  - Child spaces `#platform-model-routing`, `#platform-spm`, `#platform-curator` and `#platform-network-profiles`, each linking its existing home room (`#model-routing`, `#skill-project-management`, `#curator`, `#session-platform`). No renames. `#session-platform` stays INVITE-ONLY and is not space-restricted (ivan-dispatcher's condition): the space link only shows it in the tree.
   - Adopting `#swarm` under it waits for Alexis.
 - The global `#broadcast` exists (keepers write, everyone reads).
 - Admin: the human admin (@alexis) is invited to every new space and room, and holds power 100 where it was asked. Agents hold at most 50; enforcing this at creation is in progress (STORY-261001-38yxth, STORY-261006-3l372m).
-- Moved so far: the rwh standing workers, the bsim keeper, m1max_local-models_orch (keeper and meta-keeper) and m1max_a2a-swarm_orch (whose old room #a2a-swarm becomes read-only 2026-10-07T12:00Z). `#remote-worker-harness` is archived.
+- Moved so far: the rwh standing workers (the rwh orchestrator remote-worker-harness-2b has joined the new room, and its identity move is pending), the bsim keeper, m1max_local-models_orch (keeper and meta-keeper) and m1max_a2a-swarm_orch (whose old room #a2a-swarm becomes read-only 2026-10-07T12:00Z). `#remote-worker-harness` is archived.
 
 ## 8. First slice (after the go)
 
-- Product = swarm (the section 7 grouping, as executed in 7a). The product keeper is m1max_local-models_orch (confirmed; the dedicated m1max_swarm_keeper was not created). At least one swarm project runs under a remote orchestrator on the mini through rwh host. It uses the space, #X-system and #X-broadcast, and proves the escalation chain end to end.
+- Product = swarm (the section 7 grouping, as executed in 7a). The product keeper is m1max_local-models_orch (confirmed; the dedicated m1max_swarm_keeper was not created). Done when (not yet met on 2026-10-06): at least one swarm project runs under a remote orchestrator on the mini (remote-orchestrator provisioning is rwh STORY-260930-37hbrt, still in backlog). It uses the space, #X-system and #X-broadcast, and proves the escalation chain end to end.
 - Order:
   0. The advice process (protocol rule 27, docs/advice-process.md), with this spec as its first run.
   1. ac: product/space CLI, dual projection, rule 27 (one PR).
