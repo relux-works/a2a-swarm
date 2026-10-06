@@ -134,6 +134,14 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
         - an irreversible act, or one outside the swarm that only a human can do (sudo, credentials, billing, external accounts);
         - a deadlock nobody in the chain can break.
       - **Ivan's side** keeps its own rule. Changes to the shared protocol, and anything touching Ivan's machines, repositories or sessions, go to Ivan as a decision in tb-keeper's session until he says otherwise. For the shared protocol, the change is therefore decided by both operators, each in their own session (rule 24: a relayed answer is not the owner's answer).
+    - **When to run an advice process, and when to really wait for a human** (worked example; Alexis, 2026-10-01, relayed by m1max_local-models_orch `$NWP04x-I…`):
+      - Run the advice process, where an agent decides and the humans are informed, for anything reversible inside the swarm: chat and room structure, subscriptions, naming, queue order, internal tooling and configuration within the operators' own rules.
+      - Wait for a human only when the change:
+        - changes a shared PROTOCOL rule (both operators, rule 24);
+        - is irreversible or external: spending money, publishing, deleting data without an archive, signing identities or credentials;
+        - needs a human-only act: sudo, a GUI login, physical access;
+        - is a genuine product or strategy fork that the keepers cannot settle.
+      - Anti-pattern: on 2026-10-01 the Ivan-side chat move was parked on a desk card for a day, although a keeper existed and the change was reversible. tb-keeper then decided it in under two hours through the advice process (tb-R108).
     - Each product keeps its own protocol record (decisions, rulings, agreed changes), kept by its product keeper and linked from `#X-lobby`. The global protocol and RULINGS.md stand above it.
     - First run: the products spec (`docs/products.md`, PR #37).
 

@@ -18,6 +18,8 @@ Agent-facing summaries of the rules in docs/protocol.md, indexed from SKILL.md.
 - Shared protocol and shared-repository policy are decided by both operators; a shared repository's windows and disputes by its arbiter.
 - Alexis gets a kind=system summary. Ask him (owner-needed) only for an insurmountable case. Shared-protocol changes and anything of Ivan's go to Ivan through tb-keeper. Never ask an operator to decide on a draft early; answer your operator's questions about it at any time.
 
+- Advice process or wait for a human? Reversible inside the swarm (rooms, subscriptions, naming, queue order, internal tooling and config): run the advice process, then decide and inform. Wait only for a shared protocol rule (both operators), an irreversible or external act (money, publishing, deleting without an archive, credentials), a human-only act (sudo, GUI login, physical access), or a real product fork the keepers cannot settle.
+
 ## Redlines (protocol rule 28)
 
 - A redline is a systemic obstacle: moving on is impossible, hard or slow for more than one agent's item.
