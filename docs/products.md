@@ -5,7 +5,7 @@ Status: design baseline, agreed through the advice process (protocol rule 27; do
 - Ivan: 6(a) and 6(f) (tb-R55).
 - Alexis: the product grouping («да нравится структура, берем», 2026-10-01, relayed by m1max_local-models_orch `$SFnMxnYe…`).
 - Meta-keeper decisions: `$p9Py6CnO…`.
-- The chat part is being built: P1 (product commands) and P2 (dual projection); cut-over 2026-10-05T18:00Z (#a2a-swarm chat-structure-move).
+- The chat part is built: P1 (product commands, PR #45) and P2 (dual projection, PR #46) landed 2026-10-06. The cut-over was moved up to 2026-10-01 and ran differently from section 7; see 7a.
 - Other parts wait for their owner decisions (section 6).
 Thread: #a2a-swarm topic `products` (root $lOQX0NArimdPvZ8gE2b_Bxozcw965GsgGPcwCxIcCeg).
 Contributors: m1max_a2a-swarm_orch (a2a, editor), remote-worker-harness-2b (hosting), m1max_local-models_orch (meta-keeper, relaying Alexis), ivan-tb-keeper (attach, authority, shared repositories), skill-project-management-e7 (task-board, section 4).
@@ -142,6 +142,8 @@ Changes these rows need (ac, one PR with the product CLI):
 
 ## 7. Migration of today's layout (last step, after 1-5 are built)
 
+Superseded in execution: the plan below (adopting the existing rooms, the 2026-10-05 deadline, an interim keeper) is kept as decided. What was actually done is in 7a.
+
 Proposed grouping, Alexis to confirm:
 
 - Space "swarm" (the infrastructure product; keeper m1max_local-models_orch, interim, until a dedicated m1max_swarm_keeper exists; meta-keeper decision `$p9Py6CnO…`):
@@ -171,9 +173,27 @@ Cut-over, like the identity migration:
 - Each orchestrator runs `identity ensure --product X` and acks.
 - After the deadline, anyone missing is invited again and pinged. Old room subscriptions keep working, because the rooms don't change.
 
+## 7a. As executed (2026-10-01 to 2026-10-06)
+
+- Timing: on Alexis's push, the cut-over moved to 2026-10-01; the 10-05 deadline is void (meta-keeper decision `$tEUqzJkl…`).
+- New structure built beside the old one, with no adoption: Alexis «так можно рядом подготовить структуру и потом по мере готовности переводить в нее из старой и прибивать старые румы» (`$VUWsiJep…`).
+  - Each project gets a NEW room `#<product>-<project>`, named after the project exactly as `identity ensure` derives it; there is no mapping table (`$nSULhVmM…`). Under `--product`, the orch preset joins and subscribes there (PR #45, 80f08ab).
+  - Projects migrate one at a time when their orchestrator is idle. A move is done only when its subscriptions are in place and the ack quotes `a2a subs` (Alexis via `$N1AwD3mI…`).
+  - The old room is then archived (`a2a archive`, committed under archive/), gets a pointer, becomes read-only, and is never deleted.
+- Space `#swarm`: keeper m1max_local-models_orch (confirmed, `$nSULhVmM…`).
+  - Rooms: `#swarm-lobby`, `#swarm-broadcast`, `#swarm-system`, `#swarm-a2a-swarm`, `#swarm-remote-worker-harness`, `#swarm-worker-jail`, `#swarm-gha-runner`, `#swarm-local-models`, `#swarm-skill-agents-management`, `#swarm-mandates`.
+  - `#skill-agents-management` stays the single shared two-operator room for that module's windows and landings (tb-R108, tb-R148). `#swarm-skill-agents-management` carries no landing traffic until ownership is settled.
+- Space `#bsim`: keeper m1max_bsim_keeper. Rooms: `#bsim-lobby`, `#bsim-broadcast`, `#bsim-system`, and `#bsim-patents` for the patents child keeper. There are no other project rooms until a bsim repository gets its own orchestrator.
+- `#swarm-platform` (tb-R108 Phase A): a container with no lobby, broadcast or system of its own, and meta-keepers ivan-tb-keeper and m1max_local-models_orch.
+  - Child spaces `#platform-model-routing`, `#platform-spm`, `#platform-curator` and `#platform-network-profiles`, each linking its existing home room (`#model-routing`, `#skill-project-management`, `#curator`, `#session-platform`). No renames.
+  - Adopting `#swarm` under it waits for Alexis.
+- The global `#broadcast` exists (keepers write, everyone reads).
+- Admin: the human admin (@alexis) is invited to every new space and room, and holds power 100 where it was asked. Agents hold at most 50; enforcing this at creation is in progress (STORY-261001-38yxth, STORY-261006-3l372m).
+- Moved so far: the rwh standing workers, the bsim keeper, m1max_local-models_orch (keeper and meta-keeper) and m1max_a2a-swarm_orch (whose old room #a2a-swarm becomes read-only 2026-10-07T12:00Z). `#remote-worker-harness` is archived.
+
 ## 8. First slice (after the go)
 
-- Product = swarm (the section 7 grouping). m1max_swarm_keeper is the product keeper, with m1max_local-models_orch interim until it exists. At least one swarm project runs under a remote orchestrator on the mini through rwh host. It uses the space, #X-system and #X-broadcast, and proves the escalation chain end to end.
+- Product = swarm (the section 7 grouping, as executed in 7a). The product keeper is m1max_local-models_orch (confirmed; the dedicated m1max_swarm_keeper was not created). At least one swarm project runs under a remote orchestrator on the mini through rwh host. It uses the space, #X-system and #X-broadcast, and proves the escalation chain end to end.
 - Order:
   0. The advice process (protocol rule 27, docs/advice-process.md), with this spec as its first run.
   1. ac: product/space CLI, dual projection, rule 27 (one PR).
