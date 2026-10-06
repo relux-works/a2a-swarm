@@ -1855,3 +1855,99 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 **tb-R191. An architecture review package comes before any extraction code** (02:49Z, 2026-10-05; operator direction).
 - *Decision:* the module repos are prepared as an architecture review package: overview, module map, trust-gate pipeline, injection and output paths, key lifecycle, open questions and diagrams, for both founders. No extraction code lands before the operator's separate go. The session-core study of comparable systems goes to the wiki, with its adopted ideas traced into the architecture.
 - *State:* in force.
+
+**tb-R192. A CR crosses a test-only advance of main with a package-scoped exact-head run** (04:14Z, 2026-10-05; standing; the mirror of tb-R189).
+- *Decision:* a CR may land on a main that advanced only by test-only changes (`_test.go` files and fixtures) when all of these hold:
+  1. its full exact-head CI was green on the previous base;
+  2. its per-file patch-ids are identical after the rebase;
+  3. the advance's files are disjoint from the CR's files;
+  4. `go vet` plus `go test -count=1` of every package the advance touched ran at the exact rebased head.
+- Any non-test advance means a fresh full CI.
+- *State:* in force.
+
+**tb-R193. Every Mac mini build goes through the FIFO build lock** (04:33Z, 2026-10-05; standing).
+- *Decision:* every go build or test on the Mac mini runs through one FIFO ticket lock with dead-owner detection (a pid plus its start time). Hand-rolled spinner wrappers are retired.
+- *State:* in force.
+
+**tb-R194. The mini's syspolicyd trigger, part 2: test-created executables** (05:02Z, 2026-10-05).
+- *Decision:* suites that create and delete fake executables run on hosted CI or on the operator's workstation, not on the Mac mini. A default-off test-support switch keeps such executables until a reaper clears them. Success measure: syspolicyd's 24 h crash rate. It went from 2.4/h to 0 after this rule.
+- *State:* in force.
+
+**tb-R195. Review difficulty beats the reviewer pin; model routing runs in shadow for a week** (05:10Z, 2026-10-05; operator decisions).
+- *Decision:* hard, critical and delicate reviews get a qualified strong reviewer whatever the pinned reviewer is. The model router wraps spawns in shadow mode for one week, launching exactly the caller's arguments, before any switch to select mode.
+- *State:* in force (amended on the operator's workstation by tb-R209).
+
+**tb-R196. One machine-scoped validation ceiling** (10:25Z, 2026-10-05).
+- *Decision:* the validation queue's machine ceiling is read from one machine-scoped file that the arbiter writes. A per-root value may only lower it for that root's own tickets.
+- *State:* in force.
+
+**tb-R197. A CR crosses a disjoint code advance with a guard-and-vet run at the exact head** (10:50Z, 2026-10-05; standing).
+- *Decision:* a CR may land on a main that advanced by production code when all of these hold:
+  1. its full exact-head CI was green on the previous base;
+  2. its patch-ids are identical after the rebase;
+  3. `go list -deps` shows the two sides are disjoint in both directions;
+  4. at the exact rebased head, every repo-wide guard step runs, plus `go vet` and `go test -count=1` of each package the CR changes;
+  5. a signed exact-head fast-forward.
+- *State:* in force.
+
+**tb-R198. No new test debt in skill-project-management** (14:02Z, 2026-10-05; the second operator's request, the operator's nod).
+- *Decision:* new or changed tests use no waits (fake clocks and deterministic seams instead), no literal mutant tables in the PR suite, and isolation by default (TempDir only, no fixed ports, no shared paths). There are no new slow serial tests without a stated reason. A mechanical ciguard check follows. A fixed port means one that is bound, listened on or dialled; an inert URL literal is allowed.
+- *State:* in force.
+
+**tb-R199. Mutation tests leave PR CI for a trunk lane with a mechanical redline** (14:05Z, 2026-10-05; both operators).
+- *Decision:* fixed mutant tables leave the default PR suite. Security guards, diff-scoped meta guards and diff-triggered mutants stay per PR. A trunk mutant lane blocks landings while it is red (except the fix and board-only records) and gates tags. The CI speed-up W1–W7 runs as one epic.
+- *State:* in force.
+
+**tb-R200. Our own session core; herdr's vendor contract is supported, not implemented from herdr** (14:21Z, 2026-10-05; the operator's decision).
+- *Decision:* no herdr implementation is adopted. The session host supports herdr's agent-to-runtime state-report contract. Three invariants hold: verified input, no process writes into a session through state reports, and swarm scale. For the joint platform it is the operator's position, not a joint decision.
+- *State:* in force.
+
+**tb-R201. When Codex refuses a review, another provider reviews; review prompts get recalibrated** (15:42Z, 2026-10-05; both operators' take).
+- *Decision:* a refused or derailed Codex review is re-run on another provider. Each refusal is logged. Review prompts are reframed defensively with the same substance (owners: the second operator's spm keeper plus tb-tests, per tb-R206).
+- *State:* in force; on the operator's workstation the fallback is Muse (tb-R209).
+
+**tb-R202. A time-boxed bridge: CLI test timeout 90m → 135m until sharding is wired** (17:39Z, 2026-10-05).
+- *Decision:* one workflow change raises the CLI test timeout so the sharding fix can pass its own CI. The bridge expires when the sharding wiring lands.
+- *State:* in force until W1 rev2 lands.
+
+**tb-R203. Test redline on skill-project-management main until the sharded CI is wired** (20:13Z, 2026-10-05; the second operator's proposal, imposed as an arbiter landing hold).
+- *Decision:* only the timeout bridge, the sharding CRs, test-only hygiene, critical fixes and board-only records land. Everything else parks, with no re-runs. The release condition is simplified by tb-R208.
+- *State:* in force until released.
+
+**tb-R204. Generated maps are derived files** (04:34Z, 2026-10-06; standing; a sibling of tb-R197).
+- *Decision:* a CR crosses an advance whose only overlap is a generated owner or shard map when:
+  - the map is regenerated by its tool at the exact head, and its diff touches only the CR's entries;
+  - all other patch-ids are identical;
+  - tb-R197's checks pass, plus the maps' own guards.
+- *Amendments:* an edge that exists only through test imports passes when both ends' tests run at the exact head. A same-package overlap passes only with disjoint files, a leaf package and its full tests at the exact head.
+- *State:* in force.
+
+**tb-R205. No deliberate CPU saturation on shared hosts** (07:33Z, 2026-10-06; standing).
+- *Decision:* no load generator may take a host's CPU idle below 25%. A stress test runs at most 4 workers, attached to the test's own process (never disowned), at most 10 min per pass, and is named in the brief. A full-saturation repro goes to a hosted runner. The arbiter stops violators behind an impact notice.
+- *State:* in force.
+
+**tb-R206. Codex unblocking** (08:18Z, 2026-10-06; the second operator's request).
+- *Decision:*
+  - the prompt recalibration of tb-R201 is led by the second operator's spm keeper, with tb-tests as co-owner;
+  - the Codex goal-recovery 409 bug is P1 in the critical lane;
+  - every new guard states its per-PR cost, and a repo-wide guard over about 30 s needs a stated reason.
+- *State:* in force.
+
+**tb-R207. The operator workstation's task-board install is unblocked from two sides** (10:19Z, 2026-10-06).
+- *Decision:* curator rc.3 refuses any snapshot with a NUL byte.
+  1. skill-agents-management stores its zone data as NUL-free text with a pure loader (v0.5.54 and v0.5.41-0.maint.2), and spm pins it.
+  2. curator makes the NUL gate v1-only.
+  No install with a pre-rc3 binary.
+- *State:* in force.
+
+**tb-R208. The sharding fix W1 rev2 gets a private lane, a reserved window and a simpler release condition** (10:42Z, 2026-10-06).
+- *Decision:* W1 rev2 runs one suite in a private lane under the host gates. Main is reserved for it from green validation to landing; critical landings inside the window need its owner's agreement. Its own green exact-head full CI plus an exact-head landing releases tb-R203.
+- *State:* in force until released.
+
+**tb-R209. Models on the operator's workstation: parallel reviews on gpt-6.1-sol high plus Muse max; producers on sol medium or Muse max** (11:37Z, 2026-10-06; the operator's rule, to save the Claude Code subscription's limits).
+- *Decision:* for new spawns on that host only:
+  - every review round has two parallel reviewers (sol high and Muse max); delta and recording reviewers are cross-provider from the producer;
+  - producers run sol medium or Muse max;
+  - Claude leaves the producer and reviewer roles there.
+  Running runs continue. The Mac mini keeps its own rules.
+- *State:* in force.
