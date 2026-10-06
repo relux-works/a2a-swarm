@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -479,28 +480,49 @@ func TestInboxAndWaitNeverDuplicate(t *testing.T) {
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
 	var fired atomic.Bool
 	var inner result
+	innerDone := make(chan struct{})
 	race := func(args ...string) func(*App) {
 		return func(a *App) {
 			a.beforeDeliver = func() {
 				if fired.CompareAndSwap(false, true) {
 					inner = e.as("alice", args...)
+					close(innerDone)
 				}
 			}
 		}
 	}
 
+	// A parked wait (no wall-clock timeout: under load a short one ended
+	// before it ever delivered) races an inbox inside its delivery; once the
+	// inbox has run and the wait has polled again without printing, stop it.
+	alice := "@alice:test.local"
 	first := e.hs.inject(room, "@bob:test.local", ping(1))
 	e.configure = race("inbox")
-	w := e.as("alice", "wait", "--timeout", "200ms").ok(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := e.hs.SyncCount(alice)
+	done := make(chan result, 1)
+	go func() { done <- e.runCtx(ctx, "--as", "alice", "wait", "--timeout", "0") }()
+	select {
+	case <-innerDone:
+	case r := <-done:
+		t.Fatalf("wait returned before its delivery raced the inbox: %q", r.stdout)
+	case <-time.After(testDeadline):
+		t.Fatal("the wait never reached delivery")
+	}
+	e.syncedParked(t, alice, calls+2, done, "after the inbox took the event")
+	cancel()
+	w := recv(t, done)
 	e.configure = nil
 	tuitestkit.ContainsStr(t, inner.stdout, "id="+first)
-	if w.stdout != "timeout\n" {
+	if strings.Contains(w.stdout, first) {
 		t.Fatalf("wait printed what inbox received: %q", w.stdout)
 	}
 
 	fired.Store(false)
+	innerDone = make(chan struct{})
 	second := e.hs.inject(room, "@bob:test.local", ping(2))
-	e.configure = race("wait", "--timeout", "2s")
+	e.configure = race("wait", "--timeout", "30s") // a ceiling: it returns on the event
 	h := e.as("alice", "inbox").ok(t)
 	e.configure = nil
 	tuitestkit.ContainsStr(t, inner.stdout, "mention #proj "+second)
