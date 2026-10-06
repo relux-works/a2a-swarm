@@ -34,4 +34,5 @@ a signed git archive of room history, and close the known CLI gaps.
 | --- | --- | --- | --- | --- |
 
 ## Topics
-- #a2a-swarm: plan, governance, bridge-daemon (open); protocol-transport, signed-archive (closed)
+- #swarm-a2a-swarm (home since 2026-10-06, space #swarm): chat-structure-move, doorbell-liveness, child-keeper-onboarding (open)
+- #a2a-swarm (moved; read-only from 2026-10-07T12:00Z, archived to archive/a2a-swarm/): plan, governance, bridge-daemon, protocol-transport, signed-archive, advice-process-protocol
