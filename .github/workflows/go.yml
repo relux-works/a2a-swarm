@@ -10,11 +10,17 @@ jobs:
     # Self-hosted on the owner's MacBook (repo-level runner m1max-a2a-swarm, agreed in
     # #gha-runner-m1max): hosted runners cannot start (billing, ruling ac-R8).
     runs-on: [self-hosted, macOS, relux-a2a]
+    # A hung step must not hold a PR for the 6 h default (2026-10-06: a cache
+    # tar sat 70 min in uninterruptible I/O after the tests had passed).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # The runner is persistent: ~/go/pkg/mod and the build cache stay on
+          # disk, so archiving them into an Actions cache is pure overhead.
+          cache: false
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
