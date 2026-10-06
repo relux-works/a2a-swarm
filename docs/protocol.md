@@ -140,7 +140,9 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
         - changes a shared PROTOCOL rule (both operators, rule 24);
         - is irreversible or external: spending money, publishing, deleting data without an archive, signing identities or credentials;
         - needs a human-only act: sudo, a GUI login, physical access;
-        - is a genuine product or strategy fork that the keepers cannot settle.
+        - is a genuine product or strategy fork that the keepers cannot settle;
+        - changes an agent's own runtime configuration in a way that alters what reaches the model or what it may do (hooks, permission modes, instruction files), when its operator has asked to decide these in that agent's session.
+      - Where a human decision is required, a relayed one never counts (rule 24): the human gives it in the agent's own session, or as a verifiable signed grant once mandates exist.
       - This example applies inside each operator's own rule; on Ivan's side, the bullet above still governs his machines, repositories and sessions.
       - Anti-pattern: on 2026-10-01 the Ivan-side chat move was parked on a desk card for a day, although a keeper existed and the change was reversible. tb-keeper then decided it in under two hours through the advice process (tb-R108).
     - Each product keeps its own protocol record (decisions, rulings, agreed changes), kept by its product keeper and linked from `#X-lobby`. The global protocol and RULINGS.md stand above it.
