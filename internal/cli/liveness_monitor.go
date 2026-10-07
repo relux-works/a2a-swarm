@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,12 +16,13 @@ import (
 )
 
 type replyPolicy struct {
-	keepers map[string]bool
-	aliases map[string][]string
+	keepers   map[string]bool
+	aliases   map[string][]string
+	canonical map[string]string
 }
 
 func newReplyPolicy(keepers, aliases []string) (replyPolicy, error) {
-	p := replyPolicy{keepers: map[string]bool{}, aliases: map[string][]string{}}
+	p := replyPolicy{keepers: map[string]bool{}, aliases: map[string][]string{}, canonical: map[string]string{}}
 	for _, name := range keepers {
 		if config.ValidateName(name) != nil {
 			return p, errors.New("invalid keeper")
@@ -32,7 +34,16 @@ func newReplyPolicy(keepers, aliases []string) (replyPolicy, error) {
 		if !ok || config.ValidateName(name) != nil || config.ValidateName(alias) != nil {
 			return p, errors.New("reply-alias requires recorded NAME=ALIAS")
 		}
+		if prior, ok := p.canonical[alias]; ok && prior != name {
+			return p, errors.New("reply-alias has ambiguous destination")
+		}
+		p.canonical[alias] = name
 		p.aliases[name] = append(p.aliases[name], alias)
+	}
+	for alias, name := range p.canonical {
+		if parent := p.canonical[name]; parent != "" && parent != name && alias != name {
+			return p, errors.New("reply-alias canonical name is itself an alias")
+		}
 	}
 	return p, nil
 }
@@ -74,6 +85,9 @@ func unanswered(events []observedEvent, server string, policy replyPolicy) map[s
 			}
 			if name == "all" || config.ValidateName(name) != nil {
 				continue
+			}
+			if canonical := policy.canonical[name]; canonical != "" {
+				name = canonical
 			}
 			recipients = append(recipients, name)
 			allowed[name] = true
@@ -124,23 +138,13 @@ func (a *App) addUnanswered(ctx context.Context, s *session, rows []whoRow, sinc
 				return err
 			}
 			for _, ev := range page.Chunk {
-				if ev.OriginServerTS <= 0 || ev.OriginServerTS > a.Now().UnixMilli() {
-					return errors.New("unanswered history has an invalid/future timestamp; no alerts sent")
+				event, keep, err := observeLivenessEvent(ev, room, since, a.Now(), s.creds.UserID)
+				if err != nil {
+					return err
 				}
-				if ev.OriginServerTS < since.UnixMilli() {
-					continue
+				if keep {
+					events = append(events, event)
 				}
-				if ev.Type != "m.room.message" || isRedacted(ev) {
-					continue
-				}
-				if _, edit := isEdit(ev); edit {
-					continue
-				}
-				h, ok := decodeHeader(ev.Message().A2A)
-				if !ok || h.Type == "projection" {
-					continue
-				}
-				events = append(events, observedEvent{room: room, event: ev, header: h})
 				if len(events) > 100000 {
 					return errors.New("unanswered history exceeds scan bound; no alerts sent")
 				}
@@ -160,14 +164,7 @@ func (a *App) addUnanswered(ctx context.Context, s *session, rows []whoRow, sinc
 			return errors.New("unanswered history exceeds page bound; no alerts sent")
 		}
 	}
-	ages := unanswered(events, s.server, policy)
-	for i := range rows {
-		rows[i].Unanswered = "-"
-		if at := ages[rows[i].Name]; !at.IsZero() {
-			rows[i].UnansweredSince = at
-			rows[i].Unanswered = a.Now().Sub(at).Round(time.Second).String()
-		}
-	}
+	applyUnanswered(rows, unanswered(events, s.server, policy), a.Now())
 	return nil
 }
 
@@ -175,6 +172,7 @@ type livenessIncident struct {
 	key, value  string
 	names       []string
 	ownerNeeded bool
+	superseded  bool
 }
 
 func incidents(rows []whoRow, now time.Time, after time.Duration) []livenessIncident {
@@ -200,6 +198,17 @@ func incidents(rows []whoRow, now time.Time, after time.Duration) []livenessInci
 		out = append(out, incident)
 	}
 	for _, row := range rows {
+		// Reply evidence has its own journal key: changing transport health
+		// cannot erase an unanswered request while history is unknown.
+		if after > 0 {
+			reply := livenessIncident{key: "unanswered:" + row.Name, value: "healthy", names: []string{row.Name}}
+			if strings.HasPrefix(row.Unanswered, "unknown") {
+				reply.value = "unknown"
+			} else if !row.UnansweredSince.IsZero() && now.Sub(row.UnansweredSince) >= after {
+				reply.value = "unanswered"
+			}
+			out = append(out, reply)
+		}
 		if covered[row.Name] {
 			continue
 		}
@@ -216,8 +225,6 @@ func incidents(rows []whoRow, now time.Time, after time.Duration) []livenessInci
 		case row.State == "idle" && row.Record != nil && (row.Record.Doorbell == "none" || (row.Record.Runtime == "codex" && !strings.HasPrefix(row.Record.Wake, "runtime ready:") && row.Record.Wake != "wake accepted")):
 			i.value = "wake unavailable"
 			i.ownerNeeded = true
-		case after > 0 && !row.UnansweredSince.IsZero() && now.Sub(row.UnansweredSince) >= after:
-			i.value = "unanswered"
 		}
 		out = append(out, i)
 	}
@@ -256,7 +263,19 @@ func (a *App) alertLiveness(ctx context.Context, s *session, rows []whoRow, room
 			found = found || i.key == short
 		}
 		if !found {
-			current = append(current, livenessIncident{key: short, value: "healthy"})
+			replacement := livenessIncident{key: short, value: "healthy"}
+			if strings.HasPrefix(short, "agent:") {
+				name := strings.TrimPrefix(short, "agent:")
+				for _, i := range current {
+					if strings.HasPrefix(i.key, "host:") && slices.Contains(i.names, name) {
+						replacement.value = "covered by " + i.key
+						replacement.names = []string{name}
+						replacement.superseded = true
+						break
+					}
+				}
+			}
+			current = append(current, replacement)
 		}
 	}
 	for _, incident := range current {
@@ -280,6 +299,12 @@ func (a *App) publishLivenessTransition(ctx context.Context, s *session, key str
 				pending = &copy
 				return nil
 			}
+			if incident.value == "unknown" {
+				if previous.Value == "unanswered" {
+					return nil
+				}
+				incident.value = "healthy"
+			}
 			if previous.Value == incident.value || (incident.value == "healthy" && !exists) {
 				return nil
 			}
@@ -288,6 +313,11 @@ func (a *App) publishLivenessTransition(ctx context.Context, s *session, key str
 				body = "Liveness transition " + incident.key + ": previous condition is no longer observed in this scope; inspect current individual records."
 			}
 			kind, subtype := "system", "incident"
+			if incident.superseded {
+				kind = "notice"
+				subtype = ""
+				body = "Liveness transition " + incident.key + ": individual alert superseded by " + incident.value + "; this is not a recovery. Inspect the correlated host incident."
+			}
 			if incident.ownerNeeded {
 				kind = "owner-needed"
 				subtype = ""
@@ -297,7 +327,7 @@ func (a *App) publishLivenessTransition(ctx context.Context, s *session, key str
 			for _, keeper := range keepers {
 				mentions = append(mentions, "@"+keeper+":"+s.server)
 			}
-			pending = &config.LivenessAlertMessage{Txn: matrix.NewTxnID(), Room: room, Content: map[string]any{"msgtype": "m.text", "body": body, "ai.relux.a2a": h, "m.mentions": map[string]any{"user_ids": mentions}}}
+			pending = &config.LivenessAlertMessage{Txn: matrix.NewTxnID(), Room: room, Content: map[string]any{"msgtype": "m.text", "body": body, "ai.relux.a2a": h, "m.mentions": map[string]any{"user_ids": mentions}, "ai.relux.a2a.liveness_observation": 1}}
 			st.LivenessAlerts[key] = config.LivenessAlert{Value: incident.value, Pending: pending}
 			return nil
 		})
@@ -323,4 +353,11 @@ func (a *App) publishLivenessTransition(ctx context.Context, s *session, key str
 		}
 	}
 	return nil
+}
+
+func isLivenessObservation(ev matrix.Event) bool {
+	var content struct {
+		Observation int `json:"ai.relux.a2a.liveness_observation"`
+	}
+	return json.Unmarshal(ev.Content, &content) == nil && content.Observation == 1
 }

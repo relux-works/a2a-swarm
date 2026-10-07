@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -339,6 +340,279 @@ func TestLivenessFreshTransportDoesNotHideWakeFailure(t *testing.T) {
 		got := incidents([]whoRow{row}, time.Now(), 0)
 		if len(got) != 1 || got[0].value != tc.want || (tc.want == "wake unavailable" && !got[0].ownerNeeded) {
 			t.Fatalf("fresh transport concealed wake: %+v => %+v", tc, got)
+		}
+	}
+}
+
+// Proves re-arming preserves pre-existing manual delivery holds; ordinary
+// working records remain eligible for the caller's explicit idle transition.
+func TestLivenessWaitRearmPreservesManualHolds(t *testing.T) {
+	for _, state := range []string{"blocked", "stopping", "waiting-human", "working"} {
+		t.Run(state, func(t *testing.T) {
+			e, _ := world(t)
+			e.as("alice", "status", "init").ok(t)
+			e.as("alice", statusArgs(state)...).ok(t)
+			e.as("alice", "wait", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none", "--timeout", "15ms").ok(t)
+			st := e.state("alice")
+			want, source := state, "manual"
+			if state == "working" {
+				want, source = "idle", "wait"
+			}
+			if st.Liveness.State != want || st.LivenessSource != source || st.Liveness.Doorbell != "none" {
+				t.Fatalf("rearm cleared hold: %+v source=%s", st.Liveness, st.LivenessSource)
+			}
+		})
+	}
+}
+
+// Proves explicitly recorded aliases work as request destinations as well as
+// reply senders; unrecorded aliases never transfer requests to another row.
+func TestLivenessAliasDestination(t *testing.T) {
+	at := time.Now()
+	p, err := newReplyPolicy(nil, []string{"prefixed-a=a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := observedEvent{event: matrix.Event{EventID: "$q", OriginServerTS: at.UnixMilli()}, header: Header{Kind: "question", To: []string{"a"}}}
+	got := unanswered([]observedEvent{q}, "test.local", p)
+	if len(got) != 1 || got["prefixed-a"].IsZero() {
+		t.Fatalf("alias request lost: %v", got)
+	}
+	r := observedEvent{event: matrix.Event{Sender: "@prefixed-a:test.local", OriginServerTS: at.Add(time.Second).UnixMilli()}, header: Header{Re: "$q"}}
+	if len(unanswered([]observedEvent{q, r}, "test.local", p)) != 0 {
+		t.Fatal("canonical reply did not clear alias request")
+	}
+	p, _ = newReplyPolicy(nil, nil)
+	if got := unanswered([]observedEvent{q}, "test.local", p); got["a"].IsZero() || !got["prefixed-a"].IsZero() {
+		t.Fatal("unrecorded alias gained authority")
+	}
+}
+
+// Proves a peer's incompatible heartbeat is isolated in watch mode while an
+// independent waiting-human transition reaches its keeper; one-shot stays strict.
+func TestLivenessWatchIsolatesPeerThreshold(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "status", "init").ok(t)
+	e.as("bob", "join", "status").ok(t)
+	e.as("alice", statusArgs("waiting-human")...).ok(t)
+	args := statusArgs("working")
+	args[4] = "10m"
+	e.as("bob", args...).ok(t)
+	e.as("alice", "who", "--stale-after", "3m").failsWith(t, ExitConfig, "bob")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	e.configure = func(a *App) {
+		a.Stdout = &livenessCancelWriter{next: a.Stdout, cancel: cancel, match: "bob\tworking\tinvalid"}
+	}
+	r := e.runCtx(ctx, "--as", "alice", "who", "--watch", "--poll", "5ms", "--stale-after", "3m", "--alert", "--alert-room", "proj", "--keeper", "bob").ok(t)
+	if !strings.Contains(r.stdout, "bob\tworking\tinvalid") || !strings.Contains(r.stdout, "alice\twaiting-human\tfresh") {
+		t.Fatalf("peer silenced monitor: %s", r.stdout)
+	}
+	if len(e.state("alice").LivenessAlerts) != 2 {
+		t.Fatal("independent health transition was lost")
+	}
+}
+
+// Proves unknown reply history neither clears nor duplicates an existing
+// unanswered incident; a complete healthy observation supplies the recovery.
+func TestLivenessUnknownHistoryPreservesUnansweredIncident(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "status", "init").ok(t)
+	a := eApp(e)
+	a.Now = time.Now
+	s, err := a.sessionAs("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	room, _, err := s.resolveRoom(context.Background(), "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	incident := livenessIncident{key: "agent:alice", value: "unanswered", names: []string{"alice"}}
+	if err := a.publishLivenessTransition(context.Background(), s, "scope:agent:alice", incident, room, []string{"bob"}); err != nil {
+		t.Fatal(err)
+	}
+	before := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/send/{type}/{txn}")
+	incident.value = "unknown"
+	for n := 0; n < 3; n++ {
+		if err := a.publishLivenessTransition(context.Background(), s, "scope:agent:alice", incident, room, []string{"bob"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if e.state("alice").LivenessAlerts["scope:agent:alice"].Value != "unanswered" || e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/send/{type}/{txn}") != before {
+		t.Fatal("unknown history cleared or duplicated prior incident")
+	}
+	incident.value = "healthy"
+	if err := a.publishLivenessTransition(context.Background(), s, "scope:agent:alice", incident, room, []string{"bob"}); err != nil {
+		t.Fatal(err)
+	}
+	if e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/send/{type}/{txn}") != before+1 {
+		t.Fatal("valid recovery missing")
+	}
+}
+
+// Proves transport failure is retried at the explicit poll interval and
+// cannot silently exit a watcher; the restored server yields real rows.
+func TestLivenessWatchRetriesStateFailure(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "status", "init").ok(t)
+	e.as("alice", statusArgs("working")...).ok(t)
+	route := "GET /_matrix/client/v3/rooms/{room}/state"
+	e.hs.fail(route, 500, "M_UNKNOWN", "transient liveness read")
+	baseline := e.hs.CallCount(route)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		deadline := time.Now().Add(time.Second)
+		for e.hs.CallCount(route) < baseline+2 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		e.hs.mu.Lock()
+		delete(e.hs.failures, route)
+		e.hs.mu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	e.configure = func(a *App) {
+		a.Stdout = &livenessCancelWriter{next: a.Stdout, cancel: cancel, match: "alice\tworking\tfresh"}
+	}
+	r := e.runCtx(ctx, "--as", "alice", "who", "--watch", "--poll", "5ms", "--stale-after", "3m").ok(t)
+	<-done
+	if !strings.Contains(r.stderr, "transient liveness read") || !strings.Contains(r.stdout, "alice\tworking\tfresh") || e.hs.CallCount(route) < baseline+3 {
+		t.Fatalf("watch did not recover: %+v calls=%d", r, e.hs.CallCount(route)-baseline)
+	}
+}
+
+// Proves a self-marked monitoring observation does not become a keeper's
+// unanswered request; identical text and a peer's marker grant no exemption.
+func TestLivenessMonitorObservationExclusion(t *testing.T) {
+	now := time.Now()
+	body := livenessHistoryContent("Liveness transition waiting-human", map[string]any{"ai.relux.a2a": Header{V: 1, Type: "message", Kind: "owner-needed", To: []string{"bob"}}, "ai.relux.a2a.liveness_observation": 1})
+	for _, sender := range []string{"@alice:test.local", "@peer:test.local"} {
+		ev := matrix.Event{EventID: "$a", Sender: sender, Type: "m.room.message", OriginServerTS: now.UnixMilli(), Content: body}
+		_, keep, err := observeLivenessEvent(ev, "room", now.Add(-time.Hour), now, "@alice:test.local")
+		if err != nil || keep != (sender != "@alice:test.local") {
+			t.Fatalf("marker exemption crossed authority: %s keep=%v err=%v", sender, keep, err)
+		}
+	}
+	ev := matrix.Event{EventID: "$a", Sender: "@alice:test.local", Type: "m.room.message", OriginServerTS: now.UnixMilli(), Content: livenessHistoryContent("Liveness transition waiting-human", map[string]any{"ai.relux.a2a": Header{V: 1, Type: "message", Kind: "owner-needed", To: []string{"bob"}}})}
+	if _, keep, err := observeLivenessEvent(ev, "room", now.Add(-time.Hour), now, "@alice:test.local"); err != nil || !keep {
+		t.Fatal("body text suppressed real owner request")
+	}
+}
+
+// Proves host correlation supersedes a prior individual alert with a notice
+// explicitly denying recovery, and unchanged polls never repeat that notice.
+func TestLivenessCorrelationSupersedesIndividual(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "status", "init").ok(t)
+	e.as("bob", "join", "status").ok(t)
+	now := time.Now()
+	e.now = func() time.Time { return now }
+	e.as("alice", statusArgs("working")...).ok(t)
+	now = now.Add(4 * time.Minute)
+	e.as("bob", statusArgs("working")...).ok(t)
+	args := []string{"who", "--stale-after", "3m", "--product", "swarm", "--alert", "--alert-room", "proj", "--keeper", "bob"}
+	e.as("alice", args...).ok(t)
+	now = now.Add(4 * time.Minute)
+	e.as("alice", args...).ok(t)
+	before := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/send/{type}/{txn}")
+	e.as("alice", args...).ok(t)
+	if e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/send/{type}/{txn}") != before {
+		t.Fatal("supersession repeated")
+	}
+	e.hs.mu.Lock()
+	defer e.hs.mu.Unlock()
+	found := false
+	for _, ev := range e.hs.events {
+		h, ok := decodeHeader(ev.Message().A2A)
+		if ok && h.Kind == "notice" && strings.Contains(ev.Message().Body, "superseded") {
+			found = true
+			if !strings.Contains(ev.Message().Body, "not a recovery") {
+				t.Fatal("host grouping claimed individual recovery")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("supersession notice missing")
+	}
+}
+
+// Proves missing/unbounded watch history budgets and ambiguous alias authority
+// fail before reading Matrix; a single recorded mapping remains valid.
+func TestLivenessWatchHistoryConfiguration(t *testing.T) {
+	e, _ := world(t)
+	since := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	base := []string{"who", "--watch", "--poll", "1s", "--stale-after", "3m", "--unanswered-since", since}
+	for _, budget := range []string{"0", "101", "-1"} {
+		e.as("alice", append(base, "--history-pages-per-poll", budget)...).failsWith(t, ExitUsage, "history-pages-per-poll")
+	}
+	for _, pairs := range [][]string{{"a=x", "b=x"}, {"a=b", "b=c"}} {
+		if _, err := newReplyPolicy(nil, pairs); err == nil {
+			t.Fatalf("ambiguous alias granted authority: %v", pairs)
+		}
+	}
+	if _, err := newReplyPolicy(nil, []string{"a=x", "a=y"}); err != nil {
+		t.Fatalf("valid recorded aliases refused: %v", err)
+	}
+	if e.hs.CallCount("GET /_matrix/client/v3/rooms/{room}/state") != 0 {
+		t.Fatal("invalid flags read peer state")
+	}
+}
+
+// Cancellation is triggered by observed output, never used as a success oracle.
+type livenessCancelWriter struct {
+	next   io.Writer
+	cancel context.CancelFunc
+	match  string
+}
+
+func (w *livenessCancelWriter) Write(p []byte) (int, error) {
+	n, err := w.next.Write(p)
+	if strings.Contains(string(p), w.match) {
+		w.cancel()
+	}
+	return n, err
+}
+
+// Proves health transitions cannot erase a previously observed unanswered
+// request while reply history is unknown; complete history supplies recovery.
+func TestLivenessUnknownAfterHealthChangeRetainsUnanswered(t *testing.T) {
+	e, _ := world(t)
+	a := eApp(e)
+	s, err := a.sessionAs("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	a.Now = func() time.Time { return now }
+	since := now.Add(-time.Hour)
+	rows := []whoRow{{Name: "alice", State: "working", Health: "fresh", Unanswered: "2m", UnansweredSince: now.Add(-2 * time.Minute)}}
+	publish := func() {
+		t.Helper()
+		if err := a.alertLiveness(context.Background(), s, rows, "proj", []string{"bob"}, time.Minute, "", since, 3*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish()
+	rows[0].Health = "stale"
+	publish()
+	rows[0].Health = "fresh"
+	rows[0].Unanswered = "unknown (history incomplete)"
+	rows[0].UnansweredSince = time.Time{}
+	publish()
+	found := false
+	for _, r := range e.state("alice").LivenessAlerts {
+		found = found || r.Value == "unanswered"
+	}
+	if !found {
+		t.Fatal("health transition erased unanswered under unknown history")
+	}
+	rows[0].Unanswered = "-"
+	publish()
+	for _, r := range e.state("alice").LivenessAlerts {
+		if r.Value == "unanswered" {
+			t.Fatal("complete reply history did not supply recovery")
 		}
 	}
 }

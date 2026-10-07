@@ -84,7 +84,7 @@ func cmdStatusInit(ctx context.Context, a *App, args []string) error {
 		room, err = s.client.CreateRoom(ctx, matrix.CreateRoomRequest{
 			Preset: "public_chat", Visibility: "private", RoomAliasName: "status", Name: "Agent liveness",
 			Topic:                     "Self-written liveness. State keys are the sender's own Matrix user ID; no paths, secrets or customer data.",
-			PowerLevelContentOverride: map[string]any{"state_default": 50, "events": map[string]int{StatusEventType: 0}},
+			PowerLevelContentOverride: map[string]any{"state_default": 50, "events": map[string]int{StatusEventType: 0, "m.room.power_levels": 100, "m.room.tombstone": 100, "m.room.server_acl": 100, "m.room.encryption": 100, "m.room.history_visibility": 100}},
 		})
 		if matrix.IsCode(err, "M_ROOM_IN_USE") {
 			room, err = s.client.ResolveAlias(ctx, alias)
@@ -105,6 +105,11 @@ func cmdStatusInit(ctx context.Context, a *App, args []string) error {
 	level, ok := levels.Events[StatusEventType]
 	if !ok || level != 0 {
 		return fmt.Errorf("#status policy requires power_levels.events[%q]=0; an existing room administrator must fix it", StatusEventType)
+	}
+	for _, key := range []string{"m.room.power_levels", "m.room.tombstone", "m.room.server_acl", "m.room.encryption", "m.room.history_visibility"} {
+		if levels.Events[key] < 100 {
+			return fmt.Errorf("#status policy requires protected event %s at power 100; an existing room administrator must fix it", key)
+		}
 	}
 	a.printf("#status %s (self-key status writes at power 0)\n", room)
 	return nil
@@ -151,12 +156,14 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 	if err != nil {
 		return fmt.Errorf("liveness: join #status after a2a status init: %w", err)
 	}
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(nativeRPCTimeout)
+	deadline := time.Now().Add(nativeRPCTimeout)
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
 	}
+	writeCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
-		if (source == "wait-heartbeat" || source == "wait-disarm") && st.Liveness != nil {
+		if (source == "wait-heartbeat" || source == "wait-disarm" || (source == "wait" && manualWakeGate(*st) != "")) && st.Liveness != nil {
 			doorbell, every := record.Doorbell, record.HeartbeatEvery
 			record = *st.Liveness
 			record.Doorbell = doorbell
@@ -182,7 +189,7 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 		if st.Runtime != nil {
 			record.Wake = st.Wake.Outcome
 		}
-		_, err := s.client.PutState(ctx, room, StatusEventType, s.creds.UserID, record)
+		_, err := s.client.PutState(writeCtx, room, StatusEventType, s.creds.UserID, record)
 		if matrix.IsCode(err, "M_FORBIDDEN") {
 			return fmt.Errorf("liveness: administrator must set power_levels.events[%q]=0; agent power escalation is not a remedy", StatusEventType)
 		}
@@ -206,7 +213,7 @@ type whoRow struct {
 	UnansweredSince time.Time           `json:"unanswered_since,omitempty"`
 }
 
-func (a *App) livenessRows(ctx context.Context, s *session, product string, stale time.Duration) ([]whoRow, error) {
+func (a *App) livenessRows(ctx context.Context, s *session, product string, stale time.Duration, watch bool) ([]whoRow, error) {
 	room, _, err := s.resolveRoom(ctx, StatusRoom)
 	if err != nil {
 		return nil, err
@@ -257,7 +264,13 @@ func (a *App) livenessRows(ctx context.Context, s *session, product string, stal
 				row.Health = "invalid"
 			} else {
 				if heartbeat >= stale {
-					return nil, livenessConfigError{fmt.Sprintf("%s heartbeat_every=%s must be less than stale-after=%s", name, heartbeat, stale)}
+					if !watch {
+						return nil, livenessConfigError{fmt.Sprintf("%s heartbeat_every=%s must be less than stale-after=%s", name, heartbeat, stale)}
+					}
+					row.Health = "invalid"
+					row.Age = "heartbeat >= stale-after"
+					rows = append(rows, row)
+					continue
 				}
 				age := a.Now().Sub(record.HeartbeatAt)
 				row.Age = age.Round(time.Second).String()
@@ -284,6 +297,7 @@ func cmdWho(ctx context.Context, a *App, args []string) error {
 	product := fs.String("product", "", "filter self-recorded product")
 	asJSON := fs.Bool("json", false, "JSON records")
 	watch := fs.Bool("watch", false, "monitor transitions until interrupted")
+	historyPages := fs.Int("history-pages-per-poll", 0, "explicit per-room watch history page budget (1..100)")
 	poll := fs.Duration("poll", 0, "explicit monitoring interval")
 	sinceText := fs.String("unanswered-since", "", "explicit RFC3339 start of visible request history")
 	unansweredAfter := fs.Duration("unanswered-after", 0, "explicit unanswered alert threshold")
@@ -318,6 +332,9 @@ func cmdWho(ctx context.Context, a *App, args []string) error {
 			return usagef("--unanswered-since requires a nonfuture RFC3339 time")
 		}
 	}
+	if (*watch && !since.IsZero() && (*historyPages < 1 || *historyPages > 100)) || ((!*watch || since.IsZero()) && *historyPages != 0) {
+		return usagef("watch with --unanswered-since requires --history-pages-per-poll in 1..100")
+	}
 	policy, err := newReplyPolicy(keepers, aliases)
 	if err != nil {
 		return usagef("%s", err)
@@ -326,28 +343,61 @@ func cmdWho(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	history := &livenessHistory{}
+	pollWait := func() bool {
+		timer := time.NewTimer(*poll)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
 	for {
-		rows, err := a.livenessRows(ctx, s, *product, *stale)
+		rows, err := a.livenessRows(ctx, s, *product, *stale, *watch)
 		if err != nil {
-			if *watch && ctx.Err() != nil {
+			if !*watch {
+				return err
+			}
+			if ctx.Err() != nil {
 				return nil
 			}
-			return err
+			a.fail(fmt.Errorf("who watch: %s; retry after %s", err, *poll))
+			if !pollWait() {
+				return nil
+			}
+			continue
 		}
 		if !since.IsZero() {
-			if err := a.addUnanswered(ctx, s, rows, since, policy); err != nil {
-				if *watch && ctx.Err() != nil {
+			if *watch {
+				err = history.step(ctx, a, s, rows, since, policy, *historyPages)
+			} else {
+				err = a.addUnanswered(ctx, s, rows, since, policy)
+			}
+			if err != nil {
+				if !*watch {
+					return err
+				}
+				if ctx.Err() != nil {
 					return nil
 				}
-				return err
+				for i := range rows {
+					rows[i].Unanswered = "unknown (history unavailable)"
+					rows[i].UnansweredSince = time.Time{}
+				}
+				a.fail(fmt.Errorf("who watch: %s; unanswered unknown, retry after %s", err, *poll))
 			}
 		}
 		if *alert {
 			if err := a.alertLiveness(ctx, s, rows, *alertRoom, keepers, *unansweredAfter, *product, since, *stale); err != nil {
-				if *watch && ctx.Err() != nil {
+				if !*watch {
+					return err
+				}
+				if ctx.Err() != nil {
 					return nil
 				}
-				return err
+				a.fail(fmt.Errorf("who watch: %s; retry pending alert after %s", err, *poll))
 			}
 		}
 		if *asJSON {
@@ -371,12 +421,8 @@ func cmdWho(ctx context.Context, a *App, args []string) error {
 		if !*watch {
 			return nil
 		}
-		timer := time.NewTimer(*poll)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !pollWait() {
 			return nil
-		case <-timer.C:
 		}
 	}
 }

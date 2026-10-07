@@ -841,24 +841,37 @@ secrets, private paths or customer data. Thread IDs, endpoints, process birth an
 Once a record is declared, successful session hooks write working at start/prompt and idle at an unblocked stop. Explicit blocked/stopping
 states persist; waiting-human clears on a prompt or an explicit status change. Paused hooks write nothing. `wait --status` additionally
 requires heartbeat/runtime/hooks declarations, caps each long-poll by the heartbeat interval, writes heartbeats through empty polls and
-sets doorbell=none when it returns. A plain wait retains its existing behavior. These writes and successful waits never receipt mail.
+preserves a pre-existing manual blocked/stopping/waiting-human hold when re-armed, and sets doorbell=none when it returns. Status network writes under the identity lock share the 10-second native control deadline (or a shorter caller deadline). A heartbeat write failure ends and disarms the waiter; a launcher relying on an opt-in wait must supervise it with bounded restart backoff. A plain wait retains its existing behavior. These writes and successful waits never receipt mail.
 
 `who` requires `--stale-after DUR`; `--watch` also requires a positive `--poll DUR`. It shows joined agents without a record as down,
 stopping as down, heartbeat age at or beyond the threshold as stale, future timestamps as clock errors and malformed records as invalid.
-It refuses a declared `heartbeat_every >= stale-after` with exit **64**, naming the agent. Hooks availability, wake reachability and reply
+One-shot `who` refuses a declared `heartbeat_every >= stale-after` with exit **64**, naming the agent. A watcher instead marks that row `invalid` (`age=heartbeat >= stale-after`) and continues monitoring other agents without overriding either threshold. Watchers print scrubbed read/publication errors and retry at their explicit poll interval until interrupted; configuration errors in their own flags still fail before watching. Hooks availability, wake reachability and reply
 age are separate columns: a fresh waiter heartbeat cannot establish that the runtime can wake or that a request was answered.
 
 Unanswered age requires an explicit `--unanswered-since RFC3339`. Without it the column is `unknown (not scanned)`. The scan covers
 caller-visible messages in joined rooms, retains unanswered request/question/subscribe/owner-needed messages, and accepts `re=<event>`
-from **any** addressee, its configured `--reply-alias NAME=ALIAS`, or a configured `--keeper NAME`. It checks the actual Matrix sender,
+from **any** addressee, its configured `--reply-alias NAME=ALIAS`, or a configured `--keeper NAME`. Requests addressed to the recorded alias are attributed to NAME; ambiguous or chained mappings are refused. It checks the actual Matrix sender,
 not `from`; no implicit prefix stripping grants reply authority. A reply cannot precede its request. Wakes and inbox receipts do not
 clear age. Redacted messages, edits and projector copies do not count. The supplied start time bounds reported requests, not authority:
-the reader cannot see inaccessible history. Scans follow empty pagination pages and reject cycles, invalid/future timestamps or a
-100-page-per-room / 100,000 relevant-event bound; incomplete scans emit no alerts.
+the reader cannot see inaccessible history. One-shot scans follow empty pagination pages and reject cycles, invalid/future timestamps or a
+100-page-per-room / 100,000 relevant-event bound; they emit no alerts on incomplete history. No timestamp-order assumption truncates history.
+
+Watching with a start time additionally requires `--history-pages-per-poll N` (1..100). Each joined room gets at most N requests of up to
+100 message/redaction events per poll. Backfill resumes from its pagination cursor, then follows new events to a cached stream event-ID
+checkpoint; it does not reread old history every poll. A multi-poll pass requires a fresh tail check before reporting a known age, so
+replies arriving during backfill are included. Later server-authorized redactions invalidate cached requests and answers. The cache is
+local to this watch process, with a 100,000-entry bound on relevant events and checkpoint/redaction metadata across rooms; restarting repeats backfill. A missing checkpoint,
+cycle, read failure or future timestamp leaves unanswered age visibly `unknown`. Unknown history never opens or clears an unanswered
+incident, while independent health alerts continue. Reply-age transitions have a separate journal key, so intervening health changes or host correlation cannot erase an unresolved unanswered request. Only the monitor's own marked telemetry alerts are excluded from unanswered requests;
+ordinary owner-needed messages and other senders' markers still count.
+
+For the example `--poll 30s --history-pages-per-poll 1`, R joined rooms cost at most R history requests per poll (2R requests/minute),
+plus status, membership and transition writes. A caught-up quiet room needs one history request per poll. Both values are explicit;
+there is no default interval or unbounded budget. Choose the budget and interval with the homeserver owner.
 
 ```bash
 a2a who --stale-after 3m --unanswered-since 2026-10-07T00:00:00Z --reply-alias prefixed-orch=orch --keeper my-keeper
-a2a who --watch --poll 30s --stale-after 3m --unanswered-since 2026-10-07T00:00:00Z --unanswered-after 12h \
+a2a who --watch --poll 30s --history-pages-per-poll 1 --stale-after 3m --unanswered-since 2026-10-07T00:00:00Z --unanswered-after 12h \
   --alert --alert-room swarm-example --keeper my-keeper
 ```
 
@@ -867,8 +880,8 @@ The monitor posts `system/incident` transitions, or `owner-needed` to the
 keepers for waiting-human and an unavailable idle session with no armed consumer. Two or more stale/down records on one host are grouped
 into one host incident. A changed observation produces one event; unchanged polls and process restarts do not. Durable Matrix transaction
 IDs make retries after acknowledgement loss idempotent. A prior grouped condition disappearing means it is no longer observed in that
-scope; individual records can still be unavailable. A fresh heartbeat does not suppress blocked or unavailable-idle incidents; an
-armed plain Codex waiter with no verified native wake remains unavailable. Each keeper chooses its own thresholds and investigates before escalating to a human.
+scope; individual records can still be unavailable. An individual condition absorbed into a host incident gets a supersession notice explicitly saying this is not recovery. A fresh heartbeat does not suppress blocked or unavailable-idle incidents; an
+armed plain Codex waiter with no verified native wake remains unavailable. Planned pause/budget/hourly suppression is intentionally visible as blocked with a separate wake outcome; it does not authorize a keeper to override the owner gate. Clocks have zero implicit skew tolerance: a future heartbeat is shown as clock-invalid, and future messages make only unanswered history unknown in a watcher. Each keeper chooses its own thresholds and investigates before escalating to a human.
 
 ### Native Codex doorbell: `runtime bind`, `dispatch`, `gate`, `abandon`, `status`
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -471,5 +472,47 @@ func TestRuntimeServerErrorAfterAcceptedInput(t *testing.T) {
 	e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
 	if e.state("alice").Wake.Attempt != nil || len(n.wakes) != 1 || e.received("alice", id) {
 		t.Fatal("internal error retried instead of reconciling acceptance")
+	}
+}
+
+// Proves an unavailable previous-owner observation cannot authorize generation
+// replacement. A confirmed-absent owner permits the neighboring valid bind.
+func TestRuntimeReplacementRequiresKnownDeadOwner(t *testing.T) {
+	e, room, n, g := runtimeWorld(t)
+	id := runtimeMail(e, room, "retained")
+	_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+		st.Runtime.OwnerPID = 2147483647
+		st.Runtime.Gate = "stopping"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realPS, err := exec.LookPath("ps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ps")
+	writeProbe := func(code string) {
+		t.Helper()
+		body := "#!/bin/sh\nif [ \"$2\" = 2147483647 ]; then exit " + code + "; fi\nexec '" + realPS + "' \"$@\"\n"
+		if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeProbe("2")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	before, _ := json.Marshal(e.state("alice"))
+	args := []string{"runtime", "bind", "--codex-thread", n.thread.ID, "--endpoint", n.endpoint, "--owner-pid", strconv.Itoa(os.Getpid()), "--heartbeat", "1m", "--max-wakes-per-hour", "2", "--gate", "ready", "--hooks", "none"}
+	e.as("alice", args...).failsWith(t, ExitError, "previous owner observation unavailable")
+	after, _ := json.Marshal(e.state("alice"))
+	if string(before) != string(after) || e.received("alice", id) || len(n.wakes) != 0 {
+		t.Fatal("unknown owner changed state, rang or receipted mail")
+	}
+	writeProbe("1")
+	e.as("alice", args...).ok(t)
+	if e.state("alice").Runtime.Generation == g || e.received("alice", id) || len(n.wakes) != 0 {
+		t.Fatal("confirmed absence bind failed or produced delivery effects")
 	}
 }

@@ -275,7 +275,10 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 				return err
 			}
 			if old.Runtime != nil && !sameRuntime(*old.Runtime, binding) {
-				oldBirth, _ := ownerBirth(probe, old.Runtime.OwnerPID)
+				oldBirth, ownerErr := ownerBirth(probe, old.Runtime.OwnerPID)
+				if probe.Err() != nil || (ownerErr != nil && !errors.Is(ownerErr, errOwnerAbsent)) {
+					return errors.New("runtime replacement refused: previous owner observation unavailable")
+				}
 				if old.Runtime.Gate != "stopping" || oldBirth == old.Runtime.OwnerStart || old.Wake.Attempt != nil {
 					return errors.New("runtime replacement refused: close previous generation, stop its owner and reconcile any uncertain attempt first")
 				}

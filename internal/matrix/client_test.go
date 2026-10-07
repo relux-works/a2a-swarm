@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -218,5 +220,41 @@ func TestCreateRoom(t *testing.T) {
 	status, body = 200, `{}`
 	if id, err := c.CreateRoom(context.Background(), req); err == nil || id != "" {
 		t.Fatalf("id=%q err=%v", id, err)
+	}
+}
+
+// Proves incremental message readers explicitly request redactions while
+// existing message-only callers retain their filter and pagination options.
+func TestMessagesRedactionFilter(t *testing.T) {
+	for _, redactions := range []bool{false, true} {
+		t.Run(fmt.Sprint(redactions), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				var filter struct {
+					Types []string `json:"types"`
+				}
+				_ = json.Unmarshal([]byte(q.Get("filter")), &filter)
+				want := []string{"m.room.message"}
+				if redactions {
+					want = append(want, "m.room.redaction")
+				}
+				if !slices.Equal(filter.Types, want) || q.Get("from") != "cursor" || q.Get("dir") != "b" || q.Get("limit") != "100" {
+					t.Errorf("bad history request: %v", q)
+				}
+				w.Write([]byte(`{"chunk":[],"end":"next"}`))
+			}))
+			defer srv.Close()
+			c := New(srv.URL, "t")
+			var page Page
+			var err error
+			if redactions {
+				page, err = c.MessagesWithRedactions(context.Background(), "!room", "cursor", "b", 100)
+			} else {
+				page, err = c.Messages(context.Background(), "!room", "cursor", "b", 100)
+			}
+			if err != nil || page.End != "next" {
+				t.Fatalf("pagination lost: %+v %v", page, err)
+			}
+		})
 	}
 }

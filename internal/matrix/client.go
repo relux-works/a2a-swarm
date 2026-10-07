@@ -511,6 +511,7 @@ type Event struct {
 	OriginServerTS int64           `json:"origin_server_ts"`
 	StateKey       *string         `json:"state_key,omitempty"`
 	Content        json.RawMessage `json:"content"`
+	Redacts        string          `json:"redacts,omitempty"`
 	Unsigned       json.RawMessage `json:"unsigned,omitempty"`
 }
 
@@ -584,11 +585,21 @@ type Page struct {
 
 // Messages pages through the room timeline. dir is "b" (newest first) or "f".
 func (c *Client) Messages(ctx context.Context, roomID, from, dir string, limit int) (Page, error) {
+	return c.messages(ctx, roomID, from, dir, limit, `{"types":["m.room.message"]}`)
+}
+
+// MessagesWithRedactions lets incremental readers invalidate cached messages
+// after a server-authorized redaction, including room versions before v11.
+func (c *Client) MessagesWithRedactions(ctx context.Context, roomID, from, dir string, limit int) (Page, error) {
+	return c.messages(ctx, roomID, from, dir, limit, `{"types":["m.room.message","m.room.redaction"]}`)
+}
+
+func (c *Client) messages(ctx context.Context, roomID, from, dir string, limit int, filter string) (Page, error) {
 	q := url.Values{"dir": {dir}, "limit": {strconv.Itoa(limit)}}
 	if from != "" {
 		q.Set("from", from)
 	}
-	q.Set("filter", `{"types":["m.room.message"]}`)
+	q.Set("filter", filter)
 	var out Page
 	err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/messages", q, nil, &out)
 	return out, err

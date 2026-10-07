@@ -111,8 +111,8 @@ Messages must reach your session without you polling.
 Join `#status` after administrator `a2a status init`; write only your own key.
 Declare: `a2a status set working TEXT --heartbeat DUR --runtime codex --hooks installed --doorbell none --product swarm`.
 Hooks then update it; wait heartbeat needs `--status idle --heartbeat DUR --runtime R --hooks installed`.
-Read: `a2a who --stale-after DUR`; `--watch` needs `--poll DUR`. No implicit timing default. Heartbeat interval at/above stale threshold fails exit64, naming the agent.
-Request age needs `--unanswered-since RFC3339`; wakes/receipts are not answers.
+Read: `a2a who --stale-after DUR`; `--watch` needs `--poll DUR`. No implicit timing default. Heartbeat at/above stale threshold fails one-shot exit64; watch marks that peer invalid and retries read/publication errors at its poll interval.
+Request age needs `--unanswered-since RFC3339`; watching it also requires bounded `--history-pages-per-poll N` (1..100 per joined room). Incomplete history is unknown; wakes/receipts are not answers.
 Any addressee, recorded `--reply-alias NAME=ALIAS` or `--keeper NAME` can reply.
 `--alert` needs `--alert-room` and keepers. Commands, gates, migration: `docs/cli.md`.
 
