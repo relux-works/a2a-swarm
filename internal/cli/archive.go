@@ -24,6 +24,9 @@ import (
 // so an archive is never silently truncated. Tests lower it.
 var archiveMaxEvents = 100000
 
+// archiveMaxPages bounds scans even when filters return no matching events.
+const archiveMaxPages = 10000
+
 // archiveRoomRE is the room directory name: the alias localpart, lowercase.
 var archiveRoomRE = regexp.MustCompile(`^[a-z0-9._=-]+$`)
 
@@ -76,11 +79,13 @@ type archiveIndex struct {
 }
 
 // pageAllEvents pages newest-first to the end of a timeline and returns the
-// events oldest first. More than archiveMaxEvents events is an error.
+// events oldest first. Event/page bounds or a repeated token are errors, never
+// evidence that the timeline ended. Empty filtered pages may have successors.
 func pageAllEvents(what string, page func(from string) (matrix.Page, error)) ([]matrix.Event, error) {
 	var out []matrix.Event
 	from := ""
-	for {
+	seen := map[string]bool{}
+	for pages := 1; ; pages++ {
 		p, err := page(from)
 		if err != nil {
 			return nil, err
@@ -90,9 +95,16 @@ func pageAllEvents(what string, page func(from string) (matrix.Page, error)) ([]
 			return nil, fmt.Errorf("archive: %s has more than %d events; refusing a partial archive", what, archiveMaxEvents)
 		}
 		next := firstNonEmpty(p.End, p.NextBatch)
-		if next == "" || next == from || len(p.Chunk) == 0 {
+		if next == "" {
 			break
 		}
+		if seen[next] {
+			return nil, fmt.Errorf("archive: %s has a repeated pagination token; refusing a partial archive", what)
+		}
+		if pages == archiveMaxPages {
+			return nil, fmt.Errorf("archive: %s has unresolved history after %d pages; refusing a partial archive", what, archiveMaxPages)
+		}
+		seen[next] = true
 		from = next
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {

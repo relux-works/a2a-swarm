@@ -357,6 +357,8 @@ File format:
 - Projections (`#system`, `ai.relux.a2a.type = projection`) are archived like any message.
 - Safety cap: reading more than 100000 events for one thread or one room scan is an error. The whole room is read before anything is written, so an error
   (cap, `M_FORBIDDEN` for a non-member, network) never leaves a partial or rewritten file.
+- Empty filtered pages with a continuation token are followed. Repeated/cyclic tokens or unresolved history after 10000 pages refuse the room's
+  export before writing files; only a page without a continuation token proves the scan has ended.
 - Symlinks are never followed: if `<dir>`, `<dir>/<room>`, or a target file is a symlink (or not a directory / regular file), the room is refused before
   any file is written. Each file is written atomically (temporary file in the same directory, then rename); an unchanged file is not rewritten.
 - One line per file: `<path><TAB><events><TAB>changed|unchanged`.
