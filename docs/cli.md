@@ -149,6 +149,8 @@ power (otherwise it names who can), deletes the alias and leaves; the empty room
 message is refused: its history is archived with `a2a archive` and the room is retired through the room-move checklist, never by this
 command. The emptiness check follows filtered empty pages until the history ends. A repeated pagination token, a read failure, or
 100 pages without an end-of-history result refuses retirement before any room changes.
+The check covers only history visible to the caller; run retirement as the room's creator or a member since creation so earlier messages
+are not hidden by joined/invited history visibility.
 
 ### `a2a product new X [--keeper NAME] [--projector NAME]` / `product adopt X <room>` / `product list` / `product show X`
 
