@@ -1908,11 +1908,11 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 
 **tb-R202. A time-boxed bridge: CLI test timeout 90m → 135m until sharding is wired** (17:39Z, 2026-10-05).
 - *Decision:* one workflow change raises the CLI test timeout so the sharding fix can pass its own CI. The bridge expires when the sharding wiring lands.
-- *State:* in force until W1 rev2 lands.
+- *State:* expired (W1 rev2 landed 22:09Z, 2026-10-06).
 
 **tb-R203. Test redline on skill-project-management main until the sharded CI is wired** (20:13Z, 2026-10-05; the second operator's proposal, imposed as an arbiter landing hold).
 - *Decision:* only the timeout bridge, the sharding CRs, test-only hygiene, critical fixes and board-only records land. Everything else parks, with no re-runs. The release condition is simplified by tb-R208.
-- *State:* in force until released.
+- *State:* RELEASED (22:08Z, 2026-10-06; W1 rev2 green and landed).
 
 **tb-R204. Generated maps are derived files** (04:34Z, 2026-10-06; standing; a sibling of tb-R197).
 - *Decision:* a CR crosses an advance whose only overlap is a generated owner or shard map when:
@@ -1942,7 +1942,7 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 
 **tb-R208. The sharding fix W1 rev2 gets a private lane, a reserved window and a simpler release condition** (10:42Z, 2026-10-06).
 - *Decision:* W1 rev2 runs one suite in a private lane under the host gates. Main is reserved for it from green validation to landing; critical landings inside the window need its owner's agreement. Its own green exact-head full CI plus an exact-head landing releases tb-R203.
-- *State:* in force until released.
+- *State:* RELEASED (22:08Z, 2026-10-06).
 
 **tb-R209. Models on the operator's workstation: parallel reviews on gpt-6.1-sol high plus Muse max; producers on sol medium or Muse max** (11:37Z, 2026-10-06; the operator's rule, to save the Claude Code subscription's limits).
 - *Decision:* for new spawns on that host only:
@@ -1951,3 +1951,15 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
   - Claude leaves the producer and reviewer roles there.
   Running runs continue. The Mac mini keeps its own rules.
 - *State:* in force.
+
+**tb-R210. The model-router module may go public: one founder's OK given; the other founder's OK and the creation go pending** (23:47Z, 2026-10-06; the operator, as the module's maintainer).
+- *Decision:* the operator gives his founder OK. tb-R177 still needs the other founder's explicit OK before any flip. The tb-R190 preflight (clean history in every commit, a licence, no board directory, hosted-only CI, no self-hosted runner group) passed on the candidate. The operator confirmed Apache-2.0 plus a NOTICE, and no session trailers in future public commits. The flip itself needs his go for the creation steps.
+- *State:* in force; publication pending the other founder's OK.
+
+**tb-R211. One spm CI and test owner** (00:27Z, 2026-10-07; the operator's decision).
+- *Decision:* tb-tests hands its work to validation-fixes through a handover packet. On the ack, every ruling role naming tb-tests (CI owner, shard manifests, the CI workflow, test fixes, recalibration co-owner, stress-run policy, the critical-lane fixes in flight) passes to validation-fixes. Ruling texts are not rewritten.
+- *State:* in force.
+
+**tb-R212. Operator workstation binary swap: curator rc.4 and a task-board build with the nested-repository refresh fix** (01:03Z, 2026-10-07; under the standing swap go; completes tb-R207 path 2).
+- *Decision:* curator v0.15.0-rc.4 (checksums and attestation verified) and a new task-board build were installed behind impact notices. A symbol probe showed the fix present in the new build and absent in the old one. Nothing was restarted; the old build stays on disk. Rollback: the kept rc.3 binary and an APFS clone of the state.
+- *State:* done.
