@@ -147,7 +147,8 @@ the command exits 1 and names the space members who can link it, with the `a2a p
 Removes an EMPTY room created by mistake; Matrix cannot delete rooms. It unlinks the room from each parent space where the caller has the
 power (otherwise it names who can), deletes the alias and leaves; the empty room stays on the server without an alias. A room with any
 message is refused: its history is archived with `a2a archive` and the room is retired through the room-move checklist, never by this
-command.
+command. The emptiness check follows filtered empty pages until the history ends. A repeated pagination token, a read failure, or
+100 pages without an end-of-history result refuses retirement before any room changes.
 
 ### `a2a product new X [--keeper NAME] [--projector NAME]` / `product adopt X <room>` / `product list` / `product show X`
 

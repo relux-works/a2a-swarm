@@ -54,6 +54,8 @@ type fakeHS struct {
 	// /messages cannot page (a purged history): it keeps returning an empty
 	// chunk with the same end token.
 	historyFloor int
+	// messagePages supplies filtered pagination fixtures keyed by room and from token.
+	messagePages map[string]map[string]fakeMessagePage
 	// accountData is global account data: user id -> type -> content.
 	accountData map[string]map[string]json.RawMessage
 	// liveClock stamps events with the wall clock (strictly increasing ms)
@@ -107,6 +109,11 @@ type fakeRoom struct {
 type fakeInvite struct {
 	pos            int
 	room, user, by string
+}
+
+type fakeMessagePage struct {
+	page    matrix.Page
+	failure *fakeFailure
 }
 
 type fakeFailure struct {
@@ -792,6 +799,23 @@ func (hs *fakeHS) messages(w http.ResponseWriter, r *http.Request, u string) {
 	defer hs.mu.Unlock()
 	room := hs.roomFor(w, r, u, true)
 	if room == nil {
+		return
+	}
+	if fixture, ok := hs.messagePages[room.id][r.URL.Query().Get("from")]; ok {
+		if fixture.failure != nil {
+			f := fixture.failure
+			writeErr(w, f.status, f.errcode, f.message)
+		} else {
+			chunk := fixture.page.Chunk
+			if chunk == nil {
+				chunk = []matrix.Event{}
+			}
+			response := map[string]any{"chunk": chunk}
+			if fixture.page.End != "" {
+				response["end"] = fixture.page.End
+			}
+			writeJSON(w, 200, response)
+		}
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))

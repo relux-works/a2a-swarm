@@ -25,6 +25,9 @@ const (
 	roomVisibility = "private"
 )
 
+// Bound filtered history reads; reaching the cap leaves the room untouched.
+const roomRetireMaxPages = 100
+
 const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | a2a room retire <alias>"
 
 // roomSpec is one room to create with the standard policy.
@@ -189,12 +192,29 @@ func cmdRoomRetire(ctx context.Context, a *App, arg string) error {
 		}
 		return err
 	}
-	page, err := s.client.Messages(ctx, id, "", "b", 1)
-	if err != nil {
-		return fmt.Errorf("read %s (join it first): %w", label, err)
-	}
-	if len(page.Chunk) > 0 {
-		return fmt.Errorf("%s has messages: it is not retired by this command; archive it (a2a archive %s) and follow the room-move checklist", label, local)
+	// An empty filtered chunk can still have older messages. Only a page
+	// without an end token proves the visible history has been exhausted.
+	from := ""
+	seen := map[string]bool{}
+	for n := 0; ; n++ {
+		if n == roomRetireMaxPages {
+			return fmt.Errorf("cannot prove %s is empty after %d pages; room unchanged", label, roomRetireMaxPages)
+		}
+		page, err := s.client.Messages(ctx, id, from, "b", 1)
+		if err != nil {
+			return fmt.Errorf("cannot prove %s is empty (join it first); room unchanged: %w", label, err)
+		}
+		if len(page.Chunk) > 0 {
+			return fmt.Errorf("%s has messages: it is not retired by this command; archive it (a2a archive %s) and follow the room-move checklist", label, local)
+		}
+		if page.End == "" {
+			break
+		}
+		if seen[page.End] {
+			return fmt.Errorf("cannot prove %s is empty: pagination repeated a token; room unchanged", label)
+		}
+		seen[page.End] = true
+		from = page.End
 	}
 	parents, err := s.client.GetStateEvents(ctx, id, "m.space.parent")
 	if err != nil {
