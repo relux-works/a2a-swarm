@@ -1974,3 +1974,19 @@ Federation off. Cutover window 14:57Z–15:00Z: all topic heads verified against
 **tb-R212. Operator workstation binary swap: curator rc.4 and a task-board build with the nested-repository refresh fix** (01:03Z, 2026-10-07; under the standing swap go; completes tb-R207 path 2).
 - *Decision:* curator v0.15.0-rc.4 (checksums and attestation verified) and a new task-board build were installed behind impact notices. A symbol probe showed the fix present in the new build and absent in the old one. Nothing was restarted; the old build stays on disk. Rollback: the kept rc.3 binary and an APFS clone of the state.
 - *State:* done.
+
+**tb-R213. A generated map does not make a CR's review or suite evidence stale** (09:24Z, 2026-10-07; standing; a sibling of tb-R204 for the review stage).
+- *Decision:* when a CR is re-materialised onto a newer main and its only path overlap with the advance is a generated map (owner or shard map), the map is regenerated on the new base. If every other per-file patch-id is identical, the previous revision's local suite and reviews carry to the new one; the next reviewer may start at once. Landing evidence is unchanged (a step 5 class, or a fresh full hosted exact-head CI). Tool fix: the base-superseded check and converge treat generated maps as derived.
+- *State:* in force.
+
+**tb-R214. The mutant cut executes tb-R199 point 1 now** (09:49Z, 2026-10-07; the second operator's owner decision, within tb-R199).
+- *Decision:* mutant tests move behind the `mutants` build tag, except the tb-R199 point 2 carve-out (security and trust guard mutants, diff-scoped meta guards), which the cut lists by name. No-loss evidence at the exact head: a test-name inventory (every test runs exactly once across untagged plus tagged), one full tagged run green, and a fresh full hosted CI. Until the remote-gate wiring lands, a red trunk mutant run blocks landing windows by ruling, except the fix and board-only records. The CI owner reviews.
+- *State:* in force.
+
+**tb-R215. The test-roadmap queue: other CRs yield to the speed-up lane; one integration lands as one fast-forward** (10:00Z, 2026-10-07; on the second operator's goal to land the reworked test roadmap fast).
+- *Decision:* window order on that main is critical fixes, then the mutant cut and the shard soft threshold (one writer at a time on the CI suite workflow), then the speed-up integration, then everything else. A ready non-critical CR lands only in a gap; it is not frozen. The integration keeps each CR's accepted review with identical patch-ids, re-reviews any conflict resolution, proves its tip with one fresh full hosted CI plus 3 stabilisation runs on the same head, and lands as ONE signed exact-head fast-forward in a reserved window (4 h cap).
+- *State:* in force until the speed-up integration lands.
+
+**tb-R216. The operator approves PR #50 and designates his decision channels** (11:48Z, 2026-10-07; the operator, verbatim «Да да», through his desk channel).
+- *Decision:* YES to PR #50 at 7b30ec9. The operator's designated decision channels are his desk cards (tb-R66) and the dispatcher session. A decision relayed through either counts as his; this ruling is the record of the designation from the operator.
+- *State:* in force.
