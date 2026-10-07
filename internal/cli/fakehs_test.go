@@ -104,6 +104,7 @@ type fakeRoom struct {
 	id, alias, name string
 	members         map[string]string // user id -> membership
 	state           map[string]json.RawMessage
+	stateSenders    map[string]string
 }
 
 type fakeInvite struct {
@@ -747,7 +748,15 @@ func (hs *fakeHS) getStateEvents(w http.ResponseWriter, r *http.Request, u strin
 	for key, raw := range room.state {
 		typ, stateKey, _ := strings.Cut(key, "|")
 		k := stateKey
-		out = append(out, matrix.Event{Type: typ, StateKey: &k, Content: append(json.RawMessage(nil), raw...)})
+		out = append(out, matrix.Event{Type: typ, StateKey: &k, Sender: room.stateSenders[key], Content: append(json.RawMessage(nil), raw...)})
+	}
+	for uid, membership := range room.members {
+		if _, exists := room.state["m.room.member|"+uid]; exists {
+			continue
+		}
+		k := uid
+		raw, _ := json.Marshal(map[string]string{"membership": membership})
+		out = append(out, matrix.Event{Type: "m.room.member", StateKey: &k, Sender: uid, Content: raw})
 	}
 	writeJSON(w, 200, out)
 }
@@ -762,15 +771,37 @@ func (hs *fakeHS) putState(w http.ResponseWriter, r *http.Request, u string) {
 		return
 	}
 	typ := r.PathValue("type")
+	// Matrix authorization forbids another user's @-prefixed state key.
+	if strings.HasPrefix(r.PathValue("key"), "@") && r.PathValue("key") != u {
+		writeErr(w, 403, "M_FORBIDDEN", "sender cannot write another user's state key")
+		return
+	}
 	if hs.forbidden[typ] {
 		writeErr(w, 403, "M_FORBIDDEN", "You don't have permission to post that to the room.")
 		return
 	}
-	if !mayPost(room, u, typ != "m.room.message") {
+	allowed := mayPost(room, u, typ != "m.room.message")
+	var levels struct {
+		Events map[string]int `json:"events"`
+		Users  map[string]int `json:"users"`
+	}
+	_ = json.Unmarshal(room.state["m.room.power_levels|"], &levels)
+	if need, ok := levels.Events[typ]; ok {
+		have := levels.Users[u]
+		if u == roomCreator(room) {
+			have = 100
+		}
+		allowed = have >= need
+	}
+	if !allowed {
 		writeErr(w, 403, "M_FORBIDDEN", "You don't have permission to post that to the room.")
 		return
 	}
 	room.state[typ+"|"+r.PathValue("key")] = content
+	if room.stateSenders == nil {
+		room.stateSenders = map[string]string{}
+	}
+	room.stateSenders[typ+"|"+r.PathValue("key")] = u
 	hs.seq++
 	writeJSON(w, 200, map[string]string{"event_id": fmt.Sprintf("$state%03d", hs.seq)})
 }

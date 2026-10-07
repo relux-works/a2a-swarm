@@ -411,6 +411,11 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	timeout := fs.Duration("timeout", DefaultWaitTimeout, "how long to wait (0 = until something arrives)")
 	asJSON := fs.Bool("json", false, "one JSON object per event")
 	all := fs.Bool("all", false, "wake on every new message in the --room rooms, not only on relevant ones")
+	status := fs.String("status", "", "opt-in liveness state while waiting")
+	heartbeat := fs.Duration("heartbeat", 0, "explicit liveness heartbeat interval")
+	runtime := fs.String("runtime", "", "declared runtime: claude, codex or none")
+	hooks := fs.String("hooks", "", "declared hooks: installed or none")
+	product := fs.String("product", "", "self-recorded product scope")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -424,12 +429,35 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	if *timeout < 0 {
 		return usagef("--timeout must not be negative (0 waits until something arrives)")
 	}
+	profile := config.AgentStatus{State: *status, HeartbeatEvery: heartbeat.String(), Runtime: *runtime, Hooks: *hooks, Doorbell: "armed", Product: *product}
+	if *status != "" {
+		if err := statusValid(profile); err != nil {
+			return usagef("%s", err)
+		}
+	} else if *heartbeat != 0 || *runtime != "" || *hooks != "" || *product != "" {
+		return usagef("liveness flags require --status and explicit --heartbeat, --runtime, --hooks")
+	}
 	s, err := a.session()
 	if err != nil {
 		return err
 	}
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
+	}
+	var lastHeartbeat time.Time
+	if *status != "" {
+		if err := s.writeLivenessSource(ctx, profile, "wait"); err != nil {
+			return err
+		}
+		lastHeartbeat = a.Now()
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), nativeRPCTimeout)
+			defer cancel()
+			profile.Doorbell = "none"
+			if err := s.writeLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {
+				fmt.Fprintln(a.Stderr, "wait liveness disarm:", a.secrets.Scrub(sanitizeLine(err.Error())))
+			}
+		}()
 	}
 	filter, err := s.resolveFilter(ctx, rooms, *all)
 	if err != nil {
@@ -449,6 +477,12 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	for {
+		if *status != "" && a.Now().Sub(lastHeartbeat) >= *heartbeat {
+			if err := s.writeLivenessSource(ctx, profile, "wait-heartbeat"); err != nil {
+				return err
+			}
+			lastHeartbeat = a.Now()
+		}
 		n, err := a.showNew(ctx, s, filter, *asJSON)
 		if err != nil {
 			return err
@@ -458,6 +492,9 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 			return nil
 		}
 		poll := maxPoll
+		if *status != "" {
+			poll = min(poll, *heartbeat)
+		}
 		if !deadline.IsZero() {
 			remaining := deadline.Sub(a.Now())
 			if remaining <= 0 {

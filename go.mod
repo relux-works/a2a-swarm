@@ -2,7 +2,10 @@ module github.com/relux-works/a2a-swarm
 
 go 1.25.5
 
-require github.com/relux-works/skill-go-testing-tools/tuitestkit v0.1.1
+require (
+	github.com/coder/websocket v1.8.15
+	github.com/relux-works/skill-go-testing-tools/tuitestkit v0.1.1
+)
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

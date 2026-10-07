@@ -256,7 +256,39 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	}
 	if err != nil {
 		fail(err)
+		return
 	}
+	if err := a.hookLiveness(ctx, ev, in); err != nil {
+		fail(err)
+	}
+}
+
+// Liveness is opt-in via a typed status record. Hook availability is reported
+// as declared by its owner; executing a hook is not proof of future idle wake.
+func (a *App) hookLiveness(ctx context.Context, ev hookEvent, in hookInput) error {
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	st, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if st.Liveness == nil || st.HooksPaused {
+		return nil
+	}
+	if st.Runtime != nil && st.Runtime.SessionID != in.SessionID {
+		return errors.New("liveness hook refuses a foreign runtime session")
+	}
+	profile := *st.Liveness
+	if st.LivenessSource == "manual" && (profile.State == "blocked" || profile.State == "stopping" || (profile.State == "waiting-human" && ev.arg != "prompt")) {
+		return nil
+	}
+	profile.State = "working"
+	if ev.arg == "stop" && st.HookBlocks(hookSessionKey(in.SessionID)) == 0 {
+		profile.State = "idle"
+	}
+	return s.writeLivenessSource(ctx, profile, "hook")
 }
 
 // readHookInput parses the hook JSON; empty input is an empty object.
@@ -629,9 +661,9 @@ func cmdHookPause(a *App, args []string, pause bool) error {
 	if err != nil {
 		return err
 	}
-	if _, err := config.UpdateState(p, *agent, func(cur *config.State) error {
-		cur.HooksPaused = pause
-		return nil
+	if err := config.WithRuntimeLock(p, *agent, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		_, err := config.UpdateStateBy(p, *agent, time.Now().Add(nativeRPCTimeout), func(cur *config.State) error { cur.HooksPaused = pause; return nil })
+		return err
 	}); err != nil {
 		return err
 	}

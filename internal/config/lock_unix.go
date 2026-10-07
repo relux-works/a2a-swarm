@@ -11,7 +11,7 @@ import (
 
 // lockFile takes an exclusive flock on path and returns the unlock function.
 func lockFile(path string) (func(), error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, SecretFileMode)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|openNoFollow, SecretFileMode)
 	if err != nil {
 		return nil, err
 	}
@@ -28,7 +28,7 @@ const lockRetry = 10 * time.Millisecond
 // lockFileBy is lockFile with non-blocking attempts until deadline; a lock
 // still held then is ErrLockTimeout.
 func lockFileBy(path string, deadline time.Time) (func(), error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, SecretFileMode)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|openNoFollow, SecretFileMode)
 	if err != nil {
 		return nil, err
 	}

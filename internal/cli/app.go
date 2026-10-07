@@ -21,9 +21,10 @@ import (
 
 // Exit codes.
 const (
-	ExitOK    = 0
-	ExitError = 1
-	ExitUsage = 2
+	ExitOK     = 0
+	ExitError  = 1
+	ExitUsage  = 2
+	ExitConfig = 64
 )
 
 // App carries the process environment so tests can run commands in-process.
@@ -70,6 +71,9 @@ type App struct {
 	backfillPages int
 	// leaseTTL, when set (tests only), replaces config.LeaseTTL.
 	leaseTTL time.Duration
+	// Native transport/fault hooks are test-only seams.
+	nativeDial                        func(context.Context, string) (nativeRuntime, error)
+	afterWakeReserve, afterWakeSubmit func() error
 }
 
 // NewApp returns an App bound to the real process environment.
@@ -137,7 +141,9 @@ func commands() []command {
 		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
 		{"creds", "creds move-human <name>              move a HUMAN's credential file out of agents/ into humans/ (used only with --human)", cmdCreds},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
-		{"status", "status set <active|idle|away> [\"text\"] | status get [name]", cmdStatus},
+		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
+		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},
+		{"runtime", "runtime bind --codex-thread ID --endpoint unix:///SOCK --owner-pid PID --heartbeat DUR --max-wakes-per-hour N --gate G --hooks H [--product X] [--watch] | dispatch|gate|status   launcher-owned native Codex wake", cmdRuntime},
 	}
 }
 
@@ -246,6 +252,10 @@ func (a *App) fail(err error) int {
 	var ue usageError
 	if errors.As(err, &ue) || errors.Is(err, flag.ErrHelp) {
 		return ExitUsage
+	}
+	var ce livenessConfigError
+	if errors.As(err, &ce) {
+		return ExitConfig
 	}
 	return ExitError
 }

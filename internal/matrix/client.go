@@ -461,8 +461,8 @@ func (c *Client) GetState(ctx context.Context, roomID, evType, stateKey string, 
 // has no per-type listing (GET /state/{type} is the event with state key ""), so
 // it reads the full room state and filters.
 func (c *Client) GetStateEvents(ctx context.Context, roomID, evType string) ([]Event, error) {
-	var all []Event
-	if err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state", nil, nil, &all); err != nil {
+	all, err := c.GetRoomState(ctx, roomID)
+	if err != nil {
 		return nil, err
 	}
 	var out []Event
@@ -472,6 +472,14 @@ func (c *Client) GetStateEvents(ctx context.Context, roomID, evType string) ([]E
 		}
 	}
 	return out, nil
+}
+
+// GetRoomState reads one consistent response containing status and membership
+// events, so a liveness snapshot does not need a separate full-state fetch per type.
+func (c *Client) GetRoomState(ctx context.Context, roomID string) ([]Event, error) {
+	var all []Event
+	err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state", nil, nil, &all)
+	return all, err
 }
 
 // PutState sends a state event and returns its event id.
