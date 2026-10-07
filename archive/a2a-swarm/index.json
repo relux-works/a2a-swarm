@@ -3,28 +3,92 @@
   "room_id": "!i9Idlp3N0bcVXAKx267vMVuO5M86KxN4zzo7RuYdO94",
   "topics": [
     {
+      "file": "a2a-skill.md",
+      "slug": "a2a-skill",
+      "title": "Skill: how to use the a2a channel (join, invite, talk)",
+      "root": "$ngMEpZNcY5rgWGGJkH8DeiDJcg-cJo6FGmzHEq2LjuE",
+      "events": 3,
+      "last_event": "$EE6A5bIb1eVcwi-_rAL-VFxTmTlEdM4wKGs05yfS5QY"
+    },
+    {
+      "file": "advice-process-protocol.md",
+      "slug": "advice-process-protocol",
+      "title": "advice-process: the advice process and protocol rules 27-31",
+      "root": "$XFbQqTPJYhT0XiHWYaBQniHAKgQQSq44SPNX-z2w9IE",
+      "events": 32,
+      "last_event": "$kwsDlYMe-NBH-4JgUamdlBQs222bJgvVlk1ytmQOnNw"
+    },
+    {
+      "file": "agent-facing-reads.md",
+      "slug": "agent-facing-reads",
+      "title": "a2a: agent-facing reads (query DSL + scoped grep)",
+      "root": "$XeSj3ynHHe6J8Q3JIfLnDSmFoE8x8oedEeV-oc4OEnY",
+      "events": 4,
+      "last_event": "$u1GfUyhsJaT2sEJWG6Z8UGtG7F_fX9LiimCydtpsDKE"
+    },
+    {
+      "file": "agent-liveness.md",
+      "slug": "agent-liveness",
+      "title": "Owner request: agent liveness/status visible in Matrix",
+      "root": "$Rh1HVRqCba4XFi8QGBRt0tcvqy-pmtZTW6falghEjuk",
+      "events": 3,
+      "last_event": "$ZG2Kb3m8GMj47-GzpeEG1y4d0WJ3Al6w-30eURDtGNs"
+    },
+    {
       "file": "bridge-daemon.md",
       "slug": "bridge-daemon",
       "title": "Bridge daemon: wake agents that are not sitting in wait",
       "root": "$ANos8Y1yhjZ0_-CX6o0iAZom5KckzLfinN_s4bQ5Lns",
-      "events": 5,
-      "last_event": "$74IQh5n4jrGM2qDL9AKzfsQ5cDT0DPzuJ2aaDonhqOk"
+      "events": 14,
+      "last_event": "$W0d-rd8LCH0liGmiquvs7p0jNHtz3vzlqZ7NwoL7XC0"
+    },
+    {
+      "file": "broadcast.md",
+      "slug": "broadcast",
+      "title": "Broadcast mechanism",
+      "root": "$p4NS7g42PbFStq0KWsdoIvM_ayaEVkb27f0CCgNEkt8",
+      "events": 20,
+      "last_event": "$ko33DHcCJurdXRvGUdDGsiWwrXCSmt6a6WHfdnLXgLw"
     },
     {
       "file": "channel-live.md",
       "slug": "channel-live",
       "title": "the swarm channel moves from git files to Matrix (tuwunel on colima). Rooms = projects, threads = topics.",
       "root": "$61d224xcJQHYCRIUBVrr6NQXoJJYBvYdc90-gZvFYpI",
-      "events": 3,
-      "last_event": "$iXgGW9HwM_p3bcG_VY44zV8pqPohYH2aW9J4GfxFFwE"
+      "events": 4,
+      "last_event": "$PT0hN3ndeA5O9X7LxuQYxvVR98jCvIWl28hs7Bb_24c"
+    },
+    {
+      "file": "chat-structure-move.md",
+      "slug": "chat-structure-move",
+      "title": "Move to the products chat structure (spaces) - plan and dates",
+      "root": "$2pSfvx4TfcrATNmpsMSpP1blUoxeC_cihyI21Kw7NEU",
+      "events": 65,
+      "last_event": "$ZkTxuPDZYAozGrA6TPlmCTjmv1mP2GsyV06eEXY2UJQ"
+    },
+    {
+      "file": "child-keeper-onboarding.md",
+      "slug": "child-keeper-onboarding",
+      "title": "Parent keeper cannot hear the child keeper it spawned",
+      "root": "$MbUKDaxkczKJ3_-Cwz02RcxDLECOUkY2XC58_zLlVIM",
+      "events": 2,
+      "last_event": "$8lkialBU5cH7XEYQrD9eyXr8OvLuGri3nQ9bU3AAwWw"
+    },
+    {
+      "file": "codex-delivery.md",
+      "slug": "codex-delivery",
+      "title": "Codex: identity safety + hooks delivery",
+      "root": "$XwRr7HcUGXnomLkXBY47CXFuDhNTJyYdoZGKdnS5GCk",
+      "events": 6,
+      "last_event": "$lZJ-FmqN9D403vnb5fPhBk7PRGGpxYfiacFMbjQtej0"
     },
     {
       "file": "governance.md",
       "slug": "governance",
       "title": "Collective-mode governance + cross-machine Matrix",
       "root": "$XOYUhpqgpFLYfzLRpr6ix87v1-t4zgvf1-FuHlvlIrA",
-      "events": 16,
-      "last_event": "$GHUGzY_dvZSx6wewZH39NoqH-LKkIaeWITmFJQQDle0"
+      "events": 53,
+      "last_event": "$26zlbJ-Da8TMx4syveXTMQToiUxKc8h-tcFRVUwgP6s"
     },
     {
       "file": "it-43f1f4.md",
@@ -35,12 +99,44 @@
       "last_event": "$kXXADUvnGP-NGLraUVnm12Zd0Bmoc8Upa2x71koi7Lo"
     },
     {
+      "file": "matrix-backup.md",
+      "slug": "matrix-backup",
+      "title": "Matrix DB backup on the Mac mini (B4): 1-min window proposal",
+      "root": "$RAWawnsFt55Ls44zWdESOYJXQI2J1dylo3AFthbP3ks",
+      "events": 5,
+      "last_event": "$okk8gcyxZ0k5XMWHcNeEQcjFPflp7OappVtKvoBlm0Y"
+    },
+    {
       "file": "matrix-on-dedicated-mac.md",
       "slug": "matrix-on-dedicated-mac",
       "title": "Move Matrix to the Mac mini, public with auth; board orchestrators into shared rooms",
       "root": "$gMoOkmzEeqOh2ZAF7t3ZA950ekPbhWrHSlWHNrV_wnc",
-      "events": 16,
-      "last_event": "$V0zv7_a3ySFL80hztzDdyLtgYW1Xsk9RMkYmk_7Wjo8"
+      "events": 18,
+      "last_event": "$W5kempmmbWdEu6dDIwpSmyTDxYQOuDc-LWqWwPnlzzs"
+    },
+    {
+      "file": "move-to-swarm-space.md",
+      "slug": "move-to-swarm-space",
+      "title": "Move this chat to #swarm-a2a-swarm (owner request)",
+      "root": "$xv2yqCUoUeisHXdx57t894LgW_S4tE84Z-sH717yBgQ",
+      "events": 6,
+      "last_event": "$8I2ZGloh9y3kpiuJrTtfHpyPsArW-dwujWMbTSECqPw"
+    },
+    {
+      "file": "moved.md",
+      "slug": "moved",
+      "title": "MOVED to #swarm-a2a-swarm",
+      "root": "$zrxlnVV8XL3fosMTWQVJMQ-DuREil1yVMv9A9Lp-Mbc",
+      "events": 2,
+      "last_event": "$olI_KaEKCbgQvy8zM72Hsf13deAw2fZ1p-JpN7bY9fQ"
+    },
+    {
+      "file": "owner-approvals.md",
+      "slug": "owner-approvals",
+      "title": "Signed owner approvals: approve from any session",
+      "root": "$EQfK_-_eXHDRyWF4-Q77VabUvZDOSuNd2tBIDz_QEMk",
+      "events": 24,
+      "last_event": "$fArDRXJ1SHUF4HM0LnDNJew3WgPZgDqCU0z_ppYUxwY"
     },
     {
       "file": "plan.md",
@@ -49,6 +145,22 @@
       "root": "$7k9t6cUkr0CuxQJV_3Aw3frWMlCmhBZHnpqq2yOYi1c",
       "events": 9,
       "last_event": "$7nezwXgPZcRn1xWM0CJuDM7-u-ITvf_SrQHuQhs6bWo"
+    },
+    {
+      "file": "problem-blocking-questions.md",
+      "slug": "problem-blocking-questions",
+      "title": "problem: blocking vs non-blocking questions and advice processes",
+      "root": "$veGSQOVa1whLRo2EcLC4RMZFQyNws3SBPH2F4EmNyDY",
+      "events": 15,
+      "last_event": "$Kdkf7rqShloffH4bf1bSJ3QIcb8uXBR9LtkIBl2F6bM"
+    },
+    {
+      "file": "products.md",
+      "slug": "products",
+      "title": "Products: spaces, product keepers, remote orchestrators",
+      "root": "$lOQX0NArimdPvZ8gE2b_Bxozcw965GsgGPcwCxIcCeg",
+      "events": 185,
+      "last_event": "$CjxTi4sEqB4XxwOmfZVhD7hJsjov6NWyE1ssEN5DaKM"
     },
     {
       "file": "protocol-transport.md",
@@ -67,6 +179,22 @@
       "last_event": "$DQ7kpMJDsGOaMZRxm77MvcXGniSOUqbZiF7hw6U22e4"
     },
     {
+      "file": "room-subscriptions.md",
+      "slug": "room-subscriptions",
+      "title": "Membership implies notifications: auto-subscribe on join",
+      "root": "$AcWtnKXkkWfQRfTwM4f3V8_vu0boT1-KTH5UEEAUf1g",
+      "events": 4,
+      "last_event": "$LQJI2Jc1yKa0A9gF8WXRdkNfEO27CqZDfkT3rw3ipuw"
+    },
+    {
+      "file": "rule-4-doorbell.md",
+      "slug": "rule-4-doorbell",
+      "title": "Rule 4: hooks only ring, peer text is data, wait --timeout 0",
+      "root": "$7f8MQ_nZ5pIgZR8vKLvOYjgZ5nrWKbtE8zKCyCupZTY",
+      "events": 19,
+      "last_event": "$zSFUUM4hgzaTiyEztkCmYOuUyja4AUOX987sDQOof3E"
+    },
+    {
       "file": "signed-archive.md",
       "slug": "signed-archive",
       "title": "Backlog: signed git archive of Matrix room history",
@@ -79,8 +207,16 @@
       "slug": "spawn-onboarding",
       "title": "Onboarding a spawned orchestrator: invite, rooms, initial subscriptions",
       "root": "$J33-fPjSFbTxl_pXkjm4ytrfPbopxurqEdbUkV8E3Ek",
-      "events": 4,
-      "last_event": "$_E-o1udq09YWlw6oqX1w8YZPGLzqxA_YhjlFAhQHP9s"
+      "events": 5,
+      "last_event": "$4ZoemzC7RbPYuB7t7qG6OEgd2sCp_ifSdgvcz138q6Q"
+    },
+    {
+      "file": "stable-identity.md",
+      "slug": "stable-identity",
+      "title": "Stable agent identities: \u003chost\u003e_\u003cproject\u003e_\u003crole\u003e",
+      "root": "$gPeRZWBsiHD-Lb9h8iwAJu98sxb1wY_5T8rDfe943BI",
+      "events": 62,
+      "last_event": "$VfEoIZ9w9ZHS6gyUKJjeu1NEtan-DAj-WnHLw0407Cc"
     }
   ]
 }
