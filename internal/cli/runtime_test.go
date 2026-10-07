@@ -23,6 +23,7 @@ type nativeFixture struct {
 	ambiguous             bool
 	readErr               error
 	historyErr, wakeErr   error
+	acceptedErr           error
 }
 
 func (n *nativeFixture) Read(_ context.Context, _ string, history bool) (codexwake.Snapshot, error) {
