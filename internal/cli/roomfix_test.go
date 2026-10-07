@@ -105,14 +105,18 @@ func spacePower(t *testing.T, e *env, alias, user string) int {
 }
 
 // Proves room retire removes an EMPTY room: it unlinks the room from its
-// product space, deletes the alias and leaves; a room with a message is
+// product space, deletes the alias, leaves and removes only that room's
+// subscriptions; a room with a message is
 // refused and keeps its alias (history is archived, never retired this way).
 func TestRoomRetire(t *testing.T) {
 	e := newEnv(t)
 	alice := e.agent("alice")
 	e.hs.makePublic(e.hs.addRoom("lobby", alice))
 	e.as("alice", "product", "new", "alpha").ok(t)
+	e.as("alice", "room", "new", "keep").ok(t)
 	e.as("alice", "room", "new", "alpha-oops", "--product", "alpha").ok(t)
+	retiredID := e.hs.aliases["#alpha-oops:"+testServer]
+	keptID := e.hs.aliases["#keep:"+testServer]
 	out := e.as("alice", "room", "retire", "alpha-oops").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "unlinked from ")
 	tuitestkit.ContainsStr(t, out, "deleted alias #alpha-oops")
@@ -122,6 +126,16 @@ func TestRoomRetire(t *testing.T) {
 	}
 	if strings.Contains(e.as("alice", "product", "show", "alpha").ok(t).stdout, "alpha-oops") {
 		t.Fatal("retired room is still a live child of the space")
+	}
+	kept := false
+	for _, sub := range e.serverSubs("alice").Subs {
+		if sub.Room == retiredID {
+			t.Fatal("retired room still has a subscription")
+		}
+		kept = kept || sub.Room == keptID
+	}
+	if !kept {
+		t.Fatal("retirement removed an unrelated room's subscription")
 	}
 	e.as("alice", "room", "new", "busy").ok(t)
 	e.as("alice", "topic", "new", "busy", "t1", "T").ok(t)

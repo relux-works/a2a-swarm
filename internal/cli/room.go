@@ -239,5 +239,5 @@ func cmdRoomRetire(ctx context.Context, a *App, arg string) error {
 		return fmt.Errorf("leave %s: %w", id, err)
 	}
 	a.printf("left %s (the empty room stays on the server without an alias)\n", id)
-	return nil
+	return s.unsubscribeRoom(ctx, a, id, label)
 }
