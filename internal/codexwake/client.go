@@ -14,12 +14,30 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
 
 const ToolName = "doorbell"
 const ToolNamespace = "a2a"
+
+// RPCError retains a correlated server code without exposing its raw message.
+type RPCError struct {
+	Method string
+	Code   int
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("runtime %s refused (code %d)", e.Method, e.Code)
+}
+
+// Invalid request/method/params are rejected before submission in the pinned
+// servers. Internal errors can follow a successful steer; they stay uncertain.
+func DefinitiveRefusal(err error) bool {
+	var rpc *RPCError
+	return errors.As(err, &rpc) && rpc.Method == "turn/start" && (rpc.Code == -32600 || rpc.Code == -32601 || rpc.Code == -32602)
+}
 
 type Status struct {
 	Type        string   `json:"type"`
@@ -32,9 +50,10 @@ type Item struct {
 	Output    json.RawMessage `json:"output,omitempty"`
 }
 type Turn struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Items  []Item `json:"items"`
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Items     []Item `json:"items"`
+	StartedAt *int64 `json:"startedAt,omitempty"`
 }
 type Snapshot struct {
 	ID     string `json:"id"`
@@ -168,7 +187,7 @@ func (c *Client) rpc(ctx context.Context, method string, params, out any) error 
 			continue
 		}
 		if response.Error != nil {
-			return fmt.Errorf("runtime %s refused (code %d)", method, response.Error.Code)
+			return &RPCError{Method: method, Code: response.Error.Code}
 		}
 		if len(response.Result) == 0 || string(response.Result) == "null" {
 			return errors.New("runtime missing result")
@@ -237,6 +256,95 @@ func (c *Client) TurnStatus(ctx context.Context, thread, id string) (string, err
 	return "", errors.New("runtime turn summary bound exceeded")
 }
 
+// Reconcile pages turn metadata and individual items instead of loading a
+// long-lived thread into one frame. Include the first older turn because a
+// concurrent host transition can steer the output into an already-active turn.
+// Exhaustion or absence is inconclusive, never permission to resend.
+func (c *Client) Reconcile(ctx context.Context, thread, output string, since time.Time) (string, error) {
+	if thread == "" || output == "" || since.IsZero() {
+		return "", errors.New("runtime reconciliation identity required")
+	}
+	cursor := ""
+	seen, turns := map[string]bool{}, map[string]bool{}
+	for page := 0; page < 50; page++ {
+		var response struct {
+			Data       []Turn `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		}
+		params := map[string]any{"threadId": thread, "limit": 20, "sortDirection": "desc", "itemsView": "notLoaded"}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		if err := c.rpc(ctx, "thread/turns/list", params, &response); err != nil {
+			return "", err
+		}
+		for _, turn := range response.Data {
+			if turn.ID == "" || turns[turn.ID] {
+				return "", errors.New("runtime reconciliation turn identity/cycle")
+			}
+			turns[turn.ID] = true
+			matched, err := c.matchTurnItems(ctx, thread, turn.ID, output)
+			if err != nil {
+				return "", err
+			}
+			if matched {
+				return turn.ID, nil
+			}
+			if turn.StartedAt != nil && *turn.StartedAt < since.Unix()-1 {
+				return "", nil
+			}
+		}
+		if response.NextCursor == "" {
+			return "", nil
+		}
+		if response.NextCursor == cursor || seen[response.NextCursor] {
+			return "", errors.New("runtime reconciliation pagination cycle")
+		}
+		seen[response.NextCursor], cursor = true, response.NextCursor
+	}
+	return "", errors.New("runtime reconciliation turn bound exceeded")
+}
+
+func (c *Client) matchTurnItems(ctx context.Context, thread, turn, output string) (bool, error) {
+	cursor := ""
+	seen := map[string]bool{}
+	for page := 0; page < 2000; page++ {
+		var response struct {
+			Data []struct {
+				TurnID string `json:"turnId"`
+				Item   Item   `json:"item"`
+			} `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		}
+		params := map[string]any{"threadId": thread, "turnId": turn, "limit": 1, "sortDirection": "asc"}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		if err := c.rpc(ctx, "thread/items/list", params, &response); err != nil {
+			return false, err
+		}
+		if len(response.Data) > 1 {
+			return false, errors.New("runtime item page bound exceeded")
+		}
+		for _, entry := range response.Data {
+			if entry.TurnID != turn {
+				return false, errors.New("runtime item turn identity mismatch")
+			}
+			if matchesOutput(entry.Item, output) {
+				return true, nil
+			}
+		}
+		if response.NextCursor == "" {
+			return false, nil
+		}
+		if response.NextCursor == cursor || seen[response.NextCursor] {
+			return false, errors.New("runtime item pagination cycle")
+		}
+		seen[response.NextCursor], cursor = true, response.NextCursor
+	}
+	return false, errors.New("runtime reconciliation item bound exceeded")
+}
+
 // Wake supplies only a host-generated functionCallOutput. No model, policy,
 // cwd, permission, instruction or user-authority override accompanies it.
 func (c *Client) Wake(ctx context.Context, thread, output string) (string, error) {
@@ -266,14 +374,38 @@ func (c *Client) Wake(ctx context.Context, thread, output string) (string, error
 func Accepted(snapshot Snapshot, output string) (string, bool) {
 	for _, turn := range snapshot.Turns {
 		for _, item := range turn.Items {
-			if item.Type != "functionCallOutput" || item.Name != ToolName || item.Namespace != ToolNamespace {
-				continue
-			}
-			var text string
-			if json.Unmarshal(item.Output, &text) == nil && text == output && turn.ID != "" {
+			if matchesOutput(item, output) && turn.ID != "" {
 				return turn.ID, true
 			}
 		}
 	}
 	return "", false
+}
+
+func matchesOutput(item Item, output string) bool {
+	if item.Type != "functionCallOutput" || item.Name != ToolName || item.Namespace != ToolNamespace {
+		return false
+	}
+	var text string
+	if json.Unmarshal(item.Output, &text) == nil {
+		return text == output
+	}
+	var content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(item.Output, &content) != nil || len(content) == 0 {
+		return false
+	}
+	var body strings.Builder
+	for _, part := range content {
+		if part.Type != "inputText" {
+			return false
+		}
+		body.WriteString(part.Text)
+		if body.Len() > len(output) {
+			return false
+		}
+	}
+	return body.String() == output
 }

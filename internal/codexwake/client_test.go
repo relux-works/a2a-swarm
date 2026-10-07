@@ -3,10 +3,13 @@ package codexwake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -226,7 +229,12 @@ func testServer(t *testing.T, reply func(string, json.RawMessage) any) string {
 			if err := conn.Write(r.Context(), websocket.MessageText, note); err != nil {
 				return
 			}
-			response, _ := json.Marshal(map[string]any{"id": *req.ID, "result": out})
+			envelope := map[string]any{"id": *req.ID, "result": out}
+			if failure, ok := out.(*RPCError); ok {
+				delete(envelope, "result")
+				envelope["error"] = map[string]any{"code": failure.Code, "message": "RAW_SERVER_SECRET_MUST_NOT_LEAK"}
+			}
+			response, _ := json.Marshal(envelope)
 			if err := conn.Write(r.Context(), websocket.MessageText, response); err != nil {
 				return
 			}
@@ -235,4 +243,124 @@ func testServer(t *testing.T, reply func(string, json.RawMessage) any) string {
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close(); listener.Close() })
 	return "unix://" + path
+}
+
+// Proves correlated pre-submit server codes remain distinguishable from
+// internal/transport uncertainty, without leaking raw server error text.
+func TestNativeRefusalCodes(t *testing.T) {
+	for _, code := range []int{-32600, -32601, -32602, -32603, -32001} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			endpoint := testServer(t, func(method string, _ json.RawMessage) any {
+				if method == "initialize" {
+					return map[string]string{"userAgent": "fixture/0.161.0"}
+				}
+				return &RPCError{Method: method, Code: code}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			c, err := Dial(ctx, endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_, err = c.Wake(ctx, "own", "host notice")
+			var rpc *RPCError
+			if !errors.As(err, &rpc) || rpc.Code != code || strings.Contains(err.Error(), "RAW_SERVER") {
+				t.Fatalf("unsafe classification: %v", err)
+			}
+			if DefinitiveRefusal(err) != (code >= -32602 && code <= -32600) {
+				t.Fatal("wrong refusal classifier")
+			}
+			if DefinitiveRefusal(&RPCError{Method: "thread/read", Code: code}) {
+				t.Fatal("other method granted retry")
+			}
+		})
+	}
+}
+
+// Proves bounded turn/item pagination finds the exact host tool output, even
+// in a preceding active turn; filtered empty pages continue. Forged authority,
+// mixed content, foreign turn IDs and cycles cannot clear an uncertain attempt.
+func TestNativePagedReconciliation(t *testing.T) {
+	for _, mode := range []string{"text", "content", "older-active", "assistant", "namespace", "mixed", "wrong-output", "foreign-turn", "item-cycle", "turn-cycle"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Now()
+			started := now.Unix()
+			if mode == "older-active" {
+				started -= 3600
+			}
+			endpoint := testServer(t, func(method string, raw json.RawMessage) any {
+				if method == "initialize" {
+					return map[string]string{"userAgent": "fixture/0.161.0"}
+				}
+				var p map[string]any
+				if json.Unmarshal(raw, &p) != nil {
+					t.Fatal("bad params")
+				}
+				if p["threadId"] != "own" {
+					t.Error("foreign thread requested")
+				}
+				switch method {
+				case "thread/turns/list":
+					if p["limit"] != float64(20) || p["itemsView"] != "notLoaded" || p["sortDirection"] != "desc" {
+						t.Error("unbounded/content turn fetch")
+					}
+					if p["cursor"] == nil || mode == "turn-cycle" {
+						return map[string]any{"data": []Turn{}, "nextCursor": "next"}
+					}
+					return map[string]any{"data": []Turn{{ID: "candidate", StartedAt: &started}}, "nextCursor": ""}
+				case "thread/items/list":
+					if p["limit"] != float64(1) || p["turnId"] != "candidate" || p["sortDirection"] != "asc" {
+						t.Error("unbounded/wrong item fetch")
+					}
+					if p["cursor"] == nil || mode == "item-cycle" {
+						return map[string]any{"data": []any{}, "nextCursor": "item-next"}
+					}
+					output := json.RawMessage(`"exact host notice"`)
+					if mode == "content" {
+						output = json.RawMessage(`[{"type":"inputText","text":"exact host "},{"type":"inputText","text":"notice"}]`)
+					}
+					if mode == "mixed" {
+						output = json.RawMessage(`[{"type":"inputText","text":"exact host notice"},{"type":"inputImage","image_url":"omitted"}]`)
+					}
+					if mode == "wrong-output" {
+						output = json.RawMessage(`"exact host notice extra"`)
+					}
+					item := Item{Type: "functionCallOutput", Name: ToolName, Namespace: ToolNamespace, Output: output}
+					if mode == "assistant" {
+						item.Type = "agentMessage"
+					}
+					if mode == "namespace" {
+						item.Namespace = "peer"
+					}
+					turn := "candidate"
+					if mode == "foreign-turn" {
+						turn = "foreign"
+					}
+					return map[string]any{"data": []any{map[string]any{"turnId": turn, "item": item}}, "nextCursor": ""}
+				default:
+					t.Errorf("full history or unsafe method %s", method)
+					return strings.Repeat("oversized old history", 300000)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			c, err := Dial(ctx, endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			turn, err := c.Reconcile(ctx, "own", "exact host notice", now)
+			valid := mode == "text" || mode == "content" || mode == "older-active"
+			if valid && (turn != "candidate" || err != nil) {
+				t.Fatalf("valid reconciliation: %s %v", turn, err)
+			}
+			if !valid && turn != "" {
+				t.Fatal("forged/cyclic acceptance cleared fence")
+			}
+			if (mode == "foreign-turn" || mode == "item-cycle" || mode == "turn-cycle") && err == nil {
+				t.Fatal("malformed pagination/identity not detected")
+			}
+		})
+	}
 }

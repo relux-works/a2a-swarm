@@ -22,12 +22,26 @@ type nativeFixture struct {
 	wakes                 []string
 	ambiguous             bool
 	readErr               error
+	historyErr, wakeErr   error
 }
 
-func (n *nativeFixture) Read(context.Context, string, bool) (codexwake.Snapshot, error) {
+func (n *nativeFixture) Read(_ context.Context, _ string, history bool) (codexwake.Snapshot, error) {
+	if history && n.historyErr != nil {
+		return codexwake.Snapshot{}, n.historyErr
+	}
 	return n.thread, n.readErr
 }
 func (n *nativeFixture) Info() (string, string) { return "0.160.1", n.socket }
+
+func (n *nativeFixture) Reconcile(_ context.Context, thread, output string, _ time.Time) (string, error) {
+	if thread != n.thread.ID {
+		return "", errors.New("wrong thread")
+	}
+	if turn, ok := codexwake.Accepted(n.thread, output); ok {
+		return turn, nil
+	}
+	return "", nil
+}
 
 func (n *nativeFixture) TurnStatus(_ context.Context, thread, id string) (string, error) {
 	if thread != n.thread.ID {
@@ -46,14 +60,62 @@ func (n *nativeFixture) Wake(_ context.Context, thread, output string) (string, 
 		return "", errors.New("wrong thread")
 	}
 	n.wakes = append(n.wakes, output)
+	if n.wakeErr != nil {
+		return "", n.wakeErr
+	}
 	raw, _ := json.Marshal(output)
 	id := "turn-" + strconv.Itoa(len(n.wakes))
 	n.thread.Turns = append(n.thread.Turns, codexwake.Turn{ID: id, Status: "completed", Items: []codexwake.Item{{Type: "functionCallOutput", Name: codexwake.ToolName, Namespace: codexwake.ToolNamespace, Output: raw}}})
+	if n.acceptedErr != nil {
+		return "", n.acceptedErr
+	}
 	if n.ambiguous {
 		return "", errors.New("connection lost after accept")
 	}
 	return id, nil
 }
+
+// Proves known pre-submit refusals release only the attempt, retain the rate
+// reservation and mail, and permit a valid retry. Internal/transport outcomes
+// cannot use the same recovery path.
+func TestRuntimeDefinitiveRefusalRecovery(t *testing.T) {
+	for _, code := range []int{-32600, -32601, -32602, -32603} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			e, room, n, g := runtimeWorld(t)
+			id := runtimeMail(e, room, "pending")
+			n.wakeErr = &codexwake.RPCError{Method: "turn/start", Code: code}
+			e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
+			st := e.state("alice")
+			if (st.Wake.Attempt == nil) != (code != -32603) || len(st.Wake.Reservations) != 1 || e.received("alice", id) {
+				t.Fatal("refusal classification lost its fence, rate slot or mail")
+			}
+			n.wakeErr = nil
+			e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
+			want := 2
+			if code == -32603 {
+				want = 1
+			}
+			if len(n.wakes) != want || e.received("alice", id) {
+				t.Fatal("unsafe refusal retry or missing valid control")
+			}
+		})
+	}
+}
+
+// Proves reconciliation does not depend on an oversized full-thread read;
+// the exact acceptance still closes the fence without another wake or receipt.
+func TestRuntimeReconciliationAvoidsFullHistory(t *testing.T) {
+	e, room, n, g := runtimeWorld(t)
+	id := runtimeMail(e, room, "pending")
+	n.ambiguous = true
+	e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
+	n.historyErr = errors.New("full history exceeds frame bound")
+	e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
+	if e.state("alice").Wake.Attempt != nil || len(n.wakes) != 1 || e.received("alice", id) {
+		t.Fatal("full history wedged reconciliation")
+	}
+}
+
 func runtimeWorld(t *testing.T) (*env, string, *nativeFixture, string) {
 	t.Helper()
 	e, room := world(t)
@@ -341,5 +403,72 @@ func TestRuntimeFailedAcceptedTurnRequiresOwnerGate(t *testing.T) {
 				t.Fatal("explicit owner recovery lost pending entry")
 			}
 		})
+	}
+}
+
+// Proves only an observed-dead owner in the stopping generation may retire an
+// uncertain attempt. Retirement performs no RPC/receipt; replacement preserves
+// suppressed old entries and hourly reservations while permitting new mail.
+func TestRuntimeAbandonRetiresWithoutReplay(t *testing.T) {
+	e, room, n, g := runtimeWorld(t)
+	id := runtimeMail(e, room, "uncertain")
+	e.configure = func(a *App) {
+		a.nativeDial = func(context.Context, string) (nativeRuntime, error) { return n, nil }
+		a.afterWakeReserve = func() error { return errors.New("reserved crash") }
+	}
+	e.as("alice", "runtime", "dispatch", "--generation", g).failsWith(t, ExitError, "reserved crash")
+	e.configure = func(a *App) { a.nativeDial = func(context.Context, string) (nativeRuntime, error) { return n, nil } }
+	e.as("alice", "runtime", "abandon", "--generation", g).failsWith(t, ExitError, "still live")
+	_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Runtime.OwnerPID = 2147483647; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.as("alice", "runtime", "abandon", "--generation", g).failsWith(t, ExitError, "stopping generation")
+	e.as("alice", "runtime", "gate", "--generation", g, "stopping").ok(t)
+	e.as("alice", "runtime", "abandon", "--generation", "obsolete").failsWith(t, ExitError, "stale generation")
+	e.as("alice", "runtime", "abandon", "--generation", g).ok(t)
+	st := e.state("alice")
+	if !st.Runtime.Retired || st.Wake.Attempt != nil || len(st.Wake.Reservations) != 1 || len(n.wakes) != 0 || e.received("alice", id) {
+		t.Fatal("retirement lost mail/rate or produced effects")
+	}
+	e.as("alice", "runtime", "gate", "--generation", g, "ready").failsWith(t, ExitError, "retired generation")
+	e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
+	if len(n.wakes) != 0 {
+		t.Fatal("retired generation resumed")
+	}
+	e.as("alice", "runtime", "bind", "--codex-thread", n.thread.ID, "--endpoint", n.endpoint, "--owner-pid", strconv.Itoa(os.Getpid()), "--heartbeat", "1m", "--max-wakes-per-hour", "2", "--gate", "ready", "--hooks", "none").ok(t)
+	next := e.state("alice").Runtime.Generation
+	if next == g {
+		t.Fatal("replacement inherited retired generation")
+	}
+	e.as("alice", "runtime", "dispatch", "--generation", next).ok(t)
+	if len(n.wakes) != 0 || e.received("alice", id) {
+		t.Fatal("replacement replayed or receipted uncertain mail")
+	}
+	runtimeMail(e, room, "new control")
+	e.as("alice", "runtime", "dispatch", "--generation", next).ok(t)
+	if len(n.wakes) != 1 {
+		t.Fatal("new generation refused valid new mail")
+	}
+	runtimeMail(e, room, "rate control")
+	e.as("alice", "runtime", "dispatch", "--generation", next).ok(t)
+	if len(n.wakes) != 1 || e.state("alice").Wake.Outcome != "wake suppressed: rate" {
+		t.Fatal("replacement reset rate reservations")
+	}
+}
+
+// Proves a correlated internal error after input was queued stays fenced and
+// reconciles exact native acceptance rather than submitting it a second time.
+func TestRuntimeServerErrorAfterAcceptedInput(t *testing.T) {
+	e, room, n, g := runtimeWorld(t)
+	id := runtimeMail(e, room, "pending")
+	n.acceptedErr = &codexwake.RPCError{Method: "turn/start", Code: -32603}
+	e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
+	if e.state("alice").Wake.Attempt == nil {
+		t.Fatal("internal error discarded possibly accepted input")
+	}
+	e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
+	if e.state("alice").Wake.Attempt != nil || len(n.wakes) != 1 || e.received("alice", id) {
+		t.Fatal("internal error retried instead of reconciling acceptance")
 	}
 }

@@ -143,7 +143,7 @@ func commands() []command {
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},
-		{"runtime", "runtime bind --codex-thread ID --endpoint unix:///SOCK --owner-pid PID --heartbeat DUR --max-wakes-per-hour N --gate G --hooks H [--product X] [--watch] | dispatch|gate|status   launcher-owned native Codex wake", cmdRuntime},
+		{"runtime", "runtime bind --codex-thread ID --endpoint unix:///SOCK --owner-pid PID --heartbeat DUR --max-wakes-per-hour N --gate G --hooks H [--product X] [--watch] | dispatch|gate|abandon|status   launcher-owned native Codex wake", cmdRuntime},
 	}
 }
 

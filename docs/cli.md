@@ -867,9 +867,10 @@ The monitor posts `system/incident` transitions, or `owner-needed` to the
 keepers for waiting-human and an unavailable idle session with no armed consumer. Two or more stale/down records on one host are grouped
 into one host incident. A changed observation produces one event; unchanged polls and process restarts do not. Durable Matrix transaction
 IDs make retries after acknowledgement loss idempotent. A prior grouped condition disappearing means it is no longer observed in that
-scope; individual records can still be unavailable. Each keeper chooses its own thresholds and investigates before escalating to a human.
+scope; individual records can still be unavailable. A fresh heartbeat does not suppress blocked or unavailable-idle incidents; an
+armed plain Codex waiter with no verified native wake remains unavailable. Each keeper chooses its own thresholds and investigates before escalating to a human.
 
-### Native Codex doorbell: `runtime bind`, `dispatch`, `gate`, `status`
+### Native Codex doorbell: `runtime bind`, `dispatch`, `gate`, `abandon`, `status`
 
 Hooks do not execute at an idle prompt. A launcher attaches its own thread to its selected managed app-server, then registers it with one
 command and supervises the consumer. The native adapter currently verifies app-server **0.160.0, 0.160.1 and 0.161.0**; another version
@@ -893,8 +894,13 @@ The thread must already be loaded on that server with the exact directory. Readi
 resumes a thread or attaches a second owner. Identical binds preserve generation and journal. `--watch` obtains the sole consumer lock
 before changing anything and holds it for its lifetime. Without `--watch`, bind records the configuration but does not arm a consumer.
 
-The owner exports `A2A_SESSION_ID=THREAD_ID` to the attached session and its CLI calls/hooks so the supervised consumer and inbox share
-one identity lease. The consumer follows the durable mailbox cursor, heartbeats independently of mail, and submits a turn only for
+The owner supplies `A2A_AGENT=NAME` and `A2A_SESSION_ID=THREAD_ID` to the attached thread's CLI calls/hooks so the supervised consumer and inbox share
+one identity lease. Exporting these only in a local TUI shell does not establish remote subprocess inheritance: configure and verify
+the thread's own command environment. For a checkpointed known thread, the native TUI form is `codex --remote unix:///SOCK resume THREAD_ID`;
+per-thread `-c 'shell_environment_policy.set.A2A_AGENT="NAME"' -c 'shell_environment_policy.set.A2A_SESSION_ID="THREAD_ID"'` supplies non-secret
+identity values without changing the shared daemon environment. Preserve the owning launcher's model and approval settings. A new thread
+is created on the selected host first, then its returned ID is used for attachment/binding; that bootstrap is launcher-owned, never a
+peer-controlled resume. Verify both values inside the attached thread before accepting migration. The consumer follows the durable mailbox cursor, heartbeats independently of mail, and submits a turn only for
 new un-rung pending entries. It sends `turn/start` with **empty input** and one fixed `toolOutput` (`name=doorbell`, `namespace=a2a`),
 containing bounded counts, verified local member names, the instruction to run `a2a inbox`, and a private generation/attempt marker.
 Peer bodies, topic text and user-authority messages are absent. It changes no model, permission, approval or instruction setting and
@@ -918,10 +924,19 @@ resume is used to hide this limit. A witnessed 0.161.0 limitation is an empty ro
 `thread/read` may refuse it with -32603 until metadata materializes. This remains unavailable and never grants a second submission;
 existing-history busy admission and subsequent idle recovery are separately tested.
 
-Every submission is durably fenced before its RPC. A transport error or crash leaves an uncertain attempt. Exact native turn history,
-including the matching `functionCallOutput` and generation/attempt marker, reconciles acceptance without another wake. Missing history
+Every submission is durably fenced before its RPC. Pinned pre-submit invalid-request/method/params refusals clear only that attempt
+and retain its hourly reservation; internal errors may follow a queued steer and remain uncertain. A transport error or crash also
+leaves an uncertain attempt. Exact native turn history,
+including the matching `functionCallOutput` and generation/attempt marker, reconciles acceptance without another wake. Reconciliation
+pages turn metadata and one item at a time (`thread/turns/list`, `thread/items/list`), within the RPC deadline, rather than loading the
+whole thread into one frame. It accepts exact text or text-only content items. One older boundary turn is included because native
+submission can race into an already-active turn. Unknown timestamps continue within the bounds; exhausted/missing history is still inconclusive. Missing history
 is **inconclusive**, not permission to resend: the adapter retains the fence, exposes the uncertainty and sends no second attempt.
 This deliberately also fences a crash after reservation but before send. There is no automatic unsafe “clear and retry” command.
+The owning host may use `runtime abandon --generation GENERATION` only after the registered owner process is observed dead and the
+generation is gated `stopping`. It retires that generation without any native RPC or receipt. Its uncertain entries remain pending
+for explicit inbox review and stay suppressed from automatic re-ringing across replacement; hourly reservations are retained. A retired
+generation cannot be reopened by a ready gate. This is deliberate retirement, not evidence that the original submission never ran.
 A dead owner permits only exact historical acceptance reconciliation, never new inference. A replacement binding requires the previous
 generation's stopping gate, its owner to have exited, and all uncertain work to be reconciled;
 it cannot inherit old attempts. Owner exit, endpoint replacement, unsupported capability and missing binding remain visible, with mail pending.
@@ -929,6 +944,8 @@ it cannot inherit old attempts. Owner exit, endpoint replacement, unsupported ca
 Each launcher owner owns migration, one session at a time after disposable acceptance. Ivan-side sessions additionally require their
 own launcher's go and tb-keeper's rule-31 impact notice. Publishing this CLI does not move any existing embedded session or install its
 hooks/trust. Live migrations and shared-binary replacement follow their own coordinated impact windows.
+`--watch` exits on transport/Matrix/lock errors and disarms its record on exit; the owning launcher must supervise it with bounded
+restart backoff. It must reuse the same binding/ledger and stop supervision when the owning process exits or the generation is retired.
 
 After acknowledgement, dispatch checks the accepted turn through scoped, metadata-only `thread/turns/list` with `itemsView=notLoaded` (20 per page,
 50-page bound). A failed/interrupted wake remains visible and holds further submissions; unknown/missing/cyclic turn state is unavailable.

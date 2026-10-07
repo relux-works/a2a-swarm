@@ -31,6 +31,7 @@ type Binding struct {
 	Gate           string        `json:"gate"`
 	MaxPerHour     int           `json:"max_wakes_per_hour"`
 	HeartbeatEvery time.Duration `json:"heartbeat_every"`
+	Retired        bool          `json:"retired,omitempty"`
 }
 
 func (b Binding) Validate() error {

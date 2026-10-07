@@ -211,6 +211,11 @@ func incidents(rows []whoRow, now time.Time, after time.Duration) []livenessInci
 		case row.Health != "fresh":
 			i.value = row.Health
 			i.ownerNeeded = row.State == "idle" && row.Record != nil && row.Record.Doorbell == "none"
+		case row.State == "blocked":
+			i.value = "blocked"
+		case row.State == "idle" && row.Record != nil && (row.Record.Doorbell == "none" || (row.Record.Runtime == "codex" && !strings.HasPrefix(row.Record.Wake, "runtime ready:") && row.Record.Wake != "wake accepted")):
+			i.value = "wake unavailable"
+			i.ownerNeeded = true
 		case after > 0 && !row.UnansweredSince.IsZero() && now.Sub(row.UnansweredSince) >= after:
 			i.value = "unanswered"
 		}

@@ -322,3 +322,23 @@ func TestLivenessWaitPreservesLaterManualState(t *testing.T) {
 		t.Fatalf("wait overwrote human state: %+v source=%s", st.Liveness, st.LivenessSource)
 	}
 }
+
+// Proves fresh transport heartbeats do not label native wake failure or an
+// unarmed idle session healthy; an armed Claude harness is a valid neighbor.
+func TestLivenessFreshTransportDoesNotHideWakeFailure(t *testing.T) {
+	for _, tc := range []struct{ state, runtime, doorbell, wake, want string }{
+		{"idle", "codex", "none", "", "wake unavailable"},
+		{"idle", "codex", "armed", "", "wake unavailable"},
+		{"idle", "codex", "armed", "unavailable: native thread", "wake unavailable"},
+		{"idle", "claude", "none", "", "wake unavailable"},
+		{"idle", "claude", "armed", "", "healthy"},
+		{"idle", "codex", "armed", "runtime ready: no new mail", "healthy"},
+		{"blocked", "codex", "armed", "wake failed: owner gate required", "blocked"},
+	} {
+		row := whoRow{Name: "agent", State: tc.state, Health: "fresh", Record: &config.AgentStatus{Runtime: tc.runtime, Doorbell: tc.doorbell, Wake: tc.wake}}
+		got := incidents([]whoRow{row}, time.Now(), 0)
+		if len(got) != 1 || got[0].value != tc.want || (tc.want == "wake unavailable" && !got[0].ownerNeeded) {
+			t.Fatalf("fresh transport concealed wake: %+v => %+v", tc, got)
+		}
+	}
+}

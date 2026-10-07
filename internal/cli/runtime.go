@@ -20,9 +20,12 @@ import (
 
 const nativeRPCTimeout = 10 * time.Second
 
+var errOwnerAbsent = errors.New("own launcher process absent")
+
 type nativeRuntime interface {
 	Read(context.Context, string, bool) (codexwake.Snapshot, error)
 	TurnStatus(context.Context, string, string) (string, error)
+	Reconcile(context.Context, string, string, time.Time) (string, error)
 	Wake(context.Context, string, string) (string, error)
 	Info() (string, string)
 	Close()
@@ -43,6 +46,10 @@ func ownerBirth(ctx context.Context, pid int) (string, error) {
 	}
 	raw, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "uid=").Output()
 	fields := strings.Fields(string(raw))
+	var exited *exec.ExitError
+	if errors.As(err, &exited) && exited.ExitCode() == 1 && len(fields) == 0 && ctx.Err() == nil {
+		return "", errOwnerAbsent
+	}
 	if err != nil || len(fields) != 6 || fields[5] != strconv.Itoa(os.Getuid()) {
 		return "", errors.New("own launcher process unavailable")
 	}
@@ -55,7 +62,7 @@ func sameRuntime(a, b codexwake.Binding) bool {
 
 func cmdRuntime(ctx context.Context, a *App, args []string) error {
 	if len(args) == 0 {
-		return usagef("runtime requires bind, dispatch, gate or status")
+		return usagef("runtime requires bind, dispatch, gate, abandon or status")
 	}
 	if args[0] == "bind" {
 		return cmdRuntimeBind(ctx, a, args[1:])
@@ -89,6 +96,44 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 		return usagef("runtime operation requires --generation")
 	}
 	switch args[0] {
+	case "abandon":
+		if len(pos) != 0 {
+			return usagef("runtime abandon takes no positional arguments")
+		}
+		return config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error {
+			return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+				_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+					if st.Runtime == nil || st.Runtime.Generation != *generation || st.Runtime.Identity != s.name || st.Runtime.Host != machineLabel() {
+						return errors.New("runtime stale generation")
+					}
+					probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
+					defer cancel()
+					birth, err := ownerBirth(probe, st.Runtime.OwnerPID)
+					if probe.Err() != nil || (err != nil && !errors.Is(err, errOwnerAbsent)) {
+						return errors.New("runtime owner observation unavailable")
+					}
+					if err == nil && birth == st.Runtime.OwnerStart {
+						return errors.New("runtime abandon refused: owning launcher is still live")
+					}
+					if st.Runtime.Gate != "stopping" || st.Wake.Attempt == nil || st.Wake.Attempt.Generation != *generation {
+						return errors.New("runtime abandon requires stopping generation and its uncertain attempt")
+					}
+					for _, id := range st.Wake.Attempt.IDs {
+						if !slices.Contains(st.Wake.Rung, id) {
+							st.Wake.Rung = append(st.Wake.Rung, id)
+						}
+					}
+					st.Wake.Attempt = nil
+					st.Runtime.Retired = true
+					st.Wake.Outcome = "wake abandoned: retired generation; retained mail needs inbox"
+					return nil
+				})
+				if err == nil {
+					a.printf("%s uncertain generation retired; retained entries require inbox, no automatic replay\n", s.name)
+				}
+				return err
+			})
+		})
 	case "gate":
 		if len(pos) != 1 {
 			return usagef("runtime gate requires ready, paused, budget, stopping or unknown")
@@ -102,6 +147,9 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 			_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
 				if st.Runtime == nil || st.Runtime.Generation != *generation || st.Runtime.Identity != s.name || st.Runtime.Host != machineLabel() {
 					return errors.New("runtime stale generation")
+				}
+				if st.Runtime.Retired {
+					return errors.New("runtime retired generation")
 				}
 				st.Runtime.Gate = pos[0]
 				if pos[0] == "ready" && (st.Wake.LastTurnStatus == "failed" || st.Wake.LastTurnStatus == "interrupted") {
@@ -145,7 +193,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(pos) != 0 || *thread == "" || *pid <= 0 || *heartbeat <= 0 || *rate <= 0 || *gate == "" {
+	if len(pos) != 0 || *thread == "" || *endpoint == "" || *hooks == "" || *pid <= 0 || *heartbeat <= 0 || *rate <= 0 || *gate == "" {
 		return usagef("runtime bind requires own --codex-thread, --endpoint, --owner-pid, --heartbeat, --max-wakes-per-hour, --gate and --hooks")
 	}
 	if own := a.Getenv("CODEX_THREAD_ID"); own != "" && own != *thread {
@@ -244,7 +292,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 				if st.Runtime != nil && sameRuntime(*st.Runtime, binding) {
 					binding.Generation = st.Runtime.Generation
 				} else {
-					st.Wake = codexwake.Ledger{}
+					st.Wake = codexwake.Ledger{Rung: slices.Clone(st.Wake.Rung), Reservations: slices.Clone(st.Wake.Reservations)}
 					st.Wake.Outcome = "runtime bound: consumer not armed"
 				}
 				st.Runtime = &binding
@@ -316,6 +364,9 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			return errors.New("runtime stale generation")
 		}
 		b := *st.Runtime
+		if b.Retired {
+			return a.runtimeOutcome(s, generation, "unavailable: retired generation")
+		}
 		if err := a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
 			return err
 		}
@@ -330,6 +381,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		}
 		client, err := a.dialNative(probe, b.Endpoint)
 		if err != nil {
+			fmt.Fprintln(a.Stderr, "native connection probe:", a.secrets.Scrub(sanitizeLine(err.Error())))
 			return a.runtimeOutcome(s, generation, "unavailable: native capability or transport")
 		}
 		defer client.Close()
@@ -337,7 +389,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		if version != b.ServerVersion || socket != b.EndpointID {
 			return a.runtimeOutcome(s, generation, "unavailable: host replaced")
 		}
-		remote, err := client.Read(probe, b.ThreadID, st.Wake.Attempt != nil)
+		remote, err := client.Read(probe, b.ThreadID, false)
 		if err != nil {
 			fmt.Fprintln(a.Stderr, "native thread probe:", a.secrets.Scrub(sanitizeLine(err.Error())))
 			return a.runtimeOutcome(s, generation, "unavailable: native thread")
@@ -349,7 +401,12 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			if st.Wake.Attempt.Generation != generation {
 				return a.runtimeOutcome(s, generation, "wake uncertain: stale attempt generation")
 			}
-			if turn, ok := codexwake.Accepted(remote, st.Wake.Attempt.Output); ok {
+			turn, reconcileErr := client.Reconcile(probe, b.ThreadID, st.Wake.Attempt.Output, st.Wake.Attempt.Started)
+			if reconcileErr != nil {
+				fmt.Fprintln(a.Stderr, "native acceptance probe:", a.secrets.Scrub(sanitizeLine(reconcileErr.Error())))
+				return a.runtimeOutcome(s, generation, "wake uncertain: acceptance history unavailable; no retry")
+			}
+			if turn != "" {
 				_, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error { return cur.Wake.Accept(b, turn) })
 				return err
 			}
@@ -443,6 +500,21 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		}
 		turn, err := client.Wake(probe, b.ThreadID, attempt.Output)
 		if err != nil {
+			if codexwake.DefinitiveRefusal(err) {
+				_, updateErr := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+					if cur.Runtime == nil || cur.Runtime.Generation != generation || cur.Wake.Attempt == nil || cur.Wake.Attempt.ID != attempt.ID {
+						return errors.New("runtime stale refusal")
+					}
+					cur.Wake.Attempt = nil
+					cur.Wake.Outcome = "wake refused: not accepted; hourly reservation retained"
+					return nil
+				})
+				fmt.Fprintln(a.Stderr, a.secrets.Scrub(sanitizeLine(err.Error())))
+				if updateErr == nil {
+					a.printf("%s wake refused: not accepted; hourly reservation retained\n", s.name)
+				}
+				return updateErr
+			}
 			return a.runtimeOutcome(s, generation, "wake uncertain: transport result; reconcile before retry")
 		}
 		if a.afterWakeSubmit != nil {
