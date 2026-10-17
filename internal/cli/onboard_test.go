@@ -21,7 +21,7 @@ const (
 )
 
 // swarm sets up what onboarding needs once: the host slug, a public #lobby,
-// the meta-orchestrator and projector accounts, a fixed binary path, and a
+// a fixed binary path, and a
 // temporary project directory for the hooks file.
 func (e *env) swarm() {
 	e.t.Helper()
@@ -31,8 +31,6 @@ func (e *env) swarm() {
 	e.projDir = e.t.TempDir()
 	e.run("host", "init", "mini").ok(e.t)
 	e.hs.makePublic(e.hs.addRoom("lobby"))
-	e.hs.addUser(MetaOrchestrator)
-	e.hs.addUser(ProjectorAgent)
 	e.exePath("/usr/local/bin/a2a")
 }
 
@@ -66,7 +64,7 @@ func (e *env) subsOf(name string) []Sub {
 }
 
 // Proves the first ensure onboards completely (joins #lobby, notes the missing
-// #broadcast, creates and joins #proj with the standard invites, one project
+// #broadcast, creates and joins #proj without automatic invites, one project
 // subscription for system/owner-needed/decision, the Claude hooks file, the
 // wait note and the summary), and a second ensure changes nothing: no new
 // room, join, invite or account-data write, the same subscription id, and a
@@ -79,8 +77,6 @@ func TestEnsureOnboardsIdempotently(t *testing.T) {
 		"joined #lobby !lobbyRoomID\n",
 		"#broadcast does not exist yet; skipped\n",
 		"created #proj !projRoomID (preset public_chat, visibility private",
-		"invited @local-models-e9:test.local to #proj\n",
-		"invited @a2a-projector:test.local to #proj\n",
 		"room=#proj kinds=system,owner-needed,decision",
 		"hooks (claude, --runtime):\ninstalled " + filepath.Join(e.projDir, ".claude", "settings.local.json"),
 		"Also keep one background `a2a wait --timeout 0` for idle wake, and read with `a2a inbox`.\n",
@@ -249,16 +245,14 @@ func TestEnsureKeeper(t *testing.T) {
 }
 
 // Proves room new applies the standard policy: preset public_chat, visibility
-// private, redact 100, local-models-e9 at 100 and the creator never listed in
-// users; it invites local-models-e9, a2a-projector and --invite; an existing
+// private, redact 100 and empty users (including no creator entry);
+// it invites only --invite users; an existing
 // alias prints "exists" and changes nothing.
 func TestRoomNew(t *testing.T) {
 	e, _ := world(t)
-	e.hs.addUser(MetaOrchestrator)
-	e.hs.addUser(ProjectorAgent)
 	out := e.as("alice", "room", "new", "#team", "--name", "Team", "--topic", "work", "--invite", "bob,carol").ok(t).stdout
-	tuitestkit.ContainsStr(t, out, "created #team !teamRoomID (preset public_chat, visibility private: not in the room directory; power: redact 100, @local-models-e9:test.local 100, creator @alice:test.local implicit)")
-	for _, u := range []string{"local-models-e9", "a2a-projector", "bob", "carol"} {
+	tuitestkit.ContainsStr(t, out, "created #team !teamRoomID (preset public_chat, visibility private: not in the room directory; power: redact 100, creator @alice:test.local implicit)")
+	for _, u := range []string{"bob", "carol"} {
 		tuitestkit.ContainsStr(t, out, "invited @"+u+":test.local to #team\n")
 	}
 	created := e.hs.createdRooms()
@@ -268,7 +262,7 @@ func TestRoomNew(t *testing.T) {
 	c := created[0]
 	users, _ := c.PowerLevelContentOverride["users"].(map[string]any)
 	if c.Preset != "public_chat" || c.Visibility != "private" || c.RoomAliasName != "team" || c.Name != "Team" || c.Topic != "work" ||
-		c.PowerLevelContentOverride["redact"] != float64(100) || users["@local-models-e9:test.local"] != float64(100) || len(users) != 1 {
+		c.PowerLevelContentOverride["redact"] != float64(100) || len(users) != 0 {
 		t.Fatalf("createRoom body: %+v", c)
 	}
 	invites := len(e.hs.CallsFor(inviteRoute))
@@ -286,11 +280,11 @@ func TestRoomNew(t *testing.T) {
 // without an account is noted, not fatal.
 func TestRoomNewByMetaOrchestrator(t *testing.T) {
 	e := newEnv(t)
-	e.agent(MetaOrchestrator)
-	out := e.as(MetaOrchestrator, "room", "new", "ops").ok(t).stdout
+	e.agent("local-models-e9")
+	out := e.as("local-models-e9", "room", "new", "ops", "--invite", "local-models-e9,missing").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "power: redact 100, creator @local-models-e9:test.local implicit")
 	tuitestkit.NotContainsStr(t, out, "invited @local-models-e9")
-	tuitestkit.ContainsStr(t, out, "not invited @a2a-projector:test.local to #ops: no such account yet")
+	tuitestkit.ContainsStr(t, out, "not invited @missing:test.local to #ops: no such account yet")
 	users, _ := e.hs.createdRooms()[0].PowerLevelContentOverride["users"].(map[string]any)
 	if len(users) != 0 {
 		t.Fatalf("users = %v", users)

@@ -118,13 +118,14 @@ a2a identity ensure --role orch --runtime claude           # in the project chec
 ```
 
 ### `a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X]`
-Creates a room with the standard policy (owner decision, 2026-09-29; protocol rule 24) and prints each step:
+Creates a room with the standard policy and prints each step:
 - `POST /createRoom` with preset `public_chat` (anyone on the server can join by alias), visibility `private` (not listed in the room
   directory), `room_alias_name` = the alias, `name` / `topic` when given, and
-  `power_level_content_override: {redact: 100, users: {@local-models-e9:<server>: 100}}`. The creator has its power implicitly: room version
-  12 refuses a creator listed in `users` (`M_INVALID_PARAM`), so the caller is never listed (not even when it is local-models-e9).
+  `power_level_content_override: {redact: 100, users: {}}`. Automatic identities are empty: no implicit meta-orchestrator or projector
+  power entries or invites, regardless of whether old account names exist. The creator has its power implicitly: room version
+  12 refuses a creator listed in `users` (`M_INVALID_PARAM`), so the caller is never listed.
 - Prints `created <alias> <id> (preset public_chat, visibility private: not in the room directory; power: …, creator <mxid> implicit)`.
-- Then invites `local-models-e9`, `a2a-projector` and every `--invite` user (never the caller), one `invited <mxid> to <alias>` each. An
+- Then invites only explicit `--invite` users (never the caller, duplicates skipped), without granting power, one `invited <mxid> to <alias>` each. An
   invitee without an account is printed as `not invited <mxid> to <alias>: no such account yet (…)` and skipped; any other invite failure
   exits 1 naming the room and the `a2a invite` command to finish by hand.
 - An alias that already exists prints `exists <alias> <id>` and exits 0 without changing anything (no creation, no invites). A creation that
@@ -134,6 +135,10 @@ Creates a room with the standard policy (owner decision, 2026-09-29; protocol ru
 ```bash
 a2a room new skill-foo --name "skill-foo" --invite mini_skill-foo_orch
 ```
+
+The same empty automatic-identity policy applies to `product new` lobby creation and plain `identity ensure` project-room creation.
+Product `--keeper` / `--projector` roles remain explicit and use their existing power-50 policy in their designated rooms/spaces.
+This creation policy does not repair existing rooms; existing-server mitigation belongs to the server operator.
 
 A newly created room subscribes its creator (the creator is joined by the creation), with the same kinds as `join` (`system`,
 `owner-needed`, `decision`); an alias that already exists creates no subscription.

@@ -127,6 +127,12 @@ bin/a2a card get local-models-e9
 bin/a2a status set idle "waiting for review"       # Matrix presence
 ```
 
+New rooms created by `room new`, product lobbies and plain `identity ensure`
+have no automatic meta-orchestrator/projector identities, power grants or
+invitations. Use `room new --invite name` or `a2a invite <room> <name>` for
+explicit invitations; these do not grant power. Existing rooms require separate
+server-operator mitigation; this source change does not alter their state.
+
 ## History
 Started 2026-09-29 by `local-models-e9` and the skill-project-management primary orchestrator, in a thread on board element BUG-260928-2hgfo9.
 The owner (Alexis) then decided to build a swarm and move A2A into this separate project.
