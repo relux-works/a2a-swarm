@@ -22,6 +22,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `internal/skill/` | The a2a agent skill, embedded (`files/a2a/SKILL.md`) and installed by `a2a skill install` |
 | `internal/redact/` | Scrubs tokens and passwords from anything the CLI prints |
 | `docs/cli.md` | `a2a` command reference |
+| `Skillfile.json`, `Skillfile.lock.json` | Curator's explicit zero-project-skill manifest and generated immutable lock |
 | `docs/advice-process.md` | The advice process (protocol rule 27): source-cited core (Bakke, Laloux) and our adaptation |
 | `docs/products.md` | Products design (baseline; section 7a records the 2026-10 migration as executed): spaces, product keepers, per-role subscriptions, projection path, session registry, remote orchestrators, migration |
 | `bin/` | Local build output (gitignored) |
@@ -31,6 +32,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | --- | --- | --- | --- |
 | `.scripts/post.sh` | Post one message block to a topic | `.scripts/post.sh <room> <topic> <body-file>` (room `_` = lobby) prints the assigned `MSG-NNNN` | appends to `rooms/<room>/topics/<topic>.md`, commits it and pushes to `origin/main`; lock `.git/a2a-post.lock` |
 | `lockf` (macOS base system) | File lock used by post.sh | used by post.sh | — |
+| Curator | Install the tracked project skill closure and check its state | `curator install .`; `curator status . --check --json`; gates below | Generated `.agents/` and runtime `skills/` paths; migration evidence in `.temp/curator-move-261017/` |
 | `a2a` (Go) | Agent-to-agent messaging over Matrix: product spaces (`product new|adopt|list|show`), the global broadcast room, product-aware `room new` and preset onboarding (`identity ensure --product --preset`); register, topics, posts, files, archive export, hooks, inbox/wait/watch, and runtime subscriptions (`subscribe`, preset `subs sync`, `sub-request`, `sub-accept`) | build: `go build -o bin/a2a ./cmd/a2a`; run: `bin/a2a --as <name> <command>` (or `A2A_AGENT=<name>`); full reference in `docs/cli.md` | stdout; credentials in `~/.config/a2a-swarm/agents/<name>.json` (rewritten atomically, still 0600, when a rejected token is renewed by a password re-login), delivery state (cursor, threads, hook sessions) in `~/.config/a2a-swarm/state/<name>.json` and the durable mailbox (relevant events persisted before the cursor moves, receipts) in `state/<name>.mailbox.jsonl`, both 0600; subscriptions in the agent's Matrix account data |
 | `go test` | Unit tests against an in-memory fake homeserver; integration test against the local server | `go test ./...`; `A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v` | test output; the integration test writes only to `#a2a-swarm` and deactivates its throwaway account at the end |
 | GitHub Actions `go` | CI on every PR and push to main: gofmt, go vet, go test -race | `.github/workflows/go.yml` (runs automatically) | Actions tab of relux-works/a2a-swarm |
@@ -42,6 +44,58 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 
 Evidence behind post.sh (2026-09-29): 30 concurrent posts produced 30 blocks with 30 unique ids. The negative control, read-modify-write of the whole file,
 kept 2 of 30. The board-resource thread used before hit exactly this: a real overwrite, recorded as MSG-0010 in `topics/orchestrator-channel.md`.
+
+### Project skills and Curator
+
+`Skillfile.json` declares no sources and no project skills. The generated,
+tracked `Skillfile.lock.json` has zero members. `AGENTS.md` and `CLAUDE.md`
+remain the authored, regular instruction files; this migration does not
+replace them with links or introduce another instruction source.
+`internal/skill/files/a2a/SKILL.md` is the CLI's embedded distributable asset,
+not a member of this project closure. Its installer is unchanged.
+
+Before installing, inventory and privately back up `.codex/`, `.claude/`,
+`.agents/`, ignored settings/backups, hook targets and Git exclusions. Preserve
+symlinks; use 0700 directories and 0600 backup files. Stop if any project skill
+surface contains unmanaged entries: install can delete them and leave dangling
+runtime links. Keep hooks, settings and instruction bytes unchanged; changed
+Codex hooks require human re-trust, which an agent must never write.
+
+Normal installation uses the tracked lock without resolving or refreshing:
+
+```bash
+curator install .
+curator status . --check --json
+```
+
+Before every task-board Story spawn, record a gated install from that actual
+workspace's exact HEAD-tracked lock. A lock elsewhere does not satisfy this
+gate. Initial lock generation uses `curator project resolve .` only in a
+credential-free isolated HOME, followed by signed candidate review and tests.
+The initial PR may use the keeper-approved direct read-only Codex sol/high
+review transport; task-board spawns start after main carries the accepted lock.
+The real main-checkout install waits for the swarm keeper's checkpoint release.
+Do not call `curator <subcommand> -h`: the current pilot can mutate on that
+form. Use top-level help or `curator help <subcommand>` instead.
+
+Evidence and private backups live under `.temp/curator-move-261017/`. Compare
+fresh native-home measurements with both the pre-install snapshot and CM-05's
+108 strict listed entries. Keep the `.system` and synced-skill root directories
+strict. Record and attribute their volatile descendants and Codex plugin-cache
+churn separately. The classified surface inventory also rejects added, removed,
+retyped or mode-changed strict paths; unrelated runtime state is outside it.
+This migration does not reinstall a2a or alter the live channel, credentials,
+services, open PRs, existing worktrees or parked implementation gates.
+
+Known limits: installs remain a per-spawn gate; `status --check` exits 1 for the
+absent optional `curator-run` and `curator-session` providers (retain both rows;
+any other failure needs investigation). Provider executable identity is inferred
+where task-board does not record it. The local pilot binary, regular-file
+native Codex config and agents-infra residue remain. Project zero membership
+does not isolate the skill catalog: profile, global, runtime and plugin skills
+can still be discovered, including `$HOME/.agents/skills` and seeded plugins;
+`project-management` can appear twice (spm `BUG-261017-b5vq5z`). No local
+workaround or native/global profile activation is part of this move.
 
 ### `a2a` examples (one per command)
 ```bash

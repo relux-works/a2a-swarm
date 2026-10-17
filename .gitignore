@@ -3,3 +3,8 @@
 .task-board/
 task-board.config.json
 bin/
+
+# Curator generated project output; keep runtime settings and hooks visible.
+/.agents/
+/.claude/skills/
+/.codex/skills/
