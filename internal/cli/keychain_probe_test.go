@@ -54,7 +54,16 @@ func probeFixture(t *testing.T, mode, dir string) func(context.Context, ...strin
 	if mode == "missing" {
 		path += "-absent"
 	}
-	return func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, path, args...) }
+	return func(ctx context.Context, args ...string) *exec.Cmd {
+		// Execute valid synthetic scripts through the system interpreter: a
+		// fresh script's first direct exec has substantial macOS admission
+		// latency unrelated to the process/pipe contract under test. Keep
+		// missing/non-executable controls on the real failing exec boundary.
+		if mode == "missing" || mode == "nonexec" {
+			return exec.CommandContext(ctx, path, args...)
+		}
+		return exec.CommandContext(ctx, "/bin/sh", append([]string{path}, args...)...)
+	}
 }
 
 func TestKeychainProbeRefusals(t *testing.T) {

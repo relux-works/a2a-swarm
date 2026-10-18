@@ -602,7 +602,9 @@ func TestKeychainCLIProcess(t *testing.T) {
 	a.keychain = func(p config.Paths) *keychainStore {
 		probe := unlockedProbe
 		if path := os.Getenv("A2A_TEST_PROBE"); path != "" {
-			probe = func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, path, args...) }
+			probe = func(ctx context.Context, args ...string) *exec.Cmd {
+				return exec.CommandContext(ctx, "/bin/sh", append([]string{path}, args...)...)
+			}
 		}
 		return &keychainStore{paths: p, hostID: os.Getenv("A2A_TEST_HOST"), probeCommand: probe, command: securityCommand(modelDir), timeout: 2 * time.Second, cooldown: time.Second}
 	}

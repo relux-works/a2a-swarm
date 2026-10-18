@@ -135,7 +135,7 @@ func testKeychainProcessLifetime(t *testing.T, stage, pipes string, cancelOnRead
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
 			k := &keychainStore{paths: p, command: securityCommand(dir), probeCommand: unlockedProbe}
-			fake := func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, path) }
+			fake := func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, "/bin/sh", path) }
 			if stage == "security" {
 				k.command = fake
 			} else {
@@ -307,13 +307,13 @@ func TestKeychainPipeCompletionMigrationStages(t *testing.T) {
 							k := &keychainStore{paths: p, probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
 								probes++
 								if runner == "probe" && probes == stage.stop {
-									return exec.CommandContext(ctx, path)
+									return exec.CommandContext(ctx, "/bin/sh", path)
 								}
 								return unlockedProbe(ctx, args...)
 							}, command: func(ctx context.Context, args ...string) *exec.Cmd {
 								security++
 								if runner == "security" && security == stage.stop {
-									return exec.CommandContext(ctx, path)
+									return exec.CommandContext(ctx, "/bin/sh", path)
 								}
 								return securityCommand(dir)(ctx, args...)
 							}}
