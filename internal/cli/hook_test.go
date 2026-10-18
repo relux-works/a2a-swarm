@@ -569,14 +569,15 @@ func TestHookFailuresAreSilent(t *testing.T) {
 	e.as("alice", "hook").failsWith(t, ExitUsage, "usage: a2a hook")
 }
 
-// Proves the hook logs in again when the stored token was revoked (the server
-// refused before doing anything) and then rings, instead of failing.
+// Rejected hook credentials fail quietly without password login.
 func TestHookRelogin(t *testing.T) {
 	e, room := world(t)
 	e.hook("alice", "stop", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", ping(1))
 	e.hs.revoke("@alice:test.local")
 	r := e.hook("alice", "stop", `{}`).ok(t)
-	tuitestkit.ContainsStr(t, stopReason(t, r.stdout), "1 new peer event")
-	tuitestkit.ContainsStr(t, r.stderr, "logged in again")
+	if r.stdout != "" {
+		t.Fatal("rejected hook rang")
+	}
+	tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, routeLogin)
 }

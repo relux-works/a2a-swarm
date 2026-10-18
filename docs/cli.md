@@ -17,7 +17,7 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 | --- | --- |
 | `~/.config/a2a-swarm/matrix.env` | Legacy configuration input still read by the CLI; process env overrides each key. Do not distribute this file or use it to supply the registration secret |
 | `~/.config/a2a-swarm/host` | this machine's host slug (`a2a host init`), the first part of every stable identity: the slug and a newline, mode `0600` |
-| `~/.config/a2a-swarm/agents/<name>.json` | `user_id`, `access_token`, `device_id`, `password`, `homeserver`. Must be a regular file with mode `0600`, otherwise every command refuses to use it |
+| `~/.config/a2a-swarm/agents/<name>.json` | `user_id`, `device_id`, `homeserver`; file mode also stores `access_token`. Passwords are never written. With Keychain selected, tokens are ignored in the file. Must be a regular file with mode `0600`, otherwise every command refuses to use it |
 | `~/.config/a2a-swarm/state/<name>.json` | delivery state: the sync cursor (`next_batch`), the threads this agent takes part in, the per-session doorbell state of the hooks (`hook_sessions`: Stop loop guard, Stop rate limit, rung set), the hook kill switch (`hooks_paused`) and the lease of the one live session that holds the identity (`lease`: `holder`, `pid`, `expires`). Mode `0600`, updated under `state/<name>.lock`. Subscriptions are not here: they live in the agent's Matrix account data |
 | `~/.config/a2a-swarm/state/<name>.mailbox.jsonl` | the durable mailbox: the relevant events (and invites, gap records) not yet received, shown marks, receipts, and a receipt index for deduplication (see the delivery contract). Mode `0600`, never a symlink, written under `state/<name>.lock` |
 
@@ -33,15 +33,30 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 - Room arguments accept `#alias`, `alias`, `#alias:server`, or `!roomid`. User arguments accept `name`, `@name`, or `@name:server`.
 - Secrets are never printed: tokens and passwords are scrubbed from every error message, and the access token travels only in the `Authorization` header.
 - Exit codes: `0` success (including a `wait` timeout), `1` runtime error, `2` usage error.
-- Re-login on a rejected token: when the homeserver answers `401 M_UNKNOWN_TOKEN` / `M_MISSING_TOKEN`, the command logs in once with the
-  password stored in the credential file (`m.login.password`, `m.id.user`, `device_id` = the stored device id, so the device is kept), rewrites
-  `agents/<name>.json` atomically (temporary file in the same directory, then rename; mode stays `0600`; under `agents/.<name>.lock`), notes it on
-  stderr, and runs the command again exactly once. The retry happens only if every request of the first attempt was answered 401, i.e. the
-  server executed none of them, so a post, invite or state change is never sent twice; a token rejected after any request was served just fails.
-  If the login is refused (or the file has no password), the command exits 1 naming the file: re-registration or an admin password reset is needed.
-  The file is then left byte-for-byte unchanged. Neither the old nor the new token is ever printed.
+- A rejected token exits with a sanitized instruction to ask the keeper for rotation. Neither commands nor hooks invoke password login.
+- `A2A_SECRET_STORE` accepts `file` (also the default) or `keychain` (macOS only). Unknown values refuse credential access and registration before Matrix calls.
+- Keychain service: `works.relux.a2a.relux.works`; account: full Matrix `user_id`, validated against the selected local identity. No file fallback, empty token or password retry.
+- Production always invokes `/usr/bin/security`. Reads use `find-generic-password -s SERVICE -a FULL_ID -w` with stdout captured in a pipe; writes use `security -i` with the command on stdin. Helper stdout/stderr never goes to the terminal or errors. The subprocess environment is limited to PATH and C locale; credentials never enter its argv/environment. Interactive command lines at or beyond security's 4096-byte limit and control characters are refused.
+- New items use `-T /usr/bin/security` without `-U`; existing items use `-U` without `-T`. A duplicate create permits one relookup/update. Per-identity writers serialize; every write is read back exactly. External same-UID deletion may cause `-U` recreation with creator trust. No preservation of a deleted prior item/ACL is claimed; never `-A`, empty `-T`, ACL/partition-list changes or unlocking.
+- A repo-built Swift status companion runs before EVERY security invocation, including migration lookup/new/update/relookup/readback. It calls `SecKeychainOpen` and `SecKeychainGetStatus` without accessing items, stdin, ACLs or unlock. Both processes explicitly address the OS user's `~/Library/Keychains/login.keychain-db`; search-list/default targets and HOME overrides are unsupported. A test-only fixture seam selects the same explicit throwaway path in both processes.
+- The fixed companion path is `a2a-keychain-status` beside `os.Executable()` after symlink resolution. Never PATH or an environment override. Only stdout `unlocked\n` with exit 0 and empty stderr admits security. `locked`/3 and `error`/2 refuse; missing/nonexecutable/helper failure, timeout, extra text, unknown output or mismatched status refuse too. Production non-Darwin Keychain selection refuses; file mode remains available. See README for the local `swiftc`/ad-hoc signing build; installation is held. Linux Go CI uses fakes. The status APIs are available in the current SDK but deprecated since macOS 10.10.
+- Every probe/security call has a 5-second hard process-group deadline. Timeout/interaction failures persist a secret-free 0600 per-identity marker under 0700 `<config>/keychain-state/`. Probe locked/error/timeout also sets a host-wide marker, bound to kernel host UUID and target path. The 5-minute cooldown suppresses ALL probes/security for that identity, or all identities on that host for a host marker, across CLI processes sharing this config directory. A host lock serializes preflight/access and marker publication. Other hosts are unaffected by a host marker; identity markers remain identity-wide. Separate config directories do not share markers. Expiry permits a bounded fresh attempt; corrupt/unreadable/symlink/public markers refuse. Never delete markers to force a retry.
+- No-dialog operation is bounded to unlocked login Keychain plus an ACL trusting `/usr/bin/security`. Untrusted ACL and locking between probe and access remain accepted races. The first real sentinel left a dialog after child termination; A-lite prevents known-locked access. Reopen full helperA if the probe prompts/API is unavailable, host lock policy changes or a no-dialog domain is required. Fakes are not macOS UI proof. Phase 1 protects against file leaks, not same-UID impersonation; backups remain. Phase 2 broker, launcher-bound identity, isolated workers and revocation are deferred.
 
 ## Commands
+
+### `a2a --as <own-name> creds migrate`
+With `A2A_SECRET_STORE=keychain`, migrate exactly the selected identity. No wildcard
+or directory enumeration is supported. A human uses interactive `--human --as`.
+The original 0600 regular file stays under its existing identity lock while the
+token is written and matching readback verified. Only then is it replaced with
+metadata using a same-directory temporary file, fsync, rename and directory sync.
+A failure/mismatch/interruption before replacement keeps the recoverable file;
+a scrubbed retry verifies the existing item without creating one. Files retain
+`user_id`, `device_id`, `homeserver` and omit both secret fields. File mode refuses
+migration. Live migration is held until a separate owner window after landing;
+until then keeper rotations update both the file and its matching Keychain item.
+
 
 ### `a2a host init <slug> [--force]` / `a2a host show`
 Sets this machine's host slug (`[a-z0-9-]`, 1-24 characters) in `<config>/host` (mode `0600`, the slug and a newline), once per machine. The same
@@ -555,7 +570,7 @@ How the doorbell works:
   nothing to stdout, one line to stderr, and exits 0. The state lock is taken with non-blocking attempts within the remaining budget; a lock held
   longer (by a busy `wait` or `inbox`, say) is such an error ("the state file is locked by another a2a process"), and nothing is recorded (the
   cursor does not move; the next consumer persists the batch). `wait`,
-  `watch` and `inbox` keep the blocking lock. A rejected token is repaired by the usual one-time re-login.
+  `watch` and `inbox` keep the blocking lock. A rejected token is reported without password login; ask the keeper to rotate credentials.
 - `a2a hook pause --agent NAME` (below) makes every hook event print nothing.
 
 On a hook event `--runtime` is optional, because the output is byte-identical for Claude Code and Codex. An unknown value is an error like any other: nothing on stdout, one stderr line, exit 0, nothing recorded. Hooks installed before `--runtime` existed (`... hook stop`) keep ringing; re-running `a2a hook install --runtime claude` adds the flag in place.

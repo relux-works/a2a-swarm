@@ -173,7 +173,7 @@ func TestUpdateCredentials(t *testing.T) {
 		t.Fatalf("UpdateCredentials = %+v, %v", got, err)
 	}
 	c, err := LoadCredentials(p, "a")
-	if err != nil || c.AccessToken != "new-token-2" || c.DeviceID != "D" || c.Password != "pw-123456" {
+	if err != nil || c.AccessToken != "new-token-2" || c.DeviceID != "D" || c.Password != "" {
 		t.Fatalf("on disk = %+v, %v", c, err)
 	}
 	if st, _ := os.Lstat(p.AgentFile("a")); st.Mode().Perm() != 0o600 || !st.Mode().IsRegular() {

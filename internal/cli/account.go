@@ -44,6 +44,10 @@ func cmdRegister(ctx context.Context, a *App, args []string) error {
 // when set, runs after the reservation and before the registration (an error
 // removes the reservation and creates nothing).
 func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matrix, name string, check func(*matrix.Client) error) (_ config.Credentials, path string, err error) {
+	store, err := a.selectedStore()
+	if err != nil {
+		return config.Credentials{}, "", err
+	}
 	if mx.URL == "" {
 		return config.Credentials{}, "", fmt.Errorf("no homeserver URL: set %s in %s", config.EnvMatrixURL, p.EnvFile())
 	}
@@ -95,10 +99,19 @@ func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matri
 		UserID:      resp.UserID,
 		AccessToken: resp.AccessToken,
 		DeviceID:    resp.DeviceID,
-		Password:    password,
 		Homeserver:  mx.URL,
 	}
-	if err := config.WriteCredentials(f, creds); err != nil {
+	if err := validateCredentialIdentity(creds, name); err != nil {
+		return config.Credentials{}, "", err
+	}
+	fileCreds := creds
+	if store == "keychain" {
+		if err := a.keychainStore(p).write(ctx, creds.UserID, creds.AccessToken); err != nil {
+			return config.Credentials{}, "", err
+		}
+		fileCreds.AccessToken = ""
+	}
+	if err := config.WriteCredentials(f, fileCreds); err != nil {
 		return config.Credentials{}, "", fmt.Errorf("write %s: %w", path, err)
 	}
 	written = true
@@ -246,6 +259,9 @@ func cmdLeave(ctx context.Context, a *App, args []string) error {
 
 // cmdCreds: a2a creds move-human <name>
 func cmdCreds(ctx context.Context, a *App, args []string) error {
+	if len(args) > 0 && args[0] == "migrate" {
+		return a.migrateCredentials(ctx, args[1:])
+	}
 	if len(args) != 2 || args[0] != "move-human" {
 		return usagef("usage: a2a creds move-human <name>")
 	}

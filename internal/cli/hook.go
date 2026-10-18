@@ -202,6 +202,9 @@ func cmdHook(ctx context.Context, a *App, args []string) error {
 // never fails the process (a failing hook must not break the session).
 func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	fail := func(err error) {
+		if errors.Is(err, matrix.ErrAuth) {
+			err = fmt.Errorf("authentication failed; ask the keeper to rotate credentials")
+		}
 		fmt.Fprintln(a.Stderr, "a2a hook "+ev.arg+": "+a.secrets.Scrub(sanitizeLine(err.Error()))+"; nothing new was acknowledged")
 	}
 	fs := newFlagSet("hook " + ev.arg)
@@ -243,17 +246,10 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	a.sess = nil
-	a.served.Store(0)
+	priorContext := a.ctx
+	a.ctx = ctx
+	defer func() { a.ctx = priorContext }()
 	err = a.hookDeliver(ctx, rt, ev, in)
-	// A rejected token that the server refused before doing anything: log in
-	// again once and retry, like every other command (relogin.go).
-	if err != nil && errors.Is(err, matrix.ErrAuth) && a.sess != nil && a.served.Load() == 0 {
-		if err = a.relogin(ctx, a.sess, err); err == nil {
-			a.sess = nil
-			err = a.hookDeliver(ctx, rt, ev, in)
-		}
-	}
 	if err != nil {
 		fail(err)
 		return

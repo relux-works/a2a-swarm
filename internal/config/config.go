@@ -147,9 +147,9 @@ func LoadMatrix(p Paths, getenv Getenv) (Matrix, error) {
 // Credentials is the per-agent credential file.
 type Credentials struct {
 	UserID      string `json:"user_id"`
-	AccessToken string `json:"access_token"`
+	AccessToken string `json:"access_token,omitempty"`
 	DeviceID    string `json:"device_id"`
-	Password    string `json:"password"`
+	Password    string `json:"password,omitempty"`
 	Homeserver  string `json:"homeserver"`
 }
 
@@ -236,6 +236,17 @@ func MoveToHumans(p Paths, name string) (string, error) {
 }
 
 func readCredentials(path string) (Credentials, error) {
+	c, err := readCredentialMetadata(path)
+	if err != nil {
+		return Credentials{}, err
+	}
+	if c.AccessToken == "" {
+		return Credentials{}, fmt.Errorf("%s is missing access_token", path)
+	}
+	return c, nil
+}
+
+func readCredentialMetadata(path string) (Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Credentials{}, err
@@ -245,8 +256,8 @@ func readCredentials(path string) (Credentials, error) {
 		// Never include the file content: it holds secrets.
 		return Credentials{}, fmt.Errorf("%s is not valid credential JSON", path)
 	}
-	if c.UserID == "" || c.AccessToken == "" {
-		return Credentials{}, fmt.Errorf("%s is missing user_id or access_token", path)
+	if c.UserID == "" {
+		return Credentials{}, fmt.Errorf("%s is missing user_id", path)
 	}
 	return c, nil
 }
@@ -280,6 +291,7 @@ func CreateCredentialFile(p Paths, name string) (*os.File, error) {
 
 // WriteCredentials writes c into a file created by CreateCredentialFile and closes it.
 func WriteCredentials(f *os.File, c Credentials) error {
+	c.Password = ""
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		f.Close()
@@ -570,6 +582,7 @@ func UpdateCredentials(p Paths, name string, fn func(*Credentials) error) (Crede
 		}
 		return c, err
 	}
+	next.Password = ""
 	data, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return c, err

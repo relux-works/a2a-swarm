@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,9 +28,10 @@ const itOperator = "local-models-e9"
 // itEnv runs the real CLI against the real local homeserver from an isolated
 // temporary config dir, so the real ~/.config/a2a-swarm is never modified.
 type itEnv struct {
-	t       *testing.T
-	dir     string
-	secrets []string
+	t         *testing.T
+	dir       string
+	secrets   []string
+	passwords map[string]string
 }
 
 func (e *itEnv) run(args ...string) result {
@@ -43,7 +45,7 @@ func (e *itEnv) run(args ...string) result {
 			}
 			return ""
 		},
-		HTTP: &http.Client{},
+		HTTP: &http.Client{Transport: registrationCapture{env: e, base: http.DefaultTransport}},
 		Now:  time.Now,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -111,14 +113,14 @@ func TestIntegrationRealHomeserver(t *testing.T) {
 	// Runs last (defers are LIFO, the room leave below runs first): deactivate the
 	// throwaway account and delete its credential file, so no account is left behind.
 	defer func() {
-		cur, err := config.LoadCredentials(dst, name) // a relogin may have replaced the token
+		cur, err := config.LoadCredentials(dst, name)
 		if err != nil {
 			cur = creds
 		}
 		c := matrix.New(cur.Homeserver, cur.AccessToken)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		if err := c.Deactivate(ctx, cur.UserID, cur.Password); err != nil {
+		if err := c.Deactivate(ctx, cur.UserID, e.passwords[name]); err != nil {
 			t.Errorf("cleanup: deactivate %s: %v", cur.UserID, err)
 		}
 		if err := os.Remove(dst.AgentFile(name)); err != nil {
@@ -190,4 +192,36 @@ func TestIntegrationRealHomeserver(t *testing.T) {
 	// 10. Presence round-trips.
 	e.run("--as", name, "status", "set", "idle", "integration test").ok(t)
 	tuitestkit.ContainsStr(t, e.run("--as", name, "status", "get").ok(t).stdout, "idle: integration test")
+}
+
+// Registration passwords survive only in this gated test's memory, so cleanup
+// can satisfy Matrix UIA without making production persist a password again.
+type registrationCapture struct {
+	env  *itEnv
+	base http.RoundTripper
+}
+
+func (r registrationCapture) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost && req.URL.Path == "/_matrix/client/v3/register" && req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		defer body.Close()
+		var data struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(body).Decode(&data); err != nil {
+			return nil, err
+		}
+		if data.Password != "" {
+			if r.env.passwords == nil {
+				r.env.passwords = map[string]string{}
+			}
+			r.env.passwords[data.Username] = data.Password
+			r.env.secrets = append(r.env.secrets, data.Password)
+		}
+	}
+	return r.base.RoundTrip(req)
 }

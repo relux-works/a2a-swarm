@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -43,10 +42,10 @@ type App struct {
 	human   bool
 	secrets redact.Set
 
-	// sess is the last session opened by the running command (nil before one is
-	// opened); served counts its requests that may have been executed (see relogin.go).
-	sess   *session
-	served atomic.Int64
+	// keychain is a package-test-only factory. Production stays pinned to security.
+	keychain              func(config.Paths) *keychainStore
+	beforeCredentialScrub func() error
+	ctx                   context.Context
 
 	// afterPrint, when set (tests only), runs after wait, watch, inbox or a hook
 	// printed and before it records that (shown, receipt, rung set): an error
@@ -139,7 +138,7 @@ func commands() []command {
 		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},
 		{"project", "project --system R --source R [--source R...] [--kind k1,k2] [--once]   project allowed sources to one explicit target", cmdProject},
 		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
-		{"creds", "creds move-human <name>              move a HUMAN's credential file out of agents/ into humans/ (used only with --human)", cmdCreds},
+		{"creds", "creds migrate | move-human <name>   migrate selected credentials to Keychain, or move HUMAN metadata into humans/", cmdCreds},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},
@@ -161,6 +160,7 @@ func (a *App) usage(w io.Writer) {
 
 // Run executes one a2a invocation and returns the exit code.
 func (a *App) Run(ctx context.Context, args []string) int {
+	a.ctx = ctx
 	if a.Now == nil {
 		a.Now = time.Now
 	}
@@ -186,7 +186,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
-			return a.fail(a.runWithRelogin(ctx, c, rest[1:]))
+			return a.fail(c.run(ctx, a, rest[1:]))
 		}
 	}
 	return a.fail(usagef("unknown command %q (see: a2a help)", rest[0]))
@@ -246,7 +246,7 @@ func (a *App) fail(err error) int {
 	}
 	msg := err.Error()
 	if errors.Is(err, matrix.ErrAuth) {
-		msg = "authentication failed: " + msg + "; the credential file's access token is invalid or revoked"
+		msg = "authentication failed: " + msg + "; ask the keeper to rotate credentials"
 	}
 	fmt.Fprintln(a.Stderr, "a2a: "+a.secrets.Scrub(sanitizeLine(msg)))
 	var ue usageError
@@ -378,11 +378,7 @@ func (a *App) sessionAs(name string) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	load := config.LoadCredentials
-	if a.human {
-		load = config.LoadHumanCredentials
-	}
-	creds, err := load(p, name)
+	creds, err := a.loadCredentials(a.context(), p, name)
 	if err != nil {
 		return nil, err
 	}
@@ -399,12 +395,18 @@ func (a *App) sessionAs(name string) (*session, error) {
 		server = mx.ServerName
 	}
 	c := matrix.New(base, creds.AccessToken)
-	c.HTTP = a.probedHTTP()
+	c.HTTP = a.HTTP
 	s := &session{app: a, paths: p, mx: mx, name: name, creds: creds, client: c, server: server}
-	a.sess = s
 	return s, nil
 }
 
 func (a *App) printf(format string, args ...any) {
 	fmt.Fprintf(a.Stdout, format, args...)
+}
+
+func (a *App) context() context.Context {
+	if a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }

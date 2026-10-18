@@ -24,8 +24,8 @@ func TestRegister(t *testing.T) {
 		t.Fatalf("credential file: %v %v", st, err)
 	}
 	c, err := config.LoadCredentials(e.paths(), "newbie")
-	if err != nil || c.AccessToken != "syt_newbie_newtoken_abcdef" || c.Password == "" || c.Homeserver != e.hs.srv.URL {
-		t.Fatalf("credentials = %+v, %v", c, err)
+	if err != nil || c.AccessToken != "syt_newbie_newtoken_abcdef" || c.Password != "" || c.Homeserver != e.hs.srv.URL {
+		t.Fatalf("registered credentials mismatch: %v", err)
 	}
 	tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, "POST /_matrix/client/v3/register", 2)
 	// The new identity works.
