@@ -1,0 +1,183 @@
+package tmuxwake
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+var paneRE = regexp.MustCompile(`^%[0-9]+$`)
+
+type Target struct {
+	Socket     string `json:"socket"`
+	SocketID   string `json:"socket_id"`
+	Pane       string `json:"pane"`
+	PanePID    int    `json:"pane_pid"`
+	PaneBirth  string `json:"pane_birth"`
+	OwnerPID   int    `json:"owner_pid"`
+	OwnerBirth string `json:"owner_birth"`
+	Runtime    string `json:"runtime"`
+}
+
+func Birth(ctx context.Context, pid int) (string, error) {
+	if pid <= 0 {
+		return "", errors.New("invalid process")
+	}
+	b, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "uid=").Output()
+	f := strings.Fields(string(b))
+	if err != nil || len(f) != 6 || f[5] != strconv.Itoa(os.Getuid()) {
+		return "", errors.New("own process unavailable")
+	}
+	return strings.Join(f, " "), nil
+}
+
+func SocketID(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", errors.New("absolute tmux socket required")
+	}
+	st, err := os.Lstat(path)
+	if err != nil || st.Mode()&os.ModeSocket == 0 {
+		return "", errors.New("tmux socket unavailable")
+	}
+	return socketID(st)
+}
+
+func (t Target) command(ctx context.Context, args ...string) (string, error) {
+	if !paneRE.MatchString(t.Pane) {
+		return "", errors.New("exact tmux pane id required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	b, err := exec.CommandContext(ctx, "tmux", append([]string{"-S", t.Socket}, args...)...).Output()
+	if err != nil {
+		return "", errors.New("tmux operation unavailable")
+	}
+	return string(b), nil
+}
+
+func (t Target) Inspect(ctx context.Context) (int, int, int, error) {
+	if t.OwnerPID > 0 {
+		birth, err := Birth(ctx, t.OwnerPID)
+		if err != nil || birth != t.OwnerBirth {
+			return 0, 0, 0, errors.New("runtime process replaced")
+		}
+	}
+	id, err := SocketID(t.Socket)
+	if err != nil || t.SocketID != "" && id != t.SocketID {
+		return 0, 0, 0, errors.New("tmux socket replaced")
+	}
+	b, err := t.command(ctx, "display-message", "-p", "-t", t.Pane, "#{pane_id} #{pane_pid} #{pane_dead} #{cursor_x} #{cursor_y} #{pane_width}")
+	f := strings.Fields(b)
+	if err != nil || len(f) != 6 || f[0] != t.Pane || f[2] != "0" {
+		return 0, 0, 0, errors.New("tmux target unavailable")
+	}
+	pid, _ := strconv.Atoi(f[1])
+	x, _ := strconv.Atoi(f[3])
+	y, _ := strconv.Atoi(f[4])
+	width, _ := strconv.Atoi(f[5])
+	if t.PanePID != 0 {
+		birth, err := Birth(ctx, pid)
+		if pid != t.PanePID || err != nil || birth != t.PaneBirth {
+			return 0, 0, 0, errors.New("tmux pane process replaced")
+		}
+	}
+	return x, y, width, nil
+}
+
+func Pin(ctx context.Context, socket, pane, runtime string) (Target, error) {
+	t := Target{Socket: socket, Pane: pane, Runtime: runtime}
+	if runtime != "claude" && runtime != "codex" {
+		return t, errors.New("runtime must be claude or codex")
+	}
+	id, err := SocketID(socket)
+	if err != nil {
+		return t, err
+	}
+	t.SocketID = id
+	b, err := t.command(ctx, "display-message", "-p", "-t", pane, "#{pane_id} #{pane_pid} #{pane_dead}")
+	f := strings.Fields(b)
+	if err != nil || len(f) != 3 || f[0] != pane || f[2] != "0" {
+		return t, errors.New("tmux target unavailable")
+	}
+	t.PanePID, _ = strconv.Atoi(f[1])
+	t.PaneBirth, err = Birth(ctx, t.PanePID)
+	return t, err
+}
+
+func (t Target) box(ctx context.Context) (Box, bool) {
+	x, y, _, err := t.Inspect(ctx)
+	if err != nil {
+		return Box{}, false
+	}
+	screen, err := t.command(ctx, "capture-pane", "-e", "-p", "-t", t.Pane)
+	if err != nil {
+		return Box{}, false
+	}
+	b, ok := Input(screen, t.Runtime)
+	return b, ok && x == b.Column && y == b.Row
+}
+
+func Notice(count int) string { return fmt.Sprintf("a2a: %d new peer events; run a2a inbox", count) }
+
+func (t Target) Idle(ctx context.Context) bool { b, ok := t.box(ctx); return ok && b.Text == "" }
+
+// Send is two-phase, with no Enter on mismatch. The caller reserves its event
+// IDs durably before calling; ambiguous attempts are never replayed. Keystrokes
+// between verification and Enter/erase remain an explicitly accepted race.
+func (t Target) Send(ctx context.Context, count int, beforeType, afterType func()) (string, error) {
+	if count <= 0 {
+		return "", errors.New("positive count required")
+	}
+	box, ok := t.box(ctx)
+	if !ok || box.Text != "" {
+		return "suppressed: busy, draft or unknown input", nil
+	}
+	notice := Notice(count)
+	_, _, width, err := t.Inspect(ctx)
+	if err != nil || len(notice)+3 >= width {
+		return "suppressed: target or width", nil
+	}
+	if beforeType != nil {
+		beforeType()
+	}
+	if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-l", notice); err != nil {
+		return "uncertain: type", err
+	}
+	if afterType != nil {
+		afterType()
+	}
+	// The redraw may lag key delivery. Waiting does not submit anything; it
+	// merely lets the next capture observe the application input state.
+	timer := time.NewTimer(150 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return "uncertain: interrupted", ctx.Err()
+	case <-timer.C:
+	}
+	box, ok = t.box(ctx)
+	if !ok {
+		return "notice left in draft: input unavailable", nil
+	}
+	if box.Text == notice {
+		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
+			return "uncertain: Enter", err
+		}
+		return "wake submitted", nil
+	}
+	if strings.HasSuffix(box.Text, notice) {
+		// One bounded command, no Ctrl-U/line deletion and no Enter.
+		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-N", strconv.Itoa(len(notice)), "BSpace"); err != nil {
+			return "uncertain: suffix erase", err
+		}
+		return "suppressed: changed input; notice suffix erased", nil
+	}
+	return "notice left in draft: changed input", nil
+}

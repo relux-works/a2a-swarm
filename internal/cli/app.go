@@ -143,6 +143,8 @@ func commands() []command {
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},
 		{"runtime", "runtime bind --codex-thread ID --endpoint unix:///SOCK --owner-pid PID --heartbeat DUR --max-wakes-per-hour N --gate G --hooks H [--product X] [--watch] | dispatch|gate|abandon|status   launcher-owned native Codex wake", cmdRuntime},
+		{"bind", "bind --runtime R --owner-pid PID --interval DUR --retry-max DUR --max-wakes-per-hour N [--session-id ID]   bind this tmux session once; persistent counts-only wake", cmdBind},
+		{"unbind", "unbind                               stop this session's persistent wake process", cmdUnbind},
 	}
 }
 

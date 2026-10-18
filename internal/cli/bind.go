@@ -1,0 +1,470 @@
+package cli
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
+)
+
+// descendant inspects PID/PPID only, never command arguments or environment.
+func descendant(ctx context.Context, pid, ancestor int) bool {
+	for i := 0; i < 64 && pid > 1; i++ {
+		if pid == ancestor {
+			return true
+		}
+		b, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "ppid=").Output()
+		if err != nil {
+			return false
+		}
+		next, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		if next >= pid && next == pid {
+			return false
+		}
+		pid = next
+	}
+	return false
+}
+
+func cmdBind(ctx context.Context, a *App, args []string) error {
+	if len(args) == 1 && args[0] == "status" {
+		s, err := a.session()
+		if err != nil {
+			return err
+		}
+		st, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		if st.Terminal == nil {
+			a.printf("%s unbound\n", s.name)
+		} else {
+			b := st.Terminal
+			a.printf("%s generation=%s pid=%d stopped=%t outcome=%s\n", s.name, b.Generation, b.DaemonPID, b.Stopped, b.Outcome)
+		}
+		return nil
+	}
+	fs := newFlagSet("bind")
+	runtime := fs.String("runtime", "", "claude or codex")
+	owner := fs.Int("owner-pid", 0, "own live runtime PID")
+	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID or CODEX_THREAD_ID)")
+	pane := fs.String("pane", a.Getenv("TMUX_PANE"), "own exact tmux pane")
+	socket := fs.String("socket", strings.Split(a.Getenv("TMUX"), ",")[0], "own tmux socket")
+	interval := fs.Duration("interval", 0, "explicit idle observation and sync interval (1s..60s)")
+	retryMax := fs.Duration("retry-max", 0, "explicit maximum sync-error backoff (at most 5m)")
+	rate := fs.Int("max-wakes-per-hour", 0, "explicit maximum wake attempts per hour")
+	run := fs.String("run-generation", "", "internal detached consumer generation")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usagef("bind takes flags only")
+	}
+	if *run != "" {
+		return runBoundChild(ctx, a, *run)
+	}
+	if *sessionID == "" {
+		*sessionID = a.Getenv(EnvSessionID)
+		if *sessionID == "" {
+			*sessionID = a.Getenv("CODEX_THREAD_ID")
+		}
+	}
+	if *owner <= 1 || *interval < time.Second || *interval > maxPoll || *retryMax < *interval || *retryMax > 5*time.Minute || *rate < 1 || *rate > 3600 || !claudeSessionRE.MatchString(*sessionID) {
+		return usagef("bind requires --runtime, own --owner-pid, --session-id (or session env), --interval 1s..60s, --retry-max interval..5m and --max-wakes-per-hour 1..3600")
+	}
+	if current := a.Getenv(EnvSessionID); current != "" && current != *sessionID {
+		return usagef("bind refuses another live session")
+	}
+	if current := a.Getenv("CODEX_THREAD_ID"); current != "" && (*runtime != "codex" || current != *sessionID) {
+		return usagef("bind refuses another live Codex session")
+	}
+	if *pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "" {
+		return usagef("bind requires this invocation's own tmux pane/socket")
+	}
+	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
+	defer cancel()
+	target, err := tmuxwake.Pin(probe, *socket, *pane, *runtime)
+	if err != nil {
+		return err
+	}
+	if !descendant(probe, os.Getppid(), *owner) || !descendant(probe, *owner, target.PanePID) {
+		return errors.New("bind owner is not this invocation's runtime in this pane")
+	}
+	birth, err := tmuxwake.Birth(probe, *owner)
+	if err != nil {
+		return err
+	}
+	target.OwnerPID = *owner
+	target.OwnerBirth = birth
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	if err = a.acquireLease(s, *sessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
+		return err
+	}
+	var ready *os.File
+	var child *exec.Cmd
+	err = config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		st, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		if st.Runtime != nil && !st.Runtime.Retired {
+			return errors.New("native binding exists; use its verified transport, do not start terminal fallback")
+		}
+		if b := st.Terminal; b != nil && !b.Stopped {
+			live, _ := tmuxwake.Birth(probe, b.OwnerPID)
+			if live == b.OwnerBirth {
+				return errors.New("session already bound; unbind this generation first")
+			}
+			if live, _ := tmuxwake.Birth(probe, b.DaemonPID); live == b.DaemonBirth && live != "" {
+				return errors.New("prior bound consumer still stopping")
+			}
+		}
+		if b := st.Terminal; b != nil && b.DaemonPID > 0 {
+			live, _ := tmuxwake.Birth(probe, b.DaemonPID)
+			if live != "" && live == b.DaemonBirth {
+				return errors.New("prior bound consumer still stopping")
+			}
+		}
+		var random [16]byte
+		if _, err = rand.Read(random[:]); err != nil {
+			return err
+		}
+		b := &config.TerminalBinding{Generation: hex.EncodeToString(random[:]), SessionID: *sessionID, Host: machineLabel(), OwnerPID: *owner, OwnerBirth: birth, Target: target, Interval: *interval, RetryMax: *retryMax, MaxWakes: *rate, Outcome: "starting"}
+		if old := st.Terminal; old != nil {
+			b.Reservations = slices.Clone(old.Reservations)
+			if old.SessionID == b.SessionID {
+				b.Rung = slices.Clone(old.Rung)
+				b.AttemptIDs = slices.Clone(old.AttemptIDs)
+			}
+		}
+		if _, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal = b; return nil }); err != nil {
+			return err
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		var writer *os.File
+		ready, writer, err = os.Pipe()
+		if err != nil {
+			return err
+		}
+		// The daemon log contains fixed outcomes only, never screens or bodies.
+		logPath := filepath.Join(s.paths.Base, "state", s.name+".binding.log")
+		log, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if errors.Is(err, os.ErrExist) {
+			info, e := os.Lstat(logPath)
+			if e != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+				return errors.New("binding log must be a regular 0600 file")
+			}
+			log, err = os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0600)
+		}
+		if err != nil {
+			ready.Close()
+			writer.Close()
+			return err
+		}
+		defer log.Close()
+		child = exec.Command(exe, "--as", s.name, "bind", "--run-generation", b.Generation)
+		child.Env = append(os.Environ(), "A2A_CONFIG_DIR="+s.paths.Base, "A2A_SESSION_ID="+b.SessionID)
+		child.ExtraFiles = []*os.File{writer}
+		child.Stdout = log
+		child.Stderr = log
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err = child.Start(); err != nil {
+			ready.Close()
+			writer.Close()
+			return err
+		}
+		writer.Close()
+		b.DaemonPID = child.Process.Pid
+		b.DaemonBirth, err = tmuxwake.Birth(probe, b.DaemonPID)
+		if err == nil {
+			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal = b; return nil })
+		}
+		if err != nil {
+			child.Process.Signal(syscall.SIGTERM)
+		}
+		go child.Wait()
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	defer ready.Close()
+	if err = ready.SetReadDeadline(time.Now().Add(8 * time.Second)); err != nil {
+		return err
+	}
+	buf, err := io.ReadAll(io.LimitReader(ready, 128))
+	if err != nil || string(buf) != "ready\n" {
+		if child != nil {
+			child.Process.Signal(syscall.SIGTERM)
+		}
+		return errors.New("binding did not arm; inspect own binding status/log before retrying")
+	}
+	a.printf("%s bound pid=%d; persistent terminal fallback; unbind stops it\n", s.name, child.Process.Pid)
+	return nil
+}
+
+func runBoundChild(ctx context.Context, a *App, generation string) error {
+	ready := os.NewFile(3, "binding-ready")
+	if ready == nil {
+		return errors.New("missing bind startup pipe")
+	}
+	defer ready.Close()
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	return config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error {
+		err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+			st, err := config.LoadState(s.paths, s.name)
+			if err != nil {
+				return err
+			}
+			b := st.Terminal
+			birth, err := tmuxwake.Birth(ctx, os.Getpid())
+			if err != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != birth || b.Host != machineLabel() {
+				return errors.New("binding stale consumer")
+			}
+			if err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
+				return err
+			}
+			if _, err = ready.WriteString("ready\n"); err != nil {
+				return err
+			}
+			ready.Close()
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		return a.runTerminal(ctx, s, generation)
+	})
+}
+
+func cmdUnbind(ctx context.Context, a *App, args []string) error {
+	if len(args) != 0 {
+		return usagef("unbind takes no arguments")
+	}
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	var pid int
+	var birth string
+	err = config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+			b := st.Terminal
+			if b == nil || b.Stopped {
+				return nil
+			}
+			sessionID := a.Getenv(EnvSessionID)
+			if sessionID == "" {
+				sessionID = a.Getenv("CODEX_THREAD_ID")
+			}
+			if sessionID != b.SessionID || b.Host != machineLabel() {
+				return errors.New("unbind refuses another session's binding")
+			}
+			pid, birth = b.DaemonPID, b.DaemonBirth
+			b.Stopped = true
+			b.Outcome = "unbound"
+			return nil
+		})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if pid > 0 {
+		current, err := tmuxwake.Birth(ctx, pid)
+		if err == nil && current == birth {
+			proc, err := os.FindProcess(pid)
+			if err != nil {
+				return err
+			}
+			if err = proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				return err
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for !processGone(pid) && time.Now().Before(deadline) {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(25 * time.Millisecond):
+				}
+			}
+			if !processGone(pid) {
+				return errors.New("binding retired but process has not exited; no replacement started")
+			}
+		} else if err != nil && !processGone(pid) {
+			return errors.New("binding process observation unavailable; no process signalled")
+		}
+	}
+	a.printf("%s unbound; mailbox retained\n", s.name)
+	return nil
+}
+
+func (a *App) terminalUpdate(s *session, generation string, fn func(*config.TerminalBinding)) error {
+	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped {
+			return errors.New("binding retired")
+		}
+		fn(st.Terminal)
+		return nil
+	})
+	return err
+}
+
+func (a *App) runTerminal(ctx context.Context, s *session, generation string) error {
+	backoff := time.Duration(0)
+	for ctx.Err() == nil {
+		st, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		b := st.Terminal
+		if b == nil || b.Generation != generation || b.Stopped {
+			return nil
+		}
+		probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
+		owner, e := tmuxwake.Birth(probe, b.OwnerPID)
+		_, _, _, targetErr := b.Target.Inspect(probe)
+		cancel()
+		if e != nil || owner != b.OwnerBirth || targetErr != nil {
+			a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Stopped = true; b.Outcome = "target exited or replaced" })
+			return nil
+		}
+		if err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
+			return err
+		}
+		// Network errors retain the mailbox/cursor and use bounded exponential
+		// backoff. They never require the agent to rearm or refresh a lease.
+		syncCtx, syncCancel := context.WithTimeout(ctx, nativeRPCTimeout)
+		st, subs, err := s.startDelivery(syncCtx, a.Now())
+		if err == nil {
+			if st.NextBatch == "" {
+				st, err = s.takePosition(syncCtx, time.Now().Add(nativeRPCTimeout))
+			} else {
+				st, err = s.syncNow(syncCtx, st, subs.Subs, time.Now().Add(nativeRPCTimeout))
+			}
+		}
+		syncCancel()
+		if err != nil {
+			backoff = min(b.RetryMax, max(b.Interval, backoff*2))
+			if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "sync unavailable; retrying" }); err != nil {
+				return err
+			}
+			fmt.Fprintln(a.Stderr, "binding sync unavailable; bounded retry")
+		} else {
+			backoff = b.Interval
+			if err = a.dispatchTerminal(ctx, s, generation); err != nil {
+				return err
+			}
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
+	return nil
+}
+
+func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string) error {
+	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		st, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		b := st.Terminal
+		if b == nil || b.Stopped || b.Generation != generation {
+			return errors.New("binding retired")
+		}
+		if st.HooksPaused || manualWakeGate(st) != "" {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: manual gate" })
+		}
+		// Never auto-replay an attempt that might have typed/submitted before a
+		// process crash. Mail remains available to inbox; IDs are not receipts.
+		var ids []string
+		var pendingIDs []string
+		_, err = s.lockedDeliver(ctx, time.Now().Add(nativeRPCTimeout), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+			for _, entry := range mb.Pending() {
+				pendingIDs = append(pendingIDs, entry.ID)
+				if !slices.Contains(b.Rung, entry.ID) {
+					ids = append(ids, entry.ID)
+				}
+			}
+			return nil, nil
+		})
+		if err != nil {
+			return err
+		}
+		if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			b.Rung = slices.DeleteFunc(b.Rung, func(id string) bool { return !slices.Contains(pendingIDs, id) })
+			b.AttemptIDs = slices.DeleteFunc(b.AttemptIDs, func(id string) bool { return !slices.Contains(pendingIDs, id) })
+		}); err != nil {
+			return err
+		}
+		// Only inbox receipts can remove an uncertain fence. New mail cannot
+		// cause an uncertain old attempt to replay after a daemon restart.
+		if slices.ContainsFunc(b.AttemptIDs, func(id string) bool { return slices.Contains(pendingIDs, id) }) {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "uncertain attempt; retained mail requires inbox" })
+		}
+		if len(ids) == 0 {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "armed: no new mail" })
+		}
+		// Screen admission precedes the durable attempt fence. A busy target
+		// retains IDs for the next idle observation without spending its rate.
+		if !b.Target.Idle(ctx) {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: busy, draft or unknown input" })
+		}
+		now := a.Now()
+		reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
+		if len(reservations) >= b.MaxWakes {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: hourly rate" })
+		}
+		if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			b.AttemptIDs = ids
+			b.Reservations = append(reservations, now)
+			b.Outcome = "attempt reserved"
+		}); err != nil {
+			return err
+		}
+		outcome, sendErr := b.Target.Send(ctx, len(ids), nil, nil)
+		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			b.Outcome = outcome
+			if sendErr == nil {
+				if strings.HasPrefix(outcome, "suppressed: busy") || outcome == "suppressed: target or width" {
+					b.AttemptIDs = nil
+					return
+				}
+				b.Rung = append(b.Rung, ids...)
+				b.AttemptIDs = nil
+				// Keep dedup bounded by pending mail. Received IDs need no fence.
+			}
+		})
+	})
+}

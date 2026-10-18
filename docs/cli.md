@@ -694,7 +694,54 @@ a2a hook resume --agent alice
 
 ### `a2a bridge tmux` (removed)
 Removed on 2026-09-29: no screen check can make "the pane is idle, then type and press Enter" atomic, so typing into a terminal could answer a
-permission, question or plan dialog; the converged waking design (`research/waking-sessions-converged.md`) retires terminal typing.
+permission, question or plan dialog. The old bridge stays removed. The guarded fallback below has a different, explicitly bounded contract.
+
+### `a2a bind` / `a2a bind status` / `a2a unbind`
+
+Bind **once from the session being woken**. A detached, per-session process owns delivery until `unbind` or the pinned target exits. The agent does
+not rearm waits, renew leases, poll inbox, or recreate subscriptions. Existing runtime subscriptions determine relevance; only `inbox` receipts mail.
+Use the verified native Codex binding above when its endpoint and loaded thread are available. Terminal fallback does not qualify an unverified
+native version, attach a second app-server, resume a thread, or change hooks/trust. An existing native binding refuses fallback.
+
+```bash
+# Replace 12345 with this session's own runtime/launcher PID (an ancestor of this command, inside this pane).
+a2a bind --runtime codex --owner-pid 12345 --session-id "$CODEX_THREAD_ID" \
+  --interval 2s --retry-max 30s --max-wakes-per-hour 30
+# Claude: --runtime claude, and its own A2A_SESSION_ID or explicit --session-id.
+a2a bind status
+a2a unbind
+```
+
+`TMUX` and `TMUX_PANE` select this invocation's own absolute socket and exact `%N` pane. Explicit `--socket` / `--pane` must match those values.
+The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
+birth are pinned. A replacement socket, dead/recycled PID, missing pane or uncertain observation stops delivery. Duplicate binding refuses; unbind
+retires the generation before signalling only its recorded PID after a birth check, waits for exit, and preserves the mailbox. Restarting a provider
+requires a new bind; no shared service, launchd job, profile edit or automatic session rehost is installed.
+
+Timing and spend flags are required once: `--interval` 1s..60s, `--retry-max` interval..5m, `--max-wakes-per-hour` 1..3600. The process syncs and
+observes idle input at that interval, refreshes its own identity lease, and exponentially backs off sync errors to the chosen maximum. Hook pause,
+manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
+`state/NAME.binding.log` contains errors, never captured screens or peer bodies. Binding, reservations and event-ID fences live in `state/NAME.json`.
+
+The only typed text is `a2a: N new peer events; run a2a inbox`. The fallback recognizes a visible single-line input in the qualified Codex or Claude
+layout, at its end cursor, with no visible busy/permission/plan dialog. Dim/grey suggestions count as empty; visible text, wrapped/multiline input,
+missing boxes, unknown layouts and insufficient width fail closed. It types the notice **without Enter**, captures again, and sends Enter only when
+the input equals that notice exactly. If a human prefix raced in, it erases only a complete notice suffix at the end cursor; if text follows the notice,
+it leaves the input unchanged. Neither mismatch sends Enter. Such attempts are deduplicated; the retained event can still be read with inbox.
+
+This is **not atomic**. A keystroke between the final verification and Enter can still be submitted with the notice; a keystroke between the suffix
+check and backspaces can still be erased. These narrow residual races were explicitly accepted for this fallback (2026-10-18, meta decision
+`$PrCvK0J2GG8t1lvfu0Y2uceb-CxUGl_tl8bdrVw_yQM`, keeper disposition `$zFuGvVsDnuq_aDYFBSxFFq2N3fhOyRPJsPQe9rI3E_4`).
+Do not claim a hard human-draft guarantee. Native transport remains preferred where verified; an atomic PTY host is separate work.
+
+Before typing, event IDs and a rate reservation are persisted. A crash or ambiguous send retains an uncertain fence and never automatically replays
+that attempt, including a same-session rebind. Inbox receipts release uncertain IDs; new mail alone cannot clear them. Successful wakes are deduplicated
+independently of receipts. Same-session rebinding preserves those fences; hourly reservations carry across binding generations.
+
+Tests use only private tmux servers and synthetic raw-input fixtures: both runtime layouts, valid delivery, existing draft, prefix/suffix interleavings,
+target replacement, detached lifecycle, duplicate refusal, transient sync failure, deduplication, unbind and target exit. Run
+`go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestBind' -count=1`; tmux and python3 are required for those
+integration controls (absence is an explicit skip, not passing evidence). This release does not install shared guidance; that adoption is coordinated separately.
 
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
 `wait` rings on every reply in a thread the agent created or posted in. `mute` forgets that thread, so plain replies stop ringing; messages addressed to the agent,

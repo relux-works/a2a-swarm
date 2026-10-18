@@ -339,6 +339,7 @@ type State struct {
 	// Runtime is a launcher-owned native binding; Wake is its durable submission
 	// fence. Neither field is a mailbox receipt or authorization from a peer.
 	Runtime        *codexwake.Binding       `json:"runtime,omitempty"`
+	Terminal       *TerminalBinding         `json:"terminal,omitempty"`
 	Wake           codexwake.Ledger         `json:"wake,omitempty"`
 	Liveness       *AgentStatus             `json:"liveness,omitempty"`
 	LivenessSource string                   `json:"liveness_source,omitempty"`
