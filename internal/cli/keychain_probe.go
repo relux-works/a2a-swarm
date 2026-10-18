@@ -82,7 +82,7 @@ func (k *keychainStore) preflight(ctx context.Context) error {
 	if err := boundSecurityProcess(cmd); err != nil {
 		return errors.New("probe unavailable")
 	}
-	err := cmd.Run()
+	err := runBoundSecurityProcess(cmd)
 	// Exact token/status pair only. Helper text never escapes into CLI errors.
 	if ctx.Err() != nil || err != nil || out.overflow || stderr.overflow || stderr.Len() != 0 || out.String() != "unlocked\n" {
 		return errors.New("keychain status unavailable or locked")

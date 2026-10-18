@@ -20,15 +20,20 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 	}
 	type mutant struct{ name, file, old, next, test string }
 	mutants := []mutant{
+		{"early-leader-security-inherited-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/security/inherited"},
+		{"early-leader-security-closed-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/security/closed"},
+		{"early-leader-probe-inherited-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/probe/inherited"},
+		{"early-leader-probe-closed-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/probe/closed"},
+		{"pipe-wait-only-no-cooldown", "keychain.go", `errors.Is(err, exec.ErrWaitDelay) ||`, `errors.Is(err, exec.ErrWaitDelay) && false ||`, "TestKeychainEarlyLeaderExit/security/inherited"},
 		{"sentinel-stale-release-admitted", "keychain_observer_test.go", `release.Run == current &&`, `(release.Run == current || release.Run=="RUN-261018-123abc") &&`, "TestKeychainSentinelRunGuard/stale-release"},
 		{"sentinel-agent-minted-release-admitted", "keychain_observer_test.go", `d.Actor.Kind != "operator"`, `(d.Actor.Kind != "operator" && d.Actor.Kind!="agent")`, "TestKeychainSentinelRunGuard/self-minted"},
 		{"sentinel-missing-keeper-admitted", "keychain_observer_test.go", `event.MatchString(release.Keeper)`, `(event.MatchString(release.Keeper) || release.Keeper=="")`, "TestKeychainSentinelRunGuard/missing-keeper"},
 		{"observer-expired-ready-admitted", "keychain_observer_test.go", `if ctx.Err() != nil {`, `if ctx.Err() != nil && ctx.Err()!=context.Canceled {`, "TestKeychainObserverReadiness/expired-ready"},
 		{"observer-empty-log-admitted", "keychain_observer_test.go", `if bytes.Contains(data, []byte("observer=ready")) {`, `if bytes.Contains(data, []byte("observer=ready")) || len(data)==0 {`, "TestKeychainObserverReadiness/never"},
-		{"probe-locked-pair-admitted", "keychain_probe.go", `err := cmd.Run()`, `err := cmd.Run(); if ee,ok:=err.(*exec.ExitError);ok && ee.ExitCode()==3 && out.String()=="locked\n" {err=nil}; if out.String()=="locked\n" {out.Reset();out.WriteString("unlocked\n")}`, "TestKeychainProbeRefusals/locked"},
-		{"probe-unlocked-bad-exit-admitted", "keychain_probe.go", `err := cmd.Run()`, `err := cmd.Run(); if ee,ok:=err.(*exec.ExitError);ok && ee.ExitCode()==3 && out.String()=="unlocked\n" {err=nil}`, "TestKeychainProbeRefusals/badexit"},
+		{"probe-locked-pair-admitted", "keychain_probe.go", `err := runBoundSecurityProcess(cmd)`, `err := runBoundSecurityProcess(cmd); if ee,ok:=err.(*exec.ExitError);ok && ee.ExitCode()==3 && out.String()=="locked\n" {err=nil}; if out.String()=="locked\n" {out.Reset();out.WriteString("unlocked\n")}`, "TestKeychainProbeRefusals/locked"},
+		{"probe-unlocked-bad-exit-admitted", "keychain_probe.go", `err := runBoundSecurityProcess(cmd)`, `err := runBoundSecurityProcess(cmd); if ee,ok:=err.(*exec.ExitError);ok && ee.ExitCode()==3 && out.String()=="unlocked\n" {err=nil}`, "TestKeychainProbeRefusals/badexit"},
 		{"probe-one-garbage-suffix-admitted", "keychain_probe.go", `out.String() != "unlocked\n"`, `(out.String() != "unlocked\n" && out.String()!="unlocked\ngarbage\n")`, "TestKeychainProbeRefusals/garbage"},
-		{"probe-missing-only-admitted", "keychain_probe.go", `err := cmd.Run()`, `err := cmd.Run();if errors.Is(err,os.ErrNotExist) {err=nil;out.WriteString("unlocked\n")}`, "TestKeychainProbeRefusals/missing"},
+		{"probe-missing-only-admitted", "keychain_probe.go", `err := runBoundSecurityProcess(cmd)`, `err := runBoundSecurityProcess(cmd);if errors.Is(err,os.ErrNotExist) {err=nil;out.WriteString("unlocked\n")}`, "TestKeychainProbeRefusals/missing"},
 		{"probe-stderr-danger-admitted", "keychain_probe.go", `stderr.Len() != 0`, `(stderr.Len()!=0 && stderr.String()!="danger")`, "TestKeychainProbeRefusals/stderr"},
 		{"host-marker-bob-exemption", "keychain.go", `if k.clock().UnixNano() < until {`, `if k.clock().UnixNano() < until && !(uid=="@bob:test.local" && strings.HasPrefix(filepath.Base(path),"host-")) {`, "TestKeychainHostCooldown"},
 		{"probe-only-leader-killed", "keychain_unix.go", `syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)`, `syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)`, "TestKeychainProbeRefusals/timeout"},

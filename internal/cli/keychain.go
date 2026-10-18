@@ -24,6 +24,7 @@ const securityCooldown = 5 * time.Minute
 
 var errKeychainMissing = errors.New("keychain item missing")
 var errKeychainDuplicate = errors.New("keychain item already exists")
+var errSecurityProcessCleanup = errors.New("keychain process cleanup failed")
 
 // All seams are private and set only by package tests. The production command
 // path and default keychain selection cannot be overridden by environment/flags.
@@ -202,7 +203,7 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 	if err := boundSecurityProcess(cmd); err != nil {
 		return "", fmt.Errorf("keychain process unavailable for %s", uid)
 	}
-	err = cmd.Run()
+	err = runBoundSecurityProcess(cmd)
 	if ctx.Err() != nil || interactionFailure(err) {
 		if e := k.recordCooldown(uid); e != nil {
 			return "", fmt.Errorf("keychain interaction failed for %s; cannot persist cooldown; stop and repair private state", uid)
@@ -230,6 +231,9 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 }
 
 func interactionFailure(err error) bool {
+	if errors.Is(err, exec.ErrWaitDelay) || errors.Is(err, errSecurityProcessCleanup) {
+		return true
+	}
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) {
 		return false

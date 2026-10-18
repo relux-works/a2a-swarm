@@ -12,15 +12,34 @@ import (
 
 func boundSecurityProcess(cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
+	cmd.Cancel = func() error { return killSecurityGroup(cmd) }
 	cmd.WaitDelay = 100 * time.Millisecond
 	return nil
+}
+
+func killSecurityGroup(cmd *exec.Cmd) error {
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
+}
+
+// Cancel only runs while os/exec is watching the leader. A leader that exits
+// early can leave children with either inherited pipes (ErrWaitDelay) or closed
+// pipes (a successful Wait). Clean up this invocation's group in both cases,
+// synchronously before returning; never leave a timer holding a reusable PID.
+// Ordinary successful commands remain successful after cleanup.
+func runBoundSecurityProcess(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err // No child/group was started; do not signal a PID.
+	}
+	err := cmd.Wait()
+	cleanupErr := killSecurityGroup(cmd)
+	if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrProcessDone) {
+		return errors.Join(err, errSecurityProcessCleanup)
+	}
+	return err
 }
 func openKeychainState(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
