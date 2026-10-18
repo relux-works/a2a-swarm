@@ -15,6 +15,8 @@ import (
 
 var paneRE = regexp.MustCompile(`^%[0-9]+$`)
 
+var ErrTargetGone = errors.New("pinned target exited or replaced")
+
 type Target struct {
 	Socket     string `json:"socket"`
 	SocketID   string `json:"socket_id"`
@@ -65,17 +67,31 @@ func (t Target) command(ctx context.Context, args ...string) (string, error) {
 func (t Target) Inspect(ctx context.Context) (int, int, int, error) {
 	if t.OwnerPID > 0 {
 		birth, err := Birth(ctx, t.OwnerPID)
-		if err != nil || birth != t.OwnerBirth {
+		if err == nil && birth != t.OwnerBirth {
+			return 0, 0, 0, ErrTargetGone
+		}
+		if err != nil {
 			return 0, 0, 0, errors.New("runtime process replaced")
 		}
 	}
 	id, err := SocketID(t.Socket)
-	if err != nil || t.SocketID != "" && id != t.SocketID {
+	if err == nil && t.SocketID != "" && id != t.SocketID {
+		return 0, 0, 0, ErrTargetGone
+	}
+	if err != nil {
+		if _, statErr := os.Lstat(t.Socket); errors.Is(statErr, os.ErrNotExist) {
+			return 0, 0, 0, ErrTargetGone
+		}
+	}
+	if err != nil {
 		return 0, 0, 0, errors.New("tmux socket replaced")
 	}
 	b, err := t.command(ctx, "display-message", "-p", "-t", t.Pane, "#{pane_id} #{pane_pid} #{pane_dead} #{cursor_x} #{cursor_y} #{pane_width}")
 	f := strings.Fields(b)
-	if err != nil || len(f) != 6 || f[0] != t.Pane || f[2] != "0" {
+	if err == nil && len(f) == 6 && (f[0] != t.Pane || f[2] != "0") {
+		return 0, 0, 0, ErrTargetGone
+	}
+	if err != nil || len(f) != 6 {
 		return 0, 0, 0, errors.New("tmux target unavailable")
 	}
 	pid, _ := strconv.Atoi(f[1])
@@ -84,7 +100,10 @@ func (t Target) Inspect(ctx context.Context) (int, int, int, error) {
 	width, _ := strconv.Atoi(f[5])
 	if t.PanePID != 0 {
 		birth, err := Birth(ctx, pid)
-		if pid != t.PanePID || err != nil || birth != t.PaneBirth {
+		if pid != t.PanePID || err == nil && birth != t.PaneBirth {
+			return 0, 0, 0, ErrTargetGone
+		}
+		if err != nil {
 			return 0, 0, 0, errors.New("tmux pane process replaced")
 		}
 	}
@@ -128,15 +147,42 @@ func Notice(count int) string { return fmt.Sprintf("a2a: %d new peer events; run
 
 func (t Target) Idle(ctx context.Context) bool { b, ok := t.box(ctx); return ok && b.Text == "" }
 
+// PendingInput classifies only a journal-owned fixed notice. An arbitrary
+// notice-shaped human draft without that journal is never adopted.
+func (t Target) PendingInput(ctx context.Context, notice string) string {
+	b, ok := t.box(ctx)
+	if !ok {
+		return "blocked"
+	}
+	if b.Text == "" {
+		return "empty"
+	}
+	if notice != "" && b.Text == notice {
+		return "own"
+	}
+	return "blocked"
+}
+
+func (t Target) Resume(ctx context.Context, count int, notice string) (string, error) {
+	if notice != Notice(count) {
+		return "", errors.New("journal notice/count mismatch")
+	}
+	return t.send(ctx, count, notice, nil, nil)
+}
+
 // Send is two-phase, with no Enter on mismatch. The caller reserves its event
-// IDs durably before calling; ambiguous attempts are never replayed. Keystrokes
+// IDs durably before calling and owns bounded recovery of ambiguous attempts. Keystrokes
 // between verification and Enter/erase remain an explicitly accepted race.
 func (t Target) Send(ctx context.Context, count int, beforeType, afterType func()) (string, error) {
+	return t.send(ctx, count, "", beforeType, afterType)
+}
+
+func (t Target) send(ctx context.Context, count int, owned string, beforeType, afterType func()) (string, error) {
 	if count <= 0 {
 		return "", errors.New("positive count required")
 	}
 	box, ok := t.box(ctx)
-	if !ok || box.Text != "" {
+	if !ok || box.Text != "" && box.Text != owned {
 		return "suppressed: busy, draft or unknown input", nil
 	}
 	notice := Notice(count)
@@ -144,14 +190,16 @@ func (t Target) Send(ctx context.Context, count int, beforeType, afterType func(
 	if err != nil || len(notice)+3 >= width {
 		return "suppressed: target or width", nil
 	}
-	if beforeType != nil {
-		beforeType()
-	}
-	if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-l", notice); err != nil {
-		return "uncertain: type", err
-	}
-	if afterType != nil {
-		afterType()
+	if box.Text == "" {
+		if beforeType != nil {
+			beforeType()
+		}
+		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-l", notice); err != nil {
+			return "uncertain: type", err
+		}
+		if afterType != nil {
+			afterType()
+		}
 	}
 	// The redraw may lag key delivery. Waiting does not submit anything; it
 	// merely lets the next capture observe the application input state.

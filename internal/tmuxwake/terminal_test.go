@@ -19,7 +19,8 @@ text=''; submitted=[]; path=sys.argv[1]; runtime=sys.argv[2]
 def draw():
     global text
     if runtime=='claude':
-        screen='\x1b[2J\x1b[19;1H'+'─'*110+'\r\n❯ '+text+'\r\n'+'─'*110+'\x1b[20;'+str(3+len(text))+'H'
+        content=text+'\x1b[7m \x1b[0m' if text else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
+        screen='\x1b[2J\x1b[19;1H'+'─'*110+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n  ⏵⏵ bypass permissions on\x1b[20;'+str(3+len(text))+'H'
     else:
         screen='\x1b[2J\x1b[20;1H› '+text+'\x1b[22;1H  ? for shortcuts\x1b[20;'+str(3+len(text))+'H'
     os.write(1,screen.encode())

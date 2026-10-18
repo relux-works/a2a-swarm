@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var sgr = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
@@ -21,18 +22,34 @@ func plain(s string) string { return sgr.ReplaceAllString(s, "") }
 // visible drops dim/grey placeholder runs, preserving every plain character
 // and space. SGR color payload numbers are not interpreted as separate codes.
 func visible(s string) string {
-	dim, grey := false, false
+	dim, grey, reverse := false, false, false
 	var out strings.Builder
+	var cursor string
+	emit := func(text string) {
+		if cursor != "" {
+			if !dim && !grey {
+				out.WriteString(cursor)
+			}
+			cursor = ""
+		}
+		if dim || grey {
+			return
+		}
+		prefix := strings.TrimLeft(out.String(), " ")
+		if reverse && (prefix == "❯ " || prefix == "❯\u00a0" || prefix == "› ") && utf8.RuneCountInString(text) == 1 {
+			cursor = text
+			return
+		}
+		out.WriteString(text)
+	}
 	for len(s) > 0 {
 		loc := sgr.FindStringSubmatchIndex(s)
 		if loc == nil {
-			if !dim && !grey {
-				out.WriteString(s)
-			}
+			emit(s)
 			break
 		}
-		if !dim && !grey {
-			out.WriteString(s[:loc[0]])
+		if loc[0] > 0 {
+			emit(s[:loc[0]])
 		}
 		var codes []int
 		for _, c := range strings.Split(s[loc[2]:loc[3]], ";") {
@@ -42,11 +59,15 @@ func visible(s string) string {
 		for i := 0; i < len(codes); i++ {
 			switch c := codes[i]; c {
 			case 0:
-				dim, grey = false, false
+				dim, grey, reverse = false, false, false
 			case 2:
 				dim = true
 			case 22:
 				dim = false
+			case 7:
+				reverse = true
+			case 27:
+				reverse = false
 			case 39:
 				grey = false
 			case 90:
@@ -72,6 +93,10 @@ func visible(s string) string {
 		}
 		s = s[loc[1]:]
 	}
+	// A lone reverse cell without a following dim/grey run is real input.
+	if cursor != "" {
+		out.WriteString(cursor)
+	}
 	return out.String()
 }
 
@@ -81,7 +106,7 @@ func Input(screen, runtime string) (Box, bool) {
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 	start := max(0, len(lines)-18)
 	bottom := strings.ToLower(plain(strings.Join(lines[start:], "\n")))
-	for _, denied := range []string{"esc to interrupt", "escape to interrupt", "do you want to", "would you like to", "implement this plan", "permission", "approve", "allow once", "bypass permissions?", "accept edits?", "enter to confirm"} {
+	for _, denied := range []string{"esc to interrupt", "escape to interrupt", "do you want to", "would you like to", "implement this plan", "permission required", "permission request", "approval required", "approve this", "allow once", "bypass permissions?", "accept edits?", "enter to confirm"} {
 		if strings.Contains(bottom, denied) {
 			return Box{}, false
 		}
@@ -126,13 +151,18 @@ func Input(screen, runtime string) (Box, bool) {
 func inputLine(line, glyph string, row int) (Box, bool) {
 	text := visible(line)
 	text = strings.TrimLeft(text, " ")
-	if text != glyph && !strings.HasPrefix(text, glyph+" ") {
+	if text != glyph && !strings.HasPrefix(text, glyph+" ") && !strings.HasPrefix(text, glyph+"\u00a0") {
 		return Box{}, false
 	}
 	if text == glyph {
 		text = ""
 	} else {
-		text = strings.TrimPrefix(text, glyph+" ")
+		text = strings.TrimPrefix(text, glyph)
+		if strings.HasPrefix(text, "\u00a0") {
+			text = strings.TrimPrefix(text, "\u00a0")
+		} else {
+			text = strings.TrimPrefix(text, " ")
+		}
 	}
 	// tmux pads a capture with spaces. A draft containing only spaces remains
 	// uncertain; the cursor check also prevents treating it as empty.

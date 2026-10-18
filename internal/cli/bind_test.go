@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,8 +39,8 @@ func TestBindRefusals(t *testing.T) {
 	}
 }
 
-// An uncertain attempt cannot replay merely because new mail arrives. Only
-// inbox receipts clear its IDs; pause preserves the fence and mailbox too.
+// New mail and pause cannot blindly clear an uncertain fence. Unavailable
+// input blocks recovery; explicit inbox receipts release its IDs.
 func TestBindUncertainFenceAndPause(t *testing.T) {
 	e, room := world(t)
 	e.extra[EnvSessionID] = "owned-thread"
@@ -71,7 +72,7 @@ func TestBindUncertainFenceAndPause(t *testing.T) {
 	id2 := runtimeMail(e, room, "SYNTHETIC_NEW_PENDING")
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
 	dispatch()
-	if b := e.state("alice").Terminal; b.Outcome != "uncertain attempt; retained mail requires inbox" || len(b.AttemptIDs) != 1 || len(b.Reservations) != 1 || len(b.Rung) != 0 {
+	if b := e.state("alice").Terminal; b.Outcome != "suppressed: pending attempt input" || len(b.AttemptIDs) != 1 || len(b.Reservations) != 1 || len(b.Rung) != 0 {
 		t.Fatalf("uncertain fence changed: %+v", b)
 	}
 	e.as("alice", "hook", "pause", "--agent", "alice").ok(t)
@@ -160,7 +161,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	exe := filepath.Join(dir, "a2a")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", exe, "../../cmd/a2a").CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v %s", err, out)
@@ -261,12 +262,127 @@ func TestBindDetachedLifecycle(t *testing.T) {
 		t.Fatal("unreceived event replayed")
 	}
 	e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "synthetic transient")
-	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "sync unavailable; retrying" })
+	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "consumer unavailable; retrying" })
 	e.hs.mu.Lock()
 	delete(e.hs.failures, "GET /_matrix/client/v3/sync")
 	e.hs.mu.Unlock()
 	id2 := runtimeMail(e, room, "AFTER_RETRY")
 	awaitBinding(t, e.paths(), func(st config.State) bool { return len(st.Terminal.Rung) == 2 })
+	update := func(fn func(*config.State)) {
+		t.Helper()
+		_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error { fn(st); return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys := func(args ...string) {
+		t.Helper()
+		out, err := exec.Command("tmux", append([]string{"-S", socket, "send-keys", "-t", "%0"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("fixture keys: %v %s", err, out)
+		}
+	}
+	waitText := func(want string) {
+		t.Helper()
+		until := time.Now().Add(3 * time.Second)
+		for time.Now().Before(until) {
+			if readScreen() && screen.Text == want {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("fixture text differs: %q", screen.Text)
+	}
+	plant := func(id string, typed, retried bool) {
+		update(func(st *config.State) {
+			b := st.Terminal
+			b.AttemptIDs = []string{id}
+			b.Notice = tmuxwake.Notice(1)
+			b.NoticeCount = 1
+			b.AttemptAt = time.Now().Add(-3 * time.Second)
+			b.Typed = typed
+			b.Retried = retried
+			if !retried {
+				b.Reservations = append(b.Reservations, time.Now())
+			}
+			b.Rung = slices.DeleteFunc(b.Rung, func(x string) bool { return x == id })
+		})
+	}
+	// A proven unsubmitted journal-owned notice is completed, not treated as
+	// a permanent human draft. No history or arbitrary notice-shaped text is adopted.
+	update(func(st *config.State) { st.HooksPaused = true })
+	id3 := runtimeMail(e, room, "LEFTOVER_OWN_NOTICE")
+	keys("-l", tmuxwake.Notice(1))
+	waitText(tmuxwake.Notice(1))
+	plant(id3, true, false)
+	update(func(st *config.State) { st.HooksPaused = false })
+	awaitBinding(t, e.paths(), func(st config.State) bool { return slices.Contains(st.Terminal.Rung, id3) })
+	readScreen()
+	if len(screen.Submitted) != 3 || screen.Submitted[2] != tmuxwake.Notice(1) {
+		t.Fatal("owned notice did not complete exactly once")
+	}
+	// Human text blocks even a delayed uncertain retry. After the human draft
+	// is removed in this synthetic fixture, exactly one empty-box retry is spent.
+	update(func(st *config.State) { st.HooksPaused = true })
+	id4 := runtimeMail(e, room, "UNCERTAIN_RETRY")
+	keys("-l", "KEEP")
+	waitText("KEEP")
+	plant(id4, false, false)
+	update(func(st *config.State) { st.HooksPaused = false })
+	st = awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "suppressed: pending attempt input" })
+	if st.Terminal.Retried {
+		t.Fatal("human draft spent an uncertain retry")
+	}
+	readScreen()
+	if screen.Text != "KEEP" || len(screen.Submitted) != 3 {
+		t.Fatal("uncertain retry touched human draft")
+	}
+	keys("-N", "4", "BSpace")
+	waitText("")
+	st = awaitBinding(t, e.paths(), func(st config.State) bool { return slices.Contains(st.Terminal.Rung, id4) })
+	if !st.Terminal.Retried {
+		t.Fatal("retry was not durably spent")
+	}
+	readScreen()
+	if len(screen.Submitted) != 4 {
+		t.Fatal("empty-box retry missing or duplicated")
+	}
+	// Plant the post-send/pre-ack crash image with its retry already spent.
+	// It must remain fenced across further cycles. Restore the witnessed ack
+	// only in the owned fixture after that assertion, to continue other controls.
+	update(func(st *config.State) { st.HooksPaused = true })
+	plant(id4, false, true)
+	update(func(st *config.State) { st.HooksPaused = false })
+	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "uncertain attempt; bounded retry held" })
+	readScreen()
+	if len(screen.Submitted) != 4 {
+		t.Fatal("spent retry replayed")
+	}
+	update(func(st *config.State) {
+		b := st.Terminal
+		b.Rung = append(b.Rung, id4)
+		b.AttemptIDs = nil
+		b.Notice = ""
+	})
+	// A transient foreign lease is never stolen or used to deliver. Restoring
+	// this fake authority lets the same daemon deliver the next event.
+	update(func(st *config.State) {
+		st.Lease.Holder = "synthetic-other"
+		st.Lease.Expires = time.Now().Add(time.Minute)
+	})
+	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "consumer unavailable; retrying" })
+	if processGone(pid) {
+		t.Fatal("lease error killed persistent consumer")
+	}
+	id5 := runtimeMail(e, room, "AFTER_LOCAL_LEASE_ERROR")
+	update(func(st *config.State) { st.Lease.Holder = "bind-fixture" })
+	awaitBinding(t, e.paths(), func(st config.State) bool { return slices.Contains(st.Terminal.Rung, id5) })
+	id6 := runtimeMail(e, room, "HOURLY_RATE_MUST_RETAIN")
+	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "suppressed: hourly rate" })
+	readScreen()
+	if len(screen.Submitted) != 5 {
+		t.Fatal("hourly limit allowed a further wake")
+	}
 	stop := exec.CommandContext(ctx, exe, "--as", "alice", "unbind")
 	stop.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture")
 	if out, err := stop.CombinedOutput(); err != nil {
@@ -275,16 +391,21 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	if !processGone(pid) || e.received("alice", id) || e.received("alice", id2) {
 		t.Fatal("unbind leaked process or receipted mail")
 	}
+	for _, id := range []string{id3, id4, id5, id6} {
+		if e.received("alice", id) {
+			t.Fatal("recovery receipted retained mail")
+		}
+	}
 	if !e.state("alice").Terminal.Stopped {
 		t.Fatal("unbind did not retire generation")
 	}
 	request(3).ok(t)
 	st = awaitBinding(t, e.paths(), func(st config.State) bool {
-		return st.Terminal.DaemonPID != pid && strings.HasPrefix(st.Terminal.Outcome, "armed:")
+		return st.Terminal.DaemonPID != pid && st.Terminal.Outcome == "suppressed: hourly rate"
 	})
 	newPID := st.Terminal.DaemonPID
 	readScreen()
-	if len(screen.Submitted) != 2 {
+	if len(screen.Submitted) != 5 {
 		t.Fatal("same-session rebind replayed retained mail")
 	}
 	owner, _ := os.FindProcess(screen.PID)

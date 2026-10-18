@@ -714,32 +714,42 @@ a2a unbind
 
 `TMUX` and `TMUX_PANE` select this invocation's own absolute socket and exact `%N` pane. Explicit `--socket` / `--pane` must match those values.
 The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
-birth are pinned. A replacement socket, dead/recycled PID, missing pane or uncertain observation stops delivery. Duplicate binding refuses; unbind
+birth are pinned. A replacement socket or confirmed dead/recycled PID stops the consumer; unavailable observations retain mail and back off. Duplicate binding refuses; unbind
 retires the generation before signalling only its recorded PID after a birth check, waits for exit, and preserves the mailbox. Restarting a provider
 requires a new bind; no shared service, launchd job, profile edit or automatic session rehost is installed.
 
 Timing and spend flags are required once: `--interval` 1s..60s, `--retry-max` interval..5m, `--max-wakes-per-hour` 1..3600. The process syncs and
 observes idle input at that interval, refreshes its own identity lease, and exponentially backs off sync errors to the chosen maximum. Hook pause,
 manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
-`state/NAME.binding.log` contains errors, never captured screens or peer bodies. Binding, reservations and event-ID fences live in `state/NAME.json`.
+`state/NAME.binding.log` contains fixed errors, never captured screens or peer bodies. Binding, reservations and event-ID fences live in `state/NAME.json`.
+Local lease/state/dispatch failures also back off and retry; a conflicting lease is never stolen. Only unbind, retirement, or a confirmed dead/replaced
+target ends the consumer. Launchers creating a new Codex session must scrub an inherited `CODEX_THREAD_ID` along with old session variables, so the
+new runtime exports its own metadata; this command does not edit launcher configuration.
 
 The only typed text is `a2a: N new peer events; run a2a inbox`. The fallback recognizes a visible single-line input in the qualified Codex or Claude
 layout, at its end cursor, with no visible busy/permission/plan dialog. Dim/grey suggestions count as empty; visible text, wrapped/multiline input,
 missing boxes, unknown layouts and insufficient width fail closed. It types the notice **without Enter**, captures again, and sends Enter only when
 the input equals that notice exactly. If a human prefix raced in, it erases only a complete notice suffix at the end cursor; if text follows the notice,
-it leaves the input unchanged. Neither mismatch sends Enter. Such attempts are deduplicated; the retained event can still be read with inbox.
+it leaves the input unchanged. Neither mismatch sends Enter. A journal-owned notice left in the input is recognized only by exact equality with the
+recorded fixed notice, never by a general notice-shaped pattern. Once idle, it can be completed after another exact check without submitting a draft.
+Claude capture fixtures include the benign bypass footer, NBSP prompt separator and a single reverse-video cursor cell followed by dim suggestion
+text (ASCII or Cyrillic); a plain or reverse-video human draft remains blocking.
 
 This is **not atomic**. A keystroke between the final verification and Enter can still be submitted with the notice; a keystroke between the suffix
 check and backspaces can still be erased. These narrow residual races were explicitly accepted for this fallback (2026-10-18, meta decision
 `$PrCvK0J2GG8t1lvfu0Y2uceb-CxUGl_tl8bdrVw_yQM`, keeper disposition `$zFuGvVsDnuq_aDYFBSxFFq2N3fhOyRPJsPQe9rI3E_4`).
 Do not claim a hard human-draft guarantee. Native transport remains preferred where verified; an atomic PTY host is separate work.
 
-Before typing, event IDs and a rate reservation are persisted. A crash or ambiguous send retains an uncertain fence and never automatically replays
-that attempt, including a same-session rebind. Inbox receipts release uncertain IDs; new mail alone cannot clear them. Successful wakes are deduplicated
-independently of receipts. Same-session rebinding preserves those fences; hourly reservations carry across binding generations.
+Before typing, event IDs, fixed notice, attempt time and a rate reservation are persisted. A crash or ambiguous send retains an uncertain fence.
+After at least two observation intervals, an empty idle box on the same pinned target admits **one** bounded re-attempt, within the hourly limit;
+the retry is spent durably before any effect, including across a same-session rebind. Human text blocks it. An exact journal-owned input is a known
+unsubmitted notice and may be completed after a fresh recheck. A second uncertain empty-box retry is held until explicit inbox receipts; new mail
+alone cannot release it. This deliberately permits one duplicate counts-only wake to avoid leaving an idle session permanently deaf after a lost ack.
+Successful wakes are deduplicated independently of receipts. Hourly reservations carry across binding generations; no retry receipts mail.
 
 Tests use only private tmux servers and synthetic raw-input fixtures: both runtime layouts, valid delivery, existing draft, prefix/suffix interleavings,
-target replacement, detached lifecycle, duplicate refusal, transient sync failure, deduplication, unbind and target exit. Run
+target replacement, detached lifecycle, duplicate refusal, transient sync/local-lease failures, an owned leftover, one uncertain retry with a draft
+negative control, the spent-retry fence, hourly limit across rebind, deduplication, unbind and target exit. Run
 `go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestBind' -count=1`; tmux and python3 are required for those
 integration controls (absence is an explicit skip, not passing evidence). This release does not install shared guidance; that adoption is coordinated separately.
 

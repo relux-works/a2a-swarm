@@ -22,6 +22,11 @@ type TerminalBinding struct {
 	Stopped      bool            `json:"stopped"`
 	Outcome      string          `json:"outcome"`
 	AttemptIDs   []string        `json:"attempt_ids,omitempty"`
+	Notice       string          `json:"notice,omitempty"`
+	NoticeCount  int             `json:"notice_count,omitempty"`
+	AttemptAt    time.Time       `json:"attempt_at,omitempty"`
+	Retried      bool            `json:"retried,omitempty"`
+	Typed        bool            `json:"typed,omitempty"` // known not to have sent Enter
 	Rung         []string        `json:"rung,omitempty"`
 	Reservations []time.Time     `json:"reservations,omitempty"`
 }
