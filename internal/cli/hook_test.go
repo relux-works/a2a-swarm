@@ -477,7 +477,7 @@ func TestHookNeverRingsUnrelatedOrOwn(t *testing.T) {
 // a later inbox and hook find nothing.
 func TestInboxAndWaitNeverDuplicate(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	var fired atomic.Bool
 	var inner result
 	innerDone := make(chan struct{})

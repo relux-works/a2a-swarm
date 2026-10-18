@@ -289,7 +289,7 @@ func TestPostSubtypeSubject(t *testing.T) {
 	e, room, system := projWorld(t)
 	e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t)
 	e.project().ok(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	subject := "relux-works/skill-project-management@main"
 	id := strings.TrimSpace(e.as("bob", "post", "proj", "--topic", "alpha", "--kind", "system", "--subtype", "landing",
 		"--subject", subject, "--to", "alice", "PR #12 landed").ok(t).stdout)

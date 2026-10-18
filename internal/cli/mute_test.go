@@ -13,7 +13,7 @@ import (
 func TestMuteFollow(t *testing.T) {
 	e, room := world(t)
 	root := strings.TrimSpace(e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	tuitestkit.ContainsStr(t, e.as("alice", "mute", "proj", "--topic", "alpha").ok(t).stdout, "alpha\t"+root+"\tmuted")
 	tuitestkit.ContainsStr(t, e.as("alice", "mute", "proj", "--topic", "alpha").ok(t).stdout, "already muted")
 	threadReply := map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}
@@ -46,7 +46,7 @@ func TestMuteNegative(t *testing.T) {
 func TestMuteStickyAcrossOwnPosts(t *testing.T) {
 	e, room := world(t)
 	root := strings.TrimSpace(e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	e.as("alice", "mute", "proj", "--topic", "alpha").ok(t)
 	e.as("alice", "post", "proj", "--topic", "alpha", "my own reply after muting").ok(t)
 	threadReply := map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}

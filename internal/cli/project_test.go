@@ -290,7 +290,7 @@ func TestProjectionDoesNotRingTwice(t *testing.T) {
 	e.hs.mu.Unlock()
 	e.project().ok(t)
 	e.as("alice", "subscribe", "--kind", "system").ok(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("- from: bob\n\n@alice:test.local look", map[string]any{
 		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "system", Slug: "alpha"}}))
 	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
@@ -334,7 +334,7 @@ func TestProjectionRingsSystemRoomSubscription(t *testing.T) {
 	e.hs.mu.Unlock()
 	e.project().ok(t)
 	incSub, _ := e.subscribe("carol", "--room", "system", "--subtype", "incident")
-	e.as("carol", "wait", "--timeout", "10ms").ok(t)
+	e.as("carol", "wait", "--timeout", "500ms").ok(t)
 	incident := func(subtype string) {
 		e.hs.inject(room, "@bob:test.local", msg("- from: bob\n\nrunner down", map[string]any{
 			ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"dave"}, Kind: "system", Subtype: subtype, Slug: "alpha"}}))

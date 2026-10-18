@@ -18,7 +18,7 @@ func TestWaitBackfillsLimitedTimeline(t *testing.T) {
 	e, room := world(t)
 	e.hs.syncLimit = 5
 	e.hs.inject(room, "@bob:test.local", msg("@alice:test.local before my position", nil))
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local early in the flood", nil))
 	for i := 0; i < 12; i++ {
 		e.hs.inject(room, "@bob:test.local", msg(fmt.Sprintf("chatter %d", i), nil))
@@ -39,7 +39,7 @@ func TestWaitBackfillsLimitedTimeline(t *testing.T) {
 func TestWaitBackfillFailureKeepsPosition(t *testing.T) {
 	e, room := world(t)
 	e.hs.syncLimit = 3
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local cut", nil))
 	for i := 0; i < 5; i++ {
 		e.hs.inject(room, "@bob:test.local", msg("noise", nil))

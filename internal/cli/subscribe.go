@@ -431,7 +431,7 @@ func (s *session) getSubs(ctx context.Context) (SubList, error) {
 		if isNotFound(err) {
 			return SubList{V: 1}, nil
 		}
-		return SubList{}, fmt.Errorf("read subscriptions (account data %s): %w", SubsType, err)
+		return SubList{}, &subscriptionReadError{fmt.Errorf("read subscriptions (account data %s): %w", SubsType, err)}
 	}
 	if list.V > 1 {
 		return SubList{}, fmt.Errorf("account data %s has version %d; this a2a understands only 1", SubsType, list.V)

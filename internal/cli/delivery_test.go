@@ -83,7 +83,7 @@ func (e *env) pendingEntry(name, id string) (config.MailEntry, bool) {
 // matching event arrives, which it prints without any timeout line.
 func TestWaitBlocksWithoutMatch(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	e.hs.inject(room, "@bob:test.local", msg("not for alice", nil))
 	start := time.Now()
 	r := e.as("alice", "wait", "--timeout", "150ms").ok(t)
@@ -115,7 +115,7 @@ func TestWaitBlocksWithoutMatch(t *testing.T) {
 // next wait blocks instead of printing it again; only `ack all-shown` receipts it.
 func TestWaitMarksShownNeverReceipts(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	cursor := e.state("alice").NextBatch
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local one", nil))
 	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
@@ -141,7 +141,7 @@ func TestWaitMarksShownNeverReceipts(t *testing.T) {
 // so the next wait prints the same event again.
 func TestWaitRedeliversAfterWriteFailure(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local must not be lost", nil))
 	e.configure = func(a *App) { a.Stdout = failWriter{} }
 	e.as("alice", "wait", "--timeout", "2s").failsWith(t, ExitError, "broken pipe")
@@ -157,7 +157,7 @@ func TestWaitRedeliversAfterWriteFailure(t *testing.T) {
 // again; after that wait completes normally, it is not delivered a third time.
 func TestWaitRedeliversAfterCrashBeforeSave(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local survive a crash", nil))
 	e.configure = func(a *App) { a.afterPrint = func() error { return errors.New("killed") } }
 	r := e.as("alice", "wait", "--timeout", "2s").failsWith(t, ExitError, "killed")
@@ -176,7 +176,7 @@ func TestWaitRedeliversAfterCrashBeforeSave(t *testing.T) {
 // usage errors (the old implicit "ack the pending batch" is gone).
 func TestAckedEventNeverDeliveredTwice(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	old := e.state("alice").NextBatch
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local once", nil))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, id)
@@ -205,7 +205,7 @@ func TestAckedEventNeverDeliveredTwice(t *testing.T) {
 // again, the entries stay unreceived.
 func TestWatch(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	out := &flushBuffer{}
 	e.configure = func(a *App) { a.Stdout = out }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -267,10 +267,12 @@ func TestWatchNegative(t *testing.T) {
 	if n := len(e.hs.Calls()); n != before {
 		t.Fatalf("usage errors reached the server: %d requests", n-before)
 	}
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local keep me", nil))
 	e.configure = func(a *App) { a.Stdout = failWriter{} }
-	e.as("alice", "watch").failsWith(t, ExitError, "nothing was marked shown")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	e.runCtx(ctx, "--as", "alice", "watch").failsWith(t, ExitError, "nothing was marked shown")
 	e.configure = nil
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, id)
 }

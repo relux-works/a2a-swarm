@@ -98,6 +98,11 @@ func (a *App) relogin(ctx context.Context, s *session, cause error) error {
 		resp, err := c.Login(ctx, cr.UserID, cr.Password, cr.DeviceID)
 		a.secrets.Add(resp.AccessToken)
 		if err != nil {
+			// Preserve cancellation and nested request deadlines for callers
+			// that distinguish their own finite budget from login failures.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			return loginFailed(fmt.Sprintf("with the stored password failed (%v)", err))
 		}
 		if resp.AccessToken == "" {

@@ -100,7 +100,7 @@ func TestReadEventNegative(t *testing.T) {
 func TestWaitJSON(t *testing.T) {
 	e, room := world(t)
 	root := strings.TrimSpace(e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
-	r := e.as("alice", "wait", "--timeout", "10ms", "--json").ok(t)
+	r := e.as("alice", "wait", "--timeout", "500ms", "--json").ok(t)
 	if r.stdout != "{\"type\":\"timeout\"}\n" {
 		t.Fatalf("timeout = %q", r.stdout)
 	}

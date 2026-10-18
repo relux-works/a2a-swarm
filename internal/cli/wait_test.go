@@ -107,7 +107,7 @@ func TestWaitTimeout(t *testing.T) {
 func TestWaitRelevance(t *testing.T) {
 	e, room := world(t)
 	root := strings.TrimSpace(e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t) // take a position
+	e.as("alice", "wait", "--timeout", "500ms").ok(t) // take a position
 
 	cases := []struct {
 		name    string
@@ -140,7 +140,7 @@ func TestWaitRelevance(t *testing.T) {
 // prints it and exits.
 func TestWaitWakesOnLiveEvent(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	calls := e.hs.CallCount("GET /_matrix/client/v3/sync")
 	ch := e.waitAsync("alice", "--timeout", "10s")
 	e.syncCalls(t, calls+1)
@@ -156,7 +156,7 @@ func TestWaitWakesOnLiveEvent(t *testing.T) {
 // still delivered.
 func TestWaitNoReemitAfterRestart(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local first", nil))
 	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
 	tuitestkit.ContainsStr(t, r.stdout, id)
@@ -189,7 +189,7 @@ func TestWaitInvite(t *testing.T) {
 func TestWaitLearnsThreadsFromSync(t *testing.T) {
 	e, room := world(t)
 	root := e.hs.inject(room, "@bob:test.local", msg("[topic] beta: B", nil))
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	// alice posts from "another machine": inject directly, so local state does not know.
 	e.hs.inject(room, "@alice:test.local", msg("my reply", map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}))
 	e.as("alice", "wait", "--timeout", "30ms").ok(t)
@@ -207,7 +207,7 @@ func TestWaitLearnsThreadsFromSync(t *testing.T) {
 func TestWaitRoomFilter(t *testing.T) {
 	e, room := world(t)
 	lobby := "!lobbyRoomID"
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	alice := "@alice:test.local"
@@ -231,7 +231,7 @@ func TestWaitRoomFilter(t *testing.T) {
 // contain control characters, and hide the protocol header lines.
 func TestWaitSnippetBounded(t *testing.T) {
 	e, room := world(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	long := "- from: bob\n- to: alice\n\n" + "\x1b[2J\x1b[31mALERT\x07\r\n" + strings.Repeat("y", 1000)
 	e.hs.inject(room, "@bob:test.local", msg(long, map[string]any{ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "notice"}}))
 	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
@@ -259,7 +259,7 @@ func TestWaitNegative(t *testing.T) {
 	e.as("alice", "wait", "--timeout", "-1s").failsWith(t, ExitUsage, "--timeout must not be negative")
 	e.as("alice", "wait", "--timeout", "soon").failsWith(t, ExitUsage, "invalid value")
 	e.as("alice", "wait", "extra").failsWith(t, ExitUsage, "usage")
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()

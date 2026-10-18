@@ -71,6 +71,8 @@ type App struct {
 	backfillPages int
 	// leaseTTL, when set (tests only), replaces config.LeaseTTL.
 	leaseTTL time.Duration
+	// deliveryPause replaces only the wait/watch backoff timer in tests.
+	deliveryPause func(context.Context, time.Duration) error
 	// Native transport/fault hooks are test-only seams.
 	nativeDial                        func(context.Context, string) (nativeRuntime, error)
 	afterWakeReserve, afterWakeSubmit func() error
@@ -186,6 +188,11 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
+			// wait parses its finite timeout before wrapping both command
+			// attempts and the one allowed token renewal in that deadline.
+			if c.name == "wait" {
+				return a.fail(c.run(ctx, a, rest[1:]))
+			}
 			return a.fail(a.runWithRelogin(ctx, c, rest[1:]))
 		}
 	}

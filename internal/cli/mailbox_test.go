@@ -33,7 +33,7 @@ func (e *env) addLines(name, id string) int {
 func TestHookNeverAcksWaitBatch(t *testing.T) {
 	e, room := world(t)
 	e.sequentialSessions()
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", ping(1))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "mention #proj "+id)
 	for _, ev := range []string{"prompt", "stop", "session-start"} {
@@ -43,7 +43,7 @@ func TestHookNeverAcksWaitBatch(t *testing.T) {
 		}
 	}
 	tuitestkit.ContainsStr(t, bellContext(t, e.hook("alice", "prompt", `{"session_id":"fresh"}`).ok(t).stdout), "a2a: 1 new peer event (mention: 1)")
-	e.as("alice", "wait", "--timeout", "10ms").ok(t) // another wait receipts nothing either
+	e.as("alice", "wait", "--timeout", "500ms").ok(t) // another wait receipts nothing either
 	out := e.as("alice", "inbox").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "id="+id)
 	if !e.received("alice", id) {

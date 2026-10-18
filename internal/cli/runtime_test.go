@@ -122,7 +122,7 @@ func runtimeWorld(t *testing.T) (*env, string, *nativeFixture, string) {
 	t.Helper()
 	e, room := world(t)
 	e.as("alice", "status", "init").ok(t)
-	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	dir, err := os.MkdirTemp("", "a2a-runtime-")
 	if err != nil {
 		t.Fatal(err)

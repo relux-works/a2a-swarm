@@ -3,9 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -339,6 +342,10 @@ func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.
 	if err != nil {
 		return config.State{}, err
 	}
+	return s.persistPosition(ctx, resp, deadline)
+}
+
+func (s *session) persistPosition(ctx context.Context, resp matrix.SyncResponse, deadline time.Time) (config.State, error) {
 	var b batch
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		b.entries = append(b.entries, inviteEntry(roomID, "", resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
@@ -370,6 +377,136 @@ func (s *session) startDelivery(ctx context.Context, now time.Time) (config.Stat
 
 // shownHint tells a wait/watch consumer how its entries leave the mailbox.
 const shownHint = "a2a: printed entries stay in the mailbox until received: run `a2a inbox`, or `a2a ack <ids>` / `a2a ack all-shown`"
+
+// subscriptionReadError identifies a failed read before updateSubsBy invokes
+// its callback or writes anything. Retrying that failure is safe; a failed
+// subscription write, mailbox append, or state save must never be replayed.
+type subscriptionReadError struct{ error }
+
+func (e *subscriptionReadError) Unwrap() error { return e.error }
+
+// transientDeliveryRead is deliberately an allow-list, used only by the
+// wait/watch read loops. Context, authentication, bad JSON, certificates and
+// permanent DNS/configuration errors are not transient delivery failures.
+func transientDeliveryRead(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, matrix.ErrAuth) {
+		return false
+	}
+	var me *matrix.Error
+	if errors.As(err, &me) {
+		switch me.ErrCode {
+		case "M_FORBIDDEN", "M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_BAD_JSON", "M_NOT_JSON", "M_INVALID_PARAM", "M_UNRECOGNIZED":
+			return false
+		}
+		switch me.Status {
+		case 408, 429, 500, 502, 503, 504:
+			return true
+		}
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && (ne.Timeout() || ne.Temporary())
+}
+
+const deliveryRetryInitial = 100 * time.Millisecond
+const deliveryRetryCap = 5 * time.Second
+
+func deliveryPause(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
+
+// retryDelivery runs in the existing consumer, never a goroutine or a new
+// command. Each attempt releases any state lock before sleeping/renewing the
+// same lease. subsOnly restricts compound operations to failures of the read
+// before their first mutation; all other failures are terminal.
+func (s *session) retryDelivery(ctx context.Context, subsOnly bool, read func() error) error {
+	delay := deliveryRetryInitial
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := read()
+		if err == nil {
+			return nil
+		}
+		var subErr *subscriptionReadError
+		if (subsOnly && !errors.As(err, &subErr)) || !transientDeliveryRead(err) {
+			return err
+		}
+		pause := s.app.deliveryPause
+		if pause == nil {
+			pause = deliveryPause
+		}
+		if err := pause(ctx, delay); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.app.acquireLease(s, "", time.Time{}); err != nil {
+			return err
+		}
+		delay = min(2*delay, deliveryRetryCap)
+	}
+}
+
+func (s *session) waitingSync(ctx context.Context, since string, poll time.Duration, filter string) (resp matrix.SyncResponse, err error) {
+	err = s.retryDelivery(ctx, false, func() error {
+		resp, err = s.client.Sync(ctx, since, poll, filter)
+		return err
+	})
+	return
+}
+
+func (s *session) waitingSubs(ctx context.Context) (subs SubList, err error) {
+	err = s.retryDelivery(ctx, true, func() error {
+		subs, err = s.getSubs(ctx)
+		return err
+	})
+	return
+}
+
+func (s *session) startWaiting(ctx context.Context) (st config.State, err error) {
+	err = s.retryDelivery(ctx, true, func() error {
+		st, _, err = s.startDelivery(ctx, s.app.Now())
+		return err
+	})
+	return
+}
+
+func (s *session) takeWaitingPosition(ctx context.Context) (config.State, error) {
+	resp, err := s.waitingSync(ctx, "", 0, initialFilter)
+	if err != nil {
+		return config.State{}, err
+	}
+	return s.persistPosition(ctx, resp, time.Time{})
+}
+
+func (s *session) ingestWaiting(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool) (st config.State, err error) {
+	err = s.retryDelivery(ctx, true, func() error {
+		st, err = s.ingest(ctx, resp, since, subs, all, time.Time{})
+		return err
+	})
+	return
+}
+
+func (a *App) waitTimeout(asJSON bool) error {
+	if asJSON {
+		return a.printJSON(map[string]string{"type": "timeout"})
+	}
+	_, err := io.WriteString(a.Stdout, "timeout\n")
+	return err
+}
 
 // showNew prints the mailbox entries that wait/watch has not shown yet and f
 // selects, one flushed write each, and marks them shown after the write, under
@@ -404,7 +541,7 @@ func (a *App) showNew(ctx context.Context, s *session, f deliveryFilter, asJSON 
 }
 
 // cmdWait: a2a wait [--room R ...] [--all] [--timeout 25m|0] [--json]
-func cmdWait(ctx context.Context, a *App, args []string) error {
+func cmdWait(ctx context.Context, a *App, args []string) (retErr error) {
 	fs := newFlagSet("wait")
 	var rooms stringList
 	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
@@ -437,95 +574,108 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	} else if *heartbeat != 0 || *runtime != "" || *hooks != "" || *product != "" {
 		return usagef("liveness flags require --status and explicit --heartbeat, --runtime, --hooks")
 	}
-	s, err := a.session()
-	if err != nil {
-		return err
-	}
-	if err := a.acquireLease(s, "", time.Time{}); err != nil {
-		return err
-	}
-	var lastHeartbeat time.Time
-	if *status != "" {
-		if err := s.writeLivenessSource(ctx, profile, "wait"); err != nil {
-			return err
-		}
-		lastHeartbeat = a.Now()
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), nativeRPCTimeout)
-			defer cancel()
-			profile.Doorbell = "none"
-			if err := s.writeLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {
-				fmt.Fprintln(a.Stderr, "wait liveness disarm:", a.secrets.Scrub(sanitizeLine(err.Error())))
-			}
-		}()
-	}
-	filter, err := s.resolveFilter(ctx, rooms, *all)
-	if err != nil {
-		return err
-	}
 	var deadline time.Time
 	if *timeout > 0 {
 		deadline = a.Now().Add(*timeout)
-	}
-	st, _, err := s.startDelivery(ctx, a.Now())
-	if err != nil {
-		return err
-	}
-	if st.NextBatch == "" {
-		if st, err = s.takePosition(ctx, time.Time{}); err != nil {
-			return err
-		}
-	}
-	for {
-		if *status != "" && a.Now().Sub(lastHeartbeat) >= *heartbeat {
-			if err := s.writeLivenessSource(ctx, profile, "wait-heartbeat"); err != nil {
-				return err
+		parent := ctx
+		waitUntil := time.Now().Add(*timeout)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+		defer func() {
+			// A nested request with the same deadline can expire before this
+			// context's timer has published Err. Use our own deadline as the
+			// boundary, without swallowing an earlier request/parent deadline.
+			if errors.Is(retErr, context.DeadlineExceeded) && parent.Err() == nil && !time.Now().Before(waitUntil) {
+				retErr = a.waitTimeout(*asJSON)
 			}
-			lastHeartbeat = a.Now()
-		}
-		n, err := a.showNew(ctx, s, filter, *asJSON)
+		}()
+	}
+	// Keep the parsed options and this context across authentication renewal.
+	// Re-entering cmdWait would create a fresh finite timeout for attempt two.
+	return a.runWithRelogin(ctx, command{name: "wait", run: func(ctx context.Context, a *App, _ []string) error {
+		s, err := a.session()
 		if err != nil {
 			return err
-		}
-		if n > 0 {
-			fmt.Fprintln(a.Stderr, shownHint)
-			return nil
-		}
-		poll := maxPoll
-		if *status != "" {
-			poll = min(poll, *heartbeat)
-		}
-		if !deadline.IsZero() {
-			remaining := deadline.Sub(a.Now())
-			if remaining <= 0 {
-				if *asJSON {
-					return a.printJSON(map[string]string{"type": "timeout"})
-				}
-				a.printf("timeout\n")
-				return nil
-			}
-			if remaining < poll {
-				poll = remaining
-			}
 		}
 		if err := a.acquireLease(s, "", time.Time{}); err != nil {
 			return err
 		}
-		resp, err := s.client.Sync(ctx, st.NextBatch, poll, syncFilter)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+		var lastHeartbeat time.Time
+		if *status != "" {
+			if err := s.writeLivenessSource(ctx, profile, "wait"); err != nil {
+				return err
 			}
-			return err
+			lastHeartbeat = a.Now()
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), nativeRPCTimeout)
+				defer cancel()
+				profile.Doorbell = "none"
+				if err := s.writeLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {
+					fmt.Fprintln(a.Stderr, "wait liveness disarm:", a.secrets.Scrub(sanitizeLine(err.Error())))
+				}
+			}()
 		}
-		subs, err := s.getSubs(ctx)
+		filter, err := s.resolveFilter(ctx, rooms, *all)
 		if err != nil {
 			return err
 		}
-		if st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}); err != nil {
+		st, err := s.startWaiting(ctx)
+		if err != nil {
 			return err
 		}
-	}
+		if st.NextBatch == "" {
+			if st, err = s.takeWaitingPosition(ctx); err != nil {
+				return err
+			}
+		}
+		for {
+			if *status != "" && a.Now().Sub(lastHeartbeat) >= *heartbeat {
+				if err := s.writeLivenessSource(ctx, profile, "wait-heartbeat"); err != nil {
+					return err
+				}
+				lastHeartbeat = a.Now()
+			}
+			n, err := a.showNew(ctx, s, filter, *asJSON)
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				fmt.Fprintln(a.Stderr, shownHint)
+				return nil
+			}
+			poll := maxPoll
+			if *status != "" {
+				poll = min(poll, *heartbeat)
+			}
+			if !deadline.IsZero() {
+				remaining := deadline.Sub(a.Now())
+				if remaining <= 0 {
+					return a.waitTimeout(*asJSON)
+				}
+				if remaining < poll {
+					poll = remaining
+				}
+			}
+			if err := a.acquireLease(s, "", time.Time{}); err != nil {
+				return err
+			}
+			resp, err := s.waitingSync(ctx, st.NextBatch, poll, syncFilter)
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return err
+			}
+			subs, err := s.waitingSubs(ctx)
+			if err != nil {
+				return err
+			}
+			if st, err = s.ingestWaiting(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms()); err != nil {
+				return err
+			}
+		}
+	}}, nil)
 }
 
 const ackUsage = "usage: a2a ack <id...>|all-shown  (ids as wait/watch/inbox print them; all-shown: every entry wait or watch printed)"
@@ -613,12 +763,12 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		}
 		return err
 	}
-	st, _, err := s.startDelivery(ctx, a.Now())
+	st, err := s.startWaiting(ctx)
 	if err != nil {
 		return stopped(err)
 	}
 	if st.NextBatch == "" {
-		if st, err = s.takePosition(ctx, time.Time{}); err != nil {
+		if st, err = s.takeWaitingPosition(ctx); err != nil {
 			return stopped(err)
 		}
 	}
@@ -629,15 +779,15 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		if err := a.acquireLease(s, "", time.Time{}); err != nil {
 			return stopped(err)
 		}
-		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, syncFilter)
+		resp, err := s.waitingSync(ctx, st.NextBatch, maxPoll, syncFilter)
 		if err != nil {
 			return stopped(err)
 		}
-		subs, err := s.getSubs(ctx)
+		subs, err := s.waitingSubs(ctx)
 		if err != nil {
 			return stopped(err)
 		}
-		if st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}); err != nil {
+		if st, err = s.ingestWaiting(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms()); err != nil {
 			return stopped(err)
 		}
 	}

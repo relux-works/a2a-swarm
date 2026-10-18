@@ -16,7 +16,7 @@ import (
 func TestSubRequestAccept(t *testing.T) {
 	e, room := subWorld(t)
 	e.as("bob", "topic", "new", "proj", "alpha", "A").ok(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	req := strings.TrimSpace(e.as("bob", "sub-request", "alice", "--room", "proj", "--topic", "alpha",
 		"--subject", "BUG-1", "--until-kind", "system", "--note", "tell me when it lands").ok(t).stdout)
 	ev, _ := e.hs.eventByID(req)

@@ -172,7 +172,7 @@ func TestWaitWakesOnSubscribedKind(t *testing.T) {
 	e, room := subWorld(t)
 	lobby := e.hs.aliases["#lobby:"+testServer]
 	id, _ := e.subscribe("alice", "--kind", "system", "--room", "proj")
-	e.as("alice", "wait", "--timeout", "10ms").ok(t) // take a position
+	e.as("alice", "wait", "--timeout", "500ms").ok(t) // take a position
 	e.hs.inject(room, "@bob:test.local", kindMsg("bob", "notice", "plain notice"))
 	e.hs.inject(lobby, "@bob:test.local", kindMsg("bob", "system", "system elsewhere"))
 	e.hs.inject(room, "@alice:test.local", kindMsg("alice", "system", "my own system"))
@@ -192,7 +192,7 @@ func TestWaitWakesOnSubscribedKind(t *testing.T) {
 func TestWaitAll(t *testing.T) {
 	e, room := world(t)
 	lobby := e.hs.aliases["#lobby:"+testServer]
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	e.hs.inject(room, "@alice:test.local", msg("mine", nil))
 	e.hs.inject(lobby, "@bob:test.local", msg("lobby chatter", nil))
 	if r := e.as("alice", "wait", "--room", "proj", "--all", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
@@ -268,7 +268,7 @@ func TestSubSelectorsDeliver(t *testing.T) {
 			lobby := e.hs.aliases["#lobby:"+testServer]
 			alpha := strings.TrimSpace(e.as("bob", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
 			beta := strings.TrimSpace(e.as("bob", "topic", "new", "proj", "beta", "B").ok(t).stdout)
-			e.as("alice", "wait", "--timeout", "10ms").ok(t)
+			e.as("alice", "wait", "--timeout", "500ms").ok(t)
 			id, _ := e.subscribe("alice", tc.args...)
 			tc.noise(e, room, lobby, alpha, beta)
 			ev := tc.match(e, room, lobby, alpha, beta)
@@ -288,7 +288,7 @@ func TestSubSelectorsDeliver(t *testing.T) {
 func TestSubRoomScopedIgnoresForeignRooms(t *testing.T) {
 	e, room := subWorld(t)
 	lobby := e.hs.aliases["#lobby:"+testServer]
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	e.subscribe("alice", "--room", "proj", "--kind", "system")
 	e.hs.inject(lobby, "@bob:test.local", kindMsg("bob", "system", "foreign"))
 	if r := e.as("alice", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
@@ -303,7 +303,7 @@ func TestSubRoomScopedIgnoresForeignRooms(t *testing.T) {
 // related message (positive control).
 func TestSubSubjectScopedIgnoresUnrelated(t *testing.T) {
 	e, room := subWorld(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	e.subscribe("alice", "--subject", "relux-works/skill-project-management@main")
 	e.hs.inject(room, "@bob:test.local", msg("unrelated chatter", nil))
 	e.hs.inject(room, "@bob:test.local", hdrMsg("bob", "system", "landing", "relux-works/a2a-swarm@main", "other repo"))
@@ -323,7 +323,7 @@ func TestSubSubjectScopedIgnoresUnrelated(t *testing.T) {
 // nothing further is delivered.
 func TestSubUntilKindClosesAfterFirstClosingEvent(t *testing.T) {
 	e, room := subWorld(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id, _ := e.subscribe("alice", "--subject", "BUG-1", "--until-kind", "system")
 	first := e.hs.inject(room, "@bob:test.local", msg("working on BUG-1", nil))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "sub #proj "+first+" from=bob sub="+id)
@@ -353,7 +353,7 @@ func TestSubUntilKindClosesAfterFirstClosingEvent(t *testing.T) {
 // list keeps delivering (positive control).
 func TestSubExpiredDeliversNothing(t *testing.T) {
 	e, room := subWorld(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	e.hs.setAccountData("@alice:test.local", SubsType, SubList{V: 1, Subs: []Sub{
 		{ID: "sub-0000dead", SubSelector: SubSelector{Kinds: []string{"decision"}, Until: past}, CreatedAt: legacyCreatedAt},
@@ -374,7 +374,7 @@ func TestSubExpiredDeliversNothing(t *testing.T) {
 // delivered while it existed (positive control).
 func TestUnsubscribedDeliversNothing(t *testing.T) {
 	e, room := subWorld(t)
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id, _ := e.subscribe("alice", "--kind", "decision")
 	ev := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "decision", "one"))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, ev)
@@ -391,7 +391,7 @@ func TestUnsubscribedDeliversNothing(t *testing.T) {
 func TestSubCreationGateAndSince(t *testing.T) {
 	t.Run("created_at", func(t *testing.T) {
 		e, room := subWorld(t)
-		e.as("alice", "wait", "--timeout", "10ms").ok(t)
+		e.as("alice", "wait", "--timeout", "500ms").ok(t)
 		e.hs.inject(room, "@bob:test.local", msg("old BUG-7 note", nil))
 		time.Sleep(5 * time.Millisecond)
 		e.subscribe("alice", "--subject", "BUG-7")
@@ -403,7 +403,7 @@ func TestSubCreationGateAndSince(t *testing.T) {
 	})
 	t.Run("since", func(t *testing.T) {
 		e, room := subWorld(t)
-		e.as("alice", "wait", "--timeout", "10ms").ok(t)
+		e.as("alice", "wait", "--timeout", "500ms").ok(t)
 		e0 := e.hs.inject(room, "@bob:test.local", msg("BUG-7 zero", nil))
 		e1 := e.hs.inject(room, "@bob:test.local", msg("BUG-7 one", nil))
 		e2 := e.hs.inject(room, "@bob:test.local", msg("BUG-7 two", nil))
@@ -455,7 +455,7 @@ func TestSubsMigrateLegacyState(t *testing.T) {
 	if n := len(e.serverSubs("alice").Subs); n != 2 {
 		t.Fatalf("second run duplicated: %d", n)
 	}
-	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	e.as("alice", "wait", "--timeout", "500ms").ok(t)
 	id := e.hs.inject(lobby, "@bob:test.local", kindMsg("bob", "system", "migrated delivery"))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "sub #lobby "+id)
 }

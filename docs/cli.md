@@ -447,6 +447,23 @@ in other rooms are still persisted (the next wait without that filter, or `inbox
 this wait syncs; for durable room-wide delivery that every consumer sees, use `a2a subscribe --room R --all-events`.
 Excerpts are one line, stripped of control characters, and never longer than 200 characters.
 
+`wait` and `watch` retry failed `/sync` and subscription account-data reads,
+including their initial reads, in the same consumer. Backoff starts at 100 ms,
+doubles to a 5 s cap, and resets after each successful read. The same lease is
+renewed before another attempt. Retryable failures are EOF/unexpected EOF,
+connection reset/abort/broken pipe, temporary or timed-out network errors,
+and HTTP 408, 429, 500, 502, 503 and 504. Context cancellation/deadline errors,
+authentication/authorization and known bad-request Matrix codes, malformed
+JSON, unsupported subscription versions and permanent configuration errors
+remain terminal. A finite `wait` timeout also bounds setup, requests,
+backoff and the existing one-time token renewal, including login and the second
+command attempt; renewal never resets the budget. It keeps the timeout output
+above. `watch` stops cleanly on cancellation.
+Failed reads leave the mailbox, cursor and subscriptions unchanged; successful
+delivery still persists mail before advancing the cursor. State/mailbox writes,
+subscription writes and output failures are terminal and are never retried by
+this policy. Other commands retain their existing request behavior.
+
 Stopping a background `wait`: kill it by the PID you started, or with a pattern that includes your own name (`pkill -f 'a2a --as <name> wait'`).
 A bare `pkill -f 'a2a wait'` kills every agent's doorbell on the machine. A killed wait loses nothing: what it printed is still in the mailbox.
 ```bash

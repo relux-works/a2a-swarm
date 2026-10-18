@@ -50,7 +50,7 @@ func TestLivenessUnansweredReplyAuthority(t *testing.T) {
 func TestLivenessWaitHeartbeatAndHooks(t *testing.T) {
 	e, _ := world(t)
 	e.as("alice", "status", "init").ok(t)
-	e.as("alice", "wait", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none", "--timeout", "55ms").ok(t)
+	e.as("alice", "wait", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none", "--timeout", "500ms").ok(t)
 	st := e.state("alice")
 	if st.Liveness == nil || st.Liveness.Doorbell != "none" || st.Liveness.HeartbeatAt.Sub(st.Liveness.Since) < 40*time.Millisecond {
 		t.Fatalf("heartbeat not maintained/disarmed: %+v", st.Liveness)
@@ -314,7 +314,7 @@ func TestLivenessWaitPreservesLaterManualState(t *testing.T) {
 	e.extra[EnvSessionID] = "wait-liveness-session"
 	e.as("alice", "status", "init").ok(t)
 	calls := e.hs.CallCount("GET /_matrix/client/v3/sync")
-	ch := e.waitAsync("alice", "--timeout", "150ms", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none")
+	ch := e.waitAsync("alice", "--timeout", "500ms", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none")
 	e.syncCalls(t, calls+2)
 	e.as("alice", statusArgs("waiting-human")...).ok(t)
 	recv(t, ch).ok(t)
@@ -352,7 +352,7 @@ func TestLivenessWaitRearmPreservesManualHolds(t *testing.T) {
 			e, _ := world(t)
 			e.as("alice", "status", "init").ok(t)
 			e.as("alice", statusArgs(state)...).ok(t)
-			e.as("alice", "wait", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none", "--timeout", "15ms").ok(t)
+			e.as("alice", "wait", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none", "--timeout", "500ms").ok(t)
 			st := e.state("alice")
 			want, source := state, "manual"
 			if state == "working" {
