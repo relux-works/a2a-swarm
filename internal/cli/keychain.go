@@ -24,6 +24,7 @@ const securityCooldown = 5 * time.Minute
 
 var errKeychainMissing = errors.New("keychain item missing")
 var errKeychainDuplicate = errors.New("keychain item already exists")
+var errSecurityProcessIO = errors.New("keychain process I/O incomplete")
 var errSecurityProcessCleanup = errors.New("keychain process cleanup failed")
 
 // All seams are private and set only by package tests. The production command
@@ -231,7 +232,7 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 }
 
 func interactionFailure(err error) bool {
-	if errors.Is(err, exec.ErrWaitDelay) || errors.Is(err, errSecurityProcessCleanup) {
+	if errors.Is(err, exec.ErrWaitDelay) || errors.Is(err, errSecurityProcessIO) || errors.Is(err, errSecurityProcessCleanup) {
 		return true
 	}
 	var ee *exec.ExitError

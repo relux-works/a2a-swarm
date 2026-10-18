@@ -20,6 +20,9 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 	}
 	type mutant struct{ name, file, old, next, test string }
 	mutants := []mutant{
+		{"nonzero-pipe-failure-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletion/security/inherited/exit44"},
+		{"nonzero-pipe-duplicate-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletionMigrationStages/security/create/exit45"},
+		{"nonzero-pipe-generic-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletion/security/inherited/exit1"},
 		{"early-leader-security-inherited-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/security/inherited"},
 		{"early-leader-security-closed-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/security/closed"},
 		{"early-leader-probe-inherited-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/probe/inherited"},
@@ -154,7 +157,7 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 			if !strings.Contains(string(out), "--- FAIL: "+leaf+" ") && !strings.Contains(string(out), "--- FAIL: "+m.test+" ") {
 				t.Fatalf("not a named behavioral kill (exit %d): %s", status, out)
 			}
-			t.Logf("KILLED mutant=%s test=%s gate_exit=%d", m.name, m.test, status)
+			t.Logf("KILLED mutant=%s test=%s gate_exit=%d\n%s", m.name, m.test, status, out)
 			for _, line := range strings.Split(string(out), "\n") {
 				if strings.Contains(line, "--- FAIL:") {
 					fmt.Println(line)
