@@ -152,7 +152,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 			t.Logf("synthetic binding log: %s", b)
 		}
 	})
-	e.extra[EnvSessionID] = "bind-fixture"
+	e.extra["CODEX_THREAD_ID"] = "bind-fixture"
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
 	dir, err := os.MkdirTemp("/tmp", "ab-")
 	if err != nil {
@@ -171,7 +171,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	}
 	socket := filepath.Join(dir, "socket")
 	cmd := exec.CommandContext(ctx, "tmux", "-S", socket, "-f", "/dev/null", "new-session", "-d", "-x", "120", "-y", "24", "python3", script, dir, exe)
-	cmd.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=bind-fixture", "A2A_AGENT=alice", "CODEX_THREAD_ID=")
+	cmd.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("private tmux: %v %s", err, out)
 	}
@@ -268,7 +268,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	id2 := runtimeMail(e, room, "AFTER_RETRY")
 	awaitBinding(t, e.paths(), func(st config.State) bool { return len(st.Terminal.Rung) == 2 })
 	stop := exec.CommandContext(ctx, exe, "--as", "alice", "unbind")
-	stop.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=bind-fixture", "A2A_AGENT=alice", "CODEX_THREAD_ID=")
+	stop.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture")
 	if out, err := stop.CombinedOutput(); err != nil {
 		t.Fatalf("unbind: %v %s", err, out)
 	}

@@ -212,20 +212,20 @@ a2a broadcast-room init
 
 ### `a2a identity release [--force]`
 Clears this session's lease on the identity (`--as` / `A2A_AGENT`), so another session can take it at once. The session is named as for the
-lease (`A2A_SESSION_ID`, else `pid:<pid>@<host>`). Another session's live lease is refused (exit 1); `--force` clears it anyway: only when that
+lease (`A2A_SESSION_ID`, else `CODEX_THREAD_ID`, else `pid:<pid>@<host>`). Another session's live lease is refused (exit 1); `--force` clears it anyway: only when that
 session is really gone.
 
 ### One live session per identity: the lease
 The state file holds `lease: {holder, pid, expires}`. `wait`, `watch`, `inbox` and every hook event take the lease or refresh it for
 **10 minutes** (`config.LeaseTTL`, a named constant, not a flag); `wait` and `watch` refresh it again before every `/sync`. The holder is the
-session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise `pid:<pid>@<host>` (the host slug, or the OS
+session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise a valid native `CODEX_THREAD_ID`, otherwise `pid:<pid>@<host>` (the host slug, or the OS
 hostname when none is set: here it is only a label).
 - Another holder while the lease is unexpired is refused: `wait`, `watch` and `inbox` exit 1 with
   `identity <name> is held by <holder> until <time>` before any sync; a hook prints nothing, writes that line to stderr and exits 0.
 - An expired lease is taken over. A `pid:` holder on this host whose process has exited counts as expired.
 - The Claude Code `SessionStart` hook appends `export A2A_SESSION_ID=<session_id>` to `CLAUDE_ENV_FILE` (which Claude Code sets for that hook;
   an id that is not a plain `[A-Za-z0-9._-]` token is skipped), so the session's own `a2a inbox` and `wait` hold the same lease as its hooks.
-  Codex has no such file: a Codex session that also runs `inbox` or `wait` sets `A2A_SESSION_ID` itself.
+  Codex commands use the native `CODEX_THREAD_ID` automatically; no per-command `A2A_SESSION_ID` export is needed. An explicit export retains priority.
 - A restarted session (a new session id) finds the old lease for up to 10 minutes: `a2a identity release --force` if the old session is gone.
 
 ### `a2a register <name>` (low level)

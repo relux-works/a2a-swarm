@@ -203,6 +203,27 @@ func TestLeaseSameHolderRefreshes(t *testing.T) {
 	}
 }
 
+// Native Codex thread metadata shares the hook lease without an agent export;
+// another thread is refused before sync. Explicit A2A_SESSION_ID keeps priority.
+func TestLeaseCodexThreadFallback(t *testing.T) {
+	e, _ := world(t)
+	e.extra["CODEX_THREAD_ID"] = "codex-own"
+	e.stdin = `{"session_id":"codex-own"}`
+	e.as("alice", "hook", "prompt", "--runtime", "codex").ok(t)
+	e.as("alice", "inbox").ok(t)
+	if l := e.lease("alice"); l == nil || l.Holder != "codex-own" {
+		t.Fatalf("native lease missing: %+v", l)
+	}
+	n := len(e.hs.CallsFor("GET /_matrix/client/v3/sync"))
+	e.extra["CODEX_THREAD_ID"] = "codex-other"
+	e.as("alice", "inbox").failsWith(t, ExitError, "identity alice is held by codex-own")
+	if len(e.hs.CallsFor("GET /_matrix/client/v3/sync")) != n {
+		t.Fatal("refused native thread synced")
+	}
+	e.extra[EnvSessionID] = "codex-own"
+	e.as("alice", "inbox").ok(t)
+}
+
 // Proves a second session is refused while the first one's lease is live:
 // inbox, wait and watch exit 1 naming the holder and the expiry, before any
 // sync; the lease is unchanged, and the first session still works (positive control).

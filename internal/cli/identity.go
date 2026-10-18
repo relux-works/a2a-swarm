@@ -299,13 +299,16 @@ func cmdIdentityRelease(a *App, args []string) error {
 	return nil
 }
 
-// leaseHolder names this session: the hook's session id, else A2A_SESSION_ID,
-// else pid:<pid>@<host>.
+// leaseHolder names this session: hook id, explicit A2A_SESSION_ID, native
+// CODEX_THREAD_ID, then the PID fallback. Codex commands need no manual export.
 func (a *App) leaseHolder(p config.Paths, sessionID string) string {
 	if id := hookSessionKey(sessionID); sessionID != "" && id != "-" {
 		return id
 	}
 	if id := hookSessionKey(a.Getenv(EnvSessionID)); a.Getenv(EnvSessionID) != "" && id != "-" {
+		return id
+	}
+	if id := a.Getenv("CODEX_THREAD_ID"); claudeSessionRE.MatchString(id) {
 		return id
 	}
 	return "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel()
