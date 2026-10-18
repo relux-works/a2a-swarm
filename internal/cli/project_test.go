@@ -29,7 +29,7 @@ func projWorld(t *testing.T) (*env, string, string) {
 
 func (e *env) project(extra ...string) result {
 	e.t.Helper()
-	return e.as("proj", append([]string{"project", "--once", "--poll", "50ms"}, extra...)...)
+	return e.as("proj", append([]string{"project", "--system", "system", "--source", "proj", "--once", "--poll", "50ms"}, extra...)...)
 }
 
 // projections returns the projector's messages in the projection room.
@@ -71,7 +71,7 @@ func TestProjectMirrorsTypedMessages(t *testing.T) {
 	e.hs.inject(room, "@bob:test.local", msg("fake", map[string]any{ContentKey: map[string]any{"v": 1, "type": "projection", "kind": "system"}}))
 	on := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "owner-needed", "tailscale is logged out"))
 
-	out := e.project().ok(t).stdout
+	out := e.project("--source", "system").ok(t).stdout
 	got := e.projections(system)
 	if len(got) != 2 {
 		t.Fatalf("projections = %d, want 2; stdout:\n%s", len(got), out)
@@ -120,21 +120,21 @@ func addProductSpace(e *env, name, child string) (space, target string) {
 	return space, target
 }
 
-// Proves a space child is mirrored to both #alpha-system and #system, while
-// an event from an unrelated room is mirrored only to #system.
+// Retains the legacy fanout regression name: product metadata is preserved,
+// but both explicitly allowed sources now send only to the configured target.
 func TestProjectDualProjectionBySpace(t *testing.T) {
 	e, room, system := projWorld(t)
 	_, target := addProductSpace(e, "alpha", room)
-	e.project().ok(t)
-	id := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "in product"))
 	other := e.hs.addRoom("outside", "@proj:test.local", "@bob:test.local")
+	e.project("--source", "outside").ok(t)
+	id := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "in product"))
 	outID := e.hs.inject(other, "@bob:test.local", kindMsg("bob", "system", "outside"))
-	e.project().ok(t)
+	e.project("--source", "outside").ok(t)
 	global := e.projections(system)
 	if len(global) != 2 {
 		t.Fatalf("global projections = %+v", global)
 	}
-	if got := e.projections(target); len(got) != 1 || projectionOf(t, got[0]).ProductAlias != "#alpha" || projectionOf(t, got[0]).Product == "" {
+	if got := e.projections(target); len(got) != 0 {
 		t.Fatalf("product projections = %+v", got)
 	}
 	aliases := map[string]string{}
@@ -182,8 +182,8 @@ func TestProjectPathAndVerifiedAuthor(t *testing.T) {
 	}
 }
 
-// Proves an absent or forbidden product target emits one warning and never
-// prevents the corresponding global projection.
+// Retains the legacy target-failure regression name: an absent or forbidden
+// product target has no effect because it is never a destination.
 func TestProjectProductTargetFailureKeepsGlobal(t *testing.T) {
 	for _, mode := range []string{"missing", "forbidden"} {
 		t.Run(mode, func(t *testing.T) {
@@ -202,15 +202,15 @@ func TestProjectProductTargetFailureKeepsGlobal(t *testing.T) {
 			e.project().ok(t)
 			e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "must reach global"))
 			r := e.project().ok(t)
-			if len(e.projections(system)) != 1 || strings.Count(r.stderr, "a2a: projector: could not project") != 1 {
+			if len(e.projections(system)) != 1 || r.stderr != "" {
 				t.Fatalf("global=%d stderr=%q", len(e.projections(system)), r.stderr)
 			}
 		})
 	}
 }
 
-// Proves replaying a batch after restart deduplicates projections separately
-// in the global and product target rooms.
+// Retains the legacy dual-dedup regression name: replay deduplicates at the
+// configured target, with zero projections to the product-derived room.
 func TestProjectDualIdempotentAfterRestart(t *testing.T) {
 	e, room, system := projWorld(t)
 	_, target := addProductSpace(e, "alpha", room)
@@ -220,7 +220,7 @@ func TestProjectDualIdempotentAfterRestart(t *testing.T) {
 	e.project().ok(t)
 	config.UpdateState(e.paths(), "proj", func(cur *config.State) error { cur.NextBatch = st.NextBatch; return nil })
 	e.project().ok(t)
-	if len(e.projections(system)) != 1 || len(e.projections(target)) != 1 {
+	if len(e.projections(system)) != 1 || len(e.projections(target)) != 0 {
 		t.Fatalf("replayed projections global=%d product=%d", len(e.projections(system)), len(e.projections(target)))
 	}
 }
@@ -273,9 +273,9 @@ func TestProjectAcceptsInvites(t *testing.T) {
 	e.project().ok(t)
 	side := e.hs.addRoom("side", "@bob:test.local")
 	e.as("bob", "invite", "side", "proj").ok(t)
-	tuitestkit.ContainsStr(t, e.project().ok(t).stdout, "joined "+side)
+	tuitestkit.ContainsStr(t, e.project("--source", "side").ok(t).stdout, "joined "+side)
 	e.hs.inject(side, "@bob:test.local", kindMsg("bob", "owner-needed", "from side"))
-	e.project().ok(t)
+	e.project("--source", "side").ok(t)
 	if got := e.projections(system); len(got) != 1 || projectionOf(t, got[0]).OriginRoom != side {
 		t.Fatalf("side projection = %+v", got)
 	}
@@ -374,7 +374,7 @@ func TestProjectNegative(t *testing.T) {
 	if n := e.hs.CallCount("GET /_matrix/client/v3/sync"); n != 0 {
 		t.Fatalf("usage errors reached the server: %d syncs", n)
 	}
-	e.as("proj", "project", "--system", "nosuch", "--once").failsWith(t, ExitError, "")
+	e.as("proj", "project", "--system", "nosuch", "--source", "proj", "--once").failsWith(t, ExitError, "resolve --system")
 }
 
 // Proves sender-controlled header fields cannot forge path segments: each of

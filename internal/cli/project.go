@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
@@ -190,13 +191,27 @@ func projection(ev matrix.Event, h Header, roomID, roomLabel, server, product, p
 
 func validIdentityPart(part string) bool { return productNameRE.MatchString(part) }
 
-// cmdProject: a2a project [--system R] [--kind k1,k2] [--once] [--poll 30s]
-// Runs the projector of protocol rule 24 as the current identity: it accepts
-// every invite, and mirrors each message of a projected kind from any joined
-// room into the projection room, with a link to the original.
+func invalidProjectRoom(arg string) bool {
+	return arg == "" || arg == "!" || strings.ContainsFunc(arg, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
+// Use the shared resolver, including its opaque room-ID support, but refuse an
+// empty or malformed directory response before it can authorize any effects.
+func (s *session) resolveProjectRoom(ctx context.Context, arg string) (string, string, error) {
+	id, label, err := s.resolveRoom(ctx, arg)
+	if err == nil && (!strings.HasPrefix(id, "!") || invalidProjectRoom(id)) {
+		err = fmt.Errorf("invalid resolved projector room %q", sanitizeLine(id))
+	}
+	return id, label, err
+}
+
+// cmdProject mirrors selected messages from explicitly allowed sources into
+// exactly one explicitly configured target. Product discovery is metadata only.
 func cmdProject(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("project")
-	systemArg := fs.String("system", "system", "projection room")
+	systemArg := fs.String("system", "", "required single projection target")
+	var sources stringList
+	fs.Var(&sources, "source", "required allowed source room (repeatable)")
 	kindArg := fs.String("kind", strings.Join(DefaultProjectKinds, ","), "kinds to project")
 	once := fs.Bool("once", false, "process one sync batch and exit (for tests and cron)")
 	poll := fs.Duration("poll", 30*time.Second, "server-side long-poll per sync")
@@ -205,7 +220,7 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	if len(pos) != 0 {
-		return usagef("usage: a2a project [--system R] [--kind k1,k2] [--once] [--poll 30s]")
+		return usagef("usage: a2a project --system R --source R [--source R...] [--kind k1,k2] [--once] [--poll 30s]")
 	}
 	kinds := map[string]bool{}
 	for _, k := range splitList(*kindArg) {
@@ -220,13 +235,34 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 	if *poll <= 0 || *poll > maxPoll {
 		return usagef("--poll must be between 0 and %s", maxPoll)
 	}
+	if *systemArg == "" {
+		return usagef("--system requires an explicit nonempty target")
+	}
+	if len(sources) == 0 {
+		return usagef("--source requires at least one explicit source")
+	}
+	for _, arg := range append([]string{*systemArg}, sources...) {
+		if invalidProjectRoom(arg) {
+			return usagef("invalid projector room %q", sanitizeLine(arg))
+		}
+	}
 	s, err := a.session()
 	if err != nil {
 		return err
 	}
-	systemRoom, systemLabel, err := s.resolveRoom(ctx, *systemArg)
+	systemRoom, systemLabel, err := s.resolveProjectRoom(ctx, *systemArg)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve --system: %w", err)
+	}
+	// Resolve once before sync or durable state changes. Only these pinned IDs
+	// authorize admission; sync's aliases, names and product state cannot do so.
+	allowed := map[string]bool{}
+	for _, source := range sources {
+		id, _, err := s.resolveProjectRoom(ctx, source)
+		if err != nil {
+			return fmt.Errorf("resolve --source: %w", err)
+		}
+		allowed[id] = true
 	}
 	me := s.creds.UserID
 	labels := map[string]string{}
@@ -242,6 +278,9 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
+			return err
+		}
 		if st, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error {
 			cur.NextBatch = resp.NextBatch
 			return nil
@@ -249,9 +288,6 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		a.printf("projector %s -> %s: position taken\n", s.name, systemLabel)
-		if err := s.acceptInvites(ctx, a, resp); err != nil {
-			return err
-		}
 	}
 	for {
 		resp, err := s.client.Sync(ctx, st.NextBatch, *poll, projectFilter)
@@ -261,10 +297,13 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 			}
 			return err
 		}
-		if err := s.acceptInvites(ctx, a, resp); err != nil {
+		if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
 			return err
 		}
 		for _, roomID := range sortedKeys(resp.Rooms.Join) {
+			if !allowed[roomID] || roomID == systemRoom {
+				continue
+			}
 			tl := resp.Rooms.Join[roomID].Timeline
 			events, gap, err := s.timelineEvents(ctx, roomID, st.NextBatch, tl.Events, tl.Limited, tl.PrevBatch, func(ev matrix.Event) bool {
 				_, ok := projectable(ev, roomID, systemRoom, me, kinds)
@@ -288,16 +327,6 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 					return fmt.Errorf("project %s from %s: %w", sanitizeLine(ev.EventID), label, err)
 				}
 				a.printf("projected %s %s %s -> %s\n", label, ev.EventID, h.Kind, id)
-				if productAlias != "" {
-					productSystem, resolveErr := s.client.ResolveAlias(ctx, productAlias+"-system:"+s.server)
-					if resolveErr != nil {
-						fmt.Fprintf(a.Stderr, "a2a: projector: could not project %s to %s-system: %s\n", sanitizeLine(ev.EventID), productAlias, sanitizeLine(resolveErr.Error()))
-						continue
-					}
-					if _, err := s.client.SendMessageTxn(ctx, productSystem, projectionTxn(productSystem, roomID, ev.EventID), content); err != nil {
-						fmt.Fprintf(a.Stderr, "a2a: projector: could not project %s to %s-system: %s\n", sanitizeLine(ev.EventID), productAlias, sanitizeLine(err.Error()))
-					}
-				}
 			}
 		}
 		// Save the position only after every projection of the batch was sent.
@@ -313,9 +342,12 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 	}
 }
 
-// acceptInvites joins every room the projector is invited to.
-func (s *session) acceptInvites(ctx context.Context, a *App, resp matrix.SyncResponse) error {
+// acceptInvites admits only the actual room IDs pinned by project config.
+func (s *session) acceptInvites(ctx context.Context, a *App, resp matrix.SyncResponse, allowed map[string]bool) error {
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
+		if !allowed[roomID] {
+			continue
+		}
 		if _, err := s.client.Join(ctx, roomID); err != nil {
 			return fmt.Errorf("join %s: %w", sanitizeLine(roomID), err)
 		}

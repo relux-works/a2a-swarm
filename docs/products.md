@@ -57,7 +57,7 @@ server: #lobby, #broadcast, #system (all projections, for the meta-keeper)
 - `a2a room new --product X` adds a project room.
 - `identity ensure --product X` joins the product rooms and creates exactly the subscriptions of its role's row in section 3a.
 - An unknown product is an error; nothing is created implicitly.
-- Projector: one global identity. It mirrors every event into #system AND into #X-system when the origin room has a space parent X. Delivery to #X-system subscriptions already works (PR #36).
+- Projector routing now requires explicit `--source` selectors and exactly one `--system` target. Only allowlisted actual room IDs are joined or projected; product membership is informational and never adds a `#X-system` destination. This supersedes the dual projection behavior of PR #46; see `docs/cli.md` for the source-only command contract. Live activation remains separately authorized.
   - Every projection carries the FULL PATH to its origin (Alexis, $kpqbsYe_...).
     - Body first line: `[kind/subtype] product-X › #X-backend › topic deploy-window › $event`.
     - Then a matrix.to link to the exact event.
@@ -95,7 +95,7 @@ Principles:
 | Product keeper X | #lobby, #broadcast, #X-lobby, #X-broadcast (sole writer), #X-system, X's project rooms | #X-system: owner-needed, and system incident, blocker, budget, window and queue; #X-lobby: decision; #lobby: decision; system impact-start and impact-end (rule 31) | the rest of #X-system; project rooms | Resolves in-product order, windows and escalations. Readiness claims arrive typed (queue), with no parsing of notices. |
 | Arbiter of a shared resource (e.g. tb-keeper on spm main) | that resource's room | there: system window, landing, incident, blocker and queue; decision | notices, acks | tb-R53: a readiness notice was logged without ringing and cost a slot. |
 | Project orchestrator (local or rwh-hosted, same row) | #lobby, #broadcast, #X-lobby, #X-broadcast, its project room | its room: system incident, blocker and budget, and decision; #X-lobby: decision; #X-broadcast and #broadcast (by membership); #lobby: decision; optional sibling opt-in on #X-system (--from or --subject); and, when it lands into a shared main, that resource's room: system window, landing and queue; #X-lobby: question (rule 30); its room: system impact-start and impact-end (rule 31) | the rest of its room, #X-lobby and #X-system | Its own project's trouble and the decisions that bind it; other agents' owner-needed goes to keepers. |
-| Infra service (projector, bridge) | the project rooms it is invited to, plus #system and each #X-system as writer | nothing (--runtime none) | n/a | Not a model and has no session; it only writes projections. |
+| Infra service (projector, bridge) | explicitly allowlisted source rooms and the single configured projection target | nothing (--runtime none) | n/a | Not a model and has no session; it only writes projections. |
 | Worker (rwh-*) | none | none | none | Rule 25: results reach the chat only through its orchestrator. |
 
 Changes these rows need (ac, one PR with the product CLI):

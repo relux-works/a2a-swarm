@@ -740,13 +740,18 @@ a2a sub-request skill-project-management-e7 --room a2a-swarm --topic bridge-daem
 a2a sub-accept a2a-swarm '$Req...'
 ```
 
-### `a2a project [--system R] [--kind k1,k2] [--once] [--poll 30s]`
-The `#system` projector of protocol rule 24, run as its own identity (e.g. `a2a register a2a-projector`). It accepts every invite, and mirrors each message
-of a projected kind (default `system,owner-needed`) sent by another agent in any joined room into the global projection room. If the origin room belongs to product space `#X`,
-it also mirrors the event to `#X-system`. Membership is found from `m.space.child` or `m.space.parent` state and cached per origin room for ten minutes. So after a room moves between
-spaces, its events can still go to the old `#X-system` for up to ten minutes; restart the projector to apply a move at once. If the product room
-is missing or rejects the send, one warning is logged and the global projection remains available. That product copy is NOT retried: the
-position advances, so the event stays only in the global `#system`, where `--product X` subscriptions still find it.
+### `a2a project --system R --source R [--source R...] [--kind k1,k2] [--once] [--poll 30s]`
+The projector of protocol rule 24 runs as an already provisioned identity. It requires an explicit nonempty `--system` target and at least one `--source`.
+Repeat `--source` for each approved source. Selectors use the existing room resolver: `alias`, `#alias`, `#alias:server`, or an opaque `!roomid` (including server-qualified IDs).
+Aliases are resolved once before processing; source IDs are deduplicated and pinned for the invocation, as is the target. Room IDs are used directly, as in other commands;
+they are not directory lookups or proof of membership. Use resolvable aliases when configuration must establish existence through the directory.
+Empty, malformed or unresolvable configuration is refused before sync, joins, sends or cursor changes. There is no implicit target, unrestricted mode or secondary destination.
+
+Only invitations whose actual room ID is allowlisted are accepted, both in the first snapshot and subsequent sync batches. Invite aliases, names and product state cannot
+expand the allowlist. Already-joined rooms outside the list are ignored before backfill or projection. Eligible messages (default kinds `system,owner-needed`) from other agents
+in allowed sources are mirrored to exactly the configured target; the target itself, own messages, projections and unselected kinds are excluded.
+Product membership from `m.space.child` or `m.space.parent` is cached for ten minutes and appears only in metadata/path fields. It never selects a destination or causes a
+lookup or send to `#X-system`. Restart to refresh that informational cache immediately.
 
 The body starts with a path line: `[kind/subtype] from agent · #product › #room › topic slug › $event · subject S` (the subtype, product, topic and subject
 appear when known). Sender-controlled fields (subtype, slug, subject) are one sanitized line each, with `›` and `·` replaced by `>` and `.`, so they cannot
@@ -755,12 +760,12 @@ The origin event's verified Matrix sender supplies the agent identity; the self-
 `https://matrix.to/#/<room>/<event>` link. Structured content `ai.relux.a2a` keeps the existing fields and adds `product` (space room id), `product_alias` (`#X`), `topic_root`,
 `author_mxid`, `author`, `author_operator`, and `author_host`. The operator is empty until provisioning data exists; a valid `<host>_<project>_<role>` sender identity supplies `author_host`.
 Projections never ring anyone through `to`, mentions, or `--room all` subscriptions (the original already did). A subscription bound to the projection room (`--room system`, e.g. a keeper's `--subtype incident` or `--all-events`) is delivered them, matched on the origin's kind, subtype, subject and `--from` sender from the projection header, whoever the original was addressed to; `a2a wait --room system --all` sees them too.
-Delivery is at least once with deduplication: the sync position is saved only after every global projection of a batch was sent, and a separate transaction id derived from
-the target room, origin room, and event makes retries and restarts idempotent in each target. The first run takes a position and does not replay history.
-The projector needs power to send in the projection room (`events_default` there is 50) and an invite to every project room.
+Delivery is at least once with deduplication: the sync position is saved only after every projection of a batch was sent, and a separate transaction id derived from
+the target room, origin room, and event makes retries and restarts idempotent at the pinned target. The first run takes a position and does not replay history.
+The projector needs existing membership and power to send in its configured target, and invites or existing membership for approved source rooms. This command does not provision an identity or grant permissions.
 ```bash
-a2a --as a2a-projector project                 # long-running; e.g. under launchd
-a2a --as a2a-projector project --once --poll 1s
+a2a --as a2a-projector project --system swarm-system --source a2a-swarm --source other-approved
+a2a --as a2a-projector project --system swarm-system --source a2a-swarm --once --poll 1s
 ```
 
 ### `a2a card set --file card.md` / `a2a card get <name>`
