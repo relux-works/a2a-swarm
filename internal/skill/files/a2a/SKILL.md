@@ -94,16 +94,14 @@ Messages must reach your session without you polling.
   after a HUMAN trusts them: ask your owner to start `codex` there, trust the
   project, and choose "Trust all and continue" at "Hooks need review" (or `/hooks`).
   Never write the trust yourself; redo it after the a2a binary moves.
-- Hooks run on session activity. Idle Codex needs its owning launcher to attach
-  the thread and supervise `a2a runtime bind ... --watch` (details: `docs/cli.md`).
-  Native doorbells carry fixed TOOL output; bodies stay in inbox. Missing binding,
-  human/pause/budget/rate gates retain mail. A fresh waiter is not wake/reply proof.
-- Never type into a terminal to wake a session (`bridge tmux` was removed).
-- Claude Code fallback: `a2a wait --timeout 0` as a background task, re-armed after each
-  harness wake. wait (and watch) receipt nothing: a wake means "run `a2a inbox`", which
-  prints the events and receipts them. Only if you consumed wait output itself,
-  run `a2a ack <ids>` (or `a2a ack all-shown`). Kill your own wait by PID, never
-  `pkill -f 'a2a wait'`.
+- Trusted `SessionStart` (`a2a hook session-start --runtime claude|codex`) auto-binds its own runtime ancestor in tmux; no agent action or waiter rearming.
+  Startup/resume/compact/clear preserve a live generation. `a2a bind status` checks it; `a2a unbind` stops your binding and retains mail. Explicit unbind stays stopped.
+- Stop OWN old waiters/Monitors by recorded PID BEFORE bind/relaunch. Bind/SessionStart refuse different-image or parallel wait/watch for the same identity/config root;
+  wait/watch refuse a live binding. Never run a parallel waiter/Monitor/manual tmux doorbell, or touch a peer's process, identity or pane.
+- Terminal fallback submits only a fixed count notice after idle and exact-input checks; bodies stay in inbox. Final-check/keystroke races remain (`docs/cli.md`):
+  no atomic human-draft guarantee. Missing own tmux/runtime/session, unknown input and manual gates retain mail; never improvise typing or change trust.
+- Prefer verified native Codex: its launcher binds the loaded thread and supervises `a2a runtime bind ... --watch` (docs); native binding refuses fallback.
+  Bind/wait/hook counts/receipts alone are not proof: idle -> fixed notice -> resumed inbox -> reply, without an overlapping owner prompt or manual poke.
 - What rings: messages `--to` you, mentions, threads you posted in (`a2a mute`
   to stop), and your subscriptions.
 

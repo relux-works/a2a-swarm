@@ -698,7 +698,15 @@ permission, question or plan dialog. The old bridge stays removed. The guarded f
 
 ### `a2a bind` / `a2a bind status` / `a2a unbind`
 
-Bind **once from the session being woken**. A detached, per-session process owns delivery until `unbind` or the pinned target exits. The agent does
+Trusted `a2a hook session-start --runtime claude|codex` automatically binds **the session that fired the hook** in tmux.
+It discovers the nearest own-UID runtime ancestor (not the hook shell), validates its birth and pane ancestry, and uses the hook JSON session ID.
+Its explicit policy is a 2s observation interval, 30s maximum retry backoff and 30 wake attempts/hour. Startup, resume, compact and clear preserve
+an existing matching live generation/PID. An explicitly unbound session stays stopped; a new session can bind. Failure diagnoses on stderr without
+breaking the runtime or acknowledging mail. Outside tmux or without a verified own runtime/session it reports unavailable; it never changes hooks,
+trust, profiles, launchers or starts a provider. Native binding, paused hooks and manual gates are preserved.
+
+For an already-running session without that startup event, bind **once from the session being woken** using the explicit flags below.
+A detached, per-session process owns delivery until `unbind` or the pinned target exits. The agent does
 not rearm waits, renew leases, poll inbox, or recreate subscriptions. Existing runtime subscriptions determine relevance; only `inbox` receipts mail.
 Use the verified native Codex binding above when its endpoint and loaded thread are available. Terminal fallback does not qualify an unverified
 native version, attach a second app-server, resume a thread, or change hooks/trust. An existing native binding refuses fallback.
@@ -716,12 +724,23 @@ a2a unbind
 The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
 birth are pinned. A replacement socket or confirmed dead/recycled PID stops the consumer; unavailable observations retain mail and back off. Duplicate binding refuses; unbind
 retires the generation before signalling only its recorded PID after a birth check, waits for exit, and preserves the mailbox. Restarting a provider
-requires a new bind; no shared service, launchd job, profile edit or automatic session rehost is installed.
+fires SessionStart and automatically binds its own new session; no shared service, launchd job, profile edit or automatic session rehost is installed.
+
+Stop your own old waiter/Monitor **before** bind or relaunch. Admission refuses a live a2a process for the same identity and configuration root
+from a different loaded executable image (`ErrBindingOldImage`), including an old image after same-path binary replacement. It also refuses a live
+same-image `wait`/`watch` (`ErrBindingParallelWait`). The reverse direction is enforced: wait/watch refuse a live terminal binding; after unbind,
+wait/watch work normally. Refusal leaves binding/mail untouched and never signals that process. Inspection failure fails closed.
+The scanner covers own-UID a2a-named executables on macOS/Linux, resolves `--as` or `A2A_AGENT` and `A2A_CONFIG_DIR` in RAM, and never logs argv,
+environment, tokens or bodies. Renamed unrelated executables and an old binary started after admission are not prevented by this snapshot;
+rollout must stop old consumers first and use only the newly installed binary for subsequent commands. An old schema can otherwise erase the binding.
+macOS inspection uses `/usr/sbin/lsof` executable vnode metadata; Linux uses `/proc/PID/exe`. Other platforms refuse unavailable inspection.
 
 Timing and spend flags are required once: `--interval` 1s..60s, `--retry-max` interval..5m, `--max-wakes-per-hour` 1..3600. The process syncs and
 observes idle input at that interval, refreshes its own identity lease, and exponentially backs off sync errors to the chosen maximum. Hook pause,
 manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
-`state/NAME.binding.log` contains fixed errors, never captured screens or peer bodies. Binding, reservations and event-ID fences live in `state/NAME.json`.
+`state/NAME.binding.log` contains fixed errors and a `binding exit: REASON` line on each handled consumer exit, including vanished/replaced/stopped
+bindings, owner/target exit, cancellation and startup failure; it never contains captured screens or peer bodies. SIGKILL, a crash or host loss cannot
+run exit logging and remain distinguishable from a handled exit by missing evidence. Binding, reservations and event-ID fences live in `state/NAME.json`.
 Local lease/state/dispatch failures also back off and retry; a conflicting lease is never stolen. Only unbind, retirement, or a confirmed dead/replaced
 target ends the consumer. Launchers creating a new Codex session must scrub an inherited `CODEX_THREAD_ID` along with old session variables, so the
 new runtime exports its own metadata; this command does not edit launcher configuration.
@@ -745,7 +764,9 @@ After at least two observation intervals, an empty idle box on the same pinned t
 the retry is spent durably before any effect, including across a same-session rebind. Human text blocks it. An exact journal-owned input is a known
 unsubmitted notice and may be completed after a fresh recheck. A second uncertain empty-box retry is held until explicit inbox receipts; new mail
 alone cannot release it. This deliberately permits one duplicate counts-only wake to avoid leaving an idle session permanently deaf after a lost ack.
-Successful wakes are deduplicated independently of receipts. Hourly reservations carry across binding generations; no retry receipts mail.
+Successful wakes are deduplicated independently of receipts. Retyping a previously typed notice into an emptied box spends a new reservation
+and the bounded retry even when `Typed=true`; completing the exact journal-owned input uses the existing reservation.
+Hourly reservations carry across binding generations; no retry receipts mail.
 
 Tests use only private tmux servers and synthetic raw-input fixtures: both runtime layouts, valid delivery, existing draft, prefix/suffix interleavings,
 target replacement, detached lifecycle, duplicate refusal, transient sync/local-lease failures, an owned leftover, one uncertain retry with a draft

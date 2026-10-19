@@ -441,6 +441,9 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseBoundWait(ctx, s); err != nil {
+		return err
+	}
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
@@ -598,6 +601,9 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	}
 	s, err := a.session()
 	if err != nil {
+		return err
+	}
+	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {

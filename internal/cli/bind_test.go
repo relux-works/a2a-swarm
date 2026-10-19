@@ -383,6 +383,33 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	if len(screen.Submitted) != 5 {
 		t.Fatal("hourly limit allowed a further wake")
 	}
+	// Regression: a known typed notice removed from the synthetic input box
+	// cannot bypass the hourly cap by being retyped into that empty box.
+	update(func(st *config.State) { st.HooksPaused = true })
+	plant(id6, true, false)
+	update(func(st *config.State) {
+		b := st.Terminal
+		b.Reservations = make([]time.Time, 6)
+		for i := range b.Reservations {
+			b.Reservations[i] = time.Now()
+		}
+		st.HooksPaused = false
+	})
+	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "suppressed: hourly rate" })
+	readScreen()
+	if len(screen.Submitted) != 5 {
+		t.Fatal("typed empty recovery bypassed hourly cap")
+	}
+	// Nearby valid control: freeing exactly one reservation allows one retype,
+	// which consumes that reservation before the terminal effect.
+	update(func(st *config.State) { st.Terminal.Reservations = st.Terminal.Reservations[:5] })
+	st = awaitBinding(t, e.paths(), func(st config.State) bool { return slices.Contains(st.Terminal.Rung, id6) })
+	readScreen()
+	if len(screen.Submitted) != 6 || len(st.Terminal.Reservations) != 6 || !st.Terminal.Retried {
+		t.Fatal("typed empty recovery lost rate reservation")
+	}
+	id7 := runtimeMail(e, room, "AFTER_TYPED_EMPTY_RATE")
+	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "suppressed: hourly rate" })
 	stop := exec.CommandContext(ctx, exe, "--as", "alice", "unbind")
 	stop.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture")
 	if out, err := stop.CombinedOutput(); err != nil {
@@ -391,7 +418,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	if !processGone(pid) || e.received("alice", id) || e.received("alice", id2) {
 		t.Fatal("unbind leaked process or receipted mail")
 	}
-	for _, id := range []string{id3, id4, id5, id6} {
+	for _, id := range []string{id3, id4, id5, id6, id7} {
 		if e.received("alice", id) {
 			t.Fatal("recovery receipted retained mail")
 		}
@@ -405,7 +432,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	})
 	newPID := st.Terminal.DaemonPID
 	readScreen()
-	if len(screen.Submitted) != 5 {
+	if len(screen.Submitted) != 6 {
 		t.Fatal("same-session rebind replayed retained mail")
 	}
 	owner, _ := os.FindProcess(screen.PID)
@@ -419,5 +446,12 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	}
 	if !processGone(newPID) {
 		t.Fatal("dead target left its daemon alive")
+	}
+	log, err := os.ReadFile(filepath.Join(e.dir, "state", "alice.binding.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "binding exit: cancelled") || !strings.Contains(string(log), "binding exit: owner gone or replaced") {
+		t.Fatalf("fixed exit reasons missing: %s", log)
 	}
 }

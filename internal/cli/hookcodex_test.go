@@ -332,14 +332,19 @@ func TestHookCodexOutputShape(t *testing.T) {
 	}
 }
 
-// Proves the codex hooks are no-ops without news (first run only takes a
-// position, then empty stdout), ring the adversarial-safe template for what is
+// Proves no hook emits stdout without news; SessionStart diagnoses a missing
+// tmux target on stderr. Hooks ring the adversarial-safe template for what is
 // new without acknowledging it, and do not ring the same session twice.
 func TestHookCodexNoopAndRing(t *testing.T) {
 	e, room := world(t)
 	e.hs.inject(room, "@bob:test.local", ping(0)) // history before the position
 	for _, ev := range []string{"session-start", "prompt", "stop"} {
-		if r := e.hookRT("codex", "alice", ev, codexStdin("s1", false)).ok(t); r.stdout != "" || r.stderr != "" {
+		r := e.hookRT("codex", "alice", ev, codexStdin("s1", false)).ok(t)
+		expectedErr := ""
+		if ev == "session-start" {
+			expectedErr = "a2a hook session-start: auto-bind unavailable: this session has no tmux target; nothing new was acknowledged\n"
+		}
+		if r.stdout != "" || r.stderr != expectedErr {
 			t.Fatalf("%s without news printed %q / %q", ev, r.stdout, r.stderr)
 		}
 	}

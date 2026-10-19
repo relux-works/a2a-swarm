@@ -40,6 +40,10 @@ func descendant(ctx context.Context, pid, ancestor int) bool {
 }
 
 func cmdBind(ctx context.Context, a *App, args []string) error {
+	return a.bindTerminal(ctx, args, false)
+}
+
+func (a *App) bindTerminal(ctx context.Context, args []string, automatic bool) error {
 	if len(args) == 1 && args[0] == "status" {
 		s, err := a.session()
 		if err != nil {
@@ -119,10 +123,20 @@ func cmdBind(ctx context.Context, a *App, args []string) error {
 	}
 	var ready *os.File
 	var child *exec.Cmd
+	existing := false
 	err = config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
+		}
+		if st.HooksPaused || manualWakeGate(st) != "" {
+			return errors.New("binding refused: manual gate")
+		}
+		if err := a.guardBindingProcesses(ctx, s.name, s.paths.Base); err != nil {
+			return err
+		}
+		if automatic && st.Terminal != nil && st.Terminal.Stopped && st.Terminal.SessionID == *sessionID && st.Terminal.Outcome == "unbound" {
+			return errors.New("auto-bind suppressed: this session was explicitly stopped")
 		}
 		if st.Runtime != nil && !st.Runtime.Retired {
 			return errors.New("native binding exists; use its verified transport, do not start terminal fallback")
@@ -130,7 +144,20 @@ func cmdBind(ctx context.Context, a *App, args []string) error {
 		if b := st.Terminal; b != nil && !b.Stopped {
 			live, _ := tmuxwake.Birth(probe, b.OwnerPID)
 			if live == b.OwnerBirth {
-				return errors.New("session already bound; unbind this generation first")
+				matches := automatic && b.SessionID == *sessionID && b.Host == machineLabel() && b.OwnerPID == *owner && b.OwnerBirth == birth && b.Target.Pane == target.Pane && b.Target.SocketID == target.SocketID && b.Target.Runtime == target.Runtime
+				if !matches {
+					return errors.New("session already bound; unbind this generation first")
+				}
+				daemon, daemonErr := tmuxwake.Birth(probe, b.DaemonPID)
+				if daemonErr == nil && daemon != "" && daemon == b.DaemonBirth {
+					existing = true
+					return nil
+				}
+				if daemonErr != nil && b.DaemonPID > 1 && !processGone(b.DaemonPID) {
+					return ErrBindingProcessUnknown
+				}
+				// No live consumer remains: SessionStart recovers automatically,
+				// carrying the same-session attempt fence and hourly ledger.
 			}
 			if live, _ := tmuxwake.Birth(probe, b.DaemonPID); live == b.DaemonBirth && live != "" {
 				return errors.New("prior bound consumer still stopping")
@@ -213,8 +240,15 @@ func cmdBind(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	if existing {
+		return nil
+	}
 	defer ready.Close()
-	if err = ready.SetReadDeadline(time.Now().Add(8 * time.Second)); err != nil {
+	deadline := time.Now().Add(8 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err = ready.SetReadDeadline(deadline); err != nil {
 		return err
 	}
 	buf, err := io.ReadAll(io.LimitReader(ready, 128))
@@ -229,6 +263,8 @@ func cmdBind(ctx context.Context, a *App, args []string) error {
 }
 
 func runBoundChild(ctx context.Context, a *App, generation string) error {
+	reason := "startup unavailable"
+	defer func() { fmt.Fprintln(a.Stderr, "binding exit: "+reason) }()
 	ready := os.NewFile(3, "binding-ready")
 	if ready == nil {
 		return errors.New("missing bind startup pipe")
@@ -248,6 +284,7 @@ func runBoundChild(ctx context.Context, a *App, generation string) error {
 			b := st.Terminal
 			birth, err := tmuxwake.Birth(ctx, os.Getpid())
 			if err != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != birth || b.Host != machineLabel() {
+				reason = "stale consumer"
 				return errors.New("binding stale consumer")
 			}
 			if err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
@@ -263,7 +300,9 @@ func runBoundChild(ctx context.Context, a *App, generation string) error {
 		if err != nil {
 			return err
 		}
-		return a.runTerminal(ctx, s, generation, initial)
+		var runErr error
+		reason, runErr = a.runTerminal(ctx, s, generation, initial)
+		return runErr
 	})
 }
 
@@ -342,15 +381,21 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 
 // runTerminal retains its validated policy snapshot across local read errors;
 // no delivery action runs until fresh authority and a lease are available.
-func (a *App) runTerminal(ctx context.Context, s *session, generation string, initial config.TerminalBinding) error {
+func (a *App) runTerminal(ctx context.Context, s *session, generation string, initial config.TerminalBinding) (string, error) {
 	policy := initial
 	delay := policy.Interval
 	for ctx.Err() == nil {
 		st, err := config.LoadState(s.paths, s.name)
 		if err == nil {
 			b := st.Terminal
-			if b == nil || b.Generation != generation || b.Stopped {
-				return nil
+			if b == nil {
+				return "binding vanished", nil
+			}
+			if b.Generation != generation {
+				return "generation replaced", nil
+			}
+			if b.Stopped {
+				return "stopped", nil
 			}
 			policy = *b
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
@@ -359,7 +404,10 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			cancel()
 			if ownerErr == nil && owner != b.OwnerBirth || ownerErr != nil && processGone(b.OwnerPID) || errors.Is(targetErr, tmuxwake.ErrTargetGone) {
 				a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Stopped = true; b.Outcome = "target exited or replaced" })
-				return nil
+				if processGone(b.OwnerPID) || ownerErr == nil && owner != b.OwnerBirth {
+					return "owner gone or replaced", nil
+				}
+				return "target gone or replaced", nil
 			}
 			if ownerErr != nil {
 				err = ownerErr
@@ -386,7 +434,7 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			err = a.dispatchTerminal(ctx, s, generation)
 		}
 		if ctx.Err() != nil {
-			return nil
+			return "cancelled", nil
 		}
 		if err != nil {
 			delay = min(policy.RetryMax, max(policy.Interval, delay*2))
@@ -401,11 +449,11 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil
+			return "cancelled", nil
 		case <-timer.C:
 		}
 	}
-	return nil
+	return "cancelled", nil
 }
 
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string) error {
@@ -511,7 +559,9 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "uncertain legacy attempt; retained mail requires inbox" })
 	}
 	now := a.Now()
-	if !b.Typed {
+	if !b.Typed || input == "empty" {
+		// A fresh type into an emptied box spends a new hourly reservation,
+		// including a previously known-unsubmitted notice (Typed=true).
 		// Exact owned text is a known unsubmitted input; empty input may also
 		// follow an accepted turn. Only the latter can duplicate a wake.
 		if input == "empty" && (b.Retried || now.Before(b.AttemptAt.Add(2*b.Interval))) {

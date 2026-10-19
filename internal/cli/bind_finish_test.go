@@ -1,0 +1,141 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
+)
+
+// Same-image one-shot commands remain valid; a different image or a parallel
+// waiter has the exact typed refusal. Selector parsing matches global --as.
+func TestBindingProcessConflict(t *testing.T) {
+	for _, c := range []struct {
+		image, cmd string
+		want       error
+	}{{"current", "inbox", nil}, {"current", "post", nil}, {"old", "inbox", ErrBindingOldImage}, {"old", "wait", ErrBindingOldImage}, {"current", "wait", ErrBindingParallelWait}, {"current", "watch", ErrBindingParallelWait}} {
+		got := bindingProcessConflict("current", c.image, c.cmd, 7)
+		if !errors.Is(got, c.want) {
+			t.Fatalf("%s/%s: %v", c.image, c.cmd, got)
+		}
+	}
+	for _, args := range [][]string{{"a2a", "--as", "mine", "wait"}, {"a2a", "wait", "--as=mine"}, {"a2a", "-as=mine", "wait"}} {
+		id, root, cmd := bindingSelectors(args, []string{"A2A_AGENT=other", "A2A_CONFIG_DIR=/synthetic/state", "SECRET=must-not-survive"})
+		if id != "mine" || root != "/synthetic/state" || cmd != "wait" {
+			t.Fatal("selector mismatch")
+		}
+	}
+}
+
+// The actual OS scanner catches a separately loaded old image; a different
+// identity or config root is a positive control. Only synthetic argv/env used.
+func TestBindingProcessImageWitness(t *testing.T) {
+	dir := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(dir, "a2a-old-fixture")
+	if err = os.WriteFile(exe, raw, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestBindingProcessWitnessChild$")
+	cmd.Env = append(os.Environ(), "A2A_BIND_WITNESS=1", "A2A_AGENT=synthetic-guard", "A2A_CONFIG_DIR="+dir)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	ready := make([]byte, 1)
+	if _, err = io.ReadFull(out, ready); err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if err = a.guardBindingProcesses(ctx, "synthetic-guard", dir); !errors.Is(err, ErrBindingOldImage) {
+		t.Fatalf("old image not refused: %v", err)
+	}
+	if err = a.guardBindingProcesses(ctx, "other-identity", dir); err != nil {
+		t.Fatalf("foreign identity blocked: %v", err)
+	}
+	if err = a.guardBindingProcesses(ctx, "synthetic-guard", dir+"-other"); err != nil {
+		t.Fatalf("foreign root blocked: %v", err)
+	}
+}
+func TestBindingProcessWitnessChild(t *testing.T) {
+	if os.Getenv("A2A_BIND_WITNESS") != "1" {
+		return
+	}
+	os.Stdout.Write([]byte{'R'})
+	time.Sleep(20 * time.Second)
+	os.Exit(0)
+}
+
+// A live binding refuses BOTH public wait paths without receipts or state loss;
+// retirement allows the nearby valid wait to complete normally.
+func TestBoundWaitBothDirections(t *testing.T) {
+	e, room := world(t)
+	e.extra[EnvSessionID] = "own"
+	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	id := runtimeMail(e, room, "SYNTHETIC_PENDING")
+	birth, err := tmuxwake.Birth(context.Background(), os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+		st.Terminal = &config.TerminalBinding{Generation: "owned", SessionID: "own", DaemonPID: os.Getpid(), DaemonBirth: birth}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"wait", "watch"} {
+		e.as("alice", command).failsWith(t, ExitError, "same identity has a live wait/watch")
+	}
+	if e.received("alice", id) || e.state("alice").Terminal.Generation != "owned" {
+		t.Fatal("refusal changed mail or generation")
+	}
+	_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Terminal.Stopped = true; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+}
+
+// Nearest runtime ancestry, own UID and a bounded parent chain determine the
+// owner. Shell parent, another UID, sibling runtime and parent cycles refuse.
+func TestHookRuntimeAncestor(t *testing.T) {
+	rows := []bindingProcess{{100, 1, 11, "/vendor/bin/codex"}, {101, 100, 11, "/bin/sh"}, {102, 1, 11, "/bin/claude"}}
+	if pid, err := runtimeOwnerPID(rows, 101, "codex", 11); err != nil || pid != 100 {
+		t.Fatalf("nearest runtime: %d %v", pid, err)
+	}
+	for _, runtime := range []string{"claude", "unknown"} {
+		if _, err := runtimeOwnerPID(rows, 101, runtime, 11); err == nil {
+			t.Fatal("non-ancestor runtime admitted")
+		}
+	}
+	rows[0].UID = 12
+	if _, err := runtimeOwnerPID(rows, 101, "codex", 11); err == nil {
+		t.Fatal("foreign UID admitted")
+	}
+	rows[0].UID = 11
+	rows[1].PPID = 101
+	if _, err := runtimeOwnerPID(rows, 101, "codex", 11); err == nil {
+		t.Fatal("parent cycle admitted")
+	}
+}

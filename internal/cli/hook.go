@@ -249,6 +249,11 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	priorContext := a.ctx
 	a.ctx = ctx
 	defer func() { a.ctx = priorContext }()
+	if ev.arg == "session-start" && *runtime != "" {
+		if err := a.autoBindHook(ctx, *runtime, in); err != nil {
+			fail(err)
+		}
+	}
 	err = a.hookDeliver(ctx, rt, ev, in)
 	if err != nil {
 		fail(err)
