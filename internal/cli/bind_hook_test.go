@@ -34,7 +34,9 @@ func TestAutoBindingRuntimeChild(t *testing.T) {
 }
 
 // Real SessionStart under each runtime ancestor binds without agent action.
-// Repeated startup/resume/compact/clear preserve generation/PID. Opposite wait
+// Repeated startup/resume/compact/clear preserve generation/PID; prompt/Stop
+// recover a killed consumer or lost binding. A briefly live prior consumer
+// drains after owner death; a stuck one refuses within the hook budget. Opposite wait
 // admission refuses, explicit unbind remains stopped, and no mailbox receipts
 // are invented by binding. An unsupported parent is covered by the ancestry controls.
 func TestHookAutomaticBindingLifecycle(t *testing.T) {
@@ -73,11 +75,18 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			script := bindFixture
+			script = strings.Replace(script, "text='';submitted=[]", "text='';submitted=[];session='auto-fixture'", 1)
 			start := strings.Index(script, "        args=[exe,")
 			end := strings.Index(script[start:], "        with open(root+'/result.next'") + start
-			script = script[:start] + `        args=[exe,'--as','alice','hook','session-start','--runtime','` + runtime + `']
+			script = script[:start] + `        if request in (13,17): session='auto-fixture-clear'+str(request)
+        event={7:'prompt',8:'stop',9:'prompt',10:'stop',11:'prompt',12:'stop',14:'prompt'}.get(request,'session-start')
+        args=[exe,'--as','alice','hook',event,'--runtime','` + runtime + `']
         source=['startup','resume','compact','clear'][min(request-1,3)]
-        p=subprocess.run(args,input=json.dumps({'session_id':'auto-fixture','source':source}),capture_output=True,text=True,timeout=12)
+        current='auto-fixture' if request==14 else session
+        inherited='auto-fixture' if request==13 else current
+        hookenv={**os.environ,'A2A_SESSION_ID':inherited}
+        if '` + runtime + `'=='codex': hookenv['CODEX_THREAD_ID']=inherited
+        p=subprocess.run(args,input=json.dumps({'session_id':current,'source':source}),env=hookenv,capture_output=True,text=True,timeout=12)
 ` + script[end:]
 			// Build the Claude draw directly: Go raw strings retain Python escapes.
 			if runtime == "claude" {
@@ -134,7 +143,17 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 						Request  int
 					}
 					if err == nil && json.Unmarshal(data, &v) == nil && v.Request == id {
-						if v.Code != 0 || id != 5 && v.Err != "" || id == 5 && !strings.Contains(v.Err, "explicitly stopped") {
+						want := ""
+						if id == 5 || id == 17 {
+							want = "explicitly stopped"
+						}
+						if id == 11 {
+							want = "prior bound consumer still stopping"
+						}
+						if id == 14 {
+							want = "session already bound"
+						}
+						if v.Code != 0 || want == "" && v.Err != "" || want != "" && !strings.Contains(v.Err, want) {
 							t.Fatalf("hook %d: code%d %s %s", id, v.Code, v.Out, v.Err)
 						}
 						return
@@ -143,6 +162,42 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 				}
 				t.Fatal("hook did not return")
 			}
+			// Both previous owner and remaining consumer are task-owned OS
+			// processes; no signal is sent by the product's automatic bind.
+			gone := exec.Command("sleep", "0.3")
+			if err := gone.Start(); err != nil {
+				t.Fatal(err)
+			}
+			goneBirth, err := tmuxwake.Birth(context.Background(), gone.Process.Pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gone.Wait()
+			priorDone := map[int]chan struct{}{}
+			prior := func(duration string) *exec.Cmd {
+				t.Helper()
+				p := exec.Command("sleep", duration)
+				if err := p.Start(); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan struct{})
+				priorDone[p.Process.Pid] = done
+				go func() { p.Wait(); close(done) }()
+				t.Cleanup(func() { p.Process.Kill(); <-done })
+				birth, err := tmuxwake.Birth(context.Background(), p.Process.Pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+					st.Terminal = &config.TerminalBinding{Generation: "prior-fixture", SessionID: "auto-fixture", Host: machineLabel(), OwnerPID: gone.Process.Pid, OwnerBirth: goneBirth, DaemonPID: p.Process.Pid, DaemonBirth: birth, Interval: time.Second}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}
+			prior("0.5")
 			request(1)
 			st := awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal != nil && st.Terminal.Outcome == "armed: no new mail" })
 			generation, pid := st.Terminal.Generation, st.Terminal.DaemonPID
@@ -153,7 +208,7 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 					t.Fatal("SessionStart replaced generation")
 				}
 			}
-			// A killed own fixture consumer is not a live binding: resume
+			// A killed own fixture consumer is not a live binding: prompt
 			// must recover it without requiring an agent to run bind/unbind.
 			oldPID := pid
 			dead, _ := os.FindProcess(oldPID)
@@ -165,24 +220,80 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 			if !processGone(oldPID) {
 				t.Fatal("owned fixture consumer did not exit")
 			}
-			request(6)
+			request(7)
 			recovered := awaitBinding(t, e.paths(), func(st config.State) bool {
 				return st.Terminal != nil && st.Terminal.DaemonPID != oldPID && st.Terminal.Outcome == "armed: no new mail"
 			})
 			generation, pid = recovered.Terminal.Generation, recovered.Terminal.DaemonPID
+			_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Terminal = nil; return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			until = time.Now().Add(5 * time.Second)
+			for !processGone(pid) && time.Now().Before(until) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !processGone(pid) {
+				t.Fatal("vanished binding left consumer alive")
+			}
+			request(8)
+			recovered = awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal != nil && st.Terminal.Outcome == "armed: no new mail" })
+			pid = recovered.Terminal.DaemonPID
+			dead, _ = os.FindProcess(pid)
+			dead.Signal(syscall.SIGTERM)
+			until = time.Now().Add(5 * time.Second)
+			for !processGone(pid) && time.Now().Before(until) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !processGone(pid) {
+				t.Fatal("owned replacement consumer did not exit")
+			}
+			stuck := prior("30")
+			request(11)
+			if b := e.state("alice").Terminal; b.Generation != "prior-fixture" || b.DaemonPID != stuck.Process.Pid || processGone(stuck.Process.Pid) {
+				t.Fatal("bounded refusal changed or signalled prior consumer")
+			}
+			stuck.Process.Kill()
+			<-priorDone[stuck.Process.Pid]
+			request(12)
+			recovered = awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal != nil && st.Terminal.Outcome == "armed: no new mail" })
+			generation, pid = recovered.Terminal.Generation, recovered.Terminal.DaemonPID
 
+			// Claude clear uses a NEW ID with the same runtime/pane. Only
+			// SessionStart transfers the lease; old commands/hooks cannot.
+			request(13)
+			b := e.state("alice").Terminal
+			if b.SessionID != "auto-fixture-clear13" || b.Generation != generation || b.DaemonPID != pid || e.state("alice").Lease.Holder != b.SessionID {
+				t.Fatal("clear lost binding or lease handover")
+			}
 			e.extra[EnvSessionID] = "auto-fixture"
+			e.as("alice", "inbox").failsWith(t, ExitError, "is held by auto-fixture-clear13")
+			e.as("alice", "unbind").failsWith(t, ExitError, "another session")
+			request(14)
+			if e.state("alice").Terminal.SessionID != "auto-fixture-clear13" {
+				t.Fatal("old prompt took back clear session")
+			}
+			e.extra[EnvSessionID] = "auto-fixture-clear13"
+			e.as("alice", "inbox").ok(t)
+			e.extra[EnvSessionID] = "auto-fixture-clear13"
 			e.as("alice", "wait", "--timeout", "1ms").failsWith(t, ExitError, "same identity has a live wait/watch")
 			stop := exec.Command(exe, "--as", "alice", "unbind")
-			stop.Env = env
+			stop.Env = append(env, "A2A_SESSION_ID=auto-fixture-clear13", "CODEX_THREAD_ID=")
 			if out, err := stop.CombinedOutput(); err != nil {
 				t.Fatalf("unbind: %v %s", err, out)
 			}
 			request(5)
-			b := e.state("alice").Terminal
+			request(17)
+			request(9)
+			request(10)
+			b = e.state("alice").Terminal
 			if !b.Stopped || b.Generation != generation || b.DaemonPID != pid {
 				t.Fatal("hook revived explicit unbind")
 			}
+			if b.SessionID != "auto-fixture-clear17" || e.state("alice").Lease.Holder != b.SessionID {
+				t.Fatal("unbind-then-clear lost stopped session handover")
+			}
+			e.extra[EnvSessionID] = "auto-fixture-clear17"
 			e.as("alice", "wait", "--timeout", "1ms").ok(t)
 		})
 	}

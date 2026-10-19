@@ -701,9 +701,16 @@ permission, question or plan dialog. The old bridge stays removed. The guarded f
 Trusted `a2a hook session-start --runtime claude|codex` automatically binds **the session that fired the hook** in tmux.
 It discovers the nearest own-UID runtime ancestor (not the hook shell), validates its birth and pane ancestry, and uses the hook JSON session ID.
 Its explicit policy is a 2s observation interval, 30s maximum retry backoff and 30 wake attempts/hour. Startup, resume, compact and clear preserve
-an existing matching live generation/PID. An explicitly unbound session stays stopped; a new session can bind. Failure diagnoses on stderr without
+an existing matching live generation/PID. Clear with a new session ID atomically hands its binding and own lease to that ID only after host,
+runtime birth, pane and socket match; old prompt/inbox/unbind calls refuse. Explicit unbind stays stopped even across clear in the same runtime;
+an explicit manual bind can resume it. A new runtime can bind subject to the existing lease rules. Failure diagnoses on stderr without
 breaking the runtime or acknowledging mail. Outside tmux or without a verified own runtime/session it reports unavailable; it never changes hooks,
 trust, profiles, launchers or starts a provider. Native binding, paused hooks and manual gates are preserved.
+Discovery requires the process `comm` basename `claude` or `codex`; a version-number basename diagnoses unavailable and needs an explicit own bind.
+Prompt and Stop hooks cheaply check the recorded owner/consumer births and automatically recover a missing binding or dead consumer through the
+same full admission path. Explicit same-session unbind remains stopped on every hook. Recovery waits for the next runtime hook; a consumer crash
+while idle does not itself start a provider turn. For a confirmed-dead/replaced prior owner, automatic bind waits at most 3s for its consumer to
+exit naturally, reserves startup time within the 5s hook budget, and refuses if it remains alive. It never signals the prior consumer or steals a lease.
 
 For an already-running session without that startup event, bind **once from the session being woken** using the explicit flags below.
 A detached, per-session process owns delivery until `unbind` or the pinned target exits. The agent does
@@ -720,6 +727,8 @@ a2a bind status
 a2a unbind
 ```
 
+If `bind status` shows `unbound` in your tmux session before another hook runs, use the explicit bind above once from that session.
+
 `TMUX` and `TMUX_PANE` select this invocation's own absolute socket and exact `%N` pane. Explicit `--socket` / `--pane` must match those values.
 The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
 birth are pinned. A replacement socket or confirmed dead/recycled PID stops the consumer; unavailable observations retain mail and back off. Duplicate binding refuses; unbind
@@ -733,6 +742,7 @@ wait/watch work normally. Refusal leaves binding/mail untouched and never signal
 The scanner covers own-UID a2a-named executables on macOS/Linux, resolves `--as` or `A2A_AGENT` and `A2A_CONFIG_DIR` in RAM, and never logs argv,
 environment, tokens or bodies. Renamed unrelated executables and an old binary started after admission are not prevented by this snapshot;
 rollout must stop old consumers first and use only the newly installed binary for subsequent commands. An old schema can otherwise erase the binding.
+Current CLI identity selection requires `--as` or `A2A_AGENT`; there is no third implicit identity fallback for the scanner to infer.
 macOS inspection uses `/usr/sbin/lsof` executable vnode metadata; Linux uses `/proc/PID/exe`. Other platforms refuse unavailable inspection.
 
 Timing and spend flags are required once: `--interval` 1s..60s, `--retry-max` interval..5m, `--max-wakes-per-hour` 1..3600. The process syncs and

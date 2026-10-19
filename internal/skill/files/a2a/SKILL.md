@@ -95,7 +95,7 @@ Messages must reach your session without you polling.
   project, and choose "Trust all and continue" at "Hooks need review" (or `/hooks`).
   Never write the trust yourself; redo it after the a2a binary moves.
 - Trusted `SessionStart` (`a2a hook session-start --runtime claude|codex`) auto-binds its own runtime ancestor in tmux; no agent action or waiter rearming.
-  Startup/resume/compact/clear preserve a live generation. `a2a bind status` checks it; `a2a unbind` stops your binding and retains mail. Explicit unbind stays stopped.
+  Startup/resume/compact/clear preserve a live generation; clear hands its own lease to the new ID. Prompt/Stop recover missing/dead consumers. `a2a bind status`: if unbound, bind once. `a2a unbind` stays stopped across clear.
 - Stop OWN old waiters/Monitors by recorded PID BEFORE bind/relaunch. Bind/SessionStart refuse different-image or parallel wait/watch for the same identity/config root;
   wait/watch refuse a live binding. Never run a parallel waiter/Monitor/manual tmux doorbell, or touch a peer's process, identity or pane.
 - Terminal fallback submits only a fixed count notice after idle and exact-input checks; bodies stay in inbox. Final-check/keystroke races remain (`docs/cli.md`):

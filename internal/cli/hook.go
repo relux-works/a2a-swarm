@@ -217,11 +217,9 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fail(fmt.Errorf("%v; %s", err, hookUsage))
 		return
 	}
-	// The event commands' output is byte-identical for every runtime (see
-	// research/codex-hooks.md), so --runtime is optional here: omitting it is
-	// not a default that changes behaviour, and hooks installed before
-	// --runtime existed keep delivering. install/uninstall still require it,
-	// because there it chooses which file is written.
+	// Mailbox output is identical for every runtime. Legacy hooks omitting
+	// --runtime keep delivering but do not opt into automatic binding; the
+	// explicit runtime selects the ancestry check without a provider default.
 	rt := hookRuntimes[0]
 	if *runtime != "" {
 		if rt, err = lookupRuntime(*runtime); err != nil {
@@ -249,9 +247,15 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	priorContext := a.ctx
 	a.ctx = ctx
 	defer func() { a.ctx = priorContext }()
-	if ev.arg == "session-start" && *runtime != "" {
-		if err := a.autoBindHook(ctx, *runtime, in); err != nil {
-			fail(err)
+	if *runtime != "" {
+		var bindErr error
+		if ev.arg == "session-start" {
+			bindErr = a.autoBindHook(ctx, *runtime, in, bindingSessionStart)
+		} else {
+			bindErr = a.healHookBinding(ctx, *runtime, in)
+		}
+		if bindErr != nil {
+			fail(bindErr)
 		}
 	}
 	err = a.hookDeliver(ctx, rt, ev, in)

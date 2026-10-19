@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -137,5 +138,63 @@ func TestHookRuntimeAncestor(t *testing.T) {
 	rows[1].PPID = 101
 	if _, err := runtimeOwnerPID(rows, 101, "codex", 11); err == nil {
 		t.Fatal("parent cycle admitted")
+	}
+}
+
+// The handover transaction preserves journals/stopped state for an exact
+// target; changed owner/pane/socket or another lease cannot partially write.
+// Runtime ancestry/UID validation is exercised by the public hook fixture.
+func TestTerminalSessionHandover(t *testing.T) {
+	for _, name := range []string{"valid", "stopped", "owner", "pane", "socket", "foreign-lease"} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.agent("alice")
+			target := tmuxwake.Target{OwnerPID: 123, OwnerBirth: "own-birth", Pane: "%1", SocketID: "own-socket", Runtime: "claude"}
+			b := config.TerminalBinding{Generation: "generation", SessionID: "old", Host: machineLabel(), OwnerPID: target.OwnerPID, OwnerBirth: target.OwnerBirth, Target: target, Stopped: name == "stopped", Reservations: []time.Time{time.Now()}, AttemptIDs: []string{"pending-id"}}
+			_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+				st.Terminal = &b
+				st.Lease = &config.Lease{Holder: "old", Host: machineLabel(), Expires: time.Now().Add(time.Minute)}
+				if name == "foreign-lease" {
+					st.Lease.Holder = "third-session"
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := NewApp()
+			a.as = "alice"
+			a.Getenv = func(k string) string {
+				if k == config.EnvConfigDir {
+					return e.dir
+				}
+				return ""
+			}
+			s, err := a.session()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch name {
+			case "owner":
+				target.OwnerPID++
+			case "pane":
+				target.Pane = "%2"
+			case "socket":
+				target.SocketID = "foreign-socket"
+			}
+			before, _ := json.Marshal(e.state("alice"))
+			_, err = a.handoverTerminalSession(s, &b, target, "new")
+			st := e.state("alice")
+			if name == "valid" || name == "stopped" {
+				if err != nil || st.Lease.Holder != "new" || st.Terminal.SessionID != "new" || st.Terminal.Stopped != b.Stopped || len(st.Terminal.Reservations) != 1 || len(st.Terminal.AttemptIDs) != 1 {
+					t.Fatal("valid handover lost state", err)
+				}
+			} else {
+				after, _ := json.Marshal(st)
+				if err == nil || string(before) != string(after) {
+					t.Fatal("foreign handover admitted or changed state", err)
+				}
+			}
+		})
 	}
 }

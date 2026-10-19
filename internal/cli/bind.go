@@ -40,10 +40,19 @@ func descendant(ctx context.Context, pid, ancestor int) bool {
 }
 
 func cmdBind(ctx context.Context, a *App, args []string) error {
-	return a.bindTerminal(ctx, args, false)
+	return a.bindTerminal(ctx, args, bindingManual)
 }
 
-func (a *App) bindTerminal(ctx context.Context, args []string, automatic bool) error {
+type bindingMode int
+
+const (
+	bindingManual bindingMode = iota
+	bindingSessionStart
+	bindingRecovery
+)
+
+func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode) error {
+	automatic := mode != bindingManual
 	if len(args) == 1 && args[0] == "status" {
 		s, err := a.session()
 		if err != nil {
@@ -118,9 +127,6 @@ func (a *App) bindTerminal(ctx context.Context, args []string, automatic bool) e
 	if err != nil {
 		return err
 	}
-	if err = a.acquireLease(s, *sessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
-		return err
-	}
 	var ready *os.File
 	var child *exec.Cmd
 	existing := false
@@ -135,23 +141,39 @@ func (a *App) bindTerminal(ctx context.Context, args []string, automatic bool) e
 		if err := a.guardBindingProcesses(ctx, s.name, s.paths.Base); err != nil {
 			return err
 		}
-		if automatic && st.Terminal != nil && st.Terminal.Stopped && st.Terminal.SessionID == *sessionID && st.Terminal.Outcome == "unbound" {
-			return errors.New("auto-bind suppressed: this session was explicitly stopped")
-		}
 		if st.Runtime != nil && !st.Runtime.Retired {
 			return errors.New("native binding exists; use its verified transport, do not start terminal fallback")
 		}
+		sameTarget := func(b *config.TerminalBinding) bool {
+			return ownTerminalTarget(b, target)
+		}
+		if b := st.Terminal; mode == bindingSessionStart && b != nil && b.SessionID != *sessionID && sameTarget(b) {
+			st, err = a.handoverTerminalSession(s, b, target, *sessionID)
+			if err != nil {
+				return err
+			}
+		}
+		if automatic && st.Terminal != nil && st.Terminal.Stopped && st.Terminal.SessionID == *sessionID && st.Terminal.Outcome == "unbound" {
+			return errors.New("auto-bind suppressed: this session was explicitly stopped")
+		}
 		if b := st.Terminal; b != nil && !b.Stopped {
-			live, _ := tmuxwake.Birth(probe, b.OwnerPID)
-			if live == b.OwnerBirth {
-				matches := automatic && b.SessionID == *sessionID && b.Host == machineLabel() && b.OwnerPID == *owner && b.OwnerBirth == birth && b.Target.Pane == target.Pane && b.Target.SocketID == target.SocketID && b.Target.Runtime == target.Runtime
+			if b.Host != machineLabel() {
+				return errors.New("binding refused: prior binding belongs to another host")
+			}
+			live, ownerErr := bindingProcessBirth(ctx, b.OwnerPID)
+			if ownerErr != nil && !processGone(b.OwnerPID) {
+				return ErrBindingProcessUnknown
+			}
+			ownerGone := ownerErr == nil && live != b.OwnerBirth || processGone(b.OwnerPID)
+			if !ownerGone {
+				matches := automatic && b.SessionID == *sessionID && sameTarget(b)
 				if !matches {
 					return errors.New("session already bound; unbind this generation first")
 				}
-				daemon, daemonErr := tmuxwake.Birth(probe, b.DaemonPID)
+				daemon, daemonErr := bindingProcessBirth(ctx, b.DaemonPID)
 				if daemonErr == nil && daemon != "" && daemon == b.DaemonBirth {
 					existing = true
-					return nil
+					return a.acquireLease(s, *sessionID, time.Now().Add(nativeRPCTimeout))
 				}
 				if daemonErr != nil && b.DaemonPID > 1 && !processGone(b.DaemonPID) {
 					return ErrBindingProcessUnknown
@@ -159,17 +181,36 @@ func (a *App) bindTerminal(ctx context.Context, args []string, automatic bool) e
 				// No live consumer remains: SessionStart recovers automatically,
 				// carrying the same-session attempt fence and hourly ledger.
 			}
-			if live, _ := tmuxwake.Birth(probe, b.DaemonPID); live == b.DaemonBirth && live != "" {
-				return errors.New("prior bound consumer still stopping")
+			if automatic && ownerGone {
+				if err := waitPriorBindingConsumer(ctx, b); err != nil {
+					return err
+				}
+				// Preserve the consumer's final journal writes made during wait.
+				st, err = config.LoadState(s.paths, s.name)
+				if err != nil {
+					return err
+				}
+				if st.Terminal != nil && st.Terminal.Generation != b.Generation {
+					return errors.New("binding changed while prior consumer stopped")
+				}
+				if st.HooksPaused || manualWakeGate(st) != "" {
+					return errors.New("binding refused: manual gate")
+				}
 			}
 		}
 		if b := st.Terminal; b != nil && b.DaemonPID > 0 {
-			live, _ := tmuxwake.Birth(probe, b.DaemonPID)
+			live, err := bindingProcessBirth(ctx, b.DaemonPID)
+			if err != nil && !processGone(b.DaemonPID) {
+				return ErrBindingProcessUnknown
+			}
 			if live != "" && live == b.DaemonBirth {
 				return errors.New("prior bound consumer still stopping")
 			}
 		}
 		var random [16]byte
+		if err = a.acquireLease(s, *sessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
+			return err
+		}
 		if _, err = rand.Read(random[:]); err != nil {
 			return err
 		}
@@ -227,7 +268,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, automatic bool) e
 		}
 		writer.Close()
 		b.DaemonPID = child.Process.Pid
-		b.DaemonBirth, err = tmuxwake.Birth(probe, b.DaemonPID)
+		b.DaemonBirth, err = bindingProcessBirth(ctx, b.DaemonPID)
 		if err == nil {
 			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal = b; return nil })
 		}
