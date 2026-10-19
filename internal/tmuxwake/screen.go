@@ -11,6 +11,7 @@ import (
 
 var sgr = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
 var rule = regexp.MustCompile(`^─{5,}$`)
+var fixedNotice = regexp.MustCompile(`^a2a: [1-9][0-9]* new peer events; run a2a inbox$`)
 
 type Box struct {
 	Text        string
@@ -103,6 +104,13 @@ func visible(s string) string {
 // Input recognizes only the single-line input layouts qualified by fixtures.
 // Multiline/wrapped drafts are deliberately unavailable; no screen is persisted.
 func Input(screen, runtime string) (Box, bool) {
+	return inputWithNotice(screen, runtime, "")
+}
+
+// A filled Codex composer hides the shortcut hint. Without that anchor, only
+// the exact fixed notice supplied by its journal (or just typed by Send) is
+// recognizable. Plain comparison also preserves dim/grey appended input.
+func inputWithNotice(screen, runtime, owned string) (Box, bool) {
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 	start := max(0, len(lines)-18)
 	bottom := strings.ToLower(plain(strings.Join(lines[start:], "\n")))
@@ -140,7 +148,8 @@ func Input(screen, runtime string) (Box, bool) {
 			return Box{}, false
 		}
 		footer := plain(strings.Join(lines[i+1:], "\n"))
-		if !strings.Contains(footer, "? for shortcuts") {
+		strictOwn := fixedNotice.MatchString(owned) && strings.TrimRight(plain(lines[i]), " ") == "› "+owned
+		if !strings.Contains(footer, "? for shortcuts") && !strictOwn {
 			return Box{}, false
 		}
 		return inputLine(lines[i], "›", i)

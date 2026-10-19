@@ -22,7 +22,8 @@ def draw():
         content=text+'\x1b[7m \x1b[0m' if text else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
         screen='\x1b[2J\x1b[19;1H'+'─'*110+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n  ⏵⏵ bypass permissions on\x1b[20;'+str(3+len(text))+'H'
     else:
-        screen='\x1b[2J\x1b[20;1H› '+text+'\x1b[22;1H  ? for shortcuts\x1b[20;'+str(3+len(text))+'H'
+        footer='Codex · Ready · Context 50% left' if text else '? for shortcuts'
+        screen='\x1b[2J\x1b[20;1H\x1b[1m›\x1b[0m '+text+'\x1b[22;1H  '+footer+'\x1b[20;'+str(3+len(text))+'H'
     os.write(1,screen.encode())
     with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'pid':os.getpid()},f)
     os.replace(path+'.next',path)
@@ -152,6 +153,9 @@ func TestTerminalTwoPhaseRaceControls(t *testing.T) {
 					want := "KEEP"
 					if race == "suffix" {
 						want = notice + "KEEP"
+					} else if runtime == "codex" && race == "prefix" {
+						// No hint with real input: unknown draft is left intact.
+						want = "KEEP" + notice
 					}
 					s := f.wait(func(s fixtureState) bool { return s.Text == want })
 					if len(s.Submitted) != 0 {
@@ -160,6 +164,43 @@ func TestTerminalTwoPhaseRaceControls(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The captured Codex layout drops its shortcut hint when text is present.
+// Only the caller's exact journal notice is recognized; no journal, a changed
+// count or appended human text cannot acquire ownership or submit anything.
+func TestCodexJournalNoticeWithoutHint(t *testing.T) {
+	f := newTerminalFixture(t, "codex")
+	notice := Notice(1)
+	f.typeText(notice)
+	f.wait(func(s fixtureState) bool { return s.Text == notice })
+	for _, wrong := range []string{"", Notice(2), "human text"} {
+		if got := f.target.PendingInput(context.Background(), wrong); got != "blocked" {
+			t.Fatalf("non-journal input admitted: %s", got)
+		}
+	}
+	if got := f.target.PendingInput(context.Background(), notice); got != "own" {
+		t.Fatalf("journal-owned notice rejected: %s", got)
+	}
+	if outcome, err := f.target.Resume(context.Background(), 1, notice); err != nil || outcome != "wake submitted" {
+		t.Fatalf("owned notice not completed: %s %v", outcome, err)
+	}
+	s := f.wait(func(s fixtureState) bool { return len(s.Submitted) == 1 })
+	if s.Submitted[0] != notice {
+		t.Fatal("submitted something other than the journal notice")
+	}
+	f.typeText(notice + "KEEP")
+	f.wait(func(s fixtureState) bool { return s.Text == notice+"KEEP" })
+	if got := f.target.PendingInput(context.Background(), notice); got != "blocked" {
+		t.Fatal("appended human input acquired ownership")
+	}
+	if _, err := f.target.Resume(context.Background(), 1, notice); err != nil {
+		t.Fatal(err)
+	}
+	s = f.wait(func(s fixtureState) bool { return s.Text == notice+"KEEP" })
+	if len(s.Submitted) != 1 {
+		t.Fatal("appended human input was submitted")
 	}
 }
 

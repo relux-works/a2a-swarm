@@ -758,11 +758,14 @@ new runtime exports its own metadata; this command does not edit launcher config
 The only typed text is `a2a: N new peer events; run a2a inbox`. The fallback recognizes a visible single-line input in the qualified Codex or Claude
 layout, at its end cursor, with no visible busy/permission/plan dialog. Dim/grey suggestions count as empty; visible text, wrapped/multiline input,
 missing boxes, unknown layouts and insufficient width fail closed. It types the notice **without Enter**, captures again, and sends Enter only when
-the input equals that notice exactly. If a human prefix raced in, it erases only a complete notice suffix at the end cursor; if text follows the notice,
+the input equals that notice exactly. If a human prefix raced in and the layout remains recognizable, it erases only a complete notice suffix at the end cursor; if text follows the notice,
 it leaves the input unchanged. Neither mismatch sends Enter. A journal-owned notice left in the input is recognized only by exact equality with the
 recorded fixed notice, never by a general notice-shaped pattern. Once idle, it can be completed after another exact check without submitting a draft.
 Claude capture fixtures include the benign bypass footer, NBSP prompt separator and a single reverse-video cursor cell followed by dim suggestion
 text (ASCII or Cyrillic); a plain or reverse-video human draft remains blocking.
+Codex empty admission requires its shortcuts hint. Filled Codex input hides that hint: only the caller's exact fixed journal notice (or the notice
+just typed by this send) can be recognized without it, with the next line blank and all dialog/cursor checks preserved. Plain equality also rejects
+dim/grey appended text. An unknown Codex draft without the hint is left intact, including a raced human prefix plus notice; neither Enter nor erase is attempted.
 
 This is **not atomic**. A keystroke between the final verification and Enter can still be submitted with the notice; a keystroke between the suffix
 check and backspaces can still be erased. These narrow residual races were explicitly accepted for this fallback (2026-10-18, meta decision
@@ -781,7 +784,7 @@ Hourly reservations carry across binding generations; no retry receipts mail.
 Tests use only private tmux servers and synthetic raw-input fixtures: both runtime layouts, valid delivery, existing draft, prefix/suffix interleavings,
 target replacement, detached lifecycle, duplicate refusal, transient sync/local-lease failures, an owned leftover, one uncertain retry with a draft
 negative control, the spent-retry fence, hourly limit across rebind, deduplication, unbind and target exit. Run
-`go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestBind' -count=1`; tmux and python3 are required for those
+`go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestCodex|TestBind' -count=1`; tmux and python3 are required for those
 integration controls (absence is an explicit skip, not passing evidence). This release does not install shared guidance; that adoption is coordinated separately.
 
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`

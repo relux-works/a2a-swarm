@@ -131,6 +131,10 @@ func Pin(ctx context.Context, socket, pane, runtime string) (Target, error) {
 }
 
 func (t Target) box(ctx context.Context) (Box, bool) {
+	return t.boxWithNotice(ctx, "")
+}
+
+func (t Target) boxWithNotice(ctx context.Context, notice string) (Box, bool) {
 	x, y, _, err := t.Inspect(ctx)
 	if err != nil {
 		return Box{}, false
@@ -139,7 +143,7 @@ func (t Target) box(ctx context.Context) (Box, bool) {
 	if err != nil {
 		return Box{}, false
 	}
-	b, ok := Input(screen, t.Runtime)
+	b, ok := inputWithNotice(screen, t.Runtime, notice)
 	return b, ok && x == b.Column && y == b.Row
 }
 
@@ -150,7 +154,7 @@ func (t Target) Idle(ctx context.Context) bool { b, ok := t.box(ctx); return ok 
 // PendingInput classifies only a journal-owned fixed notice. An arbitrary
 // notice-shaped human draft without that journal is never adopted.
 func (t Target) PendingInput(ctx context.Context, notice string) string {
-	b, ok := t.box(ctx)
+	b, ok := t.boxWithNotice(ctx, notice)
 	if !ok {
 		return "blocked"
 	}
@@ -181,7 +185,7 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 	if count <= 0 {
 		return "", errors.New("positive count required")
 	}
-	box, ok := t.box(ctx)
+	box, ok := t.boxWithNotice(ctx, owned)
 	if !ok || box.Text != "" && box.Text != owned {
 		return "suppressed: busy, draft or unknown input", nil
 	}
@@ -210,7 +214,7 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 		return "uncertain: interrupted", ctx.Err()
 	case <-timer.C:
 	}
-	box, ok = t.box(ctx)
+	box, ok = t.boxWithNotice(ctx, notice)
 	if !ok {
 		return "notice left in draft: input unavailable", nil
 	}

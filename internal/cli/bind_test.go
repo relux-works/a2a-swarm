@@ -98,7 +98,8 @@ def save():
     with open(root+'/screen.next','w') as f: json.dump({'text':text,'submitted':submitted,'pid':os.getpid()},f)
     os.replace(root+'/screen.next',root+'/screen.json')
 def draw():
-    os.write(1,('\x1b[2J\x1b[20;1H› '+text+'\x1b[22;1H  ? for shortcuts\x1b[20;'+str(3+len(text))+'H').encode());save()
+    footer='Codex · Ready · Context 50% left' if text else '? for shortcuts'
+    os.write(1,('\x1b[2J\x1b[20;1H\x1b[1m›\x1b[0m '+text+'\x1b[22;1H  '+footer+'\x1b[20;'+str(3+len(text))+'H').encode());save()
 draw()
 while True:
     if os.path.exists(root+'/command.json'):

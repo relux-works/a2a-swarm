@@ -5,6 +5,11 @@
 
 ## 2026-10-19
 
+### 0925 — Filled Codex input hides the idle shortcut hint
+- FINDING: A private live capture and independent keeper analysis showed an exact journal-owned notice with a bold prompt and no `? for shortcuts` footer. Bold was already supported; requiring the idle hint for populated input blocked recovery and post-type verification. Earlier synthetic fixtures incorrectly retained the hint while filled.
+- FIX: Keep empty admission strict; recognize a no-hint populated composer only under the caller's exact fixed journal notice or its just-typed notice, with blank next line, plain-text equality, cursor and dialog checks preserved. Unknown drafts, including dim/grey appended text, remain untouched. A prefix race without the hint is left intact rather than erased.
+- EVIDENCE: BUG-261019-pczvfs — recognize-live-codex-journal-owned-notice-layout. Private real-tmux regression first failed the intended owned-notice assertion; realistic terminal/public-CLI fixtures now hide the hint after typing. A minimal prompt/blank fixture has an explicitly reconstructed neutral footer; raw captures remain private. A reverted-footer-gate control detects the intended failure. These checks do not establish live delivery; the source landing window was aborted without push pending new review.
+
 ### 0845 — Old executable images can erase a newer binding schema
 - FINDING: The first Claude proof lost `State.terminal` and its consumer exited silently. The owner identified its pre-upgrade Monitor waiter: bind ran before that old waiter stopped. An old schema rewrites state without fields it cannot decode; a later process snapshot cannot exclude an already-exited writer.
 - FIX: Bind and SessionStart reject a same-identity/config-root a2a process with a different loaded executable vnode, and both directions reject parallel terminal binding plus wait/watch. Handled consumer exits report fixed reasons; raw argv/env and screens never enter the log. The admission snapshot cannot prevent a subsequently started old binary; rollout must stop old consumers first.
