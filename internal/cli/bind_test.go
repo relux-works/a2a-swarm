@@ -118,6 +118,17 @@ while True:
         draw()
 `
 
+// The fixture polls in another process: publish only complete JSON, just as
+// it atomically publishes its results. A directly created file can be read
+// after creation/truncation but before WriteFile writes its bytes.
+func writeBindingFixtureCommand(dir string, data []byte) error {
+	next := filepath.Join(dir, "command.next")
+	if err := os.WriteFile(next, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(next, filepath.Join(dir, "command.json"))
+}
+
 func awaitBinding(t *testing.T, p config.Paths, test func(config.State) bool) config.State {
 	t.Helper()
 	until := time.Now().Add(8 * time.Second)
@@ -213,7 +224,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	})
 	request := func(id int) result {
 		b, _ := json.Marshal(id)
-		if err := os.WriteFile(filepath.Join(dir, "command.json"), b, 0600); err != nil {
+		if err := writeBindingFixtureCommand(dir, b); err != nil {
 			t.Fatal(err)
 		}
 		var r struct {

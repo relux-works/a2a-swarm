@@ -75,6 +75,7 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			script := bindFixture
+			script = strings.Replace(script, "import os,sys,tty,json,select,subprocess", "import os,sys,tty,json,select,subprocess,time", 1)
 			script = strings.Replace(script, "text='';submitted=[]", "text='';submitted=[];session='auto-fixture'", 1)
 			start := strings.Index(script, "        args=[exe,")
 			end := strings.Index(script[start:], "        with open(root+'/result.next'") + start
@@ -86,7 +87,16 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
         inherited='auto-fixture' if request==13 else current
         hookenv={**os.environ,'A2A_SESSION_ID':inherited}
         if '` + runtime + `'=='codex': hookenv['CODEX_THREAD_ID']=inherited
-        p=subprocess.run(args,input=json.dumps({'session_id':current,'source':source}),env=hookenv,capture_output=True,text=True,timeout=12)
+        started=time.monotonic()
+        try:
+            p=subprocess.run(args,input=json.dumps({'session_id':current,'source':source}),env=hookenv,capture_output=True,text=True,timeout=8)
+            timedout=False
+        except subprocess.TimeoutExpired as error:
+            def decoded(value): return value.decode(errors='replace') if isinstance(value,bytes) else (value or '')
+            p=subprocess.CompletedProcess(args,124,decoded(error.stdout),'fixture hook subprocess timed out; '+decoded(error.stderr))
+            timedout=True
+        with open(root+'/hook-observation.next','w') as f: json.dump({'request':request,'seconds':time.monotonic()-started,'timeout':timedout,'exit':p.returncode,'stderr':p.stderr},f)
+        os.replace(root+'/hook-observation.next',root+'/hook-observation.json')
 ` + script[end:]
 			// Build the Claude draw directly: Go raw strings retain Python escapes.
 			if runtime == "claude" {
@@ -116,6 +126,11 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			serverPID, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+			// Retain this private synthetic pane on failure so its traceback
+			// explains an absent result; no live/provider pane is captured.
+			if out, err := exec.Command("tmux", "-S", socket, "set-option", "-w", "remain-on-exit", "on").CombinedOutput(); err != nil {
+				t.Fatalf("fixture diagnostics: %v %s", err, out)
+			}
 			t.Cleanup(func() {
 				st, _ := config.LoadState(e.paths(), "alice")
 				if st.Terminal != nil {
@@ -131,7 +146,7 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 			request := func(id int) {
 				t.Helper()
 				data, _ := json.Marshal(id)
-				if err := os.WriteFile(filepath.Join(home, "command.json"), data, 0600); err != nil {
+				if err := writeBindingFixtureCommand(home, data); err != nil {
 					t.Fatal(err)
 				}
 				until := time.Now().Add(12 * time.Second)
@@ -154,13 +169,18 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 							want = "session already bound"
 						}
 						if v.Code != 0 || want == "" && v.Err != "" || want != "" && !strings.Contains(v.Err, want) {
-							t.Fatalf("hook %d: code%d %s %s", id, v.Code, v.Out, v.Err)
+							observation, _ := os.ReadFile(filepath.Join(home, "hook-observation.json"))
+							t.Fatalf("hook %d: code%d %s %s; observation: %s", id, v.Code, v.Out, v.Err, observation)
 						}
 						return
 					}
 					time.Sleep(10 * time.Millisecond)
 				}
-				t.Fatal("hook did not return")
+				// This server contains only the synthetic fixture. Preserve its
+				// exception/output when a missing result would hide the cause.
+				pane, _ := exec.Command("tmux", "-S", socket, "capture-pane", "-p").Output()
+				observation, _ := os.ReadFile(filepath.Join(home, "hook-observation.json"))
+				t.Fatalf("hook %d did not return; observation: %s; private fixture output: %s", id, observation, pane)
 			}
 			// Both previous owner and remaining consumer are task-owned OS
 			// processes; no signal is sent by the product's automatic bind.

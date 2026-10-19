@@ -5,6 +5,11 @@
 
 ## 2026-10-19
 
+### 1240 — Private command fixtures must publish complete JSON
+- FINDING: Hosted run39230649631 failed Codex Stop recovery with only "hook did not return"; its original trace cannot distinguish a fixture crash, timeout or hung hook. Five local diagnostic repetitions passed, so that exact historical cause is unproven.
+- REGRESSION: Both fixture drivers published `command.json` through direct WriteFile; the Python poller can observe creation before bytes. A bounded partial-publication control produces JSONDecodeError and an absent hook result. The first control verdict was too specific about which request failed; the corrected assertion detects the actual decoder error and missing result.
+- FIX: Publish complete commands through temp-file rename in both private drivers. Keep a failed synthetic pane for a bounded traceback and record hook duration, exit, timeout and stderr. The Python observation bound is 8s, before the unchanged 12s Go wait; production's 5s hook budget is unchanged. Three dual-runtime race repetitions passed after atomic publication; final-head whole-suite and legitimate hosted CI remain required.
+
 ### 0925 — Filled Codex input hides the idle shortcut hint
 - FINDING: A private live capture and independent keeper analysis showed an exact journal-owned notice with a bold prompt and no `? for shortcuts` footer. Bold was already supported; requiring the idle hint for populated input blocked recovery and post-type verification. Earlier synthetic fixtures incorrectly retained the hint while filled.
 - FIX: Keep empty admission strict; recognize a no-hint populated composer only under the caller's exact fixed journal notice or its just-typed notice, with blank next line, plain-text equality, cursor and dialog checks preserved. Unknown drafts, including dim/grey appended text, remain untouched. A prefix race without the hint is left intact rather than erased.
