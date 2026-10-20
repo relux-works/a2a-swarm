@@ -189,11 +189,17 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 	if !ok || name != s.name {
 		return errors.New("notice publication refuses foreign liveness key")
 	}
-	room, _, err := s.resolveRoom(ctx, StatusRoom)
+	deadline := time.Now().Add(nativeRPCTimeout)
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+	writeCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	room, _, err := s.resolveRoom(writeCtx, StatusRoom)
 	if err != nil {
 		return err
 	}
-	_, err = config.UpdateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout), func(st *config.State) error {
+	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
 		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped || st.Liveness == nil {
 			return errors.New("notice publication unavailable: no liveness record")
 		}
@@ -205,7 +211,7 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 			return nil
 		}
 		record.OwnNotice = st.Terminal.OwnNotice
-		if _, err := s.client.PutState(ctx, room, StatusEventType, s.creds.UserID, record); err != nil {
+		if _, err := s.client.PutState(writeCtx, room, StatusEventType, s.creds.UserID, record); err != nil {
 			return fmt.Errorf("notice publication unavailable: %w", err)
 		}
 		st.Liveness = &record
