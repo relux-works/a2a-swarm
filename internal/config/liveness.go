@@ -12,20 +12,21 @@ import (
 // AgentStatus is self-written Matrix telemetry. Private runtime endpoints,
 // thread history, paths and credentials are deliberately absent.
 type AgentStatus struct {
-	Name           string    `json:"name"`
-	State          string    `json:"state"`
-	Detail         string    `json:"detail,omitempty"`
-	Since          time.Time `json:"since"`
-	HeartbeatAt    time.Time `json:"heartbeat_at"`
-	HeartbeatEvery string    `json:"heartbeat_every"`
-	Doorbell       string    `json:"doorbell"`
-	Host           string    `json:"host"`
-	Runtime        string    `json:"runtime"`
-	Hooks          string    `json:"hooks"`
-	Product        string    `json:"product,omitempty"`
-	Wake           string    `json:"wake,omitempty"`
-	Version        int       `json:"version"`
-	A2AVersion     string    `json:"a2a_version"`
+	OwnNotice      OwnNoticeObservation `json:"own_notice"`
+	Name           string               `json:"name"`
+	State          string               `json:"state"`
+	Detail         string               `json:"detail,omitempty"`
+	Since          time.Time            `json:"since"`
+	HeartbeatAt    time.Time            `json:"heartbeat_at"`
+	HeartbeatEvery string               `json:"heartbeat_every"`
+	Doorbell       string               `json:"doorbell"`
+	Host           string               `json:"host"`
+	Runtime        string               `json:"runtime"`
+	Hooks          string               `json:"hooks"`
+	Product        string               `json:"product,omitempty"`
+	Wake           string               `json:"wake,omitempty"`
+	Version        int                  `json:"version"`
+	A2AVersion     string               `json:"a2a_version"`
 }
 
 // Alert transitions have a stable Matrix transaction ID before submission,

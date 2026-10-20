@@ -3,6 +3,7 @@ package tmuxwake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,7 +118,7 @@ func (f *terminalFixture) typeText(text string) {
 
 // Actual private tmux and a synthetic raw-input application prove that the
 // product Send path submits the fixed notice only after exact verification,
-// restores a racing prefix, and leaves a racing suffix untouched. This does
+// leaves a racing prefix or suffix intact. This does
 // not prove atomicity of the final verify-to-Enter/erase gap.
 func TestTerminalTwoPhaseRaceControls(t *testing.T) {
 	for _, runtime := range []string{"codex", "claude"} {
@@ -153,7 +154,7 @@ func TestTerminalTwoPhaseRaceControls(t *testing.T) {
 					want := "KEEP"
 					if race == "suffix" {
 						want = notice + "KEEP"
-					} else if runtime == "codex" && race == "prefix" {
+					} else if race == "prefix" {
 						// No hint with real input: unknown draft is left intact.
 						want = "KEEP" + notice
 					}
@@ -180,28 +181,17 @@ func TestCodexJournalNoticeWithoutHint(t *testing.T) {
 			t.Fatalf("non-journal input admitted: %s", got)
 		}
 	}
-	if got := f.target.PendingInput(context.Background(), notice); got != "own" {
+	if got := f.target.PendingInput(context.Background(), notice); got != "blocked" {
 		t.Fatalf("journal-owned notice rejected: %s", got)
 	}
-	if outcome, err := f.target.Resume(context.Background(), 1, notice); err != nil || outcome != "wake submitted" {
-		t.Fatalf("owned notice not completed: %s %v", outcome, err)
+	if outcome, err := f.target.Resume(context.Background(), 1, notice); err != nil || !strings.HasPrefix(outcome, "suppressed:") {
+		t.Fatalf("recovery not refused: %s %v", outcome, err)
 	}
-	s := f.wait(func(s fixtureState) bool { return len(s.Submitted) == 1 })
-	if s.Submitted[0] != notice {
-		t.Fatal("submitted something other than the journal notice")
+	s := f.wait(func(s fixtureState) bool { return true })
+	if s.Text != notice || len(s.Submitted) != 0 {
+		t.Fatal("renderer recovery touched draft")
 	}
-	f.typeText(notice + "KEEP")
-	f.wait(func(s fixtureState) bool { return s.Text == notice+"KEEP" })
-	if got := f.target.PendingInput(context.Background(), notice); got != "blocked" {
-		t.Fatal("appended human input acquired ownership")
-	}
-	if _, err := f.target.Resume(context.Background(), 1, notice); err != nil {
-		t.Fatal(err)
-	}
-	s = f.wait(func(s fixtureState) bool { return s.Text == notice+"KEEP" })
-	if len(s.Submitted) != 1 {
-		t.Fatal("appended human input was submitted")
-	}
+
 }
 
 // A recycled pane PID, owner birth or socket cannot inherit the binding;
@@ -217,5 +207,49 @@ func TestTerminalTargetPinning(t *testing.T) {
 		if bad.Idle(context.Background()) {
 			t.Fatal("replaced target admitted")
 		}
+	}
+}
+
+// Continuation may never degrade to a fresh type when an owned composer was
+// emptied between the dispatch observation and Resume's fresh verification.
+func TestTerminalResumeNeverTypesEmpty(t *testing.T) {
+	f := newTerminalFixture(t, "codex")
+	notice := Notice(1)
+	if outcome, err := f.target.Resume(context.Background(), 1, notice); err != nil || !strings.HasPrefix(outcome, "suppressed:") {
+		t.Fatalf("empty Resume was not refused: %q %v", outcome, err)
+	}
+	s := f.wait(func(s fixtureState) bool { return true })
+	if s.Text != "" || len(s.Submitted) != 0 {
+		t.Fatalf("Resume freshly typed into empty input: %+v", s)
+	}
+	f.typeText(notice)
+	f.wait(func(s fixtureState) bool { return s.Text == notice })
+	if outcome, err := f.target.Resume(context.Background(), 1, notice); err != nil || !strings.HasPrefix(outcome, "suppressed:") {
+		t.Fatalf("owned Resume not refused: %s %v", outcome, err)
+	}
+	s = f.wait(func(s fixtureState) bool { return true })
+	if s.Text != notice || len(s.Submitted) != 0 {
+		t.Fatal("owned Resume touched input")
+	}
+}
+
+// Keeper o-JKabzo retires erase authority, including valid-looking frames.
+func TestTerminalClearFreshFence(t *testing.T) {
+	for _, name := range []string{"valid", "missing", "error", "changed"} {
+		t.Run(name, func(t *testing.T) {
+			f := newTerminalFixture(t, "codex")
+			notice := Notice(1)
+			f.typeText(notice)
+			f.wait(func(s fixtureState) bool { return s.Text == notice })
+			called := false
+			cleared, err := f.target.ClearNotice(context.Background(), 1, notice, func() error { called = true; return errors.New("must not run") })
+			if cleared || err != nil || called {
+				t.Fatal("renderer authorized erase")
+			}
+			s := f.wait(func(s fixtureState) bool { return true })
+			if s.Text != notice || len(s.Submitted) != 0 {
+				t.Fatal("renderer erased input")
+			}
+		})
 	}
 }

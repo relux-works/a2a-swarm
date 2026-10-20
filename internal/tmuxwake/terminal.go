@@ -144,15 +144,28 @@ func (t Target) boxWithNotice(ctx context.Context, notice string) (Box, bool) {
 		return Box{}, false
 	}
 	b, ok := inputWithNotice(screen, t.Runtime, notice)
+	// Placeholder stripping is only idle evidence. Nonempty ownership must
+	// account for the complete prompt, including dim/grey prefix or suffix.
+	if ok && b.Text != "" && !completeInput(screen, b) {
+		return Box{}, false
+	}
 	return b, ok && x == b.Column && y == b.Row
+}
+
+func completeInput(screen string, box Box) bool {
+	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+	// Captures pad with ASCII spaces only. Trimming Unicode whitespace would
+	// turn a dim NBSP suffix into apparently exact journal-owned input.
+	line := strings.TrimRight(plain(lines[box.Row]), " ")
+	return line == "› "+box.Text || line == "❯ "+box.Text || line == "❯\u00a0"+box.Text
 }
 
 func Notice(count int) string { return fmt.Sprintf("a2a: %d new peer events; run a2a inbox", count) }
 
 func (t Target) Idle(ctx context.Context) bool { b, ok := t.box(ctx); return ok && b.Text == "" }
 
-// PendingInput classifies only a journal-owned fixed notice. An arbitrary
-// notice-shaped human draft without that journal is never adopted.
+// PendingInput retains the old empty/blocked interface. Renderer-only
+// nonempty input, including a journal lookalike, never claims ownership.
 func (t Target) PendingInput(ctx context.Context, notice string) string {
 	b, ok := t.boxWithNotice(ctx, notice)
 	if !ok {
@@ -162,21 +175,48 @@ func (t Target) PendingInput(ctx context.Context, notice string) string {
 		return "empty"
 	}
 	if notice != "" && b.Text == notice {
-		return "own"
+		return "blocked"
 	}
 	return "blocked"
 }
 
+// Resume and ClearNotice deliberately refuse every renderer-only recovery.
+// A journal records past typing, not authority over the current editor.
 func (t Target) Resume(ctx context.Context, count int, notice string) (string, error) {
-	if notice != Notice(count) {
-		return "", errors.New("journal notice/count mismatch")
+	return "suppressed: manual recovery required", nil
+}
+
+func (t Target) ClearNotice(ctx context.Context, count int, notice string, beforeErase func() error) (bool, error) {
+	return false, nil
+}
+
+// ObserveInput reports rendered emptiness/nonemptiness, never exact ownership.
+// Unknown layouts, busy screens and failed target/capture reads remain unknown.
+func (t Target) ObserveInput(ctx context.Context, notice string) string {
+	x, y, _, err := t.Inspect(ctx)
+	if err != nil {
+		return "unknown"
 	}
-	return t.send(ctx, count, notice, nil, nil)
+	screen, err := t.command(ctx, "capture-pane", "-e", "-p", "-t", t.Pane)
+	if err != nil {
+		return "unknown"
+	}
+	b, ok := inputWithNotice(screen, t.Runtime, notice)
+	if !ok {
+		return "unknown"
+	}
+	if b.Text != "" {
+		return "nonempty"
+	}
+	if x != b.Column || y != b.Row {
+		return "unknown"
+	}
+	return "empty"
 }
 
 // Send is two-phase, with no Enter on mismatch. The caller reserves its event
 // IDs durably before calling and owns bounded recovery of ambiguous attempts. Keystrokes
-// between verification and Enter/erase remain an explicitly accepted race.
+// between verification and fresh-delivery Enter remain an explicit bound.
 func (t Target) Send(ctx context.Context, count int, beforeType, afterType func()) (string, error) {
 	return t.send(ctx, count, "", beforeType, afterType)
 }
@@ -187,6 +227,11 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 	}
 	box, ok := t.boxWithNotice(ctx, owned)
 	if !ok || box.Text != "" && box.Text != owned {
+		return "suppressed: busy, draft or unknown input", nil
+	}
+	// Resume is continuation only. If the owned text vanished after the
+	// caller's observation, a fresh type needs separate qualified admission.
+	if owned != "" && box.Text == "" {
 		return "suppressed: busy, draft or unknown input", nil
 	}
 	notice := Notice(count)
@@ -224,12 +269,6 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 		}
 		return "wake submitted", nil
 	}
-	if strings.HasSuffix(box.Text, notice) {
-		// One bounded command, no Ctrl-U/line deletion and no Enter.
-		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-N", strconv.Itoa(len(notice)), "BSpace"); err != nil {
-			return "uncertain: suffix erase", err
-		}
-		return "suppressed: changed input; notice suffix erased", nil
-	}
+
 	return "notice left in draft: changed input", nil
 }

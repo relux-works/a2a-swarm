@@ -667,7 +667,13 @@ func cmdHookPause(a *App, args []string, pause bool) error {
 		return err
 	}
 	if err := config.WithRuntimeLock(p, *agent, "control", time.Now().Add(nativeRPCTimeout), func() error {
-		_, err := config.UpdateStateBy(p, *agent, time.Now().Add(nativeRPCTimeout), func(cur *config.State) error { cur.HooksPaused = pause; return nil })
+		_, err := config.UpdateStateBy(p, *agent, time.Now().Add(nativeRPCTimeout), func(cur *config.State) error {
+			cur.HooksPaused = pause
+			if cur.Terminal != nil {
+				cur.Terminal.Idle = nil
+			}
+			return nil
+		})
 		return err
 	}); err != nil {
 		return err

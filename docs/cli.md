@@ -755,37 +755,58 @@ Local lease/state/dispatch failures also back off and retry; a conflicting lease
 target ends the consumer. Launchers creating a new Codex session must scrub an inherited `CODEX_THREAD_ID` along with old session variables, so the
 new runtime exports its own metadata; this command does not edit launcher configuration.
 
-The only typed text is `a2a: N new peer events; run a2a inbox`. The fallback recognizes a visible single-line input in the qualified Codex or Claude
-layout, at its end cursor, with no visible busy/permission/plan dialog. Dim/grey suggestions count as empty; visible text, wrapped/multiline input,
-missing boxes, unknown layouts and insufficient width fail closed. It types the notice **without Enter**, captures again, and sends Enter only when
-the input equals that notice exactly. If a human prefix raced in and the layout remains recognizable, it erases only a complete notice suffix at the end cursor; if text follows the notice,
-it leaves the input unchanged. Neither mismatch sends Enter. A journal-owned notice left in the input is recognized only by exact equality with the
-recorded fixed notice, never by a general notice-shaped pattern. Once idle, it can be completed after another exact check without submitting a draft.
-Claude capture fixtures include the benign bypass footer, NBSP prompt separator and a single reverse-video cursor cell followed by dim suggestion
-text (ASCII or Cyrillic); a plain or reverse-video human draft remains blocking.
-Codex empty admission requires its shortcuts hint. Filled Codex input hides that hint: only the caller's exact fixed journal notice (or the notice
-just typed by this send) can be recognized without it, with the next line blank and all dialog/cursor checks preserved. Plain equality also rejects
-dim/grey appended text. An unknown Codex draft without the hint is left intact, including a raced human prefix plus notice; neither Enter nor erase is attempted.
+The only typed text is `a2a: N new peer events; run a2a inbox`. Ordinary fresh delivery requires two consecutive qualified rendered-empty
+observations at least `--interval` apart on the same pinned target. Busy, unknown, draft, gate, session/generation/daemon or authority changes
+reset qualification; the first glimpse spends no typing, hourly reservation or retry. Codex empty admission requires its shortcuts hint;
+Claude accepts its supported empty placeholders. Wrapped input, dialogs, unknown layouts and insufficient width retain mail.
 
-This is **not atomic**. A keystroke between the final verification and Enter can still be submitted with the notice; a keystroke between the suffix
-check and backspaces can still be erased. These narrow residual races were explicitly accepted for this fallback (2026-10-18, meta decision
-`$PrCvK0J2GG8t1lvfu0Y2uceb-CxUGl_tl8bdrVw_yQM`, keeper disposition `$zFuGvVsDnuq_aDYFBSxFFq2N3fhOyRPJsPQe9rI3E_4`).
-Do not claim a hard human-draft guarantee. Native transport remains preferred where verified; an atomic PTY host is separate work.
+Fresh Send persists event IDs, the fixed notice, attempt time and a rate reservation before typing. It captures again and sends Enter only
+when the rendered input matches the notice and cursor checks. A mismatch leaves the draft untouched: no automatic erasure. This last rendered
+check is **not editor authority or atomic**: invisible bytes and edits between verification and the final key can still affect fresh delivery.
+Do not claim a hard human-draft guarantee. Quiet/atomic delivery and an agent host remain separate work; verified native transport is preferred.
 
-Before typing, event IDs, fixed notice, attempt time and a rate reservation are persisted. A crash or ambiguous send retains an uncertain fence.
-After at least two observation intervals, an empty idle box on the same pinned target admits **one** bounded re-attempt, within the hourly limit;
-the retry is spent durably before any effect, including across a same-session rebind. Human text blocks it. An exact journal-owned input is a known
-unsubmitted notice and may be completed after a fresh recheck. A second uncertain empty-box retry is held until explicit inbox receipts; new mail
-alone cannot release it. This deliberately permits one duplicate counts-only wake to avoid leaving an idle session permanently deaf after a lost ack.
-Successful wakes are deduplicated independently of receipts. Retyping a previously typed notice into an emptied box spends a new reservation
-and the bounded retry even when `Typed=true`; completing the exact journal-owned input uses the existing reservation.
-Hourly reservations carry across binding generations; no retry receipts mail.
+Recovery is **manual and external**. No current tmux frame authorizes automatic recovery Enter or Backspace, including an exact-looking
+journal notice, dim/NBSP text or suffix spaces with a cursor that appears at the notice end. The consumer never adopts a nonempty remainder.
+A keeper may inspect and recover the pane manually; this command does not perform that operation or infer a successful wake from it.
 
-Tests use only private tmux servers and synthetic raw-input fixtures: both runtime layouts, valid delivery, existing draft, prefix/suffix interleavings,
-target replacement, detached lifecycle, duplicate refusal, transient sync/local-lease failures, an owned leftover, one uncertain retry with a draft
-negative control, the spent-retry fence, hourly limit across rebind, deduplication, unbind and target exit. Run
-`go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestCodex|TestBind' -count=1`; tmux and python3 are required for those
-integration controls (absence is an explicit skip, not passing evidence). This release does not install shared guidance; that adoption is coordinated separately.
+A typed journal whose announced events have all been legitimately receipted/pruned, together with a nonempty rendered composer, reports
+`SUSPECTED-DEAF: own notice possibly orphaned`. This is a factual suspicion, not proven deafness or proof of current editor contents.
+New pending mail remains unreceipted; reporting never clears the mailbox or reservation ledger. After an actual rendered-empty observation,
+the typed journal reconciles and ordinary delivery can resume exactly once through the full qualified-idle admission. Empty rendering does
+not prove invisible editor bytes are absent. A still-uncertain untyped attempt retains its bounded one-retry/count/hourly fences; a fresh retry
+also needs qualified empty observations. A second uncertain retry waits for legitimate receipts; new mail alone cannot release it.
+
+```bash
+a2a bind status
+a2a bind status --json
+a2a who --stale-after 3m
+a2a who --stale-after 3m --json
+```
+
+Bind status reads the recorded private `state/NAME.json`, not the current pane. JSON exposes `own_notice_possibly_orphaned` as true (suspected),
+false (fresh clear/not applicable), or null (unknown). True has fixed `reason=owned-notice-orphan-suspected` and `since`, the stable first-suspected
+RFC3339 UTC timestamp. `observed_at` is the last successful rendered observation, never publication time. Optional reason/since/observed_at
+are absent when no such evidence exists; unknown may retain valid last-suspected reason/since and last observation. Elapsed time, a receipt,
+or a successful publication never clears that evidence. Text explicitly distinguishes unknown from clear.
+
+Both notice timestamps require RFC3339's fixed-width ASCII date/time components and dot-separated decimal fractions, plus a valid calendar
+and UTC instant. Readers accept `T`/`t`, `Z`/`z`, `+00:00` and `-00:00` (known UTC instant, unknown local offset), preserving the original
+spelling and fractional precision. Fractions are compared exactly for observation ordering; one-digit components, comma fractions, nonzero
+offsets and trailing/control bytes are invalid. The existing non-leap-second time representation remains a bound: leap seconds are unavailable,
+not a claim of full RFC3339 leap-second support. Emitters continue to write uppercase UTC timestamps.
+
+The own identity's liveness key exposes the same facts under `own_notice`; who renders each identity on one line. Notice publication preserves
+heartbeat, runtime/hooks and other liveness fields. Bind JSON `publication` distinguishes pending, published and unavailable for these facts;
+a consumer/dispatch failure publishes unknown when the own publisher is available, and a failed write reports unavailable locally without
+claiming remote visibility. Who's heartbeat freshness is independent of notice observation freshness. Missing legacy notice metadata is unknown;
+malformed notice facts are unknown with a bounded `notice_error`, never fresh suspected facts or raw payload. Invalid local notice metadata
+is refused at publication and shown as unavailable. No foreign identity credentials or liveness key are used.
+
+Tests use private synthetic Matrix and tmux/PTy fixtures for both runtime layouts, combined suffix/cursor and padded lookalikes, detection,
+own publication/readback failures, receipt/restart/unknown neighbors, interval/gate/rate/lifecycle resets and ordinary empty delivery. Run
+`go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestCodex|TestBind|TestReviewCR3|TestNotice' -count=1`;
+tmux and python3 are required for terminal fixtures (absence is a skip, not passing evidence). Private handled exits remain in
+`state/NAME.binding.log`; screens and peer bodies are not persisted there. No shared guidance is installed by these commands.
 
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
 `wait` rings on every reply in a thread the agent created or posted in. `mute` forgets that thread, so plain replies stop ringing; messages addressed to the agent,

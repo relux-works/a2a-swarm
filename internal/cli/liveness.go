@@ -37,6 +37,9 @@ func typedStatusArgs(args []string) bool {
 }
 
 func statusValid(record config.AgentStatus) error {
+	if err := noticeValid(record.OwnNotice); err != nil {
+		return err
+	}
 	switch record.State {
 	case "working", "idle", "waiting-human", "blocked", "stopping":
 	default:
@@ -189,6 +192,12 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 		if st.Runtime != nil {
 			record.Wake = st.Wake.Outcome
 		}
+		if st.Terminal != nil {
+			record.OwnNotice = st.Terminal.OwnNotice
+		}
+		if err := noticeValid(record.OwnNotice); err != nil {
+			return err
+		}
 		_, err := s.client.PutState(writeCtx, room, StatusEventType, s.creds.UserID, record)
 		if matrix.IsCode(err, "M_FORBIDDEN") {
 			return fmt.Errorf("liveness: administrator must set power_levels.events[%q]=0; agent power escalation is not a remedy", StatusEventType)
@@ -198,6 +207,9 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 		}
 		st.Liveness = &record
 		st.LivenessSource = source
+		if st.Terminal != nil && manualWakeGate(*st) != "" {
+			st.Terminal.Idle = nil
+		}
 		return nil
 	})
 	return err
@@ -211,6 +223,7 @@ type whoRow struct {
 	Record          *config.AgentStatus `json:"record,omitempty"`
 	Unanswered      string              `json:"unanswered"`
 	UnansweredSince time.Time           `json:"unanswered_since,omitempty"`
+	NoticeError     string              `json:"notice_error,omitempty"`
 }
 
 func (a *App) livenessRows(ctx context.Context, s *session, product string, stale time.Duration, watch bool) ([]whoRow, error) {
@@ -262,6 +275,10 @@ func (a *App) livenessRows(ctx context.Context, s *session, product string, stal
 			heartbeat, err := time.ParseDuration(record.HeartbeatEvery)
 			if err != nil || statusValid(record) != nil || record.Version != 1 || record.HeartbeatAt.IsZero() {
 				row.Health = "invalid"
+				if noticeValid(record.OwnNotice) != nil {
+					record.OwnNotice = config.OwnNoticeObservation{}
+					row.NoticeError = "invalid own notice telemetry"
+				}
 			} else {
 				if heartbeat >= stale {
 					if !watch {
@@ -415,7 +432,11 @@ func cmdWho(ctx context.Context, a *App, args []string) error {
 						wake = row.Record.Wake
 					}
 				}
-				a.printf("%s\t%s\t%s\tage=%s\tunanswered=%s\thost=%s\thooks=%s\twake=%s\t%s\n", row.Name, sanitizeLine(row.State), row.Health, row.Age, row.Unanswered, sanitizeLine(host), sanitizeLine(hooks), sanitizeLine(wake), a.secrets.Scrub(sanitizeLine(detail)))
+				notice := config.OwnNoticeObservation{}
+				if row.Record != nil {
+					notice = row.Record.OwnNotice
+				}
+				a.printf("%s\t%s\t%s\tage=%s\tunanswered=%s\thost=%s\thooks=%s\twake=%s\t%s\t%s\n", row.Name, sanitizeLine(row.State), row.Health, row.Age, row.Unanswered, sanitizeLine(host), sanitizeLine(hooks), sanitizeLine(wake), a.secrets.Scrub(sanitizeLine(detail)), sanitizeLine(noticeText(notice)))
 			}
 		}
 		if !*watch {

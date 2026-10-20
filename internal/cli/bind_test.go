@@ -47,7 +47,7 @@ func TestBindUncertainFenceAndPause(t *testing.T) {
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
 	id := runtimeMail(e, room, "SYNTHETIC_PENDING")
 	_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
-		st.Terminal = &config.TerminalBinding{Generation: "fence", SessionID: "owned-thread", AttemptIDs: []string{id}, Reservations: []time.Time{time.Now()}}
+		st.Terminal = &config.TerminalBinding{Generation: "fence", SessionID: "owned-thread", Host: machineLabel(), AttemptIDs: []string{id}, Reservations: []time.Time{time.Now()}}
 		return nil
 	})
 	if err != nil {
@@ -328,7 +328,20 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	waitText(tmuxwake.Notice(1))
 	plant(id3, true, false)
 	update(func(st *config.State) { st.HooksPaused = false })
-	awaitBinding(t, e.paths(), func(st config.State) bool { return slices.Contains(st.Terminal.Rung, id3) })
+	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "suppressed: pending attempt input" })
+	readScreen()
+	if len(screen.Submitted) != 2 {
+		t.Fatal("live recovery submitted draft")
+	}
+	keys("Enter") // external manual fixture recovery, not an automatic wake
+	waitText("")
+	update(func(st *config.State) {
+		st.Terminal.Rung = append(st.Terminal.Rung, id3)
+		st.Terminal.AttemptIDs = nil
+		st.Terminal.Typed = false
+		st.Terminal.Notice = ""
+	})
+
 	readScreen()
 	if len(screen.Submitted) != 3 || screen.Submitted[2] != tmuxwake.Notice(1) {
 		t.Fatal("owned notice did not complete exactly once")

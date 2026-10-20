@@ -53,23 +53,10 @@ const (
 
 func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode) error {
 	automatic := mode != bindingManual
-	if len(args) == 1 && args[0] == "status" {
-		s, err := a.session()
-		if err != nil {
-			return err
-		}
-		st, err := config.LoadState(s.paths, s.name)
-		if err != nil {
-			return err
-		}
-		if st.Terminal == nil {
-			a.printf("%s unbound\n", s.name)
-		} else {
-			b := st.Terminal
-			a.printf("%s generation=%s pid=%d stopped=%t outcome=%s\n", s.name, b.Generation, b.DaemonPID, b.Stopped, b.Outcome)
-		}
-		return nil
+	if len(args) > 0 && args[0] == "status" {
+		return a.terminalStatus(ctx, args[1:])
 	}
+
 	fs := newFlagSet("bind")
 	runtime := fs.String("runtime", "", "claude or codex")
 	owner := fs.Int("owner-pid", 0, "own live runtime PID")
@@ -224,7 +211,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				b.NoticeCount = old.NoticeCount
 				b.AttemptAt = old.AttemptAt
 				b.Retried = old.Retried
-				b.Typed = old.Typed
+				b.Typed = old.Typed && ownTerminalTarget(old, target)
+				b.OwnNotice = old.OwnNotice
+				b.OwnNotice.PossiblyOrphaned = nil
 			}
 		}
 		if _, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal = b; return nil }); err != nil {
@@ -372,6 +361,7 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 			}
 			pid, birth = b.DaemonPID, b.DaemonBirth
 			b.Stopped = true
+			b.Idle = nil
 			b.Outcome = "unbound"
 			return nil
 		})
@@ -425,6 +415,7 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 func (a *App) runTerminal(ctx context.Context, s *session, generation string, initial config.TerminalBinding) (string, error) {
 	policy := initial
 	delay := policy.Interval
+	qualificationInterrupted := true
 	for ctx.Err() == nil {
 		st, err := config.LoadState(s.paths, s.name)
 		if err == nil {
@@ -472,16 +463,26 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			cancel()
 		}
 		if err == nil {
+			// A failed authority read can also prevent writing its reset. Keep
+			// that interruption in RAM until a fresh successful write precedes
+			// dispatch, including the first cycle of a restarted consumer.
+			if qualificationInterrupted {
+				err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
+				qualificationInterrupted = err != nil
+			}
+		}
+		if err == nil {
 			err = a.dispatchTerminal(ctx, s, generation)
 		}
 		if ctx.Err() != nil {
 			return "cancelled", nil
 		}
 		if err != nil {
+			qualificationInterrupted = true
 			delay = min(policy.RetryMax, max(policy.Interval, delay*2))
 			// A failed write is not a reason to terminate. The next cycle must load
 			// fresh state and reacquire its lease before it may touch the terminal.
-			_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "consumer unavailable; retrying" })
+			a.unknownTerminalNotice(ctx, s, generation, true)
 			fmt.Fprintln(a.Stderr, "binding consumer unavailable; bounded retry")
 		} else {
 			delay = policy.Interval
@@ -498,7 +499,8 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 }
 
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string) error {
-	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	observed := false
+	err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
@@ -508,7 +510,16 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			return errors.New("binding retired")
 		}
 		if st.HooksPaused || manualWakeGate(st) != "" {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: manual gate" })
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: manual gate" })
+		}
+		if st.Runtime != nil && !st.Runtime.Retired {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: native binding" })
+		}
+		if !ownTerminalTarget(b, b.Target) {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: binding target authority" })
+		}
+		if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: lease authority" })
 		}
 		// Mail remains available to inbox. Attempt and rung IDs prevent normal
 		// duplicates; an uncertain attempt has a separate bounded recovery path.
@@ -526,31 +537,60 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if err != nil {
 			return err
 		}
+		attemptIDs := slices.DeleteFunc(slices.Clone(b.AttemptIDs), func(id string) bool { return !slices.Contains(pendingIDs, id) })
+		b.AttemptIDs = attemptIDs
 		if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
 			b.Rung = slices.DeleteFunc(b.Rung, func(id string) bool { return !slices.Contains(pendingIDs, id) })
-			b.AttemptIDs = slices.DeleteFunc(b.AttemptIDs, func(id string) bool { return !slices.Contains(pendingIDs, id) })
+			b.AttemptIDs = slices.Clone(attemptIDs)
 		}); err != nil {
 			return err
 		}
-		// A live owned notice may be finished; an uncertain attempt gets one
-		// delayed, durably spent retry on empty idle input. Human drafts block.
-		if slices.ContainsFunc(b.AttemptIDs, func(id string) bool { return slices.Contains(pendingIDs, id) }) {
+		// Reconcile only rendered empty input. A nonempty renderer never
+		// authorizes continuation or erasure, even for an exact lookalike.
+		observation := b.Target.ObserveInput(ctx, b.Notice)
+		observed = true
+		if err := a.observeTerminalNotice(s, generation, *b, observation); err != nil {
+			return err
+		}
+		if observation == "empty" && b.Typed && len(b.AttemptIDs) < b.NoticeCount {
+			if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+				b.Typed = false
+				b.AttemptIDs = nil
+				b.Notice = ""
+				b.NoticeCount = 0
+				b.AttemptAt = time.Time{}
+				b.Retried = false
+				b.Idle = nil
+			}); err != nil {
+				return err
+			}
+			b.Typed = false
+			b.AttemptIDs = nil
+			b.Notice = ""
+			b.NoticeCount = 0
+			b.Idle = nil
+		}
+		if len(b.AttemptIDs) > 0 {
 			return a.recoverTerminal(ctx, s, generation, *b)
 		}
 		if len(ids) == 0 {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "armed: no new mail" })
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "armed: no new mail" })
 		}
 		// Screen admission precedes the durable attempt fence. A busy target
 		// retains IDs for the next idle observation without spending its rate.
 		if !b.Target.Idle(ctx) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: busy, draft or unknown input" })
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: busy, draft or unknown input" })
 		}
 		now := a.Now()
+		if qualified, err := a.qualifyTerminalIdle(s, generation, *b); err != nil || !qualified {
+			return err
+		}
 		reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
 		if len(reservations) >= b.MaxWakes {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: hourly rate" })
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
 		}
 		if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			b.Idle = nil
 			b.AttemptIDs = ids
 			b.Notice = tmuxwake.Notice(len(ids))
 			b.NoticeCount = len(ids)
@@ -565,6 +605,33 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		outcome, sendErr := b.Target.Send(ctx, len(ids), nil, nil)
 		return a.finishTerminal(s, generation, outcome, sendErr, false)
 	})
+	if err != nil {
+		_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
+	}
+	if err != nil || !observed {
+		a.unknownTerminalNotice(ctx, s, generation, false)
+	} else {
+		a.publishTerminalNotice(ctx, s, generation)
+	}
+	return err
+}
+
+// Both initial admission and empty-box recovery use the same observations.
+// This records a first sample without sleeping, reserving or spending a retry.
+func (a *App) qualifyTerminalIdle(s *session, generation string, b config.TerminalBinding) (bool, error) {
+	now := a.Now()
+	observation := config.TerminalIdle{At: now, Generation: b.Generation, SessionID: b.SessionID, Host: b.Host, DaemonPID: b.DaemonPID, DaemonBirth: b.DaemonBirth, Target: b.Target, Interval: b.Interval}
+	previous := b.Idle
+	qualified := false
+	if previous != nil {
+		identity := *previous
+		identity.At = now
+		qualified = identity == observation && b.Interval > 0 && !now.Before(previous.At.Add(b.Interval))
+	}
+	if !qualified {
+		return false, a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = &observation; b.Outcome = "armed: qualifying idle" })
+	}
+	return true, nil
 }
 
 func (a *App) finishTerminal(s *session, generation, outcome string, sendErr error, recovering bool) error {
@@ -592,35 +659,47 @@ func (a *App) finishTerminal(s *session, generation, outcome string, sendErr err
 }
 
 func (a *App) recoverTerminal(ctx context.Context, s *session, generation string, b config.TerminalBinding) error {
-	input := b.Target.PendingInput(ctx, b.Notice)
-	if input == "blocked" {
-		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: pending attempt input" })
+	input := b.Target.ObserveInput(ctx, b.Notice)
+	if input != "empty" {
+		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: pending attempt input" })
 	}
 	if b.NoticeCount <= 0 || b.Notice != tmuxwake.Notice(b.NoticeCount) {
-		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "uncertain legacy attempt; retained mail requires inbox" })
+		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			b.Idle = nil
+			b.Outcome = "uncertain legacy attempt; retained mail requires inbox"
+		})
+	}
+	if len(b.AttemptIDs) != b.NoticeCount {
+		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "uncertain partial attempt; mail retained" })
 	}
 	now := a.Now()
-	if !b.Typed || input == "empty" {
+	if input == "empty" {
+		if qualified, err := a.qualifyTerminalIdle(s, generation, b); err != nil || !qualified {
+			return err
+		}
 		// A fresh type into an emptied box spends a new hourly reservation,
 		// including a previously known-unsubmitted notice (Typed=true).
-		// Exact owned text is a known unsubmitted input; empty input may also
-		// follow an accepted turn. Only the latter can duplicate a wake.
+		// Empty input may follow an accepted turn; the retry remains bounded.
 		if input == "empty" && (b.Retried || now.Before(b.AttemptAt.Add(2*b.Interval))) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "uncertain attempt; bounded retry held" })
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "uncertain attempt; bounded retry held" })
 		}
 		reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
 		if len(reservations) >= b.MaxWakes {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "suppressed: hourly rate" })
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
 		}
 		if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Retried = true; b.Reservations = append(reservations, now) }); err != nil {
 			return err
 		}
 	}
-	// Pessimistically fence before any effect, including continuation of an
-	// owned input. A process crash cannot create an unlimited empty-box retry.
-	if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Typed = false }); err != nil {
+	// Fence before fresh typing. A crash cannot create unlimited empty retries.
+	if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Typed = false }); err != nil {
 		return err
 	}
-	outcome, sendErr := b.Target.Resume(ctx, b.NoticeCount, b.Notice)
+	var outcome string
+	var sendErr error
+	if input == "empty" {
+		outcome, sendErr = b.Target.Send(ctx, b.NoticeCount, nil, nil)
+
+	}
 	return a.finishTerminal(s, generation, outcome, sendErr, true)
 }
