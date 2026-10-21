@@ -125,7 +125,7 @@ func TestNoticeLocalSchemaBoundaries(t *testing.T) {
 			}
 			n := schemaNotice(kind)
 			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
-				st.Terminal = &config.TerminalBinding{Generation: "schema", OwnNotice: n}
+				st.Terminal = &config.TerminalBinding{Generation: "schema", Interval: 2 * time.Second, RetryMax: 30 * time.Second, OwnNotice: n}
 				return nil
 			})
 			if err != nil {

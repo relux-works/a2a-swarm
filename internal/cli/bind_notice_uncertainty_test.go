@@ -115,7 +115,7 @@ func TestNoticeReturnToAcknowledgedAfterCancellation(t *testing.T) {
 			if kind == "reconciliation-error" {
 				partial.Store(true)
 				retryCtx, retryCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
-				a.publishTerminalNotice(retryCtx, s, "deadline")
+				publishNoticeAtEligibility(t, a, s, retryCtx, "deadline")
 				retryCancel()
 				partial.Store(false)
 				failed := e.state("alice")
@@ -124,7 +124,7 @@ func TestNoticeReturnToAcknowledgedAfterCancellation(t *testing.T) {
 				}
 				beforeRetry = puts.Load()
 			}
-			a.publishTerminalNotice(context.Background(), s, "deadline")
+			publishNoticeAtEligibility(t, a, s, context.Background(), "deadline")
 			if kind != "certain-equal-control" && puts.Load() != beforeRetry+1 {
 				t.Fatal("uncertain equality did not publish exactly once")
 			}

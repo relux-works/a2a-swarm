@@ -6,6 +6,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"strings"
 	"testing"
+	"time"
 )
 
 type timestampProbe struct {
@@ -105,7 +106,7 @@ func TestReviewCR4LocalTimestampGrammar(t *testing.T) {
 					}
 					n := probeNotice(field, p.value)
 					_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
-						st.Terminal = &config.TerminalBinding{Generation: "review-cr4", OwnNotice: n}
+						st.Terminal = &config.TerminalBinding{Generation: "review-cr4", Interval: 2 * time.Second, RetryMax: 30 * time.Second, OwnNotice: n}
 						return nil
 					})
 					if err != nil {

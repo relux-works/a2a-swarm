@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -29,7 +30,11 @@ func (s *session) putOwnStatus(ctx context.Context, st *config.State, record con
 	// Resolve only after the caller decides a real PUT is needed. Room aliases
 	// can rotate silently while the old room remains writable, so no room ID
 	// survives this call. Resolution shares the caller's original lock/RPC budget.
-	room, _, err := s.resolveRoom(ctx, StatusRoom)
+	// Neither room resolution nor the write may follow redirects. A response
+	// from another request cannot establish this identity's status knowledge.
+	writer := *s
+	writer.client = s.client.ForOwnStatus()
+	room, _, err := writer.resolveRoom(ctx, StatusRoom)
 	if err != nil {
 		if st.Terminal != nil {
 			st.Terminal.NoticePublication = "unavailable: own liveness publication failed"
@@ -40,12 +45,17 @@ func (s *session) putOwnStatus(ctx context.Context, st *config.State, record con
 		return err
 	}
 	// No validation/resolve work that can fail before send follows this point.
+	priorUncertain := st.NoticeWriteUncertain
 	st.NoticeWriteUncertain = true
 	if st.Terminal != nil {
 		st.Terminal.NoticePublication = "unavailable: own liveness publication failed"
 	}
-	_, err = s.client.PutState(ctx, room, StatusEventType, s.creds.UserID, record)
-	if matrix.IsCode(err, "M_FORBIDDEN") {
+	_, err = writer.client.PutState(ctx, room, StatusEventType, s.creds.UserID, record)
+	var refusal *matrix.Error
+	if errors.As(err, &refusal) && refusal.OriginalRequest && refusal.Status == http.StatusForbidden && refusal.ErrCode == "M_FORBIDDEN" {
+		// This refusal only rejects THIS attempt; it cannot reconcile a prior
+		// possibly-applied write. Retain the exact prior ACK in either case.
+		st.NoticeWriteUncertain = priorUncertain
 		return fmt.Errorf("liveness: administrator must set power_levels.events[%q]=0; agent power escalation is not a remedy: %w", StatusEventType, err)
 	}
 	if err != nil {
@@ -53,6 +63,7 @@ func (s *session) putOwnStatus(ctx context.Context, st *config.State, record con
 	}
 	st.Liveness = &record
 	st.NoticeWriteUncertain = false
+	st.NoticeRetry = nil
 	if st.Terminal != nil {
 		if reflect.DeepEqual(record.OwnNotice, st.Terminal.OwnNotice) {
 			st.Terminal.NoticePublication = "published"

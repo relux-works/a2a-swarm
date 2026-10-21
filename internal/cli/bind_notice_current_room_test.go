@@ -62,7 +62,11 @@ func TestNoticeCurrentRoomRotation(t *testing.T) {
 					c.URL = &u
 					c.URL.Scheme = target.Scheme
 					c.URL.Host = target.Host
-					return http.DefaultTransport.RoundTrip(c)
+					resp, err := http.DefaultTransport.RoundTrip(c)
+					if resp != nil {
+						resp.Request = r
+					}
+					return resp, err
 				})}
 				s.client.HTTP = a.HTTP
 				if code != "fresh-control" {
@@ -105,7 +109,7 @@ func TestNoticeCurrentRoomRotation(t *testing.T) {
 					t.Fatal(err)
 				}
 				beforeResolve, beforePut := resolves.Load(), puts.Load()
-				a.publishTerminalNotice(context.Background(), s, "deadline")
+				publishNoticeAtEligibility(t, a, s, context.Background(), "deadline")
 				after := e.state("alice")
 				publicationResolves := resolves.Load() - beforeResolve
 				var remote config.AgentStatus
@@ -172,7 +176,11 @@ func TestNoticeCurrentRoomSiblingWriters(t *testing.T) {
 				c.URL = &u
 				c.URL.Scheme = target.Scheme
 				c.URL.Host = target.Host
-				return http.DefaultTransport.RoundTrip(c)
+				resp, err := http.DefaultTransport.RoundTrip(c)
+				if resp != nil {
+					resp.Request = r
+				}
+				return resp, err
 			})}
 			s.client.HTTP = a.HTTP
 			a.publishTerminalNotice(context.Background(), s, "deadline")
@@ -270,7 +278,11 @@ func TestNoticeCurrentRoomPreSendKnowledge(t *testing.T) {
 						c.URL = &u
 						c.URL.Scheme = target.Scheme
 						c.URL.Host = target.Host
-						return http.DefaultTransport.RoundTrip(c)
+						resp, err := http.DefaultTransport.RoundTrip(c)
+						if resp != nil {
+							resp.Request = r
+						}
+						return resp, err
 					})}
 					s.client.HTTP = a.HTTP
 					a.publishTerminalNotice(context.Background(), s, "deadline")
@@ -307,7 +319,7 @@ func TestNoticeCurrentRoomPreSendKnowledge(t *testing.T) {
 						t.Fatal(status.stdout)
 					}
 					reject.Store(false)
-					a.publishTerminalNotice(context.Background(), s, "deadline")
+					publishNoticeAtEligibility(t, a, s, context.Background(), "deadline")
 					after = e.state("alice")
 					if puts.Load() != bp+1 || after.NoticeWriteUncertain || after.Terminal.NoticePublication != "published" {
 						t.Fatal("pre-send failure did not allow later actual acknowledgement")

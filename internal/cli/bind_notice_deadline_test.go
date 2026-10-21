@@ -34,7 +34,7 @@ func noticeDeadlineFixture(t *testing.T) (*env, *App, *session) {
 		t.Fatal(err)
 	}
 	_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
-		st.Terminal = &config.TerminalBinding{Generation: "deadline", OwnNotice: schemaNotice("true")}
+		st.Terminal = &config.TerminalBinding{Generation: "deadline", OwnNotice: schemaNotice("true"), Interval: 2 * time.Second, RetryMax: 30 * time.Second}
 		return nil
 	})
 	if err != nil {

@@ -176,7 +176,7 @@ func TestNoticePublicationCacheLifecycle(t *testing.T) {
 			_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
 				st.Terminal.OwnNotice = schemaNotice("false")
 				if kind == "rebind" || kind == "unbind" {
-					st.Terminal = &config.TerminalBinding{Generation: "replacement", OwnNotice: schemaNotice("false")}
+					st.Terminal = &config.TerminalBinding{Generation: "replacement", Interval: 2 * time.Second, RetryMax: 30 * time.Second, OwnNotice: schemaNotice("false")}
 				}
 				return nil
 			})
@@ -190,13 +190,13 @@ func TestNoticePublicationCacheLifecycle(t *testing.T) {
 			if kind == "M_NOT_FOUND" || kind == "M_FORBIDDEN" {
 				setFail(kind)
 			}
-			a.publishTerminalNotice(context.Background(), s, gen)
+			publishNoticeAtEligibility(t, a, s, context.Background(), gen)
 			if fail != "" {
 				if e.state("alice").Terminal.NoticePublication == "published" {
 					t.Fatal("failed write acknowledged")
 				}
 				setFail("")
-				a.publishTerminalNotice(context.Background(), s, gen)
+				publishNoticeAtEligibility(t, a, s, context.Background(), gen)
 			}
 			mu.Lock()
 			defer mu.Unlock()

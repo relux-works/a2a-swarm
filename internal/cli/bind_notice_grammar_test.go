@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
@@ -188,7 +189,7 @@ func TestNoticeTimestampProductionFamilies(t *testing.T) {
 						t.Fatal(err)
 					}
 					_, err = config.UpdateState(own.paths, own.name, func(st *config.State) error {
-						st.Terminal = &config.TerminalBinding{Generation: "grammar", OwnNotice: n}
+						st.Terminal = &config.TerminalBinding{Generation: "grammar", Interval: 2 * time.Second, RetryMax: 30 * time.Second, OwnNotice: n}
 						return nil
 					})
 					if err != nil {
@@ -262,7 +263,7 @@ func TestNoticeTimestampFractionOrder(t *testing.T) {
 				n.Since, n.ObservedAt = n.ObservedAt, n.Since
 			}
 			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
-				st.Terminal = &config.TerminalBinding{Generation: "fractions", OwnNotice: n}
+				st.Terminal = &config.TerminalBinding{Generation: "fractions", Interval: 2 * time.Second, RetryMax: 30 * time.Second, OwnNotice: n}
 				return nil
 			})
 			if err != nil {

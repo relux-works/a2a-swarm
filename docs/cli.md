@@ -802,6 +802,17 @@ claiming remote visibility. Who's heartbeat freshness is independent of notice o
 malformed notice facts are unknown with a bounded `notice_error`, never fresh suspected facts or raw payload. Invalid local notice metadata
 is refused at publication and shown as unavailable. No foreign identity credentials or liveness key are used.
 
+Failed automatic notice publication uses the binding's explicit `--interval` and `--retry-max`: the first failure waits one interval,
+subsequent eligible failures double that delay up to the maximum. The identity persists this schedule across hooks, dispatch, process reload
+and replacement bindings; changed observations remain local until eligibility. Cooldown sends no status-room resolution or PUT and reports
+`unavailable: own liveness publication retry pending`. A due attempt resolves the current status room and sends at most one PUT within the
+original shared lock/deadline. Missing liveness and certain-equal observations remain zeroHTTP. Manual status and legitimate heartbeat writers
+retain their usual behavior; an actual own-status ACK clears the obsolete notice retry schedule and uncertainty. Own-status PUT and its room resolution never follow HTTP redirects, even redirects back to the original URL. A resolution redirect is a pre-send failure and preserves prior certainty; a PUT redirect leaves the write uncertain. Only a direct genuine 2xx ACK advances the acknowledged record. For own-status writes and their room resolution, success requires a complete body read to EOF without read error or cancellation, matching Content-Length when declared, and exactly one JSON object (surrounding JSON whitespace is allowed). The PUT object requires a nonempty string `event_id`; resolution requires a nonempty string `room_id`. Missing IDs, malformed or trailing JSON, partial bodies and interrupted reads provide no ACK. A failed resolution preserves prior knowledge; an invalid post-send response leaves the write uncertain and cannot clear notice cooldown. Only a direct response to the original PUT URL, with no redirect followed and a completely read body below the 64KiB error cap
+within the deadline, can establish a decoded HTTP403/`M_FORBIDDEN` rejection of that attempt: it preserves the exact prior ACK and restores PRE-attempt uncertainty, including uncertainty from an
+earlier possibly-applied send. Partial, limit-hit, read-failed, expired or redirected responses and other post-send failures remain uncertain. Clock rollback cannot make a persisted retry eligible early;
+this is not a wall-clock freshness guarantee. Old state without retry metadata permits an ordinary first attempt; semantically invalid retry
+metadata is repaired to one interval of cooldown, while unreadable/malformed whole state refuses before HTTP.
+
 Tests use private synthetic Matrix and tmux/PTy fixtures for both runtime layouts, combined suffix/cursor and padded lookalikes, detection,
 own publication/readback failures, receipt/restart/unknown neighbors, interval/gate/rate/lifecycle resets and ordinary empty delivery. Run
 `go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestCodex|TestBind|TestReviewCR3|TestNotice' -count=1`;

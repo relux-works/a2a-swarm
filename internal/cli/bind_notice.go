@@ -222,9 +222,36 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 				return nil
 			}
 		}
+		// Explicit binding policy also bounds notice-only retries. A replacement
+		// generation or fresh observation cannot bypass identity-owned eligibility.
+		if b.Interval < time.Second || b.Interval > maxPoll || b.RetryMax < b.Interval || b.RetryMax > 5*time.Minute {
+			b.NoticePublication = "unavailable: invalid notice retry policy"
+			publicationErr = errors.New(b.NoticePublication)
+			return nil
+		}
+		now := s.app.Now().UTC()
+		if retry := st.NoticeRetry; retry != nil {
+			// Old state without metadata takes the ordinary first attempt. Invalid
+			// semantic metadata is repaired to one bounded cooldown, not ignored on
+			// every cycle or allowed to permanently suppress publication.
+			if retry.Delay <= 0 || retry.Delay > 5*time.Minute || retry.FailedAt.IsZero() || !retry.Next.Equal(retry.FailedAt.Add(retry.Delay)) {
+				st.NoticeRetry = &config.NoticeRetry{FailedAt: now, Next: now.Add(b.Interval), Delay: b.Interval}
+			}
+			if now.Before(st.NoticeRetry.Next) {
+				b.NoticePublication = "unavailable: own liveness publication retry pending"
+				publicationErr = errors.New(b.NoticePublication)
+				return nil
+			}
+		}
 		record := *st.Liveness
 		record.OwnNotice = b.OwnNotice
 		failed := func(err error) error {
+			delay := b.Interval
+			if st.NoticeRetry != nil {
+				delay = min(b.RetryMax, max(b.Interval, st.NoticeRetry.Delay*2))
+			}
+			failedAt := s.app.Now().UTC()
+			st.NoticeRetry = &config.NoticeRetry{FailedAt: failedAt, Next: failedAt.Add(delay), Delay: delay}
 			b.NoticePublication = "unavailable: own liveness publication failed"
 			publicationErr = fmt.Errorf("notice publication unavailable: %w", err)
 			// Save the failure without acknowledging the PUT.
@@ -242,7 +269,7 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 }
 
 // Record bounded publication results locally; never claim a failed remote write
-// was visible to who. A later dispatch retries without spending a wake attempt.
+// was visible to who. An eligible later dispatch retries without a wake attempt.
 func (a *App) publishTerminalNotice(ctx context.Context, s *session, generation string) {
 	_ = s.publishTerminalNotice(ctx, generation)
 }

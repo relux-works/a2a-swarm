@@ -81,7 +81,11 @@ func TestNoticeSharedWriterUncertainty(t *testing.T) {
 				clone.URL = &u
 				clone.URL.Scheme = target.Scheme
 				clone.URL.Host = target.Host
-				return http.DefaultTransport.RoundTrip(clone)
+				resp, err := http.DefaultTransport.RoundTrip(clone)
+				if resp != nil {
+					resp.Request = r
+				}
+				return resp, err
 			})}
 			s.client.HTTP = a.HTTP
 			a.publishTerminalNotice(context.Background(), s, "deadline")
@@ -191,7 +195,11 @@ func TestNoticeSharedWriterAcknowledgement(t *testing.T) {
 				clone.URL = &u
 				clone.URL.Scheme = target.Scheme
 				clone.URL.Host = target.Host
-				return http.DefaultTransport.RoundTrip(clone)
+				resp, err := http.DefaultTransport.RoundTrip(clone)
+				if resp != nil {
+					resp.Request = r
+				}
+				return resp, err
 			})}
 			s.client.HTTP = a.HTTP
 			a.publishTerminalNotice(context.Background(), s, "deadline")
@@ -333,7 +341,7 @@ func TestNoticeSharedUncertaintyPersistence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a.publishTerminalNotice(context.Background(), next, "deadline")
+			publishNoticeAtEligibility(t, a, next, context.Background(), "deadline")
 			st := e.state("alice")
 			if puts.Load() != 3 || st.NoticeWriteUncertain || st.Terminal.NoticePublication != "published" {
 				t.Fatal("persisted uncertain equality did not reconcile once")
@@ -351,7 +359,16 @@ func TestNoticeSharedUncertaintyPersistence(t *testing.T) {
 
 type noticeWriterTransport func(*http.Request) (*http.Response, error)
 
-func (f noticeWriterTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+// Routing to an isolated fixture is a transport detail, not an HTTP redirect.
+// Preserve the logical request as a real proxy transport would; redirect tests
+// still execute net/http's redirect handling and each redirected request.
+func (f noticeWriterTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := f(r)
+	if resp != nil {
+		resp.Request = r
+	}
+	return resp, err
+}
 
 // Pre-send failures preserve a real acknowledgement; a possible PUT (even a
 // rejected response) instead requires reconciliation. No static source gate.
@@ -385,7 +402,11 @@ func TestNoticeSharedWriterPreSendFailure(t *testing.T) {
 					c.URL = &u
 					c.URL.Scheme = target.Scheme
 					c.URL.Host = target.Host
-					return http.DefaultTransport.RoundTrip(c)
+					resp, err := http.DefaultTransport.RoundTrip(c)
+					if resp != nil {
+						resp.Request = r
+					}
+					return resp, err
 				})}
 				s.client.HTTP = a.HTTP
 				a.publishTerminalNotice(context.Background(), s, "deadline")

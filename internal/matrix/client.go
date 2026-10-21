@@ -27,9 +27,20 @@ const maxErrorBody = 64 << 10
 
 // Client talks to one homeserver as one user (or anonymously for registration).
 type Client struct {
-	BaseURL string
-	Token   string
-	HTTP    *http.Client
+	BaseURL           string
+	Token             string
+	HTTP              *http.Client
+	directOnly        bool
+	ownStatusEvidence bool
+}
+
+// WithoutRedirects returns a scoped copy for operations whose response must
+// come from the original endpoint. It shares the transport, not mutable policy.
+// Other users of the client retain their configured redirect behavior.
+func (c *Client) WithoutRedirects() *Client {
+	copy := *c
+	copy.directOnly = true
+	return &copy
 }
 
 // New returns a client for baseURL with the given access token (may be empty).
@@ -42,6 +53,9 @@ type Error struct {
 	Status  int
 	ErrCode string `json:"errcode"`
 	Message string `json:"error"`
+	// OriginalRequest is true only for a response to the sent URL with no
+	// redirect followed. A redirected refusal says nothing about the first send.
+	OriginalRequest bool `json:"-"`
 	// Raw is the decoded body, used for UIA responses (session, flows, completed).
 	Raw json.RawMessage `json:"-"`
 }
@@ -91,6 +105,13 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		return err
 	}
 	defer resp.Body.Close()
+	if c.ownStatusEvidence {
+		field := "room_id"
+		if method == http.MethodPut {
+			field = "event_id"
+		}
+		return decodeOwnStatusResponse(ctx, resp, field, out)
+	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
@@ -126,16 +147,53 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 	if hc == nil {
 		hc = http.DefaultClient
 	}
-	resp, err := hc.Do(req)
+	// Track provenance per call without mutating the shared client's policy.
+	// Final URL equality alone misses a redirect chain returning to the first URL.
+	originalURL := req.URL.String()
+	redirected := false
+	requestClient := *hc
+	requestClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		redirected = true
+		if c.directOnly {
+			return http.ErrUseLastResponse
+		}
+		if hc.CheckRedirect != nil {
+			return hc.CheckRedirect(next, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	resp, err := requestClient.Do(req)
 	if err != nil {
 		// url.Error includes the URL, which never carries the token.
 		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
+	if c.directOnly && resp.StatusCode < 300 && (resp.StatusCode < 200 || redirected || resp.Request == nil || resp.Request.URL == nil || resp.Request.URL.String() != originalURL || resp.Request.Method != method) {
+		resp.Body.Close()
+		return nil, fmt.Errorf("%s %s: response is not from original request", method, path)
+	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		me := &Error{Status: resp.StatusCode, Raw: data}
-		_ = json.Unmarshal(data, me)
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		if c.ownStatusEvidence && resp.ContentLength >= 0 && int64(len(data)) != resp.ContentLength {
+			readErr = io.ErrUnexpectedEOF
+		}
+		me := &Error{Status: resp.StatusCode, Raw: data,
+			OriginalRequest: !redirected && resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.String() == originalURL && (!c.ownStatusEvidence || resp.Request.Method == method)}
+		// A LimitReader EOF at its cap is not evidence of a complete response.
+		// Only a clean EOF below the cap, within the caller's deadline, can
+		// establish decoded error fields. A prefix remains diagnostic Raw only.
+		// Decode all standard fields successfully before trusting any of them.
+		// The HTTP status is transport evidence, never a response-body field.
+		var decoded struct {
+			ErrCode string `json:"errcode"`
+			Message string `json:"error"`
+		}
+		if readErr == nil && len(data) < maxErrorBody && ctx.Err() == nil && json.Unmarshal(data, &decoded) == nil {
+			me.ErrCode, me.Message = decoded.ErrCode, decoded.Message
+		}
 		if resp.StatusCode == http.StatusUnauthorized && (me.ErrCode == "M_UNKNOWN_TOKEN" || me.ErrCode == "M_MISSING_TOKEN") {
 			return nil, fmt.Errorf("%w (%s)", ErrAuth, me.ErrCode)
 		}

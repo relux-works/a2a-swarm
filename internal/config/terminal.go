@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// NoticeRetry belongs to the identity, not a terminal generation. Only an
+// acknowledged own-status PUT clears it. Times are wall clock across restart;
+// a rollback waits for the stored eligibility time, without a freshness claim.
+type NoticeRetry struct {
+	FailedAt time.Time     `json:"failed_at"`
+	Next     time.Time     `json:"next"`
+	Delay    time.Duration `json:"delay"`
+}
+
 // TerminalBinding contains only local process metadata and event IDs. A wake
 // reservation is independent of inbox receipts and survives an uncertain send.
 type TerminalBinding struct {
