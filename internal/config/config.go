@@ -338,12 +338,14 @@ type State struct {
 	Lease *Lease `json:"lease,omitempty"`
 	// Runtime is a launcher-owned native binding; Wake is its durable submission
 	// fence. Neither field is a mailbox receipt or authorization from a peer.
-	Runtime        *codexwake.Binding       `json:"runtime,omitempty"`
-	Terminal       *TerminalBinding         `json:"terminal,omitempty"`
-	Wake           codexwake.Ledger         `json:"wake,omitempty"`
-	Liveness       *AgentStatus             `json:"liveness,omitempty"`
-	LivenessSource string                   `json:"liveness_source,omitempty"`
-	LivenessAlerts map[string]LivenessAlert `json:"liveness_alerts,omitempty"`
+	Runtime  *codexwake.Binding `json:"runtime,omitempty"`
+	Terminal *TerminalBinding   `json:"terminal,omitempty"`
+	Wake     codexwake.Ledger   `json:"wake,omitempty"`
+	Liveness *AgentStatus       `json:"liveness,omitempty"`
+	// Knowledge of the identity's status event survives terminal replacement.
+	NoticeWriteUncertain bool                     `json:"notice_write_uncertain,omitempty"`
+	LivenessSource       string                   `json:"liveness_source,omitempty"`
+	LivenessAlerts       map[string]LivenessAlert `json:"liveness_alerts,omitempty"`
 }
 
 // HookSession is the doorbell state of one agent session.

@@ -56,8 +56,11 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"since-refreshed-count-one", "cli/bind_notice.go", `if n.Since == "" {`, `if n.Since == "" || b.NoticeCount==1 {`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
 		{"empty-reconcile-count-one-omission", "cli/bind.go", `observation == "empty" && b.Typed && len(b.AttemptIDs) < b.NoticeCount`, `observation == "empty" && b.Typed && len(b.AttemptIDs) < b.NoticeCount && b.NoticeCount!=1`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
 		{"foreign-bob-key-exemption", "cli/bind_notice.go", `if !ok || name != s.name {`, `if !ok || name != s.name && name!="bob" {`, "TestTerminalNoticePublicationRefusals/foreign", admission + "/none"},
-		{"publication-error-suspected-exemption", "cli/bind_notice.go", `return fmt.Errorf("notice publication unavailable: %w", err)`, `if record.OwnNotice.PossiblyOrphaned==nil || !*record.OwnNotice.PossiblyOrphaned {return fmt.Errorf("notice publication unavailable: %w", err)}`, "TestTerminalNoticePublicationRefusals/failed", admission + "/none"},
-		{"publication-refreshes-heartbeat", "cli/bind_notice.go", `record.OwnNotice = st.Terminal.OwnNotice`, `record.OwnNotice = st.Terminal.OwnNotice; if record.OwnNotice.PossiblyOrphaned!=nil && *record.OwnNotice.PossiblyOrphaned {record.HeartbeatAt=s.app.Now()}`, "TestTerminalNoticePublicStatusAndWho", admission + "/none"},
+		// Publication results now live inside the session publisher, and its
+		// acknowledgement merges only the notice. Retain the original failure
+		// and heartbeat attack classes at their current behavioral call sites.
+		{"publication-error-suspected-exemption", "cli/bind_notice.go", `b.NoticePublication = "unavailable: own liveness publication failed"`, `if record.OwnNotice.PossiblyOrphaned!=nil && *record.OwnNotice.PossiblyOrphaned {b.NoticePublication="published"} else {b.NoticePublication="unavailable: own liveness publication failed"}`, "TestTerminalNoticePublicationRefusals/failed", admission + "/none"},
+		{"publication-refreshes-heartbeat", "cli/bind_notice.go", `record.OwnNotice = b.OwnNotice`, `record.OwnNotice = b.OwnNotice; if record.OwnNotice.PossiblyOrphaned!=nil && *record.OwnNotice.PossiblyOrphaned {record.HeartbeatAt=s.app.Now()}`, "TestTerminalNoticePublicStatusAndWho", admission + "/none"},
 		{"bind-status-hides-suspected", "cli/bind_notice.go", `n = st.Terminal.OwnNotice`, `n = st.Terminal.OwnNotice; if n.PossiblyOrphaned!=nil && *n.PossiblyOrphaned {v:=false;n.PossiblyOrphaned=&v}`, "TestTerminalNoticePublicStatusAndWho", admission + "/none"},
 		{"resume-count-one-exemption", "tmuxwake/terminal.go", `return "suppressed: manual recovery required", nil`, `if count==1 {return t.send(ctx,count,notice,nil,nil)}; return "suppressed: manual recovery required", nil`, "TestTerminalResumeNeverTypesEmpty", "TestTerminalTwoPhaseRaceControls/codex/none"},
 		{"erase-count-one-exemption", "tmuxwake/terminal.go", `return false, nil
@@ -129,6 +132,21 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			}
 			if err := os.WriteFile(path, []byte(prefix+strings.Replace(string(data), p.old, p.next, 1)), 0600); err != nil {
 				t.Fatal(err)
+			}
+			// Both own-key checks now guard one shared status writer. Keep both
+			// checks present, narrowing the same identity class in each.
+			if p.name == "foreign-bob-key-exemption" {
+				extra := filepath.Join(copyRoot, "internal", "cli", "own_status.go")
+				raw, err := os.ReadFile(extra)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(string(raw), p.old) != 1 {
+					t.Fatal("shared owner anchor missing")
+				}
+				if err := os.WriteFile(extra, []byte(strings.Replace(string(raw), p.old, p.next, 1)), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if p.name == "busy-reset-omission" {
 				extra := filepath.Join(copyRoot, "internal", "cli", "bind_notice.go")

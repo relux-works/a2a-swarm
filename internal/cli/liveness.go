@@ -155,17 +155,14 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 	if err := statusValid(record); err != nil {
 		return err
 	}
-	room, _, err := s.resolveRoom(ctx, StatusRoom)
-	if err != nil {
-		return fmt.Errorf("liveness: join #status after a2a status init: %w", err)
-	}
 	deadline := time.Now().Add(nativeRPCTimeout)
 	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
 		deadline = callerDeadline
 	}
 	writeCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	var publicationErr error
+	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
 		if (source == "wait-heartbeat" || source == "wait-disarm" || (source == "wait" && manualWakeGate(*st) != "")) && st.Liveness != nil {
 			doorbell, every := record.Doorbell, record.HeartbeatEvery
 			record = *st.Liveness
@@ -198,21 +195,22 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 		if err := noticeValid(record.OwnNotice); err != nil {
 			return err
 		}
-		_, err := s.client.PutState(writeCtx, room, StatusEventType, s.creds.UserID, record)
-		if matrix.IsCode(err, "M_FORBIDDEN") {
-			return fmt.Errorf("liveness: administrator must set power_levels.events[%q]=0; agent power escalation is not a remedy", StatusEventType)
-		}
+		err := s.putOwnStatus(writeCtx, st, record)
 		if err != nil {
-			return err
+			// Commit the shared owner's uncertainty even when the caller fails.
+			publicationErr = err
+			return nil
 		}
-		st.Liveness = &record
 		st.LivenessSource = source
 		if st.Terminal != nil && manualWakeGate(*st) != "" {
 			st.Terminal.Idle = nil
 		}
 		return nil
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return publicationErr
 }
 
 type whoRow struct {

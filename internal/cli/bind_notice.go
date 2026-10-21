@@ -19,7 +19,6 @@ const orphanReason = "owned-notice-orphan-suspected"
 func (a *App) observeTerminalNotice(s *session, generation string, b config.TerminalBinding, input string) error {
 	return a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
 		n := current.OwnNotice
-		current.NoticePublication = "pending: own liveness publication"
 		eligible := b.Typed && b.NoticeCount > 0 && len(b.AttemptIDs) == 0
 		if input == "unknown" || b.Typed && (b.NoticeCount <= 0 || b.Notice != tmuxwake.Notice(b.NoticeCount)) || input == "nonempty" && n.Since != "" && !eligible {
 			n.PossiblyOrphaned = nil
@@ -37,6 +36,10 @@ func (a *App) observeTerminalNotice(s *session, generation string, b config.Term
 				n.Reason = ""
 				n.Since = ""
 			}
+		}
+		// Invalidate a prior visibility claim; retain stable unavailable causes.
+		if !reflect.DeepEqual(current.OwnNotice, n) && current.NoticePublication == "published" {
+			current.NoticePublication = "unavailable: own notice changed"
 		}
 		current.OwnNotice = n
 	})
@@ -195,40 +198,53 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 	}
 	writeCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	room, _, err := s.resolveRoom(writeCtx, StatusRoom)
+	var publicationErr error
+	// Preserve the existing bounded state critical section. The acknowledged
+	// snapshot and queued local writers remain serialized through resolve + PUT.
+	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped {
+			return errors.New("binding retired")
+		}
+		b := st.Terminal
+		if err := writeCtx.Err(); err != nil {
+			return err
+		}
+		if st.Liveness == nil {
+			b.NoticePublication = "unavailable: no liveness record (a2a status set)"
+			return nil
+		}
+		if err := noticeValid(b.OwnNotice); err != nil {
+			return err
+		}
+		if reflect.DeepEqual(st.Liveness.OwnNotice, b.OwnNotice) {
+			if !st.NoticeWriteUncertain {
+				b.NoticePublication = "published"
+				return nil
+			}
+		}
+		record := *st.Liveness
+		record.OwnNotice = b.OwnNotice
+		failed := func(err error) error {
+			b.NoticePublication = "unavailable: own liveness publication failed"
+			publicationErr = fmt.Errorf("notice publication unavailable: %w", err)
+			// Save the failure without acknowledging the PUT.
+			return nil
+		}
+		if err := s.putOwnStatus(writeCtx, st, record); err != nil {
+			return failed(err)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
-		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped || st.Liveness == nil {
-			return errors.New("notice publication unavailable: no liveness record")
-		}
-		record := *st.Liveness
-		if err := noticeValid(st.Terminal.OwnNotice); err != nil {
-			return err
-		}
-		if reflect.DeepEqual(record.OwnNotice, st.Terminal.OwnNotice) {
-			return nil
-		}
-		record.OwnNotice = st.Terminal.OwnNotice
-		if _, err := s.client.PutState(writeCtx, room, StatusEventType, s.creds.UserID, record); err != nil {
-			return fmt.Errorf("notice publication unavailable: %w", err)
-		}
-		st.Liveness = &record
-		return nil
-	})
-	return err
+	return publicationErr
 }
 
 // Record bounded publication results locally; never claim a failed remote write
 // was visible to who. A later dispatch retries without spending a wake attempt.
 func (a *App) publishTerminalNotice(ctx context.Context, s *session, generation string) {
-	err := s.publishTerminalNotice(ctx, generation)
-	outcome := "published"
-	if err != nil {
-		outcome = "unavailable: own liveness publication failed"
-	}
-	_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.NoticePublication = outcome })
+	_ = s.publishTerminalNotice(ctx, generation)
 }
 
 // Error/gate paths retain last evidence, but never advertise it as a current
@@ -236,8 +252,10 @@ func (a *App) publishTerminalNotice(ctx context.Context, s *session, generation 
 func (a *App) unknownTerminalNotice(ctx context.Context, s *session, generation string, consumer bool) {
 	err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
 		b.Idle = nil
+		if b.OwnNotice.PossiblyOrphaned != nil && b.NoticePublication == "published" {
+			b.NoticePublication = "unavailable: own notice changed"
+		}
 		b.OwnNotice.PossiblyOrphaned = nil
-		b.NoticePublication = "pending: own liveness publication"
 		if consumer {
 			b.Outcome = "consumer unavailable; publishing unknown"
 		}
