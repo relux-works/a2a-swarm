@@ -1,0 +1,10 @@
+{
+  "schema_version": 3,
+  "capabilities": {
+    "network": [
+      "matrix.relux.works",
+      "github.com",
+      "api.github.com"
+    ]
+  }
+}

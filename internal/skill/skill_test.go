@@ -1,6 +1,8 @@
 package skill
 
 import (
+	"bytes"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -40,6 +42,30 @@ func TestInstall(t *testing.T) {
 		if st, err := os.Lstat(copied); err != nil || !st.Mode().IsRegular() {
 			t.Fatalf("copy missing: %v", err)
 		}
+		// Every embedded package member, including the Curator manifest and
+		// shipped references, must survive both install and replacement.
+		if err := fs.WalkDir(Files(), ".", func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			want, err := fs.ReadFile(Files(), path)
+			if err != nil {
+				return err
+			}
+			got, err := os.ReadFile(filepath.Join(r.Copied, filepath.FromSlash(path)))
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("installed %s differs from embedded package", path)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 		for _, d := range []string{".claude", ".codex"} {
 			link := filepath.Join(home, d, "skills", "a2a")
 			target, err := os.Readlink(link)
@@ -50,6 +76,49 @@ func TestInstall(t *testing.T) {
 				t.Fatalf("link does not resolve: %v", err)
 			}
 		}
+	}
+}
+
+// The installed package declares only current instructed contacts: Matrix,
+// the Quickstart SSH clone, and the gh api documentation fetch. Curator's
+// URL detector cannot infer the latter two hosts from those command forms.
+func TestInstallNetworkCapabilities(t *testing.T) {
+	r, err := Install(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(r.Copied, "agent-skill.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		SchemaVersion int `json:"schema_version"`
+		Capabilities  struct {
+			Network []string `json:"network"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != 3 {
+		t.Fatalf("schema = %d, want narrow capability schema 3", manifest.SchemaVersion)
+	}
+	want := []string{"matrix.relux.works", "github.com", "api.github.com"}
+	if len(manifest.Capabilities.Network) != len(want) {
+		t.Errorf("network = %v, want exactly %v", manifest.Capabilities.Network, want)
+	}
+	for _, host := range want {
+		t.Run(host, func(t *testing.T) {
+			count := 0
+			for _, declared := range manifest.Capabilities.Network {
+				if declared == host {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("%s declared %d times, want once", host, count)
+			}
+		})
 	}
 }
 
