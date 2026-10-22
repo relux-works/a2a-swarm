@@ -97,7 +97,7 @@ func TestAttachFilesFetchRoundTrip(t *testing.T) {
 	files := e.as("bob", "files", "proj").ok(t).stdout
 	tuitestkit.ContainsStr(t, files, id+"\talice\tnotes.txt\t26\t"+at.SHA256[:12]+"\t"+at.MXC+"\n")
 	recs := decodeRecords(t, e.as("bob", "files", "proj", "--json").ok(t).stdout)
-	if len(recs) != 1 || recs[0].Attachment == nil || *recs[0].Attachment != at || recs[0].Body != "see the notes" {
+	if len(recs) != 1 || recs[0].Attachment == nil || !reflect.DeepEqual(*recs[0].Attachment, at) || recs[0].Body != "see the notes" {
 		t.Fatalf("files --json = %+v", recs)
 	}
 	readTxt := e.as("bob", "read", "proj", "--event", id).ok(t).stdout

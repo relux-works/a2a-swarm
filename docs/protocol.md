@@ -231,3 +231,87 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
        - Zero replies to a blocking ask is a defect (rule 27): investigate delivery, liveness and addressing.
     5. **Keepers' view.** a2a tracks each ask as open until an addressee replies in its thread. `a2a questions --open --blocking [--room R|--product X]` lists age, what it blocks, and reply-by. The product keeper's status report includes them. `task-board list(status=blocked)` is the per-board supplement.
     - Across operators a blocking ask grants no authority (rule 14).
+
+## Attachment encoding v1 (rule 27 agreement)
+
+Top-level attachment metadata always describes the bytes stored at `mxc`. Encoded JSON objects use this shape:
+
+```json
+{
+  "name": "report.json.gz",
+  "size": 312,
+  "sha256": "<stored gzip sha256>",
+  "mxc": "mxc://relux.works/<id>",
+  "mimetype": "application/gzip",
+  "encoding": {
+    "version": "a2a.attachment.encoding/1",
+    "coding": "gzip",
+    "reason": "matrix-construct/tuwunel#666",
+    "original": {
+      "name": "report.json",
+      "size": 786,
+      "sha256": "<original sha256>",
+      "mimetype": "application/json"
+    }
+  }
+}
+```
+
+`encoding.original` has four required fields: `name` is a non-empty string passing the existing safe-name rules; `size` is a JSON integer in
+`0..L`; `sha256` is 64 lowercase hexadecimal characters; `mimetype` is a string (empty is allowed). `reason` is optional, but must be a string
+when present. Unknown extra keys in `encoding` and `original` are ignored. The top-level name is the original name plus `.gz`, and its size
+and hash cover the gzip bytes. Legacy clients therefore verify and save an honest `.gz` file without understanding the descriptor.
+
+| Descriptor | Fetch result |
+| --- | --- |
+| `encoding` absent | Legacy stored-byte verification and write |
+| Present `null` or any non-object | Refuse as malformed |
+| `version` missing, empty or non-string | Refuse as malformed |
+| Non-empty unknown `version` | Opaque: read no other descriptor fields; verify and save stored bytes |
+| v1 `coding` missing, empty or non-string | Refuse as malformed |
+| v1 `original` missing, non-object, or with any missing/invalid field | Refuse as malformed |
+| v1 `reason` present and non-string | Refuse as malformed |
+| Valid v1 envelope, `coding: "gzip"` | Verify stored bytes, then decode and verify original bytes |
+| Valid v1 envelope, non-empty unknown coding | Verify and save stored bytes |
+
+The entire v1 envelope is validated before coding dispatch: an unsupported coding cannot hide a malformed original. Unknown versions remain
+opaque. Each fallback exits successfully only after a verified write under the top-level name (or `-o`) and prints exactly one stderr notice:
+`attachment encoding <version>[/<coding>] not supported; saved the stored bytes as <name>`. No coding is inspected for unknown versions.
+
+The transfer bound `L` is the server's `m.upload.size`, clamped to `2^40` bytes. A server with no stated positive limit is refused. Before any
+media read, check stored `0 <= size <= L`, then v1 original `0 <= original.size <= L`, then, for gzip, `size >= 1` and
+`original.size <= 1024 * size`. Bounding operands first prevents integer overflow. Exactly 1024:1 is allowed. Attach refuses before upload
+if the original or gzip bytes exceed `L`, or the ratio exceeds 1024:1; it never bypasses a refusal by uploading the JSON object raw.
+
+Fetch uses this order before publishing anything at the target path:
+
+1. Validate legacy metadata and the descriptor, and apply the bounds above.
+2. Stream at most stored `size + 1` bytes to a temporary file; require exactly `size` and the top-level sha256.
+3. For v1 gzip only, decode into a second temporary file through `LimitReader(original.size + 1)`. Require exactly `original.size` and its sha256.
+4. Accept exactly one gzip member with valid CRC32 and ISIZE; reject truncation, any trailing byte, and a second member.
+5. Publish verified bytes without overwriting an existing path. Gzip uses the safe original name by default, or `-o path`; legacy/fallback uses
+   the top-level name. Remove temporary files on every refusal. Bare mxc fetches always save verified stored bytes without decoding.
+
+Attach encodes iff the first byte after JSON whitespace (space, tab, CR, LF) is `{` and the whole body passes `json.Valid`, including objects
+with floats. Arrays, scalars, invalid JSON, a UTF-8 BOM, text, Markdown and binary stay byte-exact without `encoding`. Original MIME detection
+is unchanged. Encoded uploads use `application/gzip` and stored metadata in Matrix `filename`/`info`. The writer emits exactly one gzip
+member, default deflate level, no FNAME/FCOMMENT/FEXTRA and MTIME zero; identical output across Go versions is not required.
+
+Lifetime: this is the workaround for tuwunel rewriting JSON-object media bodies (`matrix-construct/tuwunel#666`). Once the homeserver runs a
+fixed version, remove attach's encoder; fetch must retain v1 decoding indefinitely. Candidate objects are buffered for validation and compression;
+other uploads retain streaming. Media requests have a ten-minute timeout.
+
+Agreement: `#agents1-a2a`, topic `attach-sha256-mismatch`, 2026-10-22. Decision
+`$QpsLj-j8yWeTWcmA8ij7ei7LG2EDz-Bjqz1bgwWDu20`; keeper sponsorship `$ktRHr-JKPvzdcyahbSSCJrqreqWRDJClrGY0i4t1h50`
+(relay `$7TWfZ2gFxDRzuLUmv1WE0KpaPjHSrMrc4-JiO7rwX7c`); draft `$0IkYVxA84mNYRmeiBajvcDJvOHlW7FMjmqBMPoH2fFU`
+and acceptance `$iWL9AVU_2veZHUrdqeGZM4ZFOpB_zeHn9L_rzhtjEGA`; boundary request `$ULa5aixYzKWwz24HbqToVsoQC2pn-Kr7DU3GdRxw7Kg`;
+amendment 1 `$2xVzOmOTX1-BBF-_ls0z-UWpqagLWL2fGV3nPfy53YQ` and acceptance `$hMRNR9ZT4sOY-9VxUdib9TN3Yq7BNE1BL9vWmKfSSD0`;
+keeper conditional acceptance `$5CwS3n4ilDSw5jACLhoQLh4hdUCAHG_xNGl78n7eBGY`
+(relay `$DuGxXtY6o1sEHKuM4--wmmuiDmmmDDK-ALqE1gC51rY`); final Ivan-side acceptance `$oFZH13vtKUn_9OB6lCunu4QfXs5u5MarpPE50ojLq6I`.
+Amendment 1 governs descriptor and cap rules. Delivery requires these docs in the same PR and, after reviewed signed landing, a live smoke
+by the owning lane in its own room: encoded object round trip plus raw array, scalar, BOM object, text and binary controls. A changed raw
+control is a v1 bug and blocks reliance on v1; the smoke does not replace a shared installed binary.
+
+Display contract: `files` text and JSON, `read --json` and `archive` preserve the existing top-level metadata and add original name, size and
+sha256 for encoded events. JSON retains the descriptor object; text appends `encoding=<version>/<coding>`, `original_name=…`,
+`original_size=…`, `original_sha256=…`. Events without encoding retain byte-identical output.

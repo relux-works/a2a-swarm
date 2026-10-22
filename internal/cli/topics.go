@@ -75,11 +75,12 @@ type Header struct {
 
 // Attachment describes a file shared through the media repository.
 type Attachment struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	SHA256   string `json:"sha256"`
-	MXC      string `json:"mxc"`
-	MimeType string `json:"mimetype"`
+	Name     string          `json:"name"`
+	Size     int64           `json:"size"`
+	SHA256   string          `json:"sha256"`
+	MXC      string          `json:"mxc"`
+	MimeType string          `json:"mimetype"`
+	Encoding json.RawMessage `json:"encoding,omitempty"`
 }
 
 func decodeHeader(raw json.RawMessage) (Header, bool) {
@@ -715,6 +716,9 @@ func (a *App) printEvent(ev matrix.Event, server string) {
 		}
 		if h.Attachment != nil {
 			meta = append(meta, "file="+h.Attachment.Name, fmt.Sprintf("size=%d", h.Attachment.Size))
+			if encoded := attachmentEncodingText(h.Attachment, " "); encoded != "" {
+				meta = append(meta, strings.TrimSpace(encoded))
+			}
 		}
 	}
 	if root := ev.ThreadRoot(); root != "" {

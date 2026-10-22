@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -137,20 +140,55 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return fmt.Errorf("attach: media config: %w", err)
 	}
-	if max > 0 && size > max {
-		return fmt.Errorf("attach: file is %d bytes, over the server's upload limit of %d bytes", size, max)
+
+	limit, err := attachmentLimit(max)
+	if err != nil {
+		return fmt.Errorf("attach: %w", err)
+	}
+	if size > limit {
+		return fmt.Errorf("attach: file is %d bytes, over the server's upload limit of %d bytes", size, limit)
+	}
+	att := &Attachment{Name: name, Size: size, MimeType: mime}
+	body, err := jsonObjectFile(f, size)
+	if err != nil {
+		return fmt.Errorf("attach: %w", err)
+	}
+	var upload io.Reader = f
+	if body != nil {
+		var encoded bytes.Buffer
+		zw := gzip.NewWriter(&encoded)
+		if _, err := zw.Write(body); err != nil {
+			return fmt.Errorf("attach: gzip: %w", err)
+		}
+		if err := zw.Close(); err != nil {
+			return fmt.Errorf("attach: gzip: %w", err)
+		}
+		storedSize := int64(encoded.Len())
+		if err := validateGzipSizes(storedSize, size, limit); err != nil {
+			return fmt.Errorf("attach: gzip: %w", err)
+		}
+		originalHash := sha256.Sum256(body)
+		descriptor := attachmentEncoding{Version: attachmentEncodingVersion, Coding: "gzip", Reason: attachmentEncodingReason,
+			Original: AttachmentOriginal{Name: name, Size: size, SHA256: hex.EncodeToString(originalHash[:]), MimeType: mime}}
+		att.Encoding, err = json.Marshal(descriptor)
+		if err != nil {
+			return fmt.Errorf("attach: encoding: %w", err)
+		}
+		att.Name, att.Size, att.MimeType = name+".gz", storedSize, "application/gzip"
+		upload = bytes.NewReader(encoded.Bytes())
 	}
 
 	sum := sha256.New()
 	cnt := &countWriter{}
-	mxc, err := s.client.Upload(ctx, name, mime, io.TeeReader(f, io.MultiWriter(sum, cnt)), size)
+	mxc, err := s.client.Upload(ctx, att.Name, att.MimeType, io.TeeReader(upload, io.MultiWriter(sum, cnt)), att.Size)
 	if err != nil {
 		return fmt.Errorf("attach: upload: %w", err)
 	}
-	if cnt.n != size {
-		return fmt.Errorf("attach: %s changed while uploading (%d of %d bytes read)", sanitizeLine(path), cnt.n, size)
+	if cnt.n != att.Size {
+		return fmt.Errorf("attach: %s changed while uploading (%d of %d bytes read)", sanitizeLine(path), cnt.n, att.Size)
 	}
-	att := &Attachment{Name: name, Size: size, SHA256: hex.EncodeToString(sum.Sum(nil)), MXC: mxc, MimeType: mime}
+	att.MXC = mxc
+	att.SHA256 = hexSum(sum)
 
 	h := Header{V: 1, Type: "message", Slug: slug, Topic: root, From: s.name, To: toNames,
 		At: a.Now().UTC().Format(time.RFC3339), Kind: *kind, Attachment: att}
@@ -160,10 +198,10 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	}
 	content := threadReply(h, mentions)
 	content["msgtype"] = msgtype
-	content["body"] = formatHeaderBody(h, firstNonEmpty(caption, name))
-	content["filename"] = name
+	content["body"] = formatHeaderBody(h, firstNonEmpty(caption, att.Name))
+	content["filename"] = att.Name
 	content["url"] = mxc
-	content["info"] = map[string]any{"size": size, "mimetype": mime}
+	content["info"] = map[string]any{"size": att.Size, "mimetype": att.MimeType}
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
 		return fmt.Errorf("attach to %s: %w", label, err)
@@ -179,6 +217,51 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	return nil
+}
+
+// jsonObjectFile only buffers candidate objects; other media keep the existing
+// streaming upload. Seek back for every raw path, including invalid JSON.
+func jsonObjectFile(f *os.File, size int64) ([]byte, error) {
+	r := bufio.NewReader(f)
+	object := false
+	for {
+		b, err := r.ReadByte()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			continue
+		}
+		object = b == '{'
+		break
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if !object {
+		return nil, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(f, size))
+	if err != nil {
+		return nil, err
+	}
+	var extra [1]byte
+	n, err := f.Read(extra[:])
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	if int64(len(body)) != size || n != 0 {
+		return nil, errors.New("file changed while reading JSON object")
+	}
+	// Workaround for tuwunel rewriting JSON-object media bodies (matrix-construct/tuwunel#666); relevant until the homeserver runs a version with the fix. Remove the gzip path then; fetch must keep decoding old events.
+	if json.Valid(body) {
+		return body, nil
+	}
+	_, err = f.Seek(0, io.SeekStart)
+	return nil, err
 }
 
 type countWriter struct{ n int64 }
@@ -245,7 +328,7 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		if !sha256RE.MatchString(att.SHA256) {
 			return fmt.Errorf("event %s: attachment has no valid sha256", sanitizeLine(pos[1]))
 		}
-		if att.Size <= 0 {
+		if att.Size < 0 {
 			return fmt.Errorf("event %s: attachment has no valid size", sanitizeLine(pos[1]))
 		}
 		if _, err := matrix.ParseMXC(att.MXC); err != nil {
@@ -253,33 +336,45 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		}
 	}
 
+	max, err := s.client.MediaConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch: media config: %w", err)
+	}
+	limit, err := attachmentLimit(max)
+	if err != nil {
+		return fmt.Errorf("fetch: %w", err)
+	}
+	if bare == nil && (att.Size < 0 || att.Size > limit) {
+		return fmt.Errorf("fetch: declared size %d is over the server's upload limit of %d bytes or negative", att.Size, limit)
+	}
+	descriptor, err := parseAttachmentEncoding(att.Encoding, limit)
+	if err != nil {
+		return err
+	}
+	decode := descriptor != nil && descriptor.Version == attachmentEncodingVersion && descriptor.Coding == "gzip"
+	if decode {
+		if err := validateGzipSizes(att.Size, descriptor.Original.Size, limit); err != nil {
+			return fmt.Errorf("fetch: %w", err)
+		}
+	}
+	name := att.Name
+	if decode {
+		name = descriptor.Original.Name
+	}
 	target := *out
 	if target == "" {
-		if err := safeFileName(att.Name); err != nil {
+		if err := safeFileName(name); err != nil {
 			return err
 		}
-		target = att.Name
+		target = name
 	}
 	if _, err := os.Lstat(target); err == nil {
 		return fmt.Errorf("%s already exists; refusing to overwrite", sanitizeLine(target))
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("fetch: %w", err)
 	}
-
-	max, err := s.client.MediaConfig(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch: media config: %w", err)
-	}
-	// Hard cap on bytes read: the declared size, and never more than m.upload.size.
-	limit := max
-	if att.Size > 0 {
-		if max > 0 && att.Size > max {
-			return fmt.Errorf("fetch: declared size %d is over the server's upload limit of %d bytes", att.Size, max)
-		}
+	if bare == nil {
 		limit = att.Size
-	}
-	if limit <= 0 {
-		return fmt.Errorf("fetch: the server states no upload limit; refusing an unbounded download")
 	}
 
 	rc, err := s.client.Download(ctx, att.MXC)
@@ -298,6 +393,7 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 			os.Remove(tmp.Name())
 		}
 	}()
+
 	sum := sha256.New()
 	n, err := io.Copy(io.MultiWriter(tmp, sum), io.LimitReader(rc, limit+1))
 	if err != nil {
@@ -306,12 +402,54 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	if n > limit {
 		return fmt.Errorf("fetch: the server sent more than %d bytes; refused", limit)
 	}
-	if att.Size > 0 && n != att.Size {
+	if bare == nil && n != att.Size {
 		return fmt.Errorf("fetch: size mismatch: got %d bytes, want %d", n, att.Size)
 	}
 	if got := hexSum(sum); got != att.SHA256 {
 		return fmt.Errorf("fetch: sha256 mismatch: got %s, want %s", got, sanitizeLine(att.SHA256))
 	}
+	if decode {
+		// Stored-byte integrity is established before constructing a gzip reader.
+		encoded := tmp
+		defer func() { encoded.Close(); os.Remove(encoded.Name()) }()
+		if _, err := encoded.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("fetch: %w", err)
+		}
+		buffered := bufio.NewReader(encoded)
+		gz, err := gzip.NewReader(buffered)
+		if err != nil {
+			return fmt.Errorf("fetch: gzip: %w", err)
+		}
+		gz.Multistream(false)
+		defer gz.Close()
+		decoded, err := os.CreateTemp(filepath.Dir(target), ".a2a-fetch-*")
+		if err != nil {
+			return fmt.Errorf("fetch: %w", err)
+		}
+		tmp = decoded
+		sum = sha256.New()
+		original := descriptor.Original
+		n, err = io.Copy(io.MultiWriter(tmp, sum), io.LimitReader(gz, original.Size+1))
+		if err != nil {
+			return fmt.Errorf("fetch: gzip decode: %w", err)
+		}
+		if n > original.Size {
+			return fmt.Errorf("fetch: decoded output exceeds declared original size %d; refused", original.Size)
+		}
+		if _, err := buffered.ReadByte(); err != io.EOF {
+			if err != nil {
+				return fmt.Errorf("fetch: gzip trailing data read: %w", err)
+			}
+			return errors.New("fetch: gzip trailing data or second member refused")
+		}
+		if n != original.Size {
+			return fmt.Errorf("fetch: original size mismatch: got %d bytes, want %d", n, original.Size)
+		}
+		if got := hexSum(sum); got != original.SHA256 {
+			return fmt.Errorf("fetch: original sha256 mismatch: got %s, want %s", got, sanitizeLine(original.SHA256))
+		}
+	}
+
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
@@ -319,6 +457,13 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	done = true
+	if descriptor != nil && !decode {
+		label := descriptor.Version
+		if descriptor.Version == attachmentEncodingVersion {
+			label += "/" + descriptor.Coding
+		}
+		fmt.Fprintf(a.Stderr, "a2a: attachment encoding %s not supported; saved the stored bytes as %s\n", sanitizeLine(label), sanitizeLine(target))
+	}
 	a.printf("%s\n", sanitizeLine(target))
 	return nil
 }
@@ -403,8 +548,8 @@ func cmdFiles(ctx context.Context, a *App, args []string) error {
 		if len(short) > 12 {
 			short = short[:12]
 		}
-		a.printf("%s\t%s\t%s\t%d\t%s\t%s\n", sanitizeLine(ev.EventID), sanitizeLine(localpartIfLocal(ev.Sender, s.server)),
-			sanitizeLine(at.Name), at.Size, sanitizeLine(short), sanitizeLine(at.MXC))
+		a.printf("%s\t%s\t%s\t%d\t%s\t%s%s\n", sanitizeLine(ev.EventID), sanitizeLine(localpartIfLocal(ev.Sender, s.server)),
+			sanitizeLine(at.Name), at.Size, sanitizeLine(short), sanitizeLine(at.MXC), attachmentEncodingText(at, "\t"))
 	}
 	return nil
 }

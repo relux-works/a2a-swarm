@@ -67,6 +67,8 @@ type fakeHS struct {
 	media     map[string]fakeMedia // media id -> stored upload
 	serveAs   map[string][]byte    // media id -> bytes served instead (a lying server)
 	uploadMax int64                // m.upload.size
+	// uploadRewrite optionally models a homeserver mutating media bytes.
+	uploadRewrite func([]byte) []byte
 	// created records every accepted createRoom request body, in order.
 	created []createRoomReq
 	// syncsBy counts /sync requests per user, on arrival, so a test can wait
@@ -1136,6 +1138,9 @@ func (hs *fakeHS) upload(w http.ResponseWriter, r *http.Request, _ string) {
 	defer hs.mu.Unlock()
 	hs.seq++
 	id := fmt.Sprintf("media%03dAbC_-", hs.seq)
+	if hs.uploadRewrite != nil {
+		data = hs.uploadRewrite(data)
+	}
 	hs.media[id] = fakeMedia{data: data, contentType: r.Header.Get("Content-Type"), filename: r.URL.Query().Get("filename")}
 	writeJSON(w, 200, map[string]string{"content_uri": "mxc://" + hs.server + "/" + id})
 }

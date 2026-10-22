@@ -273,7 +273,7 @@ func writeArchiveBlock(b *strings.Builder, ev matrix.Event, server string) {
 	}
 	b.WriteString("- " + sanitizeLine(strings.Join(meta, " ")) + "\n")
 	if at := h.Attachment; hok && at != nil && !redacted {
-		fmt.Fprintf(b, "- attachment: %s %d sha256=%s %s\n", sanitizeLine(at.Name), at.Size, sanitizeLine(at.SHA256), sanitizeLine(at.MXC))
+		fmt.Fprintf(b, "- attachment: %s %d sha256=%s %s%s\n", sanitizeLine(at.Name), at.Size, sanitizeLine(at.SHA256), sanitizeLine(at.MXC), attachmentEncodingText(at, " "))
 	}
 	if target, ok := isEdit(ev); ok {
 		b.WriteString("- edit-of: " + sanitizeLine(target) + "\n")

@@ -60,7 +60,8 @@ func eventRecord(typ, room, roomID string, ev matrix.Event, server string, excer
 		}
 		if at := h.Attachment; at != nil {
 			r.Attachment = &Attachment{Name: sanitizeLine(at.Name), Size: at.Size, SHA256: sanitizeLine(at.SHA256),
-				MXC: sanitizeLine(at.MXC), MimeType: sanitizeLine(at.MimeType)}
+				MXC: sanitizeLine(at.MXC), MimeType: sanitizeLine(at.MimeType),
+				Encoding: at.Encoding}
 		}
 		if h.Type == "topic" {
 			r.Title = h.Title
