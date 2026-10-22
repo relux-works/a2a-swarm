@@ -139,3 +139,113 @@ func TestFetchOriginalSizeRequired(t *testing.T) {
 		}
 	}
 }
+
+// Keeper item 1: every event dispatch refuses declared stored L+1 before
+// downloading or writing, paired with valid media inside the same server limit.
+func TestFetchStoredSizeOverLimit(t *testing.T) {
+	const limit = 64
+	for _, mode := range []string{"legacy", "future", "unknown-coding", "gzip"} {
+		t.Run(mode, func(t *testing.T) {
+			e, a, want := storedSizeFixture(t, mode, []byte("hello"))
+			e.hs.mu.Lock()
+			e.hs.uploadMax = limit
+			e.hs.mu.Unlock()
+			sizeControl(t, e, a, want)
+			a["size"] = limit + 1
+			sizeRefusal(t, e, a, "over the server's upload limit of 64 bytes")
+		})
+	}
+}
+
+// Keeper item 2: actual 1-byte/L-byte media succeed for legacy and fallback;
+// gzip succeeds at stored L using a real stream and its exact size as server L.
+// A 1-byte gzip stream cannot contain even the fixed 10-byte gzip header.
+func TestFetchStoredSizeBoundaryControls(t *testing.T) {
+	for _, mode := range []string{"legacy", "future", "unknown-coding", "gzip"} {
+		for _, edge := range []string{"one", "at-L"} {
+			if mode == "gzip" && edge == "one" {
+				continue
+			}
+			t.Run(mode+"/"+edge, func(t *testing.T) {
+				body := []byte("x")
+				if edge == "at-L" {
+					body = bytes.Repeat([]byte("x"), 64)
+				}
+				if mode == "gzip" {
+					body = []byte("{\"a\":1}\n")
+				}
+				e, a, want := storedSizeFixture(t, mode, body)
+				if mode == "unknown-coding" {
+					// An unsupported coding's stored bytes need not be gzip; its
+					// valid v1 envelope still describes this body's original bytes.
+					e.hs.mu.Lock()
+					e.hs.media["sizefixture"] = fakeMedia{data: body}
+					e.hs.mu.Unlock()
+					a["size"], a["sha256"], want = len(body), sumHex(body), body
+				}
+				limit := 64
+				if edge == "at-L" {
+					limit = a["size"].(int)
+				}
+				if edge == "one" && a["size"] != 1 || edge == "at-L" && a["size"] != limit {
+					t.Fatal("fixture does not exercise the declared stored-size boundary")
+				}
+				e.hs.mu.Lock()
+				e.hs.uploadMax = int64(limit)
+				actual := len(e.hs.media["sizefixture"].data)
+				e.hs.mu.Unlock()
+				if actual != a["size"].(int) {
+					t.Fatal("declared boundary does not match actual stored bytes")
+				}
+				sizeControl(t, e, a, want)
+			})
+		}
+	}
+}
+
+// A one-byte stored body passes the positive size range but is not gzip;
+// decode refuses without files, while a valid stream at stored L succeeds.
+func TestFetchGzipOneByteStoredInvalid(t *testing.T) {
+	e, a, want := storedSizeFixture(t, "gzip", nil)
+	e.hs.mu.Lock()
+	e.hs.uploadMax = int64(a["size"].(int))
+	e.hs.mu.Unlock()
+	sizeControl(t, e, a, want)
+	body := []byte("x")
+	e.hs.mu.Lock()
+	e.hs.media["sizefixture"] = fakeMedia{data: body}
+	e.hs.mu.Unlock()
+	a["size"], a["sha256"] = len(body), sumHex(body)
+	before := e.hs.CallCount(downloadRoute)
+	r, dir := sizeFetch(t, e, a)
+	r.failsWith(t, ExitError, "gzip")
+	if e.hs.CallCount(downloadRoute) != before+1 || r.stdout != "" || len(dirEntries(t, dir)) != 0 {
+		t.Fatalf("invalid gzip did not reach decoding cleanly or left files: %+v", r)
+	}
+}
+
+// Keeper item 4: bare MXC has no event size; real media succeeds at server L,
+// then refuses at L+1 bytes with no stdout/target/temp, identically on base.
+func TestFetchBareSizeBound(t *testing.T) {
+	body := []byte("12345678")
+	e, a, _ := storedSizeFixture(t, "legacy", body)
+	e.hs.mu.Lock()
+	e.hs.uploadMax = int64(len(body))
+	e.hs.mu.Unlock()
+	goodDir := t.TempDir()
+	good := filepath.Join(goodDir, "out")
+	e.as("bob", "fetch", a["mxc"].(string), "--sha256", sumHex(body), "-o", good).ok(t)
+	if readFileStr(t, good) != string(body) || len(dirEntries(t, goodDir)) != 1 {
+		t.Fatal("valid bare fetch changed media or left temporary files")
+	}
+	e.hs.mu.Lock()
+	e.hs.uploadMax = int64(len(body) - 1)
+	e.hs.mu.Unlock()
+	badDir := t.TempDir()
+	before := e.hs.CallCount(downloadRoute)
+	r := e.as("bob", "fetch", a["mxc"].(string), "--sha256", sumHex(body), "-o", filepath.Join(badDir, "out"))
+	r.failsWith(t, ExitError, "more than 7 bytes")
+	if e.hs.CallCount(downloadRoute) != before+1 || r.stdout != "" || len(dirEntries(t, badDir)) != 0 {
+		t.Fatalf("over-limit bare fetch did not use its download bound or left files: %+v", r)
+	}
+}
