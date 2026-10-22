@@ -164,10 +164,11 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	content["filename"] = name
 	content["url"] = mxc
 	content["info"] = map[string]any{"size": size, "mimetype": mime}
-	id, err := s.client.SendMessage(ctx, roomID, content)
+	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
 		return fmt.Errorf("attach to %s: %w", label, err)
 	}
+	id := receipt.EventID()
 	if err := s.rememberThread(root); err != nil {
 		fmt.Fprintf(a.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}

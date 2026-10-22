@@ -165,7 +165,7 @@ func TestArchivePaginationPreservesFiles(t *testing.T) {
 			refuse = true
 			wantError := "repeated pagination token"
 			if failure == "read error" {
-				wantError = "fixture read failure"
+				wantError = "HTTP 503"
 			}
 			e.as("alice", "archive", "proj", "--dir", dir, "--json-index").failsWith(t, ExitError, wantError)
 			for _, name := range names {

@@ -254,7 +254,7 @@ func TestProjectSendFailureKeepsPosition(t *testing.T) {
 	e.project().ok(t)
 	e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "must not be lost"))
 	e.hs.fail(sendRoute, 500, "M_UNKNOWN", "boom")
-	e.project().failsWith(t, ExitError, "boom")
+	e.project().failsWith(t, ExitError, "HTTP 500")
 	if n := len(e.projections(system)); n != 0 {
 		t.Fatalf("projected despite failure: %d", n)
 	}

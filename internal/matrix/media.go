@@ -2,7 +2,6 @@ package matrix
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,12 +87,17 @@ func (c *Client) Upload(ctx context.Context, filename, contentType string, body 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 	var out struct {
 		ContentURI string `json:"content_uri"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxErrorBody)).Decode(&out); err != nil {
-		return "", fmt.Errorf("upload: decode response: %w", err)
+	// The historical upload reader allowed a 64KiB response. Read one byte
+	// beyond that boundary to distinguish an exactly full body from a prefix.
+	v, err := readControl(ctx, resp, maxErrorBody+1)
+	if err != nil {
+		return "", err
+	}
+	if err = v.consume(ctx, &out, "content_uri"); err != nil {
+		return "", err
 	}
 	m, err := ParseMXC(out.ContentURI)
 	if err != nil {

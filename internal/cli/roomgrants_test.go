@@ -156,7 +156,7 @@ func TestRoomAliasRaceAndResolveFailure(t *testing.T) {
 		e := newEnv(t)
 		e.agent("alice")
 		e.hs.fail("GET /_matrix/client/v3/directory/room/{alias}", http.StatusForbidden, "M_FORBIDDEN", "alias unreadable")
-		e.as("alice", "room", "new", "team").failsWith(t, ExitError, "alias unreadable")
+		e.as("alice", "room", "new", "team").failsWith(t, ExitError, "M_FORBIDDEN")
 		if e.hs.CallCount(createRoute) != 0 || e.hs.CallCount(inviteRoute) != 0 {
 			t.Fatal("resolve failure treated as absent alias")
 		}

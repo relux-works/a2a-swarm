@@ -321,12 +321,12 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 				label := s.roomLabel(ctx, roomID, labels)
 				product, productAlias := s.productForOrigin(ctx, roomID, productCache, a.Now())
 				content := projection(ev, h, roomID, label, s.server, product, productAlias)
-				id, err := s.client.SendMessageTxn(ctx, systemRoom, projectionTxn(systemRoom, roomID, ev.EventID), content)
+				receipt, err := s.client.SendMessageTxnReceipt(ctx, systemRoom, projectionTxn(systemRoom, roomID, ev.EventID), content)
 				if err != nil {
 					// Keep the position: the next run retries with the same txn id.
 					return fmt.Errorf("project %s from %s: %w", sanitizeLine(ev.EventID), label, err)
 				}
-				a.printf("projected %s %s %s -> %s\n", label, ev.EventID, h.Kind, id)
+				a.printf("projected %s %s %s -> %s\n", label, ev.EventID, h.Kind, receipt.EventID())
 			}
 		}
 		// Save the position only after every projection of the batch was sent.

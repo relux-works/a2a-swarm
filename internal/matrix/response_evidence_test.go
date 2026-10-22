@@ -77,7 +77,7 @@ func TestPutStateResponseEvidence(t *testing.T) {
 				if kind == "missing-request" {
 					responseRequest = nil
 				}
-				return &http.Response{StatusCode: 403, Header: make(http.Header), Body: b, Request: responseRequest}, nil
+				return &http.Response{StatusCode: 403, Header: make(http.Header), ContentLength: -1, Body: b, Request: responseRequest}, nil
 			})}
 			_, err := c.PutState(ctx, "!room:synthetic", "status", "@own:synthetic", map[string]string{"state": "working"})
 			var me *Error

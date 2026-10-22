@@ -337,7 +337,7 @@ func (a *App) publishLivenessTransition(ctx context.Context, s *session, key str
 		if pending == nil {
 			return nil
 		}
-		if _, err := s.client.SendMessageTxn(ctx, pending.Room, pending.Txn, pending.Content); err != nil {
+		if _, err := s.client.SendMessageTxnReceipt(ctx, pending.Room, pending.Txn, pending.Content); err != nil {
 			return err
 		}
 		_, err = config.UpdateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout), func(st *config.State) error {

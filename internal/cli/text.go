@@ -191,7 +191,8 @@ func (s *session) roomLabel(ctx context.Context, roomID string, cache map[string
 	return label
 }
 
-// isNotFound reports a 404 / M_NOT_FOUND Matrix error.
+// isNotFound requires the interpreted Matrix code. A status-only malformed
+// error body cannot establish absence for a fallback or mutation decision.
 func isNotFound(err error) bool {
-	return matrix.IsStatus(err, 404) || matrix.IsCode(err, "M_NOT_FOUND")
+	return matrix.IsCode(err, "M_NOT_FOUND")
 }

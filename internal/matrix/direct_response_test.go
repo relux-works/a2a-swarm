@@ -79,7 +79,7 @@ func TestDirectOnlyResponseOrigin(t *testing.T) {
 				if kind == "informational" {
 					status = 101
 				}
-				return &http.Response{StatusCode: status, Header: make(http.Header), Request: responseRequest, Body: io.NopCloser(strings.NewReader(`{"event_id":"$synthetic"}`))}, nil
+				return &http.Response{StatusCode: status, Header: make(http.Header), ContentLength: -1, Request: responseRequest, Body: io.NopCloser(strings.NewReader(`{"event_id":"$synthetic"}`))}, nil
 			})}
 			id, err := c.WithoutRedirects().PutState(context.Background(), "!own:synthetic", "status", "@own:synthetic", map[string]string{"state": "working"})
 			if kind == "direct" {

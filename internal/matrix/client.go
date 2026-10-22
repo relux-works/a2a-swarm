@@ -27,11 +27,10 @@ const maxErrorBody = 64 << 10
 
 // Client talks to one homeserver as one user (or anonymously for registration).
 type Client struct {
-	BaseURL           string
-	Token             string
-	HTTP              *http.Client
-	directOnly        bool
-	ownStatusEvidence bool
+	BaseURL    string
+	Token      string
+	HTTP       *http.Client
+	directOnly bool
 }
 
 // WithoutRedirects returns a scoped copy for operations whose response must
@@ -56,19 +55,22 @@ type Error struct {
 	// OriginalRequest is true only for a response to the sent URL with no
 	// redirect followed. A redirected refusal says nothing about the first send.
 	OriginalRequest bool `json:"-"`
-	// Raw is the decoded body, used for UIA responses (session, flows, completed).
-	Raw json.RawMessage `json:"-"`
+	// Raw is bounded diagnostic entity data, possibly invalid or incomplete.
+	// UIA consumes the private validated value, never this mutable compatibility field.
+	Raw           json.RawMessage `json:"-"`
+	control       *controlValue
+	BodyComplete  bool  `json:"-"`
+	ContentLength int64 `json:"-"`
 }
 
 func (e *Error) Error() string {
-	code := e.ErrCode
-	if code == "" {
-		code = "HTTP " + strconv.Itoa(e.Status)
+	// Server text and unknown error codes are arbitrary data, potentially secrets.
+	// Keep them out of diagnostics; classification uses the validated fields.
+	switch e.ErrCode {
+	case "M_FORBIDDEN", "M_NOT_FOUND", "M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_USER_IN_USE", "M_ROOM_IN_USE", "M_LIMIT_EXCEEDED":
+		return fmt.Sprintf("matrix: %s (status %d)", e.ErrCode, e.Status)
 	}
-	if e.Message == "" {
-		return fmt.Sprintf("matrix: %s (status %d)", code, e.Status)
-	}
-	return fmt.Sprintf("matrix: %s: %s (status %d)", code, e.Message, e.Status)
+	return "matrix: HTTP " + strconv.Itoa(e.Status)
 }
 
 // IsCode reports whether err is a Matrix error with the given errcode.
@@ -89,37 +91,52 @@ var ErrAuth = errors.New("access token rejected by the homeserver")
 // seg escapes one path segment (room ids, aliases, event ids, user ids).
 func seg(s string) string { return url.PathEscape(s) }
 
-func (c *Client) do(ctx context.Context, method, path string, query url.Values, in, out any) error {
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, in, out any, required ...string) error {
+	_, err := c.doResponse(ctx, method, path, query, in, out, false, required...)
+	return err
+}
+
+func (c *Client) doBulk(ctx context.Context, method, path string, query url.Values, in, out any) error {
+	_, err := c.doResponse(ctx, method, path, query, in, out, true)
+	return err
+}
+
+func (c *Client) doResponse(ctx context.Context, method, path string, query url.Values, in, out any, bulk bool, required ...string) (*controlValue, error) {
 	var body io.Reader
 	contentType := ""
 	size := int64(-1)
 	if in != nil {
 		data, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		body, contentType, size = bytes.NewReader(data), "application/json", int64(len(data))
 	}
 	resp, err := c.send(ctx, method, path, query, body, contentType, size)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if !bulk {
+		v, err := readControl(ctx, resp, 0)
+		if err != nil {
+			return nil, err
+		}
+		if err = v.consume(ctx, out, required...); err != nil {
+			return nil, err
+		}
+		return v, nil
 	}
 	defer resp.Body.Close()
-	if c.ownStatusEvidence {
-		field := "room_id"
-		if method == http.MethodPut {
-			field = "event_id"
-		}
-		return decodeOwnStatusResponse(ctx, resp, field, out)
-	}
+	// Peer-content success responses intentionally retain their historical
+	// decoder: duplicates and scalar repair cannot poison a whole sync.
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
+		return nil, nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("%s %s: decode response: %w", method, path, err)
+		return nil, fmt.Errorf("%s %s: decode response: %w", method, path, err)
 	}
-	return nil
+	return nil, nil
 }
 
 // send performs one request and returns the response for statuses below 300.
@@ -175,24 +192,23 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 		return nil, fmt.Errorf("%s %s: response is not from original request", method, path)
 	}
 	if resp.StatusCode >= 300 {
-		defer resp.Body.Close()
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		if c.ownStatusEvidence && resp.ContentLength >= 0 && int64(len(data)) != resp.ContentLength {
-			readErr = io.ErrUnexpectedEOF
+		me := &Error{Status: resp.StatusCode,
+			OriginalRequest: !redirected && resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.String() == originalURL && resp.Request.Method == method}
+		v, decodeErr := readControl(ctx, resp, maxErrorBody)
+		me.ContentLength = resp.ContentLength
+		if v != nil {
+			me.Raw = append([]byte(nil), v.raw...)
+			me.BodyComplete = v.complete
 		}
-		me := &Error{Status: resp.StatusCode, Raw: data,
-			OriginalRequest: !redirected && resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.String() == originalURL && (!c.ownStatusEvidence || resp.Request.Method == method)}
-		// A LimitReader EOF at its cap is not evidence of a complete response.
-		// Only a clean EOF below the cap, within the caller's deadline, can
-		// establish decoded error fields. A prefix remains diagnostic Raw only.
-		// Decode all standard fields successfully before trusting any of them.
-		// The HTTP status is transport evidence, never a response-body field.
-		var decoded struct {
-			ErrCode string `json:"errcode"`
-			Message string `json:"error"`
-		}
-		if readErr == nil && len(data) < maxErrorBody && ctx.Err() == nil && json.Unmarshal(data, &decoded) == nil {
-			me.ErrCode, me.Message = decoded.ErrCode, decoded.Message
+		if decodeErr == nil {
+			var fields struct {
+				ErrCode string `json:"errcode"`
+				Message string `json:"error"`
+			}
+			if v.consume(ctx, &fields) == nil {
+				me.ErrCode, me.Message = fields.ErrCode, fields.Message
+				me.control = v
+			}
 		}
 		if resp.StatusCode == http.StatusUnauthorized && (me.ErrCode == "M_UNKNOWN_TOKEN" || me.ErrCode == "M_MISSING_TOKEN") {
 			return nil, fmt.Errorf("%w (%s)", ErrAuth, me.ErrCode)
@@ -209,10 +225,10 @@ func withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, DefaultRequestTimeout)
 }
 
-func (c *Client) call(ctx context.Context, method, path string, query url.Values, in, out any) error {
+func (c *Client) call(ctx context.Context, method, path string, query url.Values, in, out any, required ...string) error {
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
-	return c.do(ctx, method, path, query, in, out)
+	return c.do(ctx, method, path, query, in, out, required...)
 }
 
 // NewTxnID returns a random transaction id for idempotent sends.
@@ -259,7 +275,10 @@ func (c *Client) Register(ctx context.Context, username, password, regToken, dev
 	var out RegisterResponse
 	lastStage := ""
 	for step := 0; step < 5; step++ {
-		err := c.call(ctx, http.MethodPost, v3+"/register", nil, req, &out)
+		err := c.call(ctx, http.MethodPost, v3+"/register", nil, req, &out, "user_id", "access_token", "device_id")
+		if interrupted := ctx.Err(); interrupted != nil {
+			return out, interrupted
+		}
 		if err == nil {
 			return out, nil
 		}
@@ -268,14 +287,14 @@ func (c *Client) Register(ctx context.Context, username, password, regToken, dev
 			return out, err
 		}
 		var uia uiaResponse
-		if json.Unmarshal(me.Raw, &uia) != nil || uia.Session == "" {
+		if !me.uia(&uia) {
 			return out, err
 		}
 		stage, ok := nextStage(uia)
 		if lastStage != "" && (me.ErrCode != "" || stage == lastStage) {
 			// The stage we just submitted was not accepted.
 			if lastStage == "m.login.registration_token" {
-				return out, fmt.Errorf("register: registration token rejected by the homeserver (%s)", me.ErrCode)
+				return out, fmt.Errorf("register: registration token rejected by the homeserver: %w", err)
 			}
 			return out, fmt.Errorf("register: stage %s rejected: %w", lastStage, err)
 		}
@@ -301,6 +320,9 @@ func (c *Client) Register(ctx context.Context, username, password, regToken, dev
 // 401 UIA challenge, which creates nothing.
 func (c *Client) UserExists(ctx context.Context, username string) (bool, error) {
 	err := c.call(ctx, http.MethodPost, v3+"/register", nil, RegisterRequest{Username: username}, nil)
+	if interrupted := ctx.Err(); interrupted != nil {
+		return false, interrupted
+	}
 	switch {
 	case err == nil:
 		return false, fmt.Errorf("register probe: the homeserver registered %s without authentication", username)
@@ -309,7 +331,7 @@ func (c *Client) UserExists(ctx context.Context, username string) (bool, error) 
 	}
 	var me *Error
 	var uia uiaResponse
-	if errors.As(err, &me) && me.Status == http.StatusUnauthorized && json.Unmarshal(me.Raw, &uia) == nil && uia.Session != "" {
+	if errors.As(err, &me) && me.Status == http.StatusUnauthorized && me.uia(&uia) {
 		return false, nil
 	}
 	return false, fmt.Errorf("register probe: %w", err)
@@ -367,7 +389,7 @@ func (c *Client) Login(ctx context.Context, userID, password, deviceID string) (
 		req["device_id"] = deviceID
 	}
 	var out LoginResponse
-	err := c.call(ctx, http.MethodPost, v3+"/login", nil, req, &out)
+	err := c.call(ctx, http.MethodPost, v3+"/login", nil, req, &out, "user_id", "access_token", "device_id")
 	return out, err
 }
 
@@ -377,6 +399,9 @@ func (c *Client) Login(ctx context.Context, userID, password, deviceID string) (
 func (c *Client) Deactivate(ctx context.Context, userID, password string) error {
 	path := v3 + "/account/deactivate"
 	err := c.call(ctx, http.MethodPost, path, nil, map[string]any{}, nil)
+	if interrupted := ctx.Err(); interrupted != nil {
+		return interrupted
+	}
 	if err == nil {
 		return nil // the server asked for no authentication
 	}
@@ -385,7 +410,7 @@ func (c *Client) Deactivate(ctx context.Context, userID, password string) error 
 		return fmt.Errorf("deactivate: %w", err)
 	}
 	var uia uiaResponse
-	if json.Unmarshal(me.Raw, &uia) != nil || uia.Session == "" {
+	if !me.uia(&uia) {
 		return fmt.Errorf("deactivate: %w", err)
 	}
 	if !hasFlow(uia, "m.login.password") {
@@ -399,11 +424,7 @@ func (c *Client) Deactivate(ctx context.Context, userID, password string) error 
 	}}
 	err = c.call(ctx, http.MethodPost, path, nil, req, nil)
 	if IsStatus(err, http.StatusUnauthorized) {
-		var code string
-		if errors.As(err, &me) {
-			code = me.ErrCode
-		}
-		return fmt.Errorf("deactivate: password rejected by the homeserver (%s)", code)
+		return fmt.Errorf("deactivate: password rejected by the homeserver: %w", err)
 	}
 	if err != nil {
 		return fmt.Errorf("deactivate: %w", err)
@@ -432,7 +453,7 @@ type WhoamiResponse struct {
 // Whoami returns the authenticated user.
 func (c *Client) Whoami(ctx context.Context) (WhoamiResponse, error) {
 	var out WhoamiResponse
-	err := c.call(ctx, http.MethodGet, v3+"/account/whoami", nil, nil, &out)
+	err := c.call(ctx, http.MethodGet, v3+"/account/whoami", nil, nil, &out, "user_id")
 	return out, err
 }
 
@@ -441,7 +462,7 @@ func (c *Client) JoinedRooms(ctx context.Context) ([]string, error) {
 	var out struct {
 		JoinedRooms []string `json:"joined_rooms"`
 	}
-	err := c.call(ctx, http.MethodGet, v3+"/joined_rooms", nil, nil, &out)
+	err := c.call(ctx, http.MethodGet, v3+"/joined_rooms", nil, nil, &out, "joined_rooms")
 	return out.JoinedRooms, err
 }
 
@@ -453,8 +474,8 @@ func (c *Client) ResolveAlias(ctx context.Context, alias string) (string, error)
 	var out struct {
 		RoomID string `json:"room_id"`
 	}
-	err := c.call(ctx, http.MethodGet, v3+"/directory/room/"+seg(alias), nil, nil, &out)
-	if IsStatus(err, http.StatusNotFound) || IsCode(err, "M_NOT_FOUND") {
+	err := c.call(ctx, http.MethodGet, v3+"/directory/room/"+seg(alias), nil, nil, &out, "room_id")
+	if IsCode(err, "M_NOT_FOUND") {
 		return "", fmt.Errorf("%w %s", ErrUnknownAlias, alias)
 	}
 	return out.RoomID, err
@@ -470,7 +491,7 @@ func (c *Client) Join(ctx context.Context, roomIDOrAlias string) (string, error)
 	var out struct {
 		RoomID string `json:"room_id"`
 	}
-	err := c.call(ctx, http.MethodPost, v3+"/join/"+seg(roomIDOrAlias), nil, map[string]any{}, &out)
+	err := c.call(ctx, http.MethodPost, v3+"/join/"+seg(roomIDOrAlias), nil, map[string]any{}, &out, "room_id")
 	return out.RoomID, err
 }
 
@@ -503,7 +524,7 @@ func (c *Client) CreateRoom(ctx context.Context, req CreateRoomRequest) (string,
 	var out struct {
 		RoomID string `json:"room_id"`
 	}
-	err := c.call(ctx, http.MethodPost, v3+"/createRoom", nil, req, &out)
+	err := c.call(ctx, http.MethodPost, v3+"/createRoom", nil, req, &out, "room_id")
 	if err == nil && out.RoomID == "" {
 		return "", fmt.Errorf("createRoom: the homeserver returned no room_id")
 	}
@@ -512,7 +533,7 @@ func (c *Client) CreateRoom(ctx context.Context, req CreateRoomRequest) (string,
 
 // GetState reads one state event's content into out.
 func (c *Client) GetState(ctx context.Context, roomID, evType, stateKey string, out any) error {
-	return c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType)+"/"+seg(stateKey), nil, nil, out)
+	return c.callBulk(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType)+"/"+seg(stateKey), nil, nil, out)
 }
 
 // GetStateEvents lists a room's state events of one type. The client-server API
@@ -536,26 +557,31 @@ func (c *Client) GetStateEvents(ctx context.Context, roomID, evType string) ([]E
 // events, so a liveness snapshot does not need a separate full-state fetch per type.
 func (c *Client) GetRoomState(ctx context.Context, roomID string) ([]Event, error) {
 	var all []Event
-	err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state", nil, nil, &all)
+	err := c.callBulk(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state", nil, nil, &all)
 	return all, err
 }
 
 // PutState sends a state event and returns its event id.
 func (c *Client) PutState(ctx context.Context, roomID, evType, stateKey string, content any) (string, error) {
-	var out struct {
-		EventID string `json:"event_id"`
-	}
-	err := c.call(ctx, http.MethodPut, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType)+"/"+seg(stateKey), nil, content, &out)
-	return out.EventID, err
+	ack, err := c.PutStateReceipt(ctx, roomID, evType, stateKey, content)
+	return ack.EventID(), err
+}
+
+// PutStateReceipt returns the strict ACK together with its complete raw entity.
+// Use ForOwnStatus or WithoutRedirects when original-request provenance matters.
+func (c *Client) PutStateReceipt(ctx context.Context, roomID, evType, stateKey string, content any) (ACKReceipt, error) {
+	return c.ack(ctx, v3+"/rooms/"+seg(roomID)+"/state/"+seg(evType)+"/"+seg(stateKey), content)
 }
 
 // SendMessage sends an m.room.message event and returns its event id.
 func (c *Client) SendMessage(ctx context.Context, roomID string, content any) (string, error) {
-	var out struct {
-		EventID string `json:"event_id"`
-	}
-	err := c.call(ctx, http.MethodPut, v3+"/rooms/"+seg(roomID)+"/send/m.room.message/"+seg(NewTxnID()), nil, content, &out)
-	return out.EventID, err
+	ack, err := c.SendMessageReceipt(ctx, roomID, content)
+	return ack.EventID(), err
+}
+
+// SendMessageReceipt is SendMessage with owned, validated ACK evidence.
+func (c *Client) SendMessageReceipt(ctx context.Context, roomID string, content any) (ACKReceipt, error) {
+	return c.SendMessageTxnReceipt(ctx, roomID, NewTxnID(), content)
 }
 
 // --- events ---------------------------------------------------------------------
@@ -659,7 +685,7 @@ func (c *Client) messages(ctx context.Context, roomID, from, dir string, limit i
 	}
 	q.Set("filter", filter)
 	var out Page
-	err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/messages", q, nil, &out)
+	err := c.callBulk(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/messages", q, nil, &out)
 	return out, err
 }
 
@@ -670,7 +696,7 @@ func (c *Client) Threads(ctx context.Context, roomID, from string, limit int) (P
 		q.Set("from", from)
 	}
 	var out Page
-	err := c.call(ctx, http.MethodGet, v1+"/rooms/"+seg(roomID)+"/threads", q, nil, &out)
+	err := c.callBulk(ctx, http.MethodGet, v1+"/rooms/"+seg(roomID)+"/threads", q, nil, &out)
 	return out, err
 }
 
@@ -681,14 +707,14 @@ func (c *Client) ThreadReplies(ctx context.Context, roomID, root, from, dir stri
 		q.Set("from", from)
 	}
 	var out Page
-	err := c.call(ctx, http.MethodGet, v1+"/rooms/"+seg(roomID)+"/relations/"+seg(root)+"/m.thread", q, nil, &out)
+	err := c.callBulk(ctx, http.MethodGet, v1+"/rooms/"+seg(roomID)+"/relations/"+seg(root)+"/m.thread", q, nil, &out)
 	return out, err
 }
 
 // GetEvent fetches one event.
 func (c *Client) GetEvent(ctx context.Context, roomID, eventID string) (Event, error) {
 	var out Event
-	err := c.call(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/event/"+seg(eventID), nil, nil, &out)
+	err := c.callBulk(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/event/"+seg(eventID), nil, nil, &out)
 	return out, err
 }
 
@@ -725,7 +751,7 @@ func (c *Client) Sync(ctx context.Context, since string, timeout time.Duration, 
 	ctx, cancel := context.WithTimeout(ctx, timeout+DefaultRequestTimeout)
 	defer cancel()
 	var out SyncResponse
-	err := c.do(ctx, http.MethodGet, v3+"/sync", q, nil, &out)
+	err := c.doBulk(ctx, http.MethodGet, v3+"/sync", q, nil, &out)
 	return out, err
 }
 
@@ -745,6 +771,6 @@ func (c *Client) SetPresence(ctx context.Context, userID string, p Presence) err
 // GetPresence reads a user's presence.
 func (c *Client) GetPresence(ctx context.Context, userID string) (Presence, error) {
 	var out Presence
-	err := c.call(ctx, http.MethodGet, v3+"/presence/"+seg(userID)+"/status", nil, nil, &out)
+	err := c.callBulk(ctx, http.MethodGet, v3+"/presence/"+seg(userID)+"/status", nil, nil, &out)
 	return out, err
 }

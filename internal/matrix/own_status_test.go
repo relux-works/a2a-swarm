@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// Own-status validation is opt-in: generic callers keep the historical decoder
-// contract. The separately queued generic Matrix follow-up owns that behavior.
+// Own status and generic controls share strict interpretation. The scoped
+// copy still adds its independent no-redirect policy.
 func TestOwnStatusEvidenceScope(t *testing.T) {
 	for _, shape := range []string{"put", "resolve"} {
 		for _, body := range []string{"{}", `{"event_id":"$id","room_id":"!room:test"} {}`} {
@@ -26,8 +26,8 @@ func TestOwnStatusEvidenceScope(t *testing.T) {
 					_, err := c.ResolveAlias(context.Background(), "#status:test")
 					return err
 				}
-				if err := call(c); err != nil {
-					t.Fatalf("generic contract changed: %v", err)
+				if err := call(c); err == nil {
+					t.Fatal("generic missing/partial ACK accepted")
 				}
 				if err := call(c.ForOwnStatus()); err == nil {
 					t.Fatal("scoped missing/partial ACK accepted")

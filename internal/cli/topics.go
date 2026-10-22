@@ -312,10 +312,11 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 			At: a.Now().UTC().Format(time.RFC3339),
 		},
 	}
-	id, err := s.client.SendMessage(ctx, roomID, content)
+	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
 		return fmt.Errorf("topic new in %s: %w", label, err)
 	}
+	id := receipt.EventID()
 	if err := s.rememberThread(id); err != nil {
 		fmt.Fprintf(a.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}
@@ -466,10 +467,11 @@ func (s *session) sendThreadMessage(ctx context.Context, roomID, label string, h
 	content := threadReply(h, mentions)
 	content["msgtype"] = "m.text"
 	content["body"] = formatHeaderBody(h, text)
-	id, err := s.client.SendMessage(ctx, roomID, content)
+	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
 		return "", fmt.Errorf("post to %s: %w", label, err)
 	}
+	id := receipt.EventID()
 	if err := s.rememberThread(h.Topic); err != nil {
 		fmt.Fprintf(s.app.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}

@@ -430,7 +430,7 @@ func TestSubsMigrateLegacyState(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.hs.fail(accountDataPut, 500, "M_UNKNOWN", "disk full")
-	e.as("alice", "subs").failsWith(t, ExitError, "disk full")
+	e.as("alice", "subs").failsWith(t, ExitError, "HTTP 500")
 	if st, _ := config.LoadState(e.paths(), "alice"); len(st.LegacySubscriptions) != 2 {
 		t.Fatalf("legacy map dropped after a failed migration: %+v", st)
 	}

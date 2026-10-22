@@ -218,7 +218,7 @@ func TestLivenessLockedWriteDeadlineAndFailureState(t *testing.T) {
 	e.hs.fail("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}", 500, "M_UNKNOWN", "status unavailable")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	e.runCtx(ctx, append([]string{"--as", "alice"}, statusArgs("blocked")...)...).failsWith(t, ExitError, "status unavailable")
+	e.runCtx(ctx, append([]string{"--as", "alice"}, statusArgs("blocked")...)...).failsWith(t, ExitError, "HTTP 500")
 	if !probe.seen || e.state("alice").Liveness.State != prior {
 		t.Fatal("deadline probe not applied or failed PUT mutated local state")
 	}

@@ -218,7 +218,7 @@ func TestLivenessHostRecoveryRetry(t *testing.T) {
 	e.as("bob", statusArgs("working")...).ok(t)
 	const route = "PUT /_matrix/client/v3/rooms/{room}/send/{type}/{txn}"
 	e.hs.fail(route, 500, "M_UNKNOWN", "recovery publication unavailable")
-	e.as("alice", args...).failsWith(t, ExitError, "recovery publication unavailable")
+	e.as("alice", args...).failsWith(t, ExitError, "HTTP 500")
 	var key, txn string
 	for k, record := range e.state("alice").LivenessAlerts {
 		if strings.Contains(k, "host:") && record.Value == "healthy" && record.Pending != nil {
@@ -478,7 +478,7 @@ func TestLivenessWatchRetriesStateFailure(t *testing.T) {
 	}
 	r := e.runCtx(ctx, "--as", "alice", "who", "--watch", "--poll", "5ms", "--stale-after", "3m").ok(t)
 	<-done
-	if !strings.Contains(r.stderr, "transient liveness read") || !strings.Contains(r.stdout, "alice\tworking\tfresh") || e.hs.CallCount(route) < baseline+3 {
+	if !strings.Contains(r.stderr, "HTTP 500") || !strings.Contains(r.stdout, "alice\tworking\tfresh") || e.hs.CallCount(route) < baseline+3 {
 		t.Fatalf("watch did not recover: %+v calls=%d", r, e.hs.CallCount(route)-baseline)
 	}
 }

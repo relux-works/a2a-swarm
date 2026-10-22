@@ -102,7 +102,7 @@ func TestProjectRejectsInvalidResolution(t *testing.T) {
 				e.hs.mu.Lock()
 				e.hs.aliases["#"+selector+":test.local"] = bad
 				e.hs.mu.Unlock()
-				e.project().failsWith(t, ExitError, "invalid resolved projector room")
+				e.project().failsWith(t, ExitError, "invalid")
 				if e.hs.CallCount("GET /_matrix/client/v3/sync") != 0 || len(projectPaths(e, "/join/")) != 0 || len(projectPaths(e, "/send/")) != 0 || projectCursor(t, e) != "" {
 					t.Fatal("bad directory response caused effects")
 				}
@@ -234,7 +234,7 @@ func TestProjectRetryPinsTargetAndTransaction(t *testing.T) {
 	before := projectCursor(t, e)
 	id := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "retry"))
 	e.hs.fail(sendRoute, 500, "M_UNKNOWN", "send down")
-	e.project().failsWith(t, ExitError, "send down")
+	e.project().failsWith(t, ExitError, "HTTP 500")
 	if projectCursor(t, e) != before {
 		t.Fatal("failed send advanced cursor")
 	}
@@ -276,7 +276,7 @@ func TestProjectFirstRunSkipsHistoryAndJoinFailureKeepsPosition(t *testing.T) {
 			e.as("bob", "invite", side, "proj").ok(t)
 			before := projectCursor(t, e)
 			e.hs.fail(projectJoinRoute, 500, "M_UNKNOWN", "join down")
-			e.project("--source", "side").failsWith(t, ExitError, "join down")
+			e.project("--source", "side").failsWith(t, ExitError, "HTTP 500")
 			if projectCursor(t, e) != before {
 				t.Fatal("failed join advanced cursor")
 			}
@@ -370,7 +370,7 @@ func TestProjectBackfillFailureAndGap(t *testing.T) {
 				e.hs.fail(messagesRoute, 500, "M_UNKNOWN", "backfill down")
 			}
 			if !gap {
-				e.project().failsWith(t, ExitError, "backfill down")
+				e.project().failsWith(t, ExitError, "HTTP 500")
 				if projectCursor(t, e) != before || len(e.projections(target)) != 0 {
 					t.Fatal("backfill failure lost cursor/events")
 				}

@@ -45,7 +45,7 @@ func TestWaitBackfillFailureKeepsPosition(t *testing.T) {
 		e.hs.inject(room, "@bob:test.local", msg("noise", nil))
 	}
 	e.hs.fail(messagesRoute, 500, "M_UNKNOWN", "backfill down")
-	e.as("alice", "wait", "--timeout", "2s").failsWith(t, ExitError, "backfill down")
+	e.as("alice", "wait", "--timeout", "2s").failsWith(t, ExitError, "HTTP 500")
 	e.hs.mu.Lock()
 	delete(e.hs.failures, messagesRoute)
 	e.hs.mu.Unlock()

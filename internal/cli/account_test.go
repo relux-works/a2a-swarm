@@ -117,14 +117,16 @@ func TestCredentialModeRefused(t *testing.T) {
 	}
 }
 
-// Proves that a server error message that contains a secret is scrubbed before
-// it is printed (secret redaction in error messages).
+// Proves arbitrary server error text is withheld, including secrets that
+// would otherwise need redaction.
 func TestErrorRedaction(t *testing.T) {
 	e, _ := world(t)
 	tok := e.tokens["alice"]
 	e.hs.fail("GET /_matrix/client/v3/joined_rooms", 500, "M_UNKNOWN", "backend exploded while handling token "+tok+" and password=pw-alice-secret")
-	r := e.as("alice", "rooms").failsWith(t, ExitError, "backend exploded")
-	tuitestkit.ContainsStr(t, r.stderr, "<redacted>")
+	r := e.as("alice", "rooms").failsWith(t, ExitError, "HTTP 500")
+	tuitestkit.NotContainsStr(t, r.stderr, "backend exploded")
+	tuitestkit.NotContainsStr(t, r.stderr, tok)
+	tuitestkit.NotContainsStr(t, r.stderr, "pw-alice-secret")
 }
 
 // Proves the access token never appears in any request URL (it travels only in
@@ -172,7 +174,7 @@ func TestJoinAndInvite(t *testing.T) {
 func TestInviteNegative(t *testing.T) {
 	e, _ := world(t)
 	e.as("alice", "invite", "proj", "bad user").failsWith(t, ExitUsage, "invalid user")
-	e.as("alice", "invite", "proj", "@nobody").failsWith(t, ExitError, "Unknown user")
+	e.as("alice", "invite", "proj", "@nobody").failsWith(t, ExitError, "M_NOT_FOUND")
 	e.as("alice", "invite", "nowhere", "bob").failsWith(t, ExitError, "unknown room alias #nowhere:test.local")
 	e.as("carol", "invite", "proj", "bob").failsWith(t, ExitError, "M_FORBIDDEN")
 }

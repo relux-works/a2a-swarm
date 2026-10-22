@@ -183,7 +183,7 @@ func TestRoomRetireFilteredPages(t *testing.T) {
 		}, wantError: "pagination repeated", wantReads: 3},
 		{name: "later read failure", pages: map[string]fakeMessagePage{
 			"": {page: matrix.Page{End: "older"}}, "older": {failure: &fakeFailure{status: 503, errcode: "M_UNKNOWN", message: "history unavailable"}},
-		}, wantError: "history unavailable", wantReads: 2},
+		}, wantError: "HTTP 503", wantReads: 2},
 	}
 	// Fixed contract: 100 pages without a terminal result must refuse, even
 	// when a terminal empty page exists just beyond the cap.
