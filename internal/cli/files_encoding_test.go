@@ -465,7 +465,7 @@ func TestFetchEncodingCaps(t *testing.T) {
 		e, a, body, _ := encodingFixture(t)
 		good := injectFileAttachment(e, a)
 		a["size"] = 0
-		expectFetchRefusal(t, e, a, "gzip stored size")
+		expectFetchRefusal(t, e, a, "attachment has no valid size")
 		expectValidEncoding(t, e, attachmentFields(t, e, good), body)
 	})
 	t.Run("no-server-limit", func(t *testing.T) {
@@ -563,8 +563,8 @@ func TestFetchEncodingLimitClamp(t *testing.T) {
 	}
 }
 
-// A1.1 permits zero original size and empty string mimetype/reason; A1.2 also
-// permits verified empty legacy media, while gzip stored size zero is refused.
+// A1.1 permits zero original size and empty string mimetype/reason; the gzip
+// representation is nonempty, as required for stored size by Erratum 1.
 func TestFetchEncodingZeroSizes(t *testing.T) {
 	e, a, _, _ := encodingFixture(t)
 	stored := fixtureGzip(t, nil)
@@ -576,14 +576,6 @@ func TestFetchEncodingZeroSizes(t *testing.T) {
 	orig["sha256"] = sumHex(nil)
 	orig["mimetype"] = ""
 	a["encoding"].(map[string]any)["reason"] = ""
-	expectValidEncoding(t, e, a, nil)
-	mediaID, _ := attachmentMedia(t, e, a)
-	e.hs.mu.Lock()
-	e.hs.serveAs[mediaID] = []byte{}
-	e.hs.mu.Unlock()
-	delete(a, "encoding")
-	a["size"] = 0
-	a["sha256"] = sumHex(nil)
 	expectValidEncoding(t, e, a, nil)
 }
 

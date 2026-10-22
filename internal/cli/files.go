@@ -328,7 +328,14 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		if !sha256RE.MatchString(att.SHA256) {
 			return fmt.Errorf("event %s: attachment has no valid sha256", sanitizeLine(pos[1]))
 		}
-		if att.Size < 0 {
+		// Validate required size presence/type from raw JSON without changing
+		// Attachment's wire output. Missing and null must never become zero.
+		var metadata struct {
+			Attachment struct {
+				Size *int64 `json:"size"`
+			} `json:"attachment"`
+		}
+		if err := json.Unmarshal(ev.Message().A2A, &metadata); err != nil || metadata.Attachment.Size == nil || *metadata.Attachment.Size <= 0 {
 			return fmt.Errorf("event %s: attachment has no valid size", sanitizeLine(pos[1]))
 		}
 		if _, err := matrix.ParseMXC(att.MXC); err != nil {
@@ -344,8 +351,8 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
-	if bare == nil && (att.Size < 0 || att.Size > limit) {
-		return fmt.Errorf("fetch: declared size %d is over the server's upload limit of %d bytes or negative", att.Size, limit)
+	if bare == nil && att.Size > limit {
+		return fmt.Errorf("fetch: declared size %d is over the server's upload limit of %d bytes", att.Size, limit)
 	}
 	descriptor, err := parseAttachmentEncoding(att.Encoding, limit)
 	if err != nil {

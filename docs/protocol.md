@@ -279,7 +279,7 @@ opaque. Each fallback exits successfully only after a verified write under the t
 `attachment encoding <version>[/<coding>] not supported; saved the stored bytes as <name>`. No coding is inspected for unknown versions.
 
 The transfer bound `L` is the server's `m.upload.size`, clamped to `2^40` bytes. A server with no stated positive limit is refused. Before any
-media read, check stored `0 <= size <= L`, then v1 original `0 <= original.size <= L`, then, for gzip, `size >= 1` and
+media read, require a present JSON integer stored `1 <= size <= L`, then a present JSON integer v1 original `0 <= original.size <= L`, then, for gzip,
 `original.size <= 1024 * size`. Bounding operands first prevents integer overflow. Exactly 1024:1 is allowed. Attach refuses before upload
 if the original or gzip bytes exceed `L`, or the ratio exceeds 1024:1; it never bypasses a refusal by uploading the JSON object raw.
 
@@ -308,7 +308,10 @@ and acceptance `$iWL9AVU_2veZHUrdqeGZM4ZFOpB_zeHn9L_rzhtjEGA`; boundary request 
 amendment 1 `$2xVzOmOTX1-BBF-_ls0z-UWpqagLWL2fGV3nPfy53YQ` and acceptance `$hMRNR9ZT4sOY-9VxUdib9TN3Yq7BNE1BL9vWmKfSSD0`;
 keeper conditional acceptance `$5CwS3n4ilDSw5jACLhoQLh4hdUCAHG_xNGl78n7eBGY`
 (relay `$DuGxXtY6o1sEHKuM4--wmmuiDmmmDDK-ALqE1gC51rY`); final Ivan-side acceptance `$oFZH13vtKUn_9OB6lCunu4QfXs5u5MarpPE50ojLq6I`.
-Amendment 1 governs descriptor and cap rules. Delivery requires these docs in the same PR and, after reviewed signed landing, a live smoke
+Amendment 1 governs descriptor and cap rules, corrected by Erratum 1
+`$ju9zElGf0IkdpQ17tOPkjzJuCmG9mJyKoWmbKRSnni4`: missing, null, zero or negative stored size refuses before download on every dispatch
+path (legacy, opaque version, v1 fallback, v1 gzip), preserving base behavior. Missing or null `original.size` also refuses; explicit original
+zero remains valid. Valid-event Attachment JSON output is unchanged. Delivery requires these docs in the same PR and, after reviewed signed landing, a live smoke
 by the owning lane in its own room: encoded object round trip plus raw array, scalar, BOM object, text and binary controls. A changed raw
 control is a v1 bug and blocks reliance on v1; the smoke does not replace a shared installed binary.
 
