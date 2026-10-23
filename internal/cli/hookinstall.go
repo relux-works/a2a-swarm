@@ -342,6 +342,24 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 			}
 		}
 	}
+	if rt.env {
+		if err := ownerMergeDenials(root, install); err != nil {
+			return err
+		}
+	} else {
+		exe, name := "", ""
+		if install {
+			var err error
+			exe, err = a.executable()
+			if err != nil {
+				return err
+			}
+			name = *agent
+		}
+		if err := ownerCodexRules(path, exe, name, install); err != nil {
+			return err
+		}
+	}
 	var out bytes.Buffer
 	if err := json.Compact(&out, root.marshal()); err != nil {
 		return err

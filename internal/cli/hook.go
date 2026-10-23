@@ -80,9 +80,10 @@ var hookEvents = []hookEvent{
 // hookInput is the part of the hook stdin JSON a2a uses; Claude Code and Codex
 // both send these fields under these names (Codex: hooks/src/schema.rs).
 type hookInput struct {
-	SessionID      string `json:"session_id"`
-	HookEventName  string `json:"hook_event_name"`
-	StopHookActive bool   `json:"stop_hook_active"`
+	Payload        json.RawMessage `json:"-"`
+	SessionID      string          `json:"session_id"`
+	HookEventName  string          `json:"hook_event_name"`
+	StopHookActive bool            `json:"stop_hook_active"`
 }
 
 // hookStopOutput blocks a Claude Code stop; the reason is fed to the model.
@@ -228,6 +229,15 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		}
 	}
 	in, err := readHookInput(a.Stdin)
+	blocked := false
+	if ev.arg == "stop" && *runtime != "" {
+		parent := ctx
+		defer func() {
+			if !blocked {
+				a.ownerMirrorStop(parent, rt.name, in)
+			}
+		}()
+	}
 	if err != nil {
 		fail(err)
 		return
@@ -258,7 +268,7 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 			fail(bindErr)
 		}
 	}
-	err = a.hookDeliver(ctx, rt, ev, in)
+	err = a.hookDeliver(ctx, rt, ev, in, &blocked)
 	if err != nil {
 		fail(err)
 		return
@@ -312,6 +322,7 @@ func readHookInput(r io.Reader) (hookInput, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return in, nil
 	}
+	in.Payload = append(json.RawMessage(nil), data...)
 	if err := json.Unmarshal(data, &in); err != nil {
 		return in, errors.New("hook input on stdin is not a JSON object")
 	}
@@ -334,7 +345,7 @@ func hookSessionKey(id string) string {
 // brings the mailbox up to date like inbox, skips what this session already
 // rang, and prints the fixed template for the unreceived entries. It receipts
 // nothing; only `a2a inbox` and `a2a ack` do.
-func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in hookInput) error {
+func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in hookInput, blocked *bool) error {
 	s, err := a.session()
 	if err != nil {
 		return err
@@ -416,6 +427,9 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 		out, err := hookOutput(rt, ev, doorbellOf(items, s.server, members))
 		if err != nil {
 			return nil, err
+		}
+		if stop {
+			*blocked = true
 		}
 		if _, err := io.WriteString(a.Stdout, out); err != nil {
 			return nil, fmt.Errorf("write output: %w", err)

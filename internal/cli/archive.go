@@ -477,10 +477,17 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	excluded, err := ownerFiles(s.paths, s.name).exclusions()
+	if err != nil {
+		return err
+	}
 	if !all {
 		roomID, label, err := s.resolveRoom(ctx, pos[0])
 		if err != nil {
 			return err
+		}
+		if excluded[roomID] {
+			return nil
 		}
 		if strings.HasPrefix(label, "!") {
 			if label = s.roomLabel(ctx, roomID, nil); strings.HasPrefix(label, "!") {
@@ -498,6 +505,9 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	for _, id := range ids {
+		if excluded[id] {
+			continue
+		}
 		label := s.roomLabel(ctx, id, nil)
 		if !strings.HasPrefix(label, "#") || strings.Contains(label, ":") {
 			fmt.Fprintf(a.Stderr, "a2a: note: skipping %s: no local alias\n", sanitizeLine(id))

@@ -73,7 +73,7 @@ Onboards a new orchestrator in one command (owner requirement, 2026-09-29): it p
 summary. Every step is printed; nothing is a hidden default; a re-run changes nothing and says `already` / `unchanged`.
 
 **Current onboarding policy:** the owner authorizes the identity; missing rooms are provisioned through the meta-keeper, with the product
-keeper coordinating product scope. Continue only when the required rooms and membership are ready. Do not use `identity ensure` to create
+keeper coordinating product scope. Continue only when the required rooms and membership are ready. The sole agent room-creation exception is an admitted, verified owner-channel `owner-dm bind`: it creates only the pinned owner’s unencrypted private room (see Owner DM S1 below). Do not use `identity ensure` to create
 a missing room. The implementation still has that capability (step 2 below); it does not enforce keeper approval or a readiness gate.
 
 1. **Identity.**
@@ -1223,3 +1223,190 @@ It cannot become ready just because Matrix heartbeats continue. When the owning 
 known terminal failure, only that last wake's retained entries become eligible again; the hourly reservations still apply. Completed
 wakes do not automatically replay unanswered mail. This owner-controlled recovery is separate from an uncertain submission, which
 still requires exact historical acceptance and cannot be cleared by a gate.
+
+
+## Owner DM S1 (default off)
+
+This implements the S1 portion of agreed F1 draft 7, SHA256
+`b2da973fad036f5bc0308e7f884a0415bb0f992c0e2bfe7e152e0b2da0bc219b`.
+Agreement/admission: #agents1-a2a, owner-dm-feature,
+`$ce0qi4NqDBuQlwe23xW5cXsnjp7bexxOJO9KHqPmsBU`, task T4
+`$w0h1DIW5RKTCKgRZ6VyEiKhFOwgDv5j0Oq4khG5wBDQ`;
+activation/invalid-config interpretation `$xgTxwiA2cGFeIR5HuELXxoRB_0d0Z2cuqVDf-aqeCPo`,
+freshness boundary `$sccXdPmi5weioCpTNoS40KpLFRzOr56riudHtUpUizc`.
+Nothing enables a live identity. **Tagging is forced off in S1**: `tag` and
+`render` can be stored but change no inbound JSON, framing or doorbell count.
+Inbound labels, renderings and encrypted-event `undecryptable` entries are S2.
+
+All files live in `<A2A_CONFIG_DIR>/owner-dm/`, one set for the selected identity,
+with regular mode 0600 files and atomic temp/fsync/rename writes:
+
+| File | Meaning |
+| --- | --- |
+| `NAME.pin` | Host-written `{"mode":"host"|"owner-channel","owner":"@exact:server"}`. No CLI writes it. Missing/invalid pin means host mode. |
+| `NAME.json` | `v:1`, generation, active, pending_join, owner, room, tag, mirror, render, sub_id and bound_by_event. |
+| `NAME.archive-exclude` | Append-only set of room IDs, one per line; unset/unbind never remove rooms. |
+| `NAME.bindings` | Accepted bind/unbind IDs and per-owner ordering watermark; independent of the mirror journal. |
+| `NAME.journal` | Mirror key and outcome records, bounded to 256 entries and 7 days. |
+| `NAME.lock` | Shared identity lock for lifecycle writers and complete mirror attempts. |
+
+A pin alone is never-configured and changes no command output or subscriptions.
+Pending and inactive identities do not mirror. An invalid config disables the
+feature and emits one warning per command; every `owner-dm` mutation refuses,
+while `status` reports invalid and other commands continue. The invalid file is
+never repaired or replaced. Archive independently honours valid exclusions;
+invalid/unreadable exclusions make archive refuse and name the file. Old-format
+state writers do not touch these files. Identity B never reads identity A’s set.
+
+The host operator provisions the pin. In owner-channel mode the owner posts
+exactly one command line from that MXID, in a shared room:
+
+```text
+a2a owner-dm bind NAME [tag] [mirror] [render=outside-frame|in-frame]
+a2a owner-dm unbind NAME
+```
+
+The agent executes only `a2a owner-dm bind --event ROOM '$event'` or
+`unbind --event ROOM '$event'`. CLI overrides are refused: identity and flags
+come from the fetched event and owner from the pin. The event must be an
+unedited, unredacted `m.room.message`, the identity must be joined, and its
+`origin_server_ts` must lie inclusively between now minus 15 minutes and now
+plus 2 minutes. The event ID is single-use. Host mode/no pin ignores these
+requests with no room/config/store/journal/output side effects.
+
+An initial bind from any shared room creates a fresh `private_chat`,
+`is_direct` room: invite-only, history visibility joined, no encryption,
+inviting only the pinned owner. It excludes that room from archive and installs
+one all-events subscription, whose ID alone is removed on unset/unbind. This
+is the sole agent room-creation exception to the general provisioning rule;
+terminal ensure is a host-operated fallback, not agent provisioning.
+The room is pending until the owner accepts the invitation. A second pending
+claim refuses. An active bind only changes flags and must come from the bound
+room. Unbind may come from any shared room; it deactivates, increments the
+generation and removes only that recorded subscription, leaving the room and
+archive exclusions intact.
+
+Accepted owner-channel mutations advance a persisted per-owner watermark.
+Every later mutation must have a greater timestamp, or an equal timestamp
+proved later by that room’s event order. Equal timestamps across rooms or
+unresolved room order refuse. The watermark survives unbind, unset and
+generation changes. A new pin owner has a new watermark and makes the old
+binding inactive until the new owner binds. Binding records younger than 17
+minutes are never evicted; at least the latest record for every generation is
+kept, and older records beyond the latest 1024 may be pruned.
+
+**Terminal ensure, set and unset do not consult or advance the watermark.**
+A fresh unused owner-channel request issued before a terminal change can still
+apply afterwards, within its 15-minute window. Remedy: edit the pin on the
+host, or wait out that window. This is intentional terminal ordering, not a
+promise that terminal changes invalidate prior owner requests.
+
+```text
+a2a owner-dm ensure [--tag] [--mirror] [--render in-frame|outside-frame]
+a2a owner-dm set --room '!id' [--tag] [--mirror] [--render in-frame|outside-frame]
+a2a owner-dm unset
+a2a owner-dm status
+```
+
+Ensure always creates a new room; it never discovers or adopts an existing DM.
+Set uses only the explicitly named existing room. Ensure/set require a pin
+naming the owner. All three mutations require isatty on stdin and stdout,
+`/dev/tty`, and the owner MXID typed back (the word `unset` for unset). Status
+requires no terminal and is strictly read-only: config, fingerprint, mtime,
+current audience, pending expiry and whether the owner’s join would activate.
+These checks provide friction, not authenticated consent: an agent can allocate
+a PTY, and a same-UID process can edit files or ignore the lock.
+
+Pending activation/24-hour expiry runs under the identity lock on a non-status
+owner-dm command, or an unblocked Stop with pending mirror enabled. Activation
+requires the current member event’s state_key and sender both equal the pinned
+owner, membership join, and a passing audience check. Owner-event checks and
+ordering finish before any lifecycle write: a refused event cannot activate,
+expire or confirm. Unset/unbind deactivate directly without confirming first.
+A successful operation observes activation only when it agrees with its
+requested transition. The confirmation includes identity, flags, fingerprint
+and unbind instructions. It reserves a journal key `(generation, confirm)`
+before sending with a fixed transaction ID, at most once while retained.
+Failure is journaled best effort without retry in that invocation; activation
+stands. This is not exactly-once network delivery. Status only computes its
+observation; inbox/wait/watch do not perform activation or expiry.
+These ordering and confirmation interpretations are recorded in keeper
+disposition `$aXgjJCfy7ElClZr00BpmnhfaJs_P3BV2XwAd218ZES0`, relayed by
+`$iRrfkmkcthMhw0OetmLjg_4G1RDJxGW2jVJSg4mXZow`.
+
+The audience check reads current room state at pinning, activation and before
+every mirror attempt. Only identity joined plus owner joined/invited may be
+present; activation/sends require owner joined, join_rule invite, non-world-
+readable history and no encryption state. It never repairs a room. Owner leave,
+a third invite/member, changed join rule, or encryption stops sends without
+unbinding; restoring valid state permits a later final. Status reports encrypted
+rooms as “bound room is encrypted; v1 cannot read or post there”. This is an
+observation before sending, not atomic protected audience isolation: room state
+may change before the server accepts a send, and later joiners may see history.
+
+### Stop mirror and installed hooks
+
+`hook install` keeps one ordinary Stop hook per runtime and identity. The mirror
+is part of that hook, not a consumer: it never adds wait, watch or Monitor, and
+never bypasses `ErrWaitWhileBound` or the binding/onboarding guidance above.
+Only an explicit `--runtime claude|codex` Stop that a2a does not block can mirror.
+The source is the whole `last_assistant_message` in stdin, with session_id and
+Claude prompt_id / Codex turn_id. Missing, empty or mistyped fields skip and
+best-effort journal `skipped:no-payload`. **transcript_path is never opened**.
+No thinking, tool/user messages, files, attachments or other sessions are read.
+
+The exact sanitized captures and provenance are in
+`internal/cli/testdata/stop-payloads/`: Claude Code **2.1.309** and Codex CLI
+**0.163.0**. Other shapes are synthetic tests, not captured-runtime claims.
+The Claude capture used a `--settings` override. The Codex capture fired only
+through a session `-c hooks.Stop` override; project `.codex/hooks.json` was not
+loaded in either captured attempt. **S1 hook-install discovery has not yet been
+validated: producer runtime execution awaits host keeper approval.** Generated
+files alone and the capture do not prove discovery. A human must perform the
+project/hook trust steps above; a2a never writes trust or user CODEX_HOME config.
+
+Install also writes Claude permissions.deny rules for the three terminal verbs;
+Codex receives `rules/a2a-owner-dm.rules` beside the selected hooks file, using
+forbidden prefix rules for canonical `a2a owner-dm ...` and `a2a --as NAME
+owner-dm ...` invocations, including the installed binary path. Foreign rules
+files refuse replacement. The rules are removed with the corresponding hook
+uninstall. They are runtime policy friction, not same-UID protection or a claim
+that arbitrary wrappers, renamed binaries or shell code cannot bypass them.
+Syntax references: [OpenAI rules](https://learn.chatgpt.com/docs/agent-configuration/rules)
+and [Claude permissions](https://code.claude.com/docs/en/permissions).
+Agent-callable lifecycle commands are bind/unbind --event and status; the
+technical-root verbs must remain denied to agents.
+
+The whole selected message is redacted before truncation/chunking: private-key
+PEM, Authorization Bearer, Matrix/GitHub/Slack/Google/sk-/AWS access-key patterns,
+URL userinfo credentials, and shell/JSON/YAML assignments of password, passwd,
+token, secret, api_key, access_token, refresh_token or client_secret. Matches
+become `[redacted]`; more than 20 original spans withholds the final with one
+notice. Redaction is best effort. Above 32000 characters, retain 28000 and append
+the omitted count; then split into at most eight chunks of at most 4000 Unicode
+characters.
+
+A mirror has one total 5-second deadline covering lock wait, journal I/O,
+activation, audience and all chunks. Lifecycle writers wait at most 10 seconds
+for the same lock. Under it, the mirror re-reads config and reserves/fsyncs
+`pending` before any final-message chunk. The key contains runtime, session,
+turn, SHA256 of the selected text and generation. Any retained journal state
+suppresses replay, including a crash-left pending; no retry or resume occurs.
+Chunks use `a2a-odm-<sha256(key)[:24]>-<index>` transaction IDs. Outcomes are sent,
+partial, failed, refused or skipped. An unwritable pending record prevents send;
+unwritable journals and lock timeouts have no guaranteed failure record.
+After a successful unset, unbind or terminal re-pin returns, no chunk from an
+earlier generation can be sent. A same-UID editor ignoring the lock is outside
+that guarantee. Mirror failures change no native Stop exit code, doorbell,
+mailbox, receipts or cursor. Other concurrent runtime hooks may still block a
+stop a2a allowed; a later changed final in that turn is a separate mirror key.
+
+No delivery or exactly-once guarantee is made. Deduplication lasts only while
+the key is retained (256 entries, 7 days); server transaction deduplication is
+also time-bounded. A later replay can send again. Messages remain **plaintext
+on the homeserver** until E2EE, subject to server retention; redaction does not
+make the room safe for secrets. Homeserver/owner-account compromise, same-UID
+file edits, and first replay of a still-fresh genuine owner request are outside
+F1’s protection. Fingerprint/mtime are observations; render is presentation.
+Protected authority requires separately owned B4, outside S1. S2 and live
+activation require their own admission.

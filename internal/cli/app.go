@@ -70,6 +70,9 @@ type App struct {
 	backfillPages int
 	// leaseTTL, when set (tests only), replaces config.LeaseTTL.
 	leaseTTL time.Duration
+	// Owner terminal/deadline seams are tests only; production uses /dev/tty.
+	ownerConfirm      func(string) error
+	ownerMirrorBudget time.Duration
 	// Native transport/fault hooks are test-only seams.
 	nativeDial                        func(context.Context, string) (nativeRuntime, error)
 	afterWakeReserve, afterWakeSubmit func() error
@@ -102,6 +105,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
+		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
@@ -188,6 +192,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
+			if c.name != "owner-dm" {
+				a.warnOwnerDM()
+			}
 			return a.fail(c.run(ctx, a, rest[1:]))
 		}
 	}

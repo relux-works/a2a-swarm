@@ -85,6 +85,8 @@ func (hs *fakeHS) SyncCount(user string) int {
 
 // createRoomReq is the part of a createRoom body the fake checks and records.
 type createRoomReq struct {
+	IsDirect                  bool           `json:"is_direct"`
+	InitialState              []matrix.Event `json:"initial_state"`
 	Creator                   string         `json:"-"`
 	Preset                    string         `json:"preset"`
 	Visibility                string         `json:"visibility"`
@@ -590,7 +592,7 @@ func (hs *fakeHS) createRoom(w http.ResponseWriter, r *http.Request, u string) {
 		}
 	}
 	full := "#" + req.RoomAliasName + ":" + hs.server
-	if _, taken := hs.aliases[full]; taken {
+	if _, taken := hs.aliases[full]; taken && req.RoomAliasName != "" {
 		writeErr(w, 400, "M_ROOM_IN_USE", "Room alias already taken")
 		return
 	}
@@ -601,6 +603,10 @@ func (hs *fakeHS) createRoom(w http.ResponseWriter, r *http.Request, u string) {
 		}
 	}
 	id := "!" + req.RoomAliasName + "RoomID"
+	if req.RoomAliasName == "" {
+		id = fmt.Sprintf("!dm%dRoomID", len(hs.created))
+		full = ""
+	}
 	room := &fakeRoom{id: id, alias: full, name: req.Name, members: map[string]string{u: "join"}, state: map[string]json.RawMessage{}}
 	room.state["m.room.canonical_alias|"], _ = json.Marshal(map[string]string{"alias": full})
 	create := map[string]any{"creator": u}
@@ -625,7 +631,14 @@ func (hs *fakeHS) createRoom(w http.ResponseWriter, r *http.Request, u string) {
 	}
 	room.state["m.room.power_levels|"], _ = json.Marshal(pl)
 	hs.rooms[id] = room
-	hs.aliases[full] = id
+	if full != "" {
+		hs.aliases[full] = id
+	}
+	for _, ev := range req.InitialState {
+		if ev.StateKey != nil {
+			room.state[ev.Type+"|"+*ev.StateKey] = append(json.RawMessage(nil), ev.Content...)
+		}
+	}
 	for _, inv := range req.Invite {
 		room.members[inv] = "invite"
 		hs.invites = append(hs.invites, fakeInvite{pos: len(hs.events) + 1, room: id, user: inv, by: u})

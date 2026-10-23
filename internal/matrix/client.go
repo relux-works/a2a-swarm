@@ -505,15 +505,24 @@ func (c *Client) Invite(ctx context.Context, roomID, userID string) error {
 	return c.call(ctx, http.MethodPost, v3+"/rooms/"+seg(roomID)+"/invite", nil, map[string]any{"user_id": userID}, nil)
 }
 
+// InitialStateEvent is the client-supplied state, without server event metadata.
+type InitialStateEvent struct {
+	Type     string          `json:"type"`
+	StateKey string          `json:"state_key"`
+	Content  json.RawMessage `json:"content"`
+}
+
 // CreateRoomRequest is the body of POST /createRoom (the subset a2a sets).
 type CreateRoomRequest struct {
-	Preset          string         `json:"preset,omitempty"`
-	Visibility      string         `json:"visibility,omitempty"`
-	CreationContent map[string]any `json:"creation_content,omitempty"`
-	RoomAliasName   string         `json:"room_alias_name,omitempty"`
-	Name            string         `json:"name,omitempty"`
-	Topic           string         `json:"topic,omitempty"`
-	Invite          []string       `json:"invite,omitempty"`
+	IsDirect        bool                `json:"is_direct,omitempty"`
+	InitialState    []InitialStateEvent `json:"initial_state,omitempty"`
+	Preset          string              `json:"preset,omitempty"`
+	Visibility      string              `json:"visibility,omitempty"`
+	CreationContent map[string]any      `json:"creation_content,omitempty"`
+	RoomAliasName   string              `json:"room_alias_name,omitempty"`
+	Name            string              `json:"name,omitempty"`
+	Topic           string              `json:"topic,omitempty"`
+	Invite          []string            `json:"invite,omitempty"`
 	// PowerLevelContentOverride is merged over the preset's m.room.power_levels.
 	PowerLevelContentOverride map[string]any `json:"power_level_content_override,omitempty"`
 }
