@@ -55,7 +55,7 @@ server: #lobby, #broadcast, #system (all projections, for the meta-keeper)
   - creates the space and the rooms #X-lobby, #X-broadcast and #X-system, linked as space child and parent;
   - sets power levels: events_default=50 in #X-broadcast, where only X_keeper has 50; in #X-system only the projector writes.
 - `a2a room new --product X` adds a project room.
-- `identity ensure --product X` joins the product rooms and creates exactly the subscriptions of its role's row in section 3a.
+- `identity ensure --product X --preset P` joins the product rooms and creates the ordinary-room baseline plus the role's additional rows in section 3a, preserving recorded trims.
 - An unknown product is an error; nothing is created implicitly.
 - Projector routing now requires explicit `--source` selectors and exactly one `--system` target. Only allowlisted actual room IDs are joined or projected; product membership is informational and never adds a `#X-system` destination. This supersedes the dual projection behavior of PR #46; see `docs/cli.md` for the source-only command contract. Live activation remains separately authorized.
   - Every projection carries the FULL PATH to its origin (Alexis, $kpqbsYe_...).
@@ -84,17 +84,17 @@ Principles:
 - Noise is cut by kind/subtype selectors and thread mutes only.
 - Anything addressed to you (--to or a mention) ALWAYS rings, whatever its kind. The one exception is ack: acks are collected by the decision's author through `a2a inbox` and never wake anyone.
 - Replies in threads you are in ring unless you muted the thread.
-- owner-needed rings keepers, not every orchestrator (2b: it was most of today's noise).
+- Ordinary message rooms carry the rule-24 baseline: system, owner-needed and decision. An identity may deliberately narrow its own subscriptions and explicitly record the room/kinds omitted with `a2a subs trim`; onboarding and sync preserve recorded trims.
 - A redline and its closure (protocol rule 28, PR #39) are broadcast in the broadcast room of their scope and projected. They ring everyone in scope plus the meta-keeper.
-- Onboarding creates exactly the row's set and prints it, with no hidden extras. `subs sync` reconciles to it and prints each add and remove.
+- Session onboarding prints and creates the ordinary-room baseline plus the role-specific rows below. Spaces, global #system projections and #broadcast are exempt; the sessionless service preset retains zero subscriptions. Role-specific preset sync reconciles only its tagged rows, preserving baseline and manual rows and respecting recorded trims. `subs check` distinguishes missing, recorded trims and covered rooms without writing state or subscriptions.
 
-| Role | Joins | Rings (besides anything addressed to it) | Only readable | Why |
+| Role | Joins | Rings (agent session rows also carry the ordinary-room baseline above) | Other readable traffic | Why |
 |---|---|---|---|---|
 | Human operator (Alexis, Element) | his products' rooms plus the global rooms | owner-needed addressed to him; #broadcast | everything else | His attention is the scarcest. |
-| Meta-keeper | #lobby, #broadcast, #system; each #X-lobby | #system: owner-needed, and system incident, blocker and budget; #lobby: decision; system impact-start and impact-end (rule 31) | the rest of #system, #X-lobby, project rooms | Sees every escalation and every incident once, across all products. |
-| Product keeper X | #lobby, #broadcast, #X-lobby, #X-broadcast (sole writer), #X-system, X's project rooms | #X-system: owner-needed, and system incident, blocker, budget, window and queue; #X-lobby: decision; #lobby: decision; system impact-start and impact-end (rule 31) | the rest of #X-system; project rooms | Resolves in-product order, windows and escalations. Readiness claims arrive typed (queue), with no parsing of notices. |
-| Arbiter of a shared resource (e.g. tb-keeper on spm main) | that resource's room | there: system window, landing, incident, blocker and queue; decision | notices, acks | tb-R53: a readiness notice was logged without ringing and cost a slot. |
-| Project orchestrator (local or rwh-hosted, same row) | #lobby, #broadcast, #X-lobby, #X-broadcast, its project room | its room: system incident, blocker and budget, and decision; #X-lobby: decision; #X-broadcast and #broadcast (by membership); #lobby: decision; optional sibling opt-in on #X-system (--from or --subject); and, when it lands into a shared main, that resource's room: system window, landing and queue; #X-lobby: question (rule 30); its room: system impact-start and impact-end (rule 31) | the rest of its room, #X-lobby and #X-system | Its own project's trouble and the decisions that bind it; other agents' owner-needed goes to keepers. |
+| Meta-keeper | #lobby, #broadcast, #system; each #X-lobby | #system: owner-needed, and system incident, blocker and budget; #lobby: decision; system impact-start and impact-end (rule 31) | Other kinds unless addressed, followed, or explicitly subscribed | Sees every escalation and every incident once, across all products. |
+| Product keeper X | #lobby, #broadcast, #X-lobby, #X-broadcast (sole writer), #X-system, X's project rooms | Ordinary-room baseline, including X's project rooms; additionally #X-system: owner-needed, and system incident, blocker, budget, window and queue; #X-lobby: decision; #lobby: decision; system impact-start and impact-end (rule 31) | Other kinds unless addressed, followed, or explicitly subscribed | Resolves in-product order, windows and escalations. Readiness claims arrive typed (queue), with no parsing of notices. |
+| Arbiter of a shared resource (e.g. tb-keeper on spm main) | that resource's room | there: system window, landing, incident, blocker and queue; decision | Other kinds unless addressed, followed, or explicitly subscribed | tb-R53: a readiness notice was logged without ringing and cost a slot. |
+| Project orchestrator (local or rwh-hosted, same row) | #lobby, #broadcast, #X-lobby, #X-broadcast, its project room | its room: system incident, blocker and budget, and decision; #X-lobby: decision; #X-broadcast and #broadcast (by membership); #lobby: decision; optional sibling opt-in on #X-system (--from or --subject); and, when it lands into a shared main, that resource's room: system window, landing and queue; #X-lobby: question (rule 30); its room: system impact-start and impact-end (rule 31) | Other kinds unless addressed, followed, or explicitly subscribed | Its own project's trouble and the decisions that bind it; recorded deliberate trims can reduce duplicate traffic. |
 | Infra service (projector, bridge) | explicitly allowlisted source rooms and the single configured projection target | nothing (--runtime none) | n/a | Not a model and has no session; it only writes projections. |
 | Worker (rwh-*) | none | none | none | Rule 25: results reach the chat only through its orchestrator. |
 
@@ -103,7 +103,7 @@ Changes these rows need (ac, one PR with the product CLI):
 - Subscription selectors accept a subtype LIST (today a single --subtype).
 - A new system subtype `queue` for readiness claims and slot requests.
 - An addressed ack no longer rings; it stays in the mailbox for `a2a inbox`.
-- Role presets `identity ensure --role-preset operator|meta-keeper|keeper|arbiter|orch|service` print and create exactly the row.
+- Role presets `identity ensure --preset meta-keeper|keeper|arbiter|orch|service` print and create the session baseline plus the row; the service exception remains sessionless.
 - Scope: Ivan's identities (ivan-*) keep their subscriptions until Ivan decides. The arbiter row is offered, not imposed.
 
 ## 4. Task-board (skill-project-management-e7)

@@ -192,9 +192,13 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		}{SubSelector{Room: sysID, AllEvents: true}, sysLabel})
 	}
 	for _, x := range sels {
-		sub, created, err := s.ensureSub(ctx, x.sel, a.Now())
+		sub, created, err := s.ensureOnboardSub(ctx, x.sel, a.Now())
 		if err != nil {
 			return err
+		}
+		if sub.ID == "" {
+			a.printf("trimmed %s\tall standard kinds deliberately omitted\n", x.label)
+			continue
 		}
 		state := "already"
 		if created {

@@ -89,13 +89,20 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 	for _, r := range rooms {
 		if in[r.id] {
 			a.printf("already in %s %s\n", r.label, r.id)
-			continue
+		} else {
+			if _, err := s.client.Join(ctx, r.id); err != nil {
+				return fmt.Errorf("join %s: %w", r.label, err)
+			}
+			in[r.id] = true
+			a.printf("joined %s %s\n", r.label, r.id)
 		}
-		if _, err := s.client.Join(ctx, r.id); err != nil {
-			return fmt.Errorf("join %s: %w", r.label, err)
+		// Services have no session. Every session preset gets the ordinary
+		// room baseline in addition to its role-specific selectors.
+		if len(presets) != 1 || presets[0] != "service" {
+			if err := s.subscribeRoom(ctx, a, r.id, r.label, a.Now()); err != nil {
+				return err
+			}
 		}
-		in[r.id] = true
-		a.printf("joined %s %s\n", r.label, r.id)
 	}
 	for _, preset := range presets {
 		if preset == "service" {
@@ -287,16 +294,30 @@ func uniquePresetRooms(in []presetRoom) []presetRoom {
 // reconcilePresetSubs makes the subscriptions tagged tag exactly sels. It never
 // touches hand-made subscriptions or those of another tag.
 func (s *session) reconcilePresetSubs(ctx context.Context, tag string, sels []presetSub, now time.Time) error {
+	return config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+		return s.reconcilePresetSubsWithPolicy(ctx, tag, sels, now)
+	})
+}
+
+func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string, sels []presetSub, now time.Time) error {
+	policy, err := s.subscriptionPolicy()
+	if err != nil {
+		return err
+	}
 	desired := make([]Sub, 0, len(sels))
 	for _, x := range sels {
-		sel := SubSelector{Room: x.room, Kinds: x.kinds, Subtypes: x.subtypes}
+		kinds := withoutTrim(x.kinds, policy.Trims[x.room])
+		if len(kinds) == 0 {
+			continue
+		}
+		sel := SubSelector{Room: x.room, Kinds: kinds, Subtypes: x.subtypes}
 		if err := sel.validate(); err != nil {
 			return err
 		}
 		desired = append(desired, Sub{SubSelector: sel, Preset: tag})
 	}
 	var messages []string
-	_, _, err := s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
+	_, _, err = s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
 		changed := false
 		keep := list.Subs[:0]
 		kept := make([]bool, len(desired))

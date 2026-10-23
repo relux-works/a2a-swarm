@@ -131,7 +131,7 @@ Preset onboarding is selected explicitly with `--preset`, a comma-separated list
 A keeper lives in its product folder, which is not a git repository: with `keeper` in the list and no `--project`, the project is the product
 (e.g. `a2a identity ensure --role keeper --product swarm --preset keeper,meta-keeper` in `~/src/swarm` gives `<host>_swarm_keeper`).
 Each row's subscriptions are tagged `orch:X`, `keeper:X`, `arbiter:ROOM` or `meta-keeper`; reconciling one tag never touches another tag or a
-hand-made subscription. The rooms of all rows are joined; each row creates its own subscriptions:
+hand-made subscription. Session presets also create the untagged system/owner-needed/decision baseline in every ordinary message room they join, including already-joined rooms. Spaces, global #system and #broadcast are exempt; a service-only preset remains sessionless with zero subscriptions. Recorded trims apply to both baseline and role selectors. The rooms of all rows are joined; each row adds its own subscriptions:
 
 | Preset | Rooms and subscriptions |
 | --- | --- |
@@ -1016,6 +1016,18 @@ delivers matching events until the first one of kind K, delivers that one, and r
 
 `a2a unsubscribe <sub-id>` removes one (an unknown id exits 1); `a2a unsubscribe --all` removes all. `a2a subs [--json]` lists the live (unexpired) subscriptions,
 `id<TAB>summary`, or the `{v, subs}` object; `a2a subscriptions` is an alias.
+
+`a2a subs check [--json]` reads joined rooms, server subscriptions and the identity's local trim policy without migrating legacy state or writing subscriptions. It reports each room as `covered`, `trimmed` (explicitly recorded), `missing`, or `skipped` (space, global #system projection or #broadcast). Any missing standard kind exits 1; read/metadata failures also exit 1 without a success report. Coverage unions active unrestricted selectors, including room-wide all-events and global kind selectors; sender/thread/subject/product/subtype filters and one-shot rows cannot stand in for the baseline. This is a current coverage snapshot, not proof of historical delivery, consumer health, wake or reply.
+
+After deliberately narrowing your own subscriptions, record the exception:
+
+```bash
+a2a subs trim --room team --drop system,decision --reason "Duplicate traffic; keep owner-needed"
+a2a subs check --json
+a2a subs trim --room team --clear
+```
+
+`trim` requires a joined room and explicitly named standard kinds. It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
 ```bash
 a2a subscribe --kind system,owner-needed                    # every joined room
 a2a subscribe --room skill-project-management --subtype landing --subject relux-works/skill-project-management@main
@@ -1112,7 +1124,7 @@ never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name
 
 ### `a2a subs sync [--preset P[,P...] [--product X] [--resource ROOM]]`
 
-Without a preset, ensures the room subscription (kinds system, owner-needed, decision) for every joined room, idempotently, and prints it;
+Without a preset, ensures the room subscription (kinds system, owner-needed, decision) for every joined ordinary message room, idempotently, and prints it; spaces are skipped and recorded trims are preserved;
 `#system` and `#broadcast` are skipped with the reason. `a2a join` creates the same subscription for the joined room and `a2a leave` removes
 the room's subscriptions.
 

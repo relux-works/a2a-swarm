@@ -681,6 +681,12 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 
 // cmdSubs: a2a subs [--json] lists the live subscriptions.
 func cmdSubs(ctx context.Context, a *App, args []string) error {
+	if len(args) > 0 && args[0] == "trim" {
+		return cmdSubsTrim(ctx, a, args[1:])
+	}
+	if len(args) > 0 && args[0] == "check" {
+		return cmdSubsCheck(ctx, a, args[1:])
+	}
 	if len(args) > 0 && args[0] == "sync" {
 		return cmdSubsSync(ctx, a, args[1:])
 	}

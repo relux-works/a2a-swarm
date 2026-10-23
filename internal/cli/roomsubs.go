@@ -32,11 +32,36 @@ func (s *session) roomSubSkip(ctx context.Context, roomID string) string {
 
 // subscribeRoom ensures the room subscription for roomID and prints it.
 func (s *session) subscribeRoom(ctx context.Context, a *App, roomID, label string, now time.Time) error {
-	if why := s.roomSubSkip(ctx, roomID); why != "" {
+	return config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+		return s.subscribeRoomWithPolicy(ctx, a, roomID, label, now)
+	})
+}
+
+func (s *session) subscribeRoomWithPolicy(ctx context.Context, a *App, roomID, label string, now time.Time) error {
+	var create struct {
+		Type string `json:"type"`
+	}
+	if err := s.client.GetState(ctx, roomID, "m.room.create", "", &create); err != nil {
+		return err
+	}
+	why := s.roomSubSkip(ctx, roomID)
+	if create.Type == "m.space" {
+		why = "space"
+	}
+	if why != "" {
 		a.printf("no room subscription for %s: %s\n", label, why)
 		return nil
 	}
-	sub, created, err := s.ensureSub(ctx, SubSelector{Room: roomID, Kinds: onboardKinds}, now)
+	policy, err := s.subscriptionPolicy()
+	if err != nil {
+		return err
+	}
+	kinds := withoutTrim(onboardKinds, policy.Trims[roomID])
+	if len(kinds) == 0 {
+		a.printf("trimmed %s\tall standard kinds deliberately omitted\n", label)
+		return nil
+	}
+	sub, created, err := s.ensureSub(ctx, SubSelector{Room: roomID, Kinds: kinds}, now)
 	if err != nil {
 		return err
 	}

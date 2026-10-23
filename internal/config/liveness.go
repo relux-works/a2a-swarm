@@ -44,11 +44,13 @@ type LivenessAlertMessage struct {
 // WithRuntimeLock separates native control from the mailbox lock: a wake may
 // run inbox immediately, while bind/gate operations cannot race a submission.
 // The consumer lock is held for the supervised consumer's entire lifetime.
+// subscription-policy serializes explicit trims with automatic subscription
+// repair, independently of both live-runtime control and delivery state.
 func WithRuntimeLock(p Paths, name, kind string, deadline time.Time, fn func() error) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
-	if kind != "control" && kind != "consumer" {
+	if kind != "control" && kind != "consumer" && kind != "subscription-policy" {
 		return errors.New("invalid runtime lock")
 	}
 	switch runtime.GOOS {

@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -281,24 +282,25 @@ func TestIdentityProductPresetAndSubsSync(t *testing.T) {
 	}
 	name := "mini_proj_orch"
 	list := e.serverSubs(name)
-	if len(list.Subs) != 4 {
+	if len(list.Subs) != 8 {
 		t.Fatalf("preset subscriptions = %+v", list.Subs)
 	}
 	for _, sub := range list.Subs {
-		if sub.Preset != "orch:alpha" {
+		if sub.Preset != "" && sub.Preset != "orch:alpha" {
 			t.Fatalf("unmarked preset subscription: %+v", sub)
 		}
 		if sub.Room == legacyRoom {
 			t.Fatalf("preset subscribed in the legacy #proj room: %+v", sub)
 		}
 	}
+	e.as(name, "subs", "check").ok(t)
 	e.as(name, "subscribe", "--room", "alpha-proj", "--kind", "question").ok(t)
 	manual := e.serverSubs(name)
 	manual.Subs = append(manual.Subs, Sub{ID: "sub-stale", SubSelector: SubSelector{Room: "!projRoomID", Kinds: []string{"notice"}}, Preset: "orch:alpha", CreatedAt: "2026-01-01T00:00:00Z"})
 	e.hs.setAccountData("@"+name+":"+testServer, SubsType, manual)
 	sync := e.as(name, "subs", "sync", "--preset", "orch", "--product", "alpha").ok(t).stdout
 	tuitestestContains(t, sync, "removed sub-stale")
-	if len(e.serverSubs(name).Subs) != 5 {
+	if len(e.serverSubs(name).Subs) != 9 {
 		t.Fatalf("sync removed or added hand-made subscription: %+v", e.serverSubs(name).Subs)
 	}
 	e.run("--as", name, "identity", "ensure", "--role", "orch", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "orch").ok(t)
@@ -308,9 +310,18 @@ func TestIdentityProductPresetAndSubsSync(t *testing.T) {
 	e.agent(keeperName)
 	keeperOut := e.run("--as", keeperName, "identity", "ensure", "--role", "keeper", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "keeper").ok(t).stdout
 	tuitestestContains(t, keeperOut, "joined #alpha")
-	if got := len(e.serverSubs(keeperName).Subs); got != 4 {
+	if got := len(e.serverSubs(keeperName).Subs); got != 9 {
 		t.Fatalf("keeper preset subscription count = %d", got)
 	}
+	e.as(keeperName, "subs", "check").ok(t)
+	// A keeper with role rows alone reproduces the old onboarding gap. The
+	// checker must reject it, and repeated onboarding must repair the baseline.
+	keeperRows := e.serverSubs(keeperName)
+	keeperRows.Subs = slices.DeleteFunc(keeperRows.Subs, func(sub Sub) bool { return sub.Preset == "" })
+	e.hs.setAccountData("@"+keeperName+":"+testServer, SubsType, keeperRows)
+	e.as(keeperName, "subs", "check").failsWith(t, ExitError, "subscription coverage gaps")
+	e.run("--as", keeperName, "identity", "ensure", "--role", "keeper", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "keeper").ok(t)
+	e.as(keeperName, "subs", "check").ok(t)
 
 	serviceName := "mini_proj_service"
 	e.run("identity", "ensure", "--role", "service", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "service").ok(t)
@@ -323,7 +334,7 @@ func TestIdentityProductPresetAndSubsSync(t *testing.T) {
 	arbiterName := "mini_proj_arbiter"
 	arbiterOut := e.run("identity", "ensure", "--role", "arbiter", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "arbiter", "--resource", "resource").ok(t).stdout
 	tuitestestContains(t, arbiterOut, "joined #resource")
-	if got := len(e.serverSubs(arbiterName).Subs); got != 2 {
+	if got := len(e.serverSubs(arbiterName).Subs); got != 3 {
 		t.Fatalf("arbiter preset subscription count = %d", got)
 	}
 

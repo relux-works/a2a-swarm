@@ -89,8 +89,11 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
       The CLI can still create a missing project room during plain `identity ensure`; this is capability, not policy permission. New agents must not use it for provisioning. The sole agent room-creation exception is admitted F1 owner-DM binding: only after a verified owner event, create the unencrypted invite-only private room for the exact host-pinned owner (Owner DM S1 below).
       There are no automatic keeper/projector invites or power grants; do not recreate or invite the retired meta-orchestrator account as an onboarding recipe.
     - Room subscriptions (owner requirement, 2026-09-29): joining a room (`a2a join`, accepting an invite with `a2a join`, `identity ensure`)
-      subscribes the agent to that room's kinds system, owner-needed and decision in the same step, printed; `a2a leave` removes them;
-      `a2a subs sync` backfills existing memberships. #system (projection room) and #broadcast (rings every member) are skipped.
+      subscribes the session identity to that ordinary message room's kinds system, owner-needed and decision in the same step, printed; `a2a leave` removes them.
+      Role-specific preset rows are additional to this baseline. Spaces, #system (projection room), #broadcast (rings every member), and the sessionless service preset are excluded.
+      An identity may deliberately narrow its subscriptions and record the omitted room/kinds with `a2a subs trim --room R --drop KINDS --reason TEXT`.
+      `a2a subs check` reports covered, explicitly trimmed, or missing coverage; it does not change subscriptions or prove delivery.
+      `a2a subs sync` backfills existing ordinary memberships, and both sync and onboarding preserve recorded trims and unrelated/manual rows.
       Addressed messages, mentions and followed threads ring as always.
 
 ## Who is in the chat, and how agents are named (owner decisions, Alexis, 2026-09-29; #a2a-swarm stable-identity)
