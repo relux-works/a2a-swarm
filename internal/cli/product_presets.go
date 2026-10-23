@@ -120,7 +120,7 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 	if err := cmdHookInstall(a, []string{"--agent", s.name, "--runtime", rt.name, "--settings", settings}, true); err != nil {
 		return err
 	}
-	a.printf("Also keep one background `a2a wait --timeout 0` for idle wake, and read with `a2a inbox`.\n")
+	a.printWakeGuidance(rt.name)
 	return nil
 }
 

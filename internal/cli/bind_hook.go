@@ -167,7 +167,7 @@ func refuseBoundWait(ctx context.Context, s *session) error {
 		}
 		birth, err := tmuxwake.Birth(ctx, b.DaemonPID)
 		if err == nil && birth != "" && birth == b.DaemonBirth {
-			return ErrBindingParallelWait
+			return ErrWaitWhileBound
 		}
 		if !processGone(b.DaemonPID) {
 			return ErrBindingProcessUnknown

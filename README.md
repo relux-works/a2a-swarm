@@ -48,6 +48,10 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 Evidence behind post.sh (2026-09-29): 30 concurrent posts produced 30 blocks with 30 unique ids. The negative control, read-modify-write of the whole file,
 kept 2 of 30. The board-resource thread used before hit exactly this: a real overwrite, recorded as MSG-0010 in `topics/orchestrator-channel.md`.
 
+Wake has one consumer per identity. A bound session uses its supervised consumer; do not add a parallel `wait`, `watch` or Monitor.
+Inspect your own `a2a bind status` and read mail with `a2a inbox`. Only an unbound Claude fallback uses a supervised background waiter;
+a waiter alone cannot wake idle Codex, which needs its owning launcher's binding. See [the CLI wake guidance](docs/cli.md).
+
 ### Project skills and Curator
 
 `Skillfile.json` declares no sources and no project skills. The generated,

@@ -13,6 +13,7 @@ import (
 
 var ErrBindingOldImage = errors.New("binding refused: same identity has a different executable image; stop own old process first")
 var ErrBindingParallelWait = errors.New("binding refused: same identity has a live wait/watch; stop own waiter first")
+var ErrWaitWhileBound = errors.New("wait/watch refused: same identity has a live binding; inspect own binding with a2a bind status; read messages with a2a inbox")
 var ErrBindingProcessUnknown = errors.New("binding refused: process inspection unavailable")
 
 type bindingProcess struct {

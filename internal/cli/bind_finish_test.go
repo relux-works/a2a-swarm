@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +95,17 @@ func TestBoundWaitBothDirections(t *testing.T) {
 	e.extra[EnvSessionID] = "own"
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
 	id := runtimeMail(e, room, "SYNTHETIC_PENDING")
+	// Seed an unshown pending event: the refusal must preserve mailbox bytes,
+	// not merely leave an already-empty mailbox unreceived.
+	e.hs.mu.Lock()
+	raw, marshalErr := json.Marshal(e.hs.events[len(e.hs.events)-1])
+	e.hs.mu.Unlock()
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if _, err := e.mailbox("alice").Append([]config.MailEntry{{ID: id, Kind: config.MailEvent, Room: room, Rel: "to", Event: raw}}); err != nil {
+		t.Fatal(err)
+	}
 	birth, err := tmuxwake.Birth(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
@@ -105,8 +117,18 @@ func TestBoundWaitBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, _ := json.Marshal(e.state("alice"))
+	mailBefore := readFile(t, e.paths().MailboxFile("alice"))
+	requests := len(e.hs.Calls())
 	for _, command := range []string{"wait", "watch"} {
-		e.as("alice", command).failsWith(t, ExitError, "same identity has a live wait/watch")
+		r := e.as("alice", command).failsWith(t, ExitError, "same identity has a live binding")
+		if !strings.Contains(r.stderr, "a2a bind status") || !strings.Contains(r.stderr, "a2a inbox") || strings.Contains(r.stderr, "stop own waiter") || strings.Contains(r.stderr, "unbind") || strings.Contains(r.stderr, "kill") {
+			t.Fatalf("wrong recovery guidance: %s", r.stderr)
+		}
+		after, _ := json.Marshal(e.state("alice"))
+		if string(before) != string(after) || readFile(t, e.paths().MailboxFile("alice")) != mailBefore || len(e.hs.Calls()) != requests || r.stdout != "" {
+			t.Fatal("refused consumer changed state, sent traffic or printed mail")
+		}
 	}
 	if e.received("alice", id) || e.state("alice").Terminal.Generation != "owned" {
 		t.Fatal("refusal changed mail or generation")
@@ -115,7 +137,10 @@ func TestBoundWaitBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	valid := e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	if !strings.Contains(valid.stdout, id) {
+		t.Fatal("retired binding still blocked pending mail")
+	}
 }
 
 // Nearest runtime ancestry, own UID and a bounded parent chain determine the

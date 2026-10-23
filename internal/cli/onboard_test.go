@@ -79,7 +79,7 @@ func TestEnsureOnboardsIdempotently(t *testing.T) {
 		"created #proj !projRoomID (preset public_chat, visibility private",
 		"room=#proj kinds=system,owner-needed,decision",
 		"hooks (claude, --runtime):\ninstalled " + filepath.Join(e.projDir, ".claude", "settings.local.json"),
-		"Also keep one background `a2a wait --timeout 0` for idle wake, and read with `a2a inbox`.\n",
+		"Only for an unbound Claude fallback, keep one supervised background `a2a wait --timeout 0` and re-arm it after completion.\n",
 		"identity:  mini_proj_orch\n",
 		"mxid:      @mini_proj_orch:test.local\n",
 		"operator:  ops   host: mini   project: proj   role: orch\n",

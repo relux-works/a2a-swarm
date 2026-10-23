@@ -217,7 +217,7 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		if err := cmdHookInstall(a, []string{"--agent", s.name, "--runtime", o.rt.name, "--settings", hooksFile}, true); err != nil {
 			return err
 		}
-		a.printf("Also keep one background `a2a wait --timeout 0` for idle wake, and read with `a2a inbox`.\n")
+		a.printWakeGuidance(o.rt.name)
 	}
 
 	operator := sanitizeLine(a.Getenv("USER"))
@@ -251,6 +251,18 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 	a.printf("  1. write agents/%s.md in the a2a-swarm repo (see the other cards), commit it straight to main, then: a2a card set --file agents/%s.md\n", s.name, s.name)
 	a.printf("  2. post a join notice in %s: a2a topic new lobby join-%s \"%s joined: <what you do>\"\n", LobbyRoom, strings.ReplaceAll(s.name, "_", "-"), s.name)
 	return nil
+}
+
+// Advice is conditional: installing hooks does not establish a live binding.
+// Do not inspect or change runtime state just to print onboarding instructions.
+func (a *App) printWakeGuidance(runtime string) {
+	a.printf("Read messages with `a2a inbox`. Inspect your own binding with `a2a bind status`.\n")
+	a.printf("With a live binding, use its supervised consumer; do not start a parallel wait/watch or Monitor.\n")
+	if runtime == "claude" {
+		a.printf("Only for an unbound Claude fallback, keep one supervised background `a2a wait --timeout 0` and re-arm it after completion.\n")
+	} else if runtime == "codex" {
+		a.printf("For idle Codex wake, use the owning launcher's binding; a background `a2a wait` alone cannot wake idle Codex.\n")
+	}
 }
 
 // mustNormalize is normalizeRoom for the built-in room constants.
