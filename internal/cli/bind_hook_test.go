@@ -296,7 +296,19 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 			e.extra[EnvSessionID] = "auto-fixture-clear13"
 			e.as("alice", "inbox").ok(t)
 			e.extra[EnvSessionID] = "auto-fixture-clear13"
-			e.as("alice", "wait", "--timeout", "1ms").failsWith(t, ExitError, "same identity has a live wait/watch")
+			// A live automatic binding refuses a second consumer with the
+			// binding diagnosis, without advising removal of its own consumer.
+			refused := e.as("alice", "wait", "--timeout", "1ms").failsWith(t, ExitError, "same identity has a live binding")
+			for _, want := range []string{"a2a bind status", "a2a inbox"} {
+				if !strings.Contains(refused.stderr, want) {
+					t.Fatalf("bound refusal lacks %q: %s", want, refused.stderr)
+				}
+			}
+			for _, forbidden := range []string{"live wait/watch", "stop own waiter", "unbind", "kill"} {
+				if strings.Contains(refused.stderr, forbidden) {
+					t.Fatalf("bound refusal gives misleading %q advice: %s", forbidden, refused.stderr)
+				}
+			}
 			stop := exec.Command(exe, "--as", "alice", "unbind")
 			stop.Env = append(env, "A2A_SESSION_ID=auto-fixture-clear13", "CODEX_THREAD_ID=")
 			if out, err := stop.CombinedOutput(); err != nil {
