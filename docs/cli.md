@@ -1329,13 +1329,17 @@ and unbind instructions. It reserves a journal key `(generation, confirm)`
 before sending with a fixed transaction ID, at most once while retained.
 Failure is journaled best effort without retry in that invocation; activation
 stands. This is not exactly-once network delivery. Status only computes its
-observation; inbox/wait/watch do not perform activation or expiry.
+observation; inbox/wait/watch do not perform activation or expiry. A retained
+skipped/refused mirror key cannot
+suppress pending lifecycle observation on the next eligible Stop.
 These ordering and confirmation interpretations are recorded in keeper
 disposition `$aXgjJCfy7ElClZr00BpmnhfaJs_P3BV2XwAd218ZES0`, relayed by
 `$iRrfkmkcthMhw0OetmLjg_4G1RDJxGW2jVJSg4mXZow`.
 
 The audience check reads current room state at pinning, activation and before
-every mirror attempt. Only identity joined plus owner joined/invited may be
+every chunk (keeper disposition `$Bj7eZRqC`, relay
+`$fgDbVRgUuIRDzxKd_V2rbJMmEw1th4JU8grWn_LRDIs`). Only identity joined plus owner
+joined/invited may be
 present; activation/sends require owner joined, join_rule invite, non-world-
 readable history and no encryption state. It never repairs a room. Owner leave,
 a third invite/member, changed join rule, or encryption stops sends without
@@ -1360,10 +1364,21 @@ The exact sanitized captures and provenance are in
 **0.163.0**. Other shapes are synthetic tests, not captured-runtime claims.
 The Claude capture used a `--settings` override. The Codex capture fired only
 through a session `-c hooks.Stop` override; project `.codex/hooks.json` was not
-loaded in either captured attempt. **S1 hook-install discovery has not yet been
-validated: producer runtime execution awaits host keeper approval.** Generated
-files alone and the capture do not prove discovery. A human must perform the
-project/hook trust steps above; a2a never writes trust or user CODEX_HOME config.
+loaded in either captured attempt. Separately, the orchestrator validated
+installed project-hook discovery at head `873e667` on agents1: Claude Code
+2.1.309 picked up `.claude/settings.local.json`, and SessionStart,
+UserPromptSubmit and Stop all fired. Codex CLI 0.163.0 discovered and fired
+`.codex/hooks.json` only with project and hook trust enabled. A dotted
+`trust_level` override alone did not set project trust. The successful evidence
+used a one-invocation inline `projects` table plus
+`--dangerously-bypass-hook-trust`.
+Real use requires Codex's own project trust prompt and hook “Trust all” step
+printed by hook install; those mandatory human steps were not exercised by the
+disposable discovery runs, and a2a never writes them. The payload capture remains
+session-override evidence. Deny-rule enforcement was not exercised.
+Evidence: orchestrator addendum `$Qobyj3RbFsCDGsWOgI6OLPtt-K74LXKZIyzp_NuhVHk`,
+`~/lanes/a2a/research/f1-discovery/RESULT.md`. a2a never writes trust or user
+CODEX_HOME config.
 
 Install also writes Claude permissions.deny rules for the three terminal verbs;
 Codex receives `rules/a2a-owner-dm.rules` beside the selected hooks file, using
@@ -1387,13 +1402,21 @@ the omitted count; then split into at most eight chunks of at most 4000 Unicode
 characters.
 
 A mirror has one total 5-second deadline covering lock wait, journal I/O,
-activation, audience and all chunks. Lifecycle writers wait at most 10 seconds
+activation, every audience check and all chunks. The final 250 ms are reserved
+for a terminal journal write: lock/I/O/network work uses the earlier deadline.
+An expired work deadline records `failed:deadline` or
+`partial k/n:refused:deadline` within that reserve; if the final write fails,
+the durable pending record remains and is never resumed. This allocation follows
+`$7ZTQi5odw3BdPlQel9tvemCUqr9iUQymgBnWvOVevqw`.
+Lifecycle writers wait at most 10 seconds
 for the same lock. Under it, the mirror re-reads config and reserves/fsyncs
 `pending` before any final-message chunk. The key contains runtime, session,
 turn, SHA256 of the selected text and generation. Any retained journal state
 suppresses replay, including a crash-left pending; no retry or resume occurs.
 Chunks use `a2a-odm-<sha256(key)[:24]>-<index>` transaction IDs. Outcomes are sent,
-partial, failed, refused or skipped. An unwritable pending record prevents send;
+partial, failed, refused or skipped. A later audience refusal records
+`partial k/n:refused:audience` and stops all remaining chunks without retry.
+An unwritable pending record prevents send;
 unwritable journals and lock timeouts have no guaranteed failure record.
 After a successful unset, unbind or terminal re-pin returns, no chunk from an
 earlier generation can be sent. A same-UID editor ignoring the lock is outside

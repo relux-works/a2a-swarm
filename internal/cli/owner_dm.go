@@ -105,6 +105,10 @@ func (s *session) ownerTransition(ctx context.Context, c *ownerDMConfig, st os.F
 	return "", nil
 }
 func (s *session) ownerSaveTransition(ctx context.Context, f ownerDMFiles, c *ownerDMConfig, transition string) error {
+	return s.ownerSaveTransitionWithJournal(ctx, ctx, f, c, transition)
+}
+
+func (s *session) ownerSaveTransitionWithJournal(ctx, journalCtx context.Context, f ownerDMFiles, c *ownerDMConfig, transition string) error {
 	if transition == "" {
 		return nil
 	}
@@ -133,7 +137,7 @@ func (s *session) ownerSaveTransition(ctx context.Context, f ownerDMFiles, c *ow
 		if err != nil {
 			entries[len(entries)-1].State = "failed:confirm"
 		}
-		_ = f.saveJournal(ctx, entries)
+		_ = f.saveJournal(journalCtx, entries)
 		return err
 	}
 	return nil

@@ -362,7 +362,13 @@ An unblocked Stop may mirror only stdin’s final assistant text; transcript_pat
 is never opened. Redaction precedes character caps and chunking. A durable
 pending journal record precedes final-message sends; any retained key state
 suppresses retry/resume. Five seconds covers the mirror including lock wait,
-audience and all chunks. Failures preserve native hook output, receipts,
+every audience check and all chunks, with the final 250 ms reserved for the
+terminal journal write (coordinator `$7ZTQi5odw3BdPlQel9tvemCUqr9iUQymgBnWvOVevqw`).
+A failed terminal write may leave pending, never resumed. The audience is checked before every
+chunk (keeper `$Bj7eZRqC`, relay `$fgDbVRgUuIRDzxKd_V2rbJMmEw1th4JU8grWn_LRDIs`);
+a later refusal stops remaining chunks and journals partial/refused without
+retry. The check/send race remains outside the guarantee.
+Failures preserve native hook output, receipts,
 mailbox and cursor. No additional consumer is installed; binding/waiter and
 rule 32 guidance remains in force. Other hooks can block the same runtime stop,
 so a later changed final may be mirrored again.
@@ -378,5 +384,5 @@ Homeserver/owner compromise, same-UID edits/lock bypass, and first replay of a
 fresh genuine request are outside F1. TTY checks are friction, fingerprints
 observations, rendering presentation; protected authority is B4, not S1.
 See docs/cli.md for storage, commands, pinned payload provenance, discovery
-limits and runtime deny wiring. Hook-install runtime discovery and live
-activation have not been authorized by this implementation admission.
+limits, orchestrator discovery evidence and runtime deny wiring. Deny-rule
+enforcement was not exercised; live activation remains separately gated.

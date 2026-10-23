@@ -165,7 +165,11 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 	if a.ownerMirrorBudget > 0 {
 		budget = a.ownerMirrorBudget
 	}
-	ctx, cancel := context.WithTimeout(parent, budget)
+	totalCtx, totalCancel := context.WithTimeout(parent, budget)
+	defer totalCancel()
+	totalDeadline, _ := totalCtx.Deadline()
+	// Preserve a bounded terminal-journal reserve inside the same total budget.
+	ctx, cancel := context.WithDeadline(totalCtx, totalDeadline.Add(-250*time.Millisecond))
 	defer cancel()
 	name, err := a.identity()
 	if err != nil {
@@ -190,7 +194,7 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 	}
 	unlock, err := f.lock(ctx)
 	if err != nil {
-		f.journalLockFailure(ctx, keyFor(c.Generation), a.Now())
+		f.journalLockFailure(totalCtx, keyFor(c.Generation), a.Now())
 		return
 	}
 	defer unlock()
@@ -213,22 +217,23 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 	if err != nil {
 		return
 	}
-	for _, entry := range entries {
-		if entry.Key == key {
-			return
-		}
-	}
 	record := ownerDMJournalEntry{Key: key, At: a.Now(), State: "pending"}
 	transition, err := s.ownerTransition(ctx, c, st)
 	if err != nil {
 		record.State = "refused:activation"
-		_ = f.saveJournal(ctx, append(entries, record))
+		if ctx.Err() != nil {
+			record.State = "failed:deadline"
+		}
+		_ = f.saveJournal(totalCtx, append(entries, record))
 		return
 	}
-	if err = s.ownerSaveTransition(ctx, f, c, transition); err != nil {
+	if err = s.ownerSaveTransitionWithJournal(ctx, totalCtx, f, c, transition); err != nil {
 		record.State = "failed:activation"
+		if ctx.Err() != nil {
+			record.State = "failed:deadline"
+		}
 		if latest, readErr := f.journal(a.Now()); readErr == nil {
-			_ = f.saveJournal(ctx, append(latest, record))
+			_ = f.saveJournal(totalCtx, append(latest, record))
 		}
 		return
 	}
@@ -236,6 +241,12 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 	entries, err = f.journal(a.Now())
 	if err != nil {
 		return
+	}
+	// A retained final key suppresses only delivery, never pending lifecycle observation.
+	for _, entry := range entries {
+		if entry.Key == key {
+			return
+		}
 	}
 	if !valid {
 		record.State = "skipped:no-payload"
@@ -250,20 +261,40 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 	if err = f.saveJournal(ctx, entries); err != nil {
 		return
 	}
-	finish := func(status string) { entries[len(entries)-1].State = status; _ = f.saveJournal(ctx, entries) }
-	if _, err = s.ownerAudience(ctx, c.Room, c.Owner, false); err != nil {
-		finish("refused:audience")
-		return
+	finish := func(status string) { entries[len(entries)-1].State = status; _ = f.saveJournal(totalCtx, entries) }
+	deadlineFailure := func(sent, n int) {
+		if sent == 0 {
+			finish("failed:deadline")
+		} else {
+			finish(fmt.Sprintf("partial %d/%d:refused:deadline", sent, n))
+		}
 	}
 	chunks := ownerDMContent(text)
 	sent := 0
 	digest := sha256.Sum256([]byte(key))
 	prefix := "a2a-odm-" + hex.EncodeToString(digest[:])[:24]
 	for i, chunk := range chunks {
+		// Recheck immediately before every chunk under the same total deadline.
+		if _, err = s.ownerAudience(ctx, c.Room, c.Owner, false); err != nil {
+			if ctx.Err() != nil {
+				deadlineFailure(sent, len(chunks))
+				return
+			}
+			if sent == 0 {
+				finish("refused:audience")
+			} else {
+				finish(fmt.Sprintf("partial %d/%d:refused:audience", sent, len(chunks)))
+			}
+			return
+		}
 		if err = ctx.Err(); err == nil {
 			_, err = s.client.SendMessageTxn(ctx, c.Room, fmt.Sprintf("%s-%d", prefix, i), map[string]any{"msgtype": "m.text", "body": chunk})
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				deadlineFailure(sent, len(chunks))
+				return
+			}
 			if sent == 0 {
 				finish("failed:send")
 			} else {

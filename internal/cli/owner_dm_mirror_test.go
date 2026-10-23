@@ -351,7 +351,7 @@ func TestOwnerDMFailureIsolation(t *testing.T) {
 				}
 			case "timeout":
 				e.configure = func(a *App) {
-					a.ownerMirrorBudget = 20 * time.Millisecond
+					a.ownerMirrorBudget = 500 * time.Millisecond
 					a.HTTP = &http.Client{Transport: ownerRoundTrip(func(r *http.Request) (*http.Response, error) {
 						if strings.Contains(r.URL.Path, "/send/m.room.message/a2a-odm-") {
 							<-r.Context().Done()
@@ -367,7 +367,7 @@ func TestOwnerDMFailureIsolation(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer release()
-				e.configure = func(a *App) { a.ownerMirrorBudget = 20 * time.Millisecond }
+				e.configure = func(a *App) { a.ownerMirrorBudget = 500 * time.Millisecond }
 			case "journal-mode":
 				os.WriteFile(f.path("journal"), []byte("private"), 0400)
 			case "journal-dir":
@@ -527,7 +527,7 @@ func TestOwnerDMConfirmationFailureAndBudget(t *testing.T) {
 			transport := e.hs.srv.Client().Transport
 			var attempts atomic.Int32
 			e.configure = func(a *App) {
-				a.ownerMirrorBudget = 80 * time.Millisecond
+				a.ownerMirrorBudget = 500 * time.Millisecond
 				a.HTTP = &http.Client{Transport: ownerRoundTrip(func(r *http.Request) (*http.Response, error) {
 					if strings.Contains(r.URL.Path, "/send/") {
 						attempts.Add(1)
