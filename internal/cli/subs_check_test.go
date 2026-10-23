@@ -209,6 +209,11 @@ func TestSubsTrimLifecycle(t *testing.T) {
 	for _, args := range [][]string{{"subs", "check"}, {"subs", "sync"}, {"join", "proj"}} {
 		e.as("alice", args...).ok(t)
 	}
+	// Leaving removes server rows, but must preserve the recorded intent for
+	// a later invite/rejoin of this same room ID.
+	e.as("alice", "leave", "proj").ok(t)
+	e.as("bob", "invite", "proj", "alice").ok(t)
+	e.as("alice", "join", "proj").ok(t)
 	if out := e.as("alice", "subs", "check").ok(t).stdout; !strings.Contains(out, "trimmed: system,decision (recorded)") {
 		t.Fatalf("trim not reported: %s", out)
 	}
