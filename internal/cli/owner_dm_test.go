@@ -386,8 +386,8 @@ func mustOwnerBytes(t *testing.T, path string) []byte {
 }
 
 // Tests 7/9: status is read-only, pending expires at 24 h, and terminal
-// lifecycle refuses noninteractive/wrong confirmation; confirmed ensure always
-// creates a new room instead of adopting an invite or reusing a binding.
+// lifecycle refuses noninteractive/wrong confirmation. Ensure refuses pending,
+// and creates only from never-configured/inactive, following verified bind.
 func TestOwnerDMTerminalAndExpiry(t *testing.T) {
 	e, room, f := ownerFixture(t)
 	c := ownerBind(t, e, room, f)
@@ -410,24 +410,29 @@ func TestOwnerDMTerminalAndExpiry(t *testing.T) {
 			return nil
 		}
 	}
+	e.as("bob", "owner-dm", "ensure", "--mirror").failsWith(t, ExitError, "pending claim")
+	e.as("bob", "owner-dm", "unset").ok(t)
 	e.as("bob", "owner-dm", "ensure", "--mirror").ok(t)
 	first := ownerLoad(t, f)
-	e.as("bob", "owner-dm", "ensure", "--mirror").ok(t)
-	second := ownerLoad(t, f)
-	if second.Room == first.Room || second.Generation <= first.Generation {
-		t.Fatal("ensure reused room")
-	}
+	before := ownerSnapshot(t, f)
+	e.as("bob", "owner-dm", "ensure", "--mirror").failsWith(t, ExitError, "pending claim")
+	ownerUnchanged(t, f, before)
 	st, err := os.Stat(f.path("json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.now = func() time.Time { return st.ModTime().Add(24 * time.Hour) }
-	before := ownerSnapshot(t, f)
+	before = ownerSnapshot(t, f)
 	e.as("bob", "owner-dm", "status").ok(t)
 	ownerUnchanged(t, f, before)
 	ownerMirror(t, e, "claude", ownerPayload(t, "claude", "expired", "x"))
 	if x := ownerLoad(t, f); x.Pending || x.Active {
 		t.Fatal("pending did not expire")
+	}
+	e.as("bob", "owner-dm", "ensure", "--mirror").ok(t)
+	second := ownerLoad(t, f)
+	if second.Room == first.Room || second.Generation <= first.Generation {
+		t.Fatal("inactive ensure did not create")
 	}
 	e.as("bob", "owner-dm", "unset").ok(t)
 	for _, old := range []string{c.Room, first.Room, second.Room} {

@@ -338,7 +338,9 @@ private_chat, is_direct, invite-only, unencrypted room with joined history and
 only the pinned owner invited. It remains pending until the owner’s own join
 and a passing audience check; pending expires after 24 hours. No invites or
 existing owner-created DMs are automatically adopted. The host terminal can
-ensure a new room or explicitly set an existing valid room with TTY/type-back;
+ensure with the same effective-state behavior as bind (pending refusal, active
+flags only, new room when never-configured/inactive), or explicitly set an
+existing valid room with TTY/type-back;
 agents must use bind/unbind --event or status instead.
 
 Every accepted owner-channel mutation advances the persisted per-owner order

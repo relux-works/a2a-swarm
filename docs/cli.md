@@ -1280,11 +1280,15 @@ inviting only the pinned owner. It excludes that room from archive and installs
 one all-events subscription, whose ID alone is removed on unset/unbind. This
 is the sole agent room-creation exception to the general provisioning rule;
 terminal ensure is a host-operated fallback, not agent provisioning.
+If the immediate audience check after room creation fails, for example because
+the homeserver enables encryption by default, the new room may remain unpinned
+on the server. The CLI refuses without repairing or deleting it.
 The room is pending until the owner accepts the invitation. A second pending
 claim refuses. An active bind only changes flags and must come from the bound
 room. Unbind may come from any shared room; it deactivates, increments the
 generation and removes only that recorded subscription, leaving the room and
-archive exclusions intact.
+archive exclusions intact. On a never-configured identity, verified unbind only
+records the event and advances its watermark; it writes no placeholder config.
 
 Accepted owner-channel mutations advance a persisted per-owner watermark.
 Every later mutation must have a greater timestamp, or an equal timestamp
@@ -1308,7 +1312,10 @@ a2a owner-dm unset
 a2a owner-dm status
 ```
 
-Ensure always creates a new room; it never discovers or adopts an existing DM.
+Ensure has the same effect as a verified bind: after observing the pending
+lifecycle, it refuses a still-pending claim, changes only flags while active
+(keeping room and generation), and creates a fresh room only when
+never-configured or inactive. It never discovers or adopts another DM.
 Set uses only the explicitly named existing room. Ensure/set require a pin
 naming the owner. All three mutations require isatty on stdin and stdout,
 `/dev/tty`, and the owner MXID typed back (the word `unset` for unset). Status
@@ -1380,8 +1387,12 @@ Evidence: orchestrator addendum `$Qobyj3RbFsCDGsWOgI6OLPtt-K74LXKZIyzp_NuhVHk`,
 `~/lanes/a2a/research/f1-discovery/RESULT.md`. a2a never writes trust or user
 CODEX_HOME config.
 
-Install also writes Claude permissions.deny rules for the three terminal verbs;
-Codex receives `rules/a2a-owner-dm.rules` beside the selected hooks file, using
+Install also writes Claude permissions.deny rules for the three terminal verbs,
+anchored on their subcommand position with separate bare/argument forms; words
+inside bind/unbind room references or event IDs do not select terminal rules.
+Reinstall replaces the earlier managed substring globs. Codex uses literal argv
+prefix tokens for the same distinction. Codex receives `rules/a2a-owner-dm.rules`
+beside the selected hooks file, using
 forbidden prefix rules for canonical `a2a owner-dm ...` and `a2a --as NAME
 owner-dm ...` invocations, including the installed binary path. Foreign rules
 files refuse replacement. The rules are removed with the corresponding hook

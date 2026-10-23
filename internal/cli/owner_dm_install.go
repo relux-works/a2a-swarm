@@ -9,7 +9,14 @@ import (
 	"strings"
 )
 
-var ownerClaudeDenials = []string{"Bash(*owner-dm*ensure*)", "Bash(*owner-dm*set*)", "Bash(*owner-dm*unset*)"}
+// Separate bare and argument forms: a leading wildcard means Claude's special
+// single-trailing-wildcard bare-command shortcut does not apply.
+var ownerClaudeDenials = []string{
+	"Bash(*owner-dm ensure)", "Bash(*owner-dm ensure *)",
+	"Bash(*owner-dm set)", "Bash(*owner-dm set *)",
+	"Bash(*owner-dm unset)", "Bash(*owner-dm unset *)",
+}
+var ownerLegacyClaudeDenials = []string{"Bash(*owner-dm*ensure*)", "Bash(*owner-dm*set*)", "Bash(*owner-dm*unset*)"}
 
 func ownerMergeDenials(root *jsonObject, install bool) error {
 	permissions, err := root.childObject("permissions")
@@ -24,7 +31,7 @@ func ownerMergeDenials(root *jsonObject, install bool) error {
 	}
 	kept := []string{}
 	for _, rule := range current {
-		if !contains(ownerClaudeDenials, rule) {
+		if !contains(ownerClaudeDenials, rule) && !contains(ownerLegacyClaudeDenials, rule) {
 			kept = append(kept, rule)
 		}
 	}

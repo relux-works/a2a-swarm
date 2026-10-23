@@ -36,11 +36,11 @@ func TestOwnerDMInstallDenials(t *testing.T) {
 						Deny []string `json:"deny"`
 					} `json:"permissions"`
 				}
-				if json.Unmarshal([]byte(fresh), &data) != nil || len(data.Permissions.Deny) != 3 {
+				if json.Unmarshal([]byte(fresh), &data) != nil || len(data.Permissions.Deny) != 6 {
 					t.Fatal("missing deny rules")
 				}
 				for _, verb := range []string{"ensure", "set", "unset"} {
-					if !contains(data.Permissions.Deny, "Bash(*owner-dm*"+verb+"*)") {
+					if !contains(data.Permissions.Deny, "Bash(*owner-dm "+verb+")") || !contains(data.Permissions.Deny, "Bash(*owner-dm "+verb+" *)") {
 						t.Fatal("terminal verb not denied", verb)
 					}
 				}

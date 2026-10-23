@@ -195,7 +195,8 @@ func TestOwnerDMAudience(t *testing.T) {
 
 // Tests 13/14: same-key hooks serialize to one send, pending never resumes,
 // partial sends never retry, and the config writer waits through all chunks
-// before advancing the generation. These are isolated fake-network schedules.
+// before applying its requested transition (ensure retains the active generation).
+// These are isolated fake-network schedules.
 func TestOwnerDMJournalAndSynchronization(t *testing.T) {
 	t.Run("same-key", func(t *testing.T) {
 		e, c, f := ownerActiveFixture(t)
@@ -307,7 +308,12 @@ func TestOwnerDMJournalAndSynchronization(t *testing.T) {
 			if sentAtReturn != int32(3+extra) || len(ownerBodies(e, c.Room)) != before+3+extra {
 				t.Fatal("unchanged generation not fully sent")
 			}
-			if ownerLoad(t, f).Generation <= c.Generation {
+			got := ownerLoad(t, f)
+			if action == "ensure" {
+				if got.Generation != c.Generation || got.Room != c.Room {
+					t.Fatal("active ensure repinned")
+				}
+			} else if got.Generation <= c.Generation {
 				t.Fatal("writer did not advance generation")
 			}
 			ownerMirror(t, e, "claude", ownerPayload(t, "claude", "late", "old"))

@@ -446,20 +446,21 @@ func cmdOwnerDM(ctx context.Context, a *App, args []string) error {
 	if pin.Owner == "" && action != "unset" {
 		return errors.New("owner-dm pin no longer names an owner")
 	}
+	bindLike := action == "bind" || action == "ensure"
 	transition := ""
-	if action == "bind" && c != nil && c.Owner == pin.Owner {
+	if bindLike && c != nil && c.Owner == pin.Owner {
 		transition, err = s.ownerTransition(ctx, c, st)
-		if err != nil && action == "bind" {
+		if err != nil {
 			return err
 		}
 	}
 	current := c != nil && c.Owner == pin.Owner
-	if action == "bind" && current && c.Pending {
+	if bindLike && current && c.Pending {
 		return errors.New("owner-dm already has a pending claim")
 	}
-	flagChange := action == "bind" && current && c.Active
+	flagChange := bindLike && current && c.Active
 	if flagChange {
-		if room != c.Room {
+		if action == "bind" && room != c.Room {
 			return errors.New("active owner-dm flags must change in bound room")
 		}
 		if _, err = s.ownerAudience(ctx, c.Room, c.Owner, false); err != nil {
@@ -489,7 +490,9 @@ func cmdOwnerDM(ctx context.Context, a *App, args []string) error {
 	}
 	if flagChange {
 		c.Tag, c.Mirror, c.Render = flags.Tag, flags.Mirror, flags.Render
-		c.BoundBy = ev.EventID
+		if action == "bind" {
+			c.BoundBy = ev.EventID
+		}
 		if err = ownerWrite(ctx, f.path("json"), c); err != nil {
 			return err
 		}
@@ -498,7 +501,9 @@ func cmdOwnerDM(ctx context.Context, a *App, args []string) error {
 		}
 	} else if action == "unset" || action == "unbind" {
 		if c == nil {
-			c = &ownerDMConfig{V: 1, Owner: pin.Owner, Room: "!unset", Render: "in-frame"}
+			// The verified unbind is already consumed above; no binding exists to remove.
+			a.printf("never-configured\n")
+			return nil
 		}
 		if err = s.ownerSubscription(ctx, c, false); err != nil {
 			return err

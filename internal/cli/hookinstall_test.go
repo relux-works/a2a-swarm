@@ -50,9 +50,12 @@ const installedFresh = `{
   },
   "permissions": {
     "deny": [
-      "Bash(*owner-dm*ensure*)",
-      "Bash(*owner-dm*set*)",
-      "Bash(*owner-dm*unset*)"
+      "Bash(*owner-dm ensure)",
+      "Bash(*owner-dm ensure *)",
+      "Bash(*owner-dm set)",
+      "Bash(*owner-dm set *)",
+      "Bash(*owner-dm unset)",
+      "Bash(*owner-dm unset *)"
     ]
   }
 }
@@ -142,7 +145,7 @@ func TestHookInstallMergesIdempotently(t *testing.T) {
 	if err := json.Unmarshal([]byte(first), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Env["OTHER"] != "1" || got.Env["A2A_AGENT"] != "alice" || got.Model != "opus" || compactJSON(t, string(got.Permissions)) != `{"allow":["Bash(ls)"],"deny":["Bash(*owner-dm*ensure*)","Bash(*owner-dm*set*)","Bash(*owner-dm*unset*)"]}` {
+	if got.Env["OTHER"] != "1" || got.Env["A2A_AGENT"] != "alice" || got.Model != "opus" || compactJSON(t, string(got.Permissions)) != `{"allow":["Bash(ls)"],"deny":["Bash(*owner-dm ensure)","Bash(*owner-dm ensure *)","Bash(*owner-dm set)","Bash(*owner-dm set *)","Bash(*owner-dm unset)","Bash(*owner-dm unset *)"]}` {
 		t.Fatalf("unrelated keys changed: %s", first)
 	}
 	stop := `{"hooks":[{"type":"command","command":"'/opt/a2a tools/a2a' --as alice hook stop --runtime claude"}]}`
