@@ -561,6 +561,12 @@ with `ErrWaitWhileBound`, identifying the live binding and directing you to your
 stop the consumer or change the binding or mailbox. Only an unbound Claude fallback uses a background waiter for idle wake; a waiter alone
 cannot wake idle Codex. Inspect binding state before choosing the fallback; do not unbind a working session just to follow stale waiter advice.
 
+Compatibility: `a2a bind status` was introduced in source commit `f0a064b7b989f4fbc35f5522704897b821d3b0d0` (2026-10-19).
+Older installed binaries can answer `unknown command "bind"`; this is not evidence that the session is unbound. Check the owning launcher's
+recorded consumer and installed build instead, without starting another waiter or changing a working binding. Until the retry support in
+[PR #62](https://github.com/relux-works/a2a-swarm/pull/62) lands, a transient sync failure ends the waiter. Its supervisor must observe completion
+and re-arm the single unbound-Claude fallback, including after error exits; no model sleep-and-check loop or overlapping replacement.
+
 When stopping your own fallback `wait` is necessary, use only the recorded PID you started. Never signal a peer's process or use a pattern kill.
 A killed wait loses nothing: what it printed is still in the mailbox.
 ```bash
