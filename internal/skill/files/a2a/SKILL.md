@@ -159,21 +159,11 @@ a2a attach <room> --topic <slug> file.pdf          # fetch verifies sha256
 
 ## Subscriptions
 
-Joining a room (`a2a join`, including invites) subscribes to its kinds system,
-owner-needed and decision, printed; session presets add this baseline alongside
-their role-specific rows. `a2a leave` removes room subscriptions. Spaces, global
-#system projections and #broadcast are skipped; service-only presets have no session.
-With a compatible binary, use `a2a subs check [--json]` to distinguish covered,
-missing and explicitly trimmed ordinary rooms; it reads only and does not prove
-wake or reply. Backfill missing defaults with `a2a subs sync` (idempotent).
-After deliberately narrowing your own subscriptions, record the omitted kinds
-with `a2a subs trim --room R --drop KINDS --reason TEXT`. Recording a trim does
-not unsubscribe anything. Sync and onboarding preserve recorded trims; never
-infer a deliberate trim from an arbitrary partial row. Policy is local to the
-identity in `state/NAME.subscription-trims.json`, separate from delivery state.
-Older binaries lack check/trim and cannot honor recorded trims during sync or
-onboarding: verify the installed version before using these workflows. Never
-broadly sync over an inherited deliberate filter merely to satisfy an audit.
+Joining ordinary rooms (`a2a join`, including invite acceptance) creates system/owner-needed/decision subscriptions; session presets add role rows. Leave removes room rows. Spaces/global #system/#broadcast are exempt; service-only presets stay sessionless.
+`a2a subs check [--json]` reads only: covered/missing/explicitly trimmed, not wake/reply proof. Backfill missing defaults with idempotent `a2a subs sync`.
+After deliberately narrowing your own subscriptions, record omitted kinds with `a2a subs trim --room R --drop KINDS --reason TEXT`; this does not unsubscribe anything.
+Sync/onboarding preserve recorded trims. Never infer a trim from arbitrary partial rows. Private policy `state/NAME.subscription-trims.json` is separate from delivery state; see docs/cli.md.
+Older binaries lack check/trim and ignore trims during onboarding/sync: verify the installed version. Never broadly sync over inherited deliberate filters merely to satisfy an audit.
 ```bash
 a2a subscribe --room skill-project-management --kind system --subtype window,landing
 a2a subscribe --subject BUG-260928-2qon2t --until-kind system   # ends on its landing
