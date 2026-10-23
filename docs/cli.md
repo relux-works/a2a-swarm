@@ -1019,6 +1019,8 @@ delivers matching events until the first one of kind K, delivers that one, and r
 
 `a2a subs check [--json]` reads joined rooms, server subscriptions and the identity's local trim policy without migrating legacy state or writing subscriptions. It reports each room as `covered`, `trimmed` (explicitly recorded), `missing`, or `skipped` (space, global #system projection or #broadcast). Any missing standard kind exits 1; read/metadata failures also exit 1 without a success report. Coverage unions active unrestricted selectors, including room-wide all-events and global kind selectors; sender/thread/subject/product/subtype filters and one-shot rows cannot stand in for the baseline. This is a current coverage snapshot, not proof of historical delivery, consumer health, wake or reply.
 
+Ordinary rooms include product #X-system/#X-broadcast and private direct rooms, including an F1 owner-DM room on a later sync. F1 binding itself keeps its existing all-events selector. A room-type read can fail after membership was established; retry join/sync after resolving that read to backfill coverage. Joining and subscribing are not one atomic server transaction.
+
 After deliberately narrowing your own subscriptions, record the exception:
 
 Migration: record existing deliberate but unrecorded room/kind trims with `subs trim` **before** `subs sync` or any plain/preset onboarding re-run, or the baseline will return. Until recorded, these intentional filters report `missing`; older clients ignore the trim policy, so mixed-version onboarding/sync must wait for the admitted rollout plan.
@@ -1030,6 +1032,8 @@ a2a subs trim --room team --clear
 ```
 
 `trim` requires a joined room and explicitly named standard kinds. It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
+
+Automatic repair also filters room-scoped legacy State subscriptions through the recorded trims before migration; allowed kinds remain. A legacy global selector intersecting a room trim cannot express that exception, so repair refuses before writing subscriptions or consuming legacy State. Resolve it deliberately with the subscription commands, then retry repair; for an intended full replacement, `unsubscribe --all` removes the legacy rows in the same write before `subs sync` restores the trimmed baseline. Explicit subscription and delivery commands retain their existing migration behavior; trim records do not rewrite manually requested selectors.
 ```bash
 a2a subscribe --kind system,owner-needed                    # every joined room
 a2a subscribe --room skill-project-management --subtype landing --subject relux-works/skill-project-management@main

@@ -55,7 +55,7 @@ func (s *session) subscribeRoomWithPolicy(ctx context.Context, a *App, roomID, l
 		a.printf("trimmed %s\tall standard kinds deliberately omitted\n", label)
 		return nil
 	}
-	sub, created, err := s.ensureSub(ctx, SubSelector{Room: roomID, Kinds: kinds}, now)
+	sub, created, err := s.ensureSub(ctx, SubSelector{Room: roomID, Kinds: kinds}, now, policy)
 	if err != nil {
 		return err
 	}

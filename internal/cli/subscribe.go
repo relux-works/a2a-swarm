@@ -396,12 +396,27 @@ func (l *SubList) pruneExpired(now time.Time) []string {
 // migrateLegacy moves the pre-v2 local kind subscriptions into list (one
 // subscription per room entry) and drops them from st. It is idempotent: an
 // identical migrated entry is not added twice.
-func migrateLegacy(st *config.State, list *SubList) bool {
+func migrateLegacy(st *config.State, list *SubList, policy *config.SubscriptionPolicy) (bool, error) {
 	if len(st.LegacySubscriptions) == 0 {
-		return false
+		return false, nil
+	}
+	if policy != nil {
+		// A global selector cannot express a room exception. Refuse the
+		// conflicting migration before changing anything, rather than widen
+		// a trim or silently drop coverage in unrelated rooms.
+		for _, trim := range policy.Trims {
+			for _, kind := range st.LegacySubscriptions[config.LegacyAllRooms] {
+				if contains(trim.Dropped, kind) {
+					return false, fmt.Errorf("legacy global subscription conflicts with a recorded room trim; deliberately migrate and narrow legacy subscriptions before automatic repair")
+				}
+			}
+		}
 	}
 	for _, room := range sortedKeys(st.LegacySubscriptions) {
 		kinds := st.LegacySubscriptions[room]
+		if policy != nil {
+			kinds = withoutTrim(kinds, policy.Trims[room])
+		}
 		if room == config.LegacyAllRooms {
 			room = ""
 		}
@@ -420,7 +435,7 @@ func migrateLegacy(st *config.State, list *SubList) bool {
 		}
 	}
 	st.LegacySubscriptions = nil
-	return true
+	return true, nil
 }
 
 // getSubs reads the subscriptions from account data (none when never set).
@@ -451,6 +466,16 @@ func (s *session) updateSubs(ctx context.Context, fn func(st *config.State, list
 // updateSubsBy is updateSubs with a bounded wait for the state lock when
 // deadline is set (hooks); the zero deadline blocks.
 func (s *session) updateSubsBy(ctx context.Context, deadline time.Time, fn func(st *config.State, list *SubList) (bool, error)) (config.State, SubList, error) {
+	return s.updateSubsWithPolicyBy(ctx, deadline, nil, fn)
+}
+
+// Automatic repair supplies the policy already protected by its outer policy
+// lock. Explicit subscription/delivery callers retain their existing behavior.
+func (s *session) updateSubsWithPolicy(ctx context.Context, policy config.SubscriptionPolicy, fn func(st *config.State, list *SubList) (bool, error)) (config.State, SubList, error) {
+	return s.updateSubsWithPolicyBy(ctx, time.Time{}, &policy, fn)
+}
+
+func (s *session) updateSubsWithPolicyBy(ctx context.Context, deadline time.Time, policy *config.SubscriptionPolicy, fn func(st *config.State, list *SubList) (bool, error)) (config.State, SubList, error) {
 	if err := s.checkConnection(); err != nil {
 		return config.State{}, SubList{}, err
 	}
@@ -463,7 +488,10 @@ func (s *session) updateSubsBy(ctx context.Context, deadline time.Time, fn func(
 		if list, err = s.getSubs(ctx); err != nil {
 			return err
 		}
-		changed := migrateLegacy(st, &list)
+		changed, err := migrateLegacy(st, &list, policy)
+		if err != nil {
+			return err
+		}
 		if fn != nil {
 			c, err := fn(st, &list)
 			if err != nil {

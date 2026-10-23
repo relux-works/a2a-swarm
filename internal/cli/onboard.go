@@ -303,11 +303,11 @@ func kindSet(kinds []string) string {
 
 // ensureSub returns the live subscription with selector sel, adding it only
 // when none exists (created reports which).
-func (s *session) ensureSub(ctx context.Context, sel SubSelector, now time.Time) (sub Sub, created bool, err error) {
+func (s *session) ensureSub(ctx context.Context, sel SubSelector, now time.Time, policy config.SubscriptionPolicy) (sub Sub, created bool, err error) {
 	if err := sel.validate(); err != nil {
 		return Sub{}, false, err
 	}
-	_, _, err = s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
+	_, _, err = s.updateSubsWithPolicy(ctx, policy, func(_ *config.State, list *SubList) (bool, error) {
 		for _, cur := range list.Subs {
 			if cur.SubSelector.equal(sel) && !cur.expiredAt(now) {
 				sub = cur

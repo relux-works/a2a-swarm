@@ -53,7 +53,7 @@ func (s *session) ensureOnboardSub(ctx context.Context, sel SubSelector, now tim
 				return nil
 			}
 		}
-		sub, created, err = s.ensureSub(ctx, sel, now)
+		sub, created, err = s.ensureSub(ctx, sel, now, policy)
 		return err
 	})
 	return

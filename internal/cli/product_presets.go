@@ -317,7 +317,7 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 		desired = append(desired, Sub{SubSelector: sel, Preset: tag})
 	}
 	var messages []string
-	_, _, err = s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
+	_, _, err = s.updateSubsWithPolicy(ctx, policy, func(_ *config.State, list *SubList) (bool, error) {
 		changed := false
 		keep := list.Subs[:0]
 		kept := make([]bool, len(desired))
