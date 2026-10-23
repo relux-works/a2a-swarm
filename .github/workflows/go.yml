@@ -25,3 +25,19 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
+
+  voice-native:
+    # Keep the existing full-suite "test" check stable. Qualify the optional
+    # native linkage and affected voice contracts separately, without rerunning
+    # unrelated launcher/credential fixtures a second time.
+    runs-on: [self-hosted, macOS, relux-a2a]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go vet -tags sherpa ./...
+      - run: go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
+      - run: go test -tags sherpa -race ./internal/voice ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict|TestModelCache|TestLocalRunner' -count=1

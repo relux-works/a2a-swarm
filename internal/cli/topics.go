@@ -373,8 +373,9 @@ func validKind(k string) bool {
 
 // cmdPost: a2a post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
 func cmdPost(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] <text|@file|->"
+	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] <text|@file|->"
 	fs := newFlagSet("post")
+	withVoice := fs.Bool("voice", false, "add a local voice reply after the unchanged text post")
 	topic := fs.String("topic", "", "topic slug or root event id")
 	kind := fs.String("kind", "notice", "message kind")
 	re := fs.String("re", "", "event id this message answers")
@@ -459,6 +460,11 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	a.printf("%s\n", id)
+	if *withVoice {
+		if err := s.postVoice(ctx, roomID, root, id, text); err != nil {
+			a.voiceWarning(err)
+		}
+	}
 	return nil
 }
 

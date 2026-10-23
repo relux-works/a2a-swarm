@@ -5,6 +5,11 @@ Rooms are projects, threads are topics. The protocol itself lives in `docs/proto
 
 ## Build
 
+Optional local spoken copies: `post ... --voice`, explicit
+`voice config --enable`, and pinned
+`voice install`. See [the voice contract](voice.md) for native build,
+dependencies,180s cap, text-preserving failures and separate activation.
+
 ```bash
 go build -o bin/a2a ./cmd/a2a      # bin/ is gitignored
 go test ./...                      # unit tests (in-memory fake homeserver)

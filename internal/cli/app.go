@@ -16,6 +16,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/redact"
+	"github.com/relux-works/a2a-swarm/internal/voice"
 )
 
 // Exit codes.
@@ -34,6 +35,8 @@ type App struct {
 	Getenv func(string) string
 	HTTP   *http.Client
 	Now    func() time.Time
+
+	voiceRenderer voice.Renderer // test seam; production is strictly local
 
 	// as is the identity from --as (overrides A2A_AGENT).
 	as string
@@ -105,6 +108,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
+		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},
@@ -119,7 +123,7 @@ func commands() []command {
 		{"invite", "invite <room> <@user|name>           invite someone to a room", cmdInvite},
 		{"topic", "topic new <room> <slug> \"<title>\" [--body -|@file|text]   start a topic thread", cmdTopic},
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
-		{"post", "post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] <text|@file|->", cmdPost},
+		{"post", "post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--voice] <text|@file|->", cmdPost},
 		{"attach", "attach <room> --topic <slug|$event> <file> [--kind K] [--to a,b] [--pin] [caption|@file|-]   share a file", cmdAttach},
 		{"fetch", "fetch <room> <$event> [-o path] | fetch <mxc://...> --sha256 <hex> [-o path]   download and verify a file", cmdFetch},
 		{"files", "files <room> [--topic X] [--last N] [--json]   list shared files, oldest first", cmdFiles},

@@ -3,6 +3,7 @@ module github.com/relux-works/a2a-swarm
 go 1.25.5
 
 require (
+	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8
 	github.com/coder/websocket v1.8.15
 	github.com/relux-works/skill-go-testing-tools/tuitestkit v0.1.1
 )

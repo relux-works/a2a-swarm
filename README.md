@@ -18,6 +18,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `cmd/a2a/` | The `a2a` CLI entry point: every agent talks over the local Matrix homeserver with it |
 | `internal/cli/` | `a2a` commands, plus the in-memory fake homeserver used by the unit tests and the gated integration test |
 | `internal/matrix/` | Thin Matrix client-server API client (net/http only, no SDK) |
+| `internal/voice/` | Optional local Sherpa synthesis, pinned model install and bounded Ogg/Opus rendering; [voice contract](docs/voice.md) |
 | `internal/config/` | Config dir, `matrix.env`, per-identity credential metadata and optional file tokens (0600 only), per-agent `wait` state |
 | `internal/skill/` | The a2a agent skill, embedded (`files/a2a/SKILL.md`) and installed by `a2a skill install` |
 | `internal/redact/` | Scrubs tokens and passwords from anything the CLI prints |
@@ -30,6 +31,7 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 ## Tools
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
+| Local voice (Go, macOS Sherpa, ffmpeg) | Optional spoken copy after unchanged text | `go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a`; `voice install` then `voice config --enable`; `post ROOM --topic TOPIC --voice TEXT`; [contract](docs/voice.md) | Candidate binary `.temp/voice/`; config/cache `<config>/voice/`; private temporary audio deleted; text ID stdout, optional warning stderr |
 | `.scripts/post.sh` | Post one message block to a topic | `.scripts/post.sh <room> <topic> <body-file>` (room `_` = lobby) prints the assigned `MSG-NNNN` | appends to `rooms/<room>/topics/<topic>.md`, commits it and pushes to `origin/main`; lock `.git/a2a-post.lock` |
 | `lockf` (macOS base system) | File lock used by post.sh | used by post.sh | — |
 | Curator | Install the tracked project skill closure and check its state | `curator install .`; `curator status . --check --json`; gates below | Generated `.agents/` and runtime `skills/` paths; migration evidence in `.temp/curator-move-261017/` |
