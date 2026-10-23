@@ -58,6 +58,29 @@ func attachmentOf(ev matrix.Event) (*Attachment, bool) {
 	return h.Attachment, true
 }
 
+// attachmentForFetch decodes once. The selected pointer carries both the
+// required size evidence and every field consumed by fetch, including through
+// repeated attachment keys and nulls. Attachment's public wire shape is unchanged.
+func attachmentForFetch(ev matrix.Event) (*Attachment, error) {
+	var h struct {
+		Header
+		Attachment *struct {
+			Attachment
+			Size *int64 `json:"size"`
+		} `json:"attachment"`
+	}
+	if ev.Type != "m.room.message" || json.Unmarshal(ev.Message().A2A, &h) != nil || h.Attachment == nil {
+		return nil, fmt.Errorf("event %s has no a2a attachment", sanitizeLine(ev.EventID))
+	}
+	selected := h.Attachment
+	if selected.Size == nil || *selected.Size <= 0 {
+		return nil, fmt.Errorf("event %s: attachment has no valid size", sanitizeLine(ev.EventID))
+	}
+	att := selected.Attachment
+	att.Size = *selected.Size
+	return &att, nil
+}
+
 // cmdAttach: a2a attach <room> --topic <slug|$root> <file> [--kind K] [--to a,b] [--pin] [caption text|@file|-]
 func cmdAttach(ctx context.Context, a *App, args []string) error {
 	const use = "usage: a2a attach <room> --topic <slug|$event_id> <file> [--kind K] [--to a,b] [--pin] [caption text|@file|-]"
@@ -320,29 +343,25 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 			}
 			return err
 		}
-		p, ok := attachmentOf(ev)
-		if !ok {
-			return fmt.Errorf("event %s has no a2a attachment", sanitizeLine(pos[1]))
+		p, err := attachmentForFetch(ev)
+		if err != nil {
+			return err
 		}
 		att = *p
 		if !sha256RE.MatchString(att.SHA256) {
 			return fmt.Errorf("event %s: attachment has no valid sha256", sanitizeLine(pos[1]))
-		}
-		// Validate required size presence/type from raw JSON without changing
-		// Attachment's wire output. Missing and null must never become zero.
-		var metadata struct {
-			Attachment struct {
-				Size *int64 `json:"size"`
-			} `json:"attachment"`
-		}
-		if err := json.Unmarshal(ev.Message().A2A, &metadata); err != nil || metadata.Attachment.Size == nil || *metadata.Attachment.Size <= 0 {
-			return fmt.Errorf("event %s: attachment has no valid size", sanitizeLine(pos[1]))
 		}
 		if _, err := matrix.ParseMXC(att.MXC); err != nil {
 			return fmt.Errorf("event %s: attachment %w", sanitizeLine(pos[1]), err)
 		}
 	}
 
+	// Structural validation precedes even media config. The returned descriptor
+	// contains exactly the validated selected values; never decode it again.
+	descriptor, err := parseAttachmentEncoding(att.Encoding, attachmentMaxLimit)
+	if err != nil {
+		return err
+	}
 	max, err := s.client.MediaConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch: media config: %w", err)
@@ -354,9 +373,8 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	if bare == nil && att.Size > limit {
 		return fmt.Errorf("fetch: declared size %d is over the server's upload limit of %d bytes", att.Size, limit)
 	}
-	descriptor, err := parseAttachmentEncoding(att.Encoding, limit)
-	if err != nil {
-		return err
+	if descriptor != nil && descriptor.Version == attachmentEncodingVersion && descriptor.Original.Size > limit {
+		return fmt.Errorf("fetch: malformed attachment encoding: invalid original.size (outside limit)")
 	}
 	decode := descriptor != nil && descriptor.Version == attachmentEncodingVersion && descriptor.Coding == "gzip"
 	if decode {

@@ -27,7 +27,9 @@ type attachmentEncoding struct {
 }
 
 // Raw descriptors preserve presence (including null) and opaque future
-// versions. Decode only version until the descriptor is known to be v1.
+// versions. Maps select one raw value per key; the validated fields below are
+// also the values returned for consumption. Decode only version until the
+// descriptor is known to be v1.
 func parseAttachmentEncoding(raw json.RawMessage, limit int64) (*attachmentEncoding, error) {
 	if len(raw) == 0 {
 		return nil, nil
