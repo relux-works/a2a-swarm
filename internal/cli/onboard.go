@@ -192,12 +192,22 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		}{SubSelector{Room: sysID, AllEvents: true}, sysLabel})
 	}
 	for _, x := range sels {
+		if !x.sel.AllEvents {
+			why, err := s.roomSubscriptionSkip(ctx, x.sel.Room)
+			if err != nil {
+				return err
+			}
+			if why != "" {
+				a.printf("no room subscription for %s: %s\n", x.label, why)
+				continue
+			}
+		}
 		sub, created, err := s.ensureOnboardSub(ctx, x.sel, a.Now())
 		if err != nil {
 			return err
 		}
 		if sub.ID == "" {
-			a.printf("trimmed %s\tall standard kinds deliberately omitted\n", x.label)
+			a.printf("trimmed %s\tno onboarding subscription added under recorded trim\n", x.label)
 			continue
 		}
 		state := "already"

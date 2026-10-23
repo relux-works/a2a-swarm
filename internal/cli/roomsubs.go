@@ -38,15 +38,9 @@ func (s *session) subscribeRoom(ctx context.Context, a *App, roomID, label strin
 }
 
 func (s *session) subscribeRoomWithPolicy(ctx context.Context, a *App, roomID, label string, now time.Time) error {
-	var create struct {
-		Type string `json:"type"`
-	}
-	if err := s.client.GetState(ctx, roomID, "m.room.create", "", &create); err != nil {
+	why, err := s.roomSubscriptionSkip(ctx, roomID)
+	if err != nil {
 		return err
-	}
-	why := s.roomSubSkip(ctx, roomID)
-	if create.Type == "m.space" {
-		why = "space"
 	}
 	if why != "" {
 		a.printf("no room subscription for %s: %s\n", label, why)
@@ -71,6 +65,22 @@ func (s *session) subscribeRoomWithPolicy(ctx context.Context, a *App, roomID, l
 	}
 	a.printf("%s %s\t%s\n", state, sub.ID, sub.summary(label, s.server))
 	return nil
+}
+
+// Baseline onboarding and ordinary join/repair share the same exemptions.
+// An unreadable room type must fail before adding that room's baseline.
+func (s *session) roomSubscriptionSkip(ctx context.Context, roomID string) (string, error) {
+	var create struct {
+		Type string `json:"type"`
+	}
+	if err := s.client.GetState(ctx, roomID, "m.room.create", "", &create); err != nil {
+		return "", err
+	}
+	why := s.roomSubSkip(ctx, roomID)
+	if create.Type == "m.space" {
+		why = "space"
+	}
+	return why, nil
 }
 
 // unsubscribeRoom removes every subscription scoped to roomID and prints them.

@@ -41,6 +41,12 @@ func (s *session) ensureOnboardSub(ctx context.Context, sel SubSelector, now tim
 		if err != nil {
 			return err
 		}
+		// A catch-all role selector would undo any room/kind trim. Skip its
+		// recreation rather than silently replacing its role semantics with
+		// a standard-kinds selector. Existing manual rows remain untouched.
+		if sel.AllEvents && len(policy.Trims[sel.Room].Dropped) > 0 {
+			return nil
+		}
 		if len(sel.Kinds) > 0 {
 			sel.Kinds = withoutTrim(sel.Kinds, policy.Trims[sel.Room])
 			if len(sel.Kinds) == 0 {
