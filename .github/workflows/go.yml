@@ -24,7 +24,10 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      - run: go test -race ./...
+      # The full CLI suite took 565s in the successful base-main run39958808425;
+      # Go's default 10m aggregate watchdog left only 35s for runtime variance.
+      # Keep a bounded suite watchdog inside this job's existing 30m budget.
+      - run: go test -race -timeout 20m ./...
 
   voice-native:
     # Keep the existing full-suite "test" check stable. Qualify the optional

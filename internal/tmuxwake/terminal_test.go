@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-const inputFixture = `import os,sys,tty,json
+// Match orphanFixture's input batching: per-byte redraw/JSON writes can leave
+// the synthetic screen mid-notice at Send's bounded verification, even when
+// this test intended a ready renderer. Delayed rendering is tested separately.
+const inputFixture = `import os,sys,tty,json,time
 tty.setraw(0)
 text=''; submitted=[]; path=sys.argv[1]; runtime=sys.argv[2]
 def draw():
@@ -30,10 +33,12 @@ def draw():
     os.replace(path+'.next',path)
 draw()
 while True:
-    c=os.read(0,1)
-    if c in (b'\r',b'\n'): submitted.append(text);text=''
-    elif c in (b'\x7f',b'\x08'): text=text[:-1]
-    else: text+=c.decode('ascii')
+    pending=os.read(0,4096)
+    while os.path.exists(path+'.hold'): time.sleep(0.005)
+    for c in pending:
+        if c in (13,10): submitted.append(text);text=''
+        elif c in (127,8): text=text[:-1]
+        else: text+=chr(c)
     draw()
 `
 
@@ -165,6 +170,35 @@ func TestTerminalTwoPhaseRaceControls(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A renderer that has not consumed the typed bytes cannot authorize Enter.
+// Even after it catches up, Send has left exactly one unsubmitted notice.
+// The adjacent two-phase "none" cases are the ready-renderer positive controls.
+func TestTerminalDelayedRendererDoesNotSubmit(t *testing.T) {
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			hold := f.path + ".hold"
+			defer os.Remove(hold)
+			outcome, err := f.target.Send(context.Background(), 2, func() {
+				// The fixture consumes no input until this test removes its gate.
+				if err := os.WriteFile(hold, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}, nil)
+			if err != nil || outcome != "notice left in draft: changed input" {
+				t.Fatalf("delayed renderer authorized submission: %q %v", outcome, err)
+			}
+			if err := os.Remove(hold); err != nil {
+				t.Fatal(err)
+			}
+			s := f.wait(func(s fixtureState) bool { return s.Text == Notice(2) || len(s.Submitted) != 0 })
+			if len(s.Submitted) != 0 {
+				t.Fatalf("delayed notice was submitted: %+v", s)
+			}
+		})
 	}
 }
 

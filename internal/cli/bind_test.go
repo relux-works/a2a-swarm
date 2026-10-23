@@ -91,6 +91,8 @@ func TestBindUncertainFenceAndPause(t *testing.T) {
 	}
 }
 
+// Batch pending input before drawing, as orphanFixture does. Per-byte frame
+// and JSON writes make the lifecycle's ready-renderer control depend on load.
 const bindFixture = `import os,sys,tty,json,select,subprocess
 tty.setraw(0)
 root=sys.argv[1]; exe=sys.argv[2]; text='';submitted=[]
@@ -111,10 +113,10 @@ while True:
         os.replace(root+'/result.next',root+'/result.json')
     readable,_,_=select.select([0],[],[],0.02)
     if readable:
-        c=os.read(0,1)
-        if c in (b'\r',b'\n'): submitted.append(text);text=''
-        elif c in (b'\x7f',b'\x08'): text=text[:-1]
-        else:text+=c.decode('ascii')
+        for c in os.read(0,4096):
+            if c in (13,10): submitted.append(text);text=''
+            elif c in (127,8): text=text[:-1]
+            else:text+=chr(c)
         draw()
 `
 
