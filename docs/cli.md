@@ -1021,6 +1021,8 @@ delivers matching events until the first one of kind K, delivers that one, and r
 
 After deliberately narrowing your own subscriptions, record the exception:
 
+Migration: record existing deliberate but unrecorded room/kind trims with `subs trim` **before** `subs sync` or any plain/preset onboarding re-run, or the baseline will return. Until recorded, these intentional filters report `missing`; older clients ignore the trim policy, so mixed-version onboarding/sync must wait for the admitted rollout plan.
+
 ```bash
 a2a subs trim --room team --drop system,decision --reason "Duplicate traffic; keep owner-needed"
 a2a subs check --json

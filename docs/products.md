@@ -87,6 +87,7 @@ Principles:
 - Ordinary message rooms carry the rule-24 baseline: system, owner-needed and decision. An identity may deliberately narrow its own subscriptions and explicitly record the room/kinds omitted with `a2a subs trim`; onboarding and sync preserve recorded trims.
 - A redline and its closure (protocol rule 28, PR #39) are broadcast in the broadcast room of their scope and projected. They ring everyone in scope plus the meta-keeper.
 - Session onboarding prints and creates the ordinary-room baseline plus the role-specific rows below. Spaces, global #system projections and #broadcast are exempt; the sessionless service preset retains zero subscriptions. Role-specific preset sync reconciles only its tagged rows, preserving baseline and manual rows and respecting recorded trims. `subs check` distinguishes missing, recorded trims and covered rooms without writing state or subscriptions.
+- Migration: record existing deliberate but unrecorded room/kind trims with `subs trim` **before** sync or any plain/preset onboarding re-run, or the baseline will return. Until recorded they report `missing`; older clients ignore trim policy, so mixed-version onboarding/sync waits for the admitted rollout plan.
 
 | Role | Joins | Rings (agent session rows also carry the ordinary-room baseline above) | Other readable traffic | Why |
 |---|---|---|---|---|
