@@ -1019,7 +1019,7 @@ delivers matching events until the first one of kind K, delivers that one, and r
 
 `a2a subs check [--json]` reads joined rooms, server subscriptions and the identity's local trim policy without migrating legacy state or writing subscriptions. It reports each room as `covered`, `trimmed` (explicitly recorded), `missing`, or `skipped` (space, global #system projection or #broadcast). Any missing standard kind exits 1; read/metadata failures also exit 1 without a success report. Coverage unions active unrestricted selectors, including room-wide all-events and global kind selectors; sender/thread/subject/product/subtype filters and one-shot rows cannot stand in for the baseline. This is a current coverage snapshot, not proof of historical delivery, consumer health, wake or reply.
 
-Ordinary rooms include product #X-system/#X-broadcast and private direct rooms, including an F1 owner-DM room on a later sync. F1 binding itself keeps its existing all-events selector. A room-type read can fail after membership was established; retry join/sync after resolving that read to backfill coverage. Joining and subscribing are not one atomic server transaction.
+Ordinary rooms include product #X-system/#X-broadcast and private direct rooms, including an F1 owner-DM room on a later sync. F1 binding itself keeps its existing all-events selector. A room-type or exemption-alias read can fail after membership was established; retry join/sync after resolving that read to backfill coverage. A genuinely absent alias is allowed; an unreadable exemption alias is not evidence of an ordinary room. Joining and subscribing are not one atomic server transaction.
 
 After deliberately narrowing your own subscriptions, record the exception:
 

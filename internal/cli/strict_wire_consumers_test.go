@@ -441,9 +441,12 @@ func TestStrictOptionalAliasConsumers(t *testing.T) {
 						t.Fatal("product discovery trusted invalid alias")
 					}
 				case "room-sub-skip":
-					why := s.roomSubSkip(context.Background(), "!broadcastRoomID")
+					why, err := s.roomSubSkip(context.Background(), "!broadcastRoomID")
 					if (why != "") != (kind == "valid") {
 						t.Fatal("room subscription skipped on invalid alias")
+					}
+					if (err == nil) != (kind == "valid") {
+						t.Fatal("invalid alias classified as an ordinary room instead of refusing")
 					}
 				case "leave-by-id":
 					// Compatibility bound: optional lobby lookup failure has historically

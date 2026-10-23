@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
 // Room subscriptions (owner requirement, protocol rule 24): joining a room
@@ -15,19 +18,29 @@ import (
 // skipped, with the reason printed: #system (a projection room; projections
 // never ring through subscriptions) and #broadcast (it rings every member).
 
-// roomSubSkip returns why roomID gets no room subscription, or "".
-func (s *session) roomSubSkip(ctx context.Context, roomID string) string {
-	for alias, why := range map[string]string{
-		SystemRoom:    "a projection room; watch it with wait --room system --all if you are a keeper",
-		BroadcastRoom: "broadcasts ring every member without a subscription",
+// roomSubSkip returns why roomID is exempt, or "" only after successful
+// classification. An absent alias is allowed; an unreadable alias is unknown.
+func (s *session) roomSubSkip(ctx context.Context, roomID string) (string, error) {
+	for _, exemption := range []struct{ alias, why string }{
+		{SystemRoom, "a projection room; watch it with wait --room system --all if you are a keeper"},
+		{BroadcastRoom, "broadcasts ring every member without a subscription"},
 	} {
-		if norm, err := normalizeRoom(alias, s.server); err == nil {
-			if id, err := s.client.ResolveAlias(ctx, norm); err == nil && id == roomID {
-				return why
+		norm, err := normalizeRoom(exemption.alias, s.server)
+		if err != nil {
+			return "", err
+		}
+		id, err := s.client.ResolveAlias(ctx, norm)
+		if err != nil {
+			if errors.Is(err, matrix.ErrUnknownAlias) {
+				continue
 			}
+			return "", fmt.Errorf("resolve subscription exemption %s: %w", exemption.alias, err)
+		}
+		if id == roomID {
+			return exemption.why, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // subscribeRoom ensures the room subscription for roomID and prints it.
@@ -68,7 +81,7 @@ func (s *session) subscribeRoomWithPolicy(ctx context.Context, a *App, roomID, l
 }
 
 // Baseline onboarding and ordinary join/repair share the same exemptions.
-// An unreadable room type must fail before adding that room's baseline.
+// Unreadable type or exemption-alias metadata fails before adding a baseline.
 func (s *session) roomSubscriptionSkip(ctx context.Context, roomID string) (string, error) {
 	var create struct {
 		Type string `json:"type"`
@@ -76,11 +89,10 @@ func (s *session) roomSubscriptionSkip(ctx context.Context, roomID string) (stri
 	if err := s.client.GetState(ctx, roomID, "m.room.create", "", &create); err != nil {
 		return "", err
 	}
-	why := s.roomSubSkip(ctx, roomID)
 	if create.Type == "m.space" {
-		why = "space"
+		return "space", nil
 	}
-	return why, nil
+	return s.roomSubSkip(ctx, roomID)
 }
 
 // unsubscribeRoom removes every subscription scoped to roomID and prints them.
