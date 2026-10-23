@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -307,20 +309,79 @@ func TestLivenessWatchCancellation(t *testing.T) {
 	e.runCtx(ctx, "--as", "alice", "who", "--watch", "--poll", "5ms", "--stale-after", "3m").ok(t)
 }
 
-// Proves periodic transport heartbeats and disarming do not overwrite a
-// human state recorded while a waiter is alive.
+// Proves a heartbeat after a manual write and the subsequent disarm preserve
+// that state/source, including when initial sync takes longer than the former
+// 150ms fixture lifetime. A relevant live event ends the waiter; elapsed time
+// alone cannot satisfy the heartbeat assertion.
 func TestLivenessWaitPreservesLaterManualState(t *testing.T) {
-	e, _ := world(t)
-	e.extra[EnvSessionID] = "wait-liveness-session"
-	e.as("alice", "status", "init").ok(t)
-	calls := e.hs.CallCount("GET /_matrix/client/v3/sync")
-	ch := e.waitAsync("alice", "--timeout", "150ms", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none")
-	e.syncCalls(t, calls+2)
-	e.as("alice", statusArgs("waiting-human")...).ok(t)
-	recv(t, ch).ok(t)
-	st := e.state("alice")
-	if st.Liveness.State != "waiting-human" || st.LivenessSource != "manual" || st.Liveness.Doorbell != "none" {
-		t.Fatalf("wait overwrote human state: %+v source=%s", st.Liveness, st.LivenessSource)
+	for _, tc := range []struct {
+		name            string
+		slowInitialSync bool
+	}{{"normal", false}, {"slow-initial-sync", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, room := world(t)
+			e.extra[EnvSessionID] = "wait-liveness-session"
+			var offset atomic.Int64
+			e.now = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+			e.configure = func(a *App) {
+				a.HTTP = &http.Client{Transport: predicateTransport(func(r *http.Request) (*http.Response, error) {
+					resp, err := http.DefaultTransport.RoundTrip(r)
+					if tc.slowInitialSync && strings.HasSuffix(r.URL.Path, "/sync") && r.URL.Query().Get("since") == "" {
+						// Model setup consuming time without a scheduler-sensitive sleep.
+						offset.Add(int64(time.Second))
+					}
+					return resp, err
+				})}
+			}
+			e.as("alice", "status", "init").ok(t)
+			calls := e.hs.SyncCount("@alice:test.local")
+			ctx, cancel := context.WithCancel(context.Background())
+			ch, finished := make(chan result, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				ch <- e.runCtx(ctx, "--as", "alice", "wait", "--timeout", "0", "--status", "idle", "--heartbeat", "10ms", "--runtime", "codex", "--hooks", "none")
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(testDeadline):
+					t.Error("wait did not stop after cleanup cancellation")
+				}
+			})
+			e.syncedParked(t, "@alice:test.local", calls+2, ch, "wait ready for manual state")
+			e.as("alice", append(statusArgs("waiting-human"), "owner decision pending")...).ok(t)
+			manual := *e.state("alice").Liveness
+			offset.Add(int64(time.Second))
+			deadline := time.Now().Add(testDeadline)
+			for {
+				st := e.state("alice")
+				if st.Liveness.HeartbeatAt.After(manual.HeartbeatAt) {
+					if st.Liveness.State != manual.State || st.Liveness.Detail != manual.Detail || st.LivenessSource != "manual" || st.Liveness.Doorbell != "armed" {
+						t.Fatalf("heartbeat overwrote human state: %+v source=%s", st.Liveness, st.LivenessSource)
+					}
+					break
+				}
+				select {
+				case r := <-ch:
+					t.Fatalf("wait returned before post-manual heartbeat: %+v", r)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("no heartbeat after manual state")
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local wake up", nil))
+			r := recv(t, ch).ok(t)
+			if !strings.Contains(r.stdout, id) {
+				t.Fatalf("wait did not deliver the controlled live event: %q", r.stdout)
+			}
+			st := e.state("alice")
+			if st.Liveness.State != manual.State || st.Liveness.Detail != manual.Detail || st.LivenessSource != "manual" || st.Liveness.Doorbell != "none" {
+				t.Fatalf("disarm overwrote human state: %+v source=%s", st.Liveness, st.LivenessSource)
+			}
+		})
 	}
 }
 
