@@ -202,17 +202,24 @@ command refuses to attest current state. See the
 JSON emits one `room-members` record with `room_id`, `caller`,
 `membership_filter`, `completeness: "complete-response"` and `members`.
 Text prints a header with that completeness marker/filter/count and then
-`membership<TAB>full-MXID` rows. Completeness means a complete validated
-server response for this one room, not independent server honesty, a global
+`membership<TAB>quoted-full-MXID` rows. Room IDs and full MXIDs in text are
+ASCII Go string literals (including quotes); escapes round-trip to the exact
+identifier and prevent historical control characters from injecting rows or
+terminal commands. JSON preserves the original identifier strings.
+Completeness means a complete validated server response for this one room, not independent server honesty, a global
 recipient roster, or confirmation that affected members received a notice.
 It can race later membership changes and must be refreshed for later decisions.
 
-Permission denial, token rejection and network failure remain errors. A non-200,
-short/read/close-failed entity, response over 16 MiB, or pagination/limited/
+Permission denial, token rejection and network failure remain errors. An
+unexpected successful non-200, short/read/close-failed entity, response over 16 MiB, or pagination/limited/
 partial-state indicator refuses as incomplete. Malformed JSON (including
 duplicate keys/trailing values), absent/null/wrong-type projected fields,
 duplicate users, mismatched rooms, invalid MXIDs or unknown membership refuse
-as malformed. None prints a partial or empty-success roster. Unknown event
+as malformed. Received event MXIDs accept historical localparts (including empty
+and control characters except NUL), validate server-name syntax, and retain
+full case-sensitive bytes; this is not new-account registration policy. See
+[Matrix identifier grammar](https://spec.matrix.org/v1.16/appendices/#historical-user-ids).
+None prints a partial or empty-success roster. Unknown event
 fields are syntactically checked but discarded. A selected binding change
 before output also refuses; mutable current and unrelated profiles remain
 outside the pinned selection. Missing metadata and the human-identity guard

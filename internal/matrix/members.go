@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
-	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -103,10 +104,55 @@ func (c *Client) CurrentRoomMembers(ctx context.Context, roomID, caller string) 
 	return members, nil
 }
 
+// Received member events permit historical localparts, including empty and
+// control characters (except NUL). This is not the registration policy:
+// https://spec.matrix.org/v1.16/appendices/#historical-user-ids
 func memberUserID(id string) bool {
-	if !strings.HasPrefix(id, "@") || len(id) > 255 || strings.ContainsFunc(id, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+	if !strings.HasPrefix(id, "@") || len(id) > 255 || !utf8.ValidString(id) {
 		return false
 	}
 	local, server, ok := strings.Cut(id[1:], ":")
-	return ok && local != "" && server != ""
+	return ok && !strings.ContainsRune(local, 0) && memberServerName(server)
+}
+
+// Validate the received server-name grammar without resolving, normalizing or
+// applying new-account DNS label restrictions. Full MXIDs remain case sensitive.
+// https://spec.matrix.org/v1.16/appendices/#server-name
+func memberServerName(server string) bool {
+	host, tail := server, ""
+	if strings.HasPrefix(server, "[") {
+		end := strings.IndexByte(server, ']')
+		if end < 0 {
+			return false
+		}
+		host, tail = server[1:end], server[end+1:]
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.Is6() || addr.Zone() != "" {
+			return false
+		}
+	} else {
+		if pos := strings.IndexByte(server, ':'); pos >= 0 {
+			host, tail = server[:pos], server[pos:]
+		}
+		if len(host) == 0 || len(host) > 255 {
+			return false
+		}
+		for _, b := range []byte(host) {
+			if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '.') {
+				return false
+			}
+		}
+	}
+	if tail == "" {
+		return true
+	}
+	if tail[0] != ':' || len(tail) < 2 || len(tail) > 6 {
+		return false
+	}
+	for _, b := range []byte(tail[1:]) {
+		if b < '0' || b > '9' {
+			return false
+		}
+	}
+	return true
 }

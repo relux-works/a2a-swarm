@@ -146,7 +146,7 @@ func TestRoomMembersNamedReadOnly(t *testing.T) {
 				if tc.invite && len(got.Members) != 2 {
 					t.Fatalf("principals: %+v", got.Members)
 				}
-			} else if !strings.Contains(text, "count=1\njoin\t@alice:alpha.invalid\n") {
+			} else if !strings.Contains(text, "count=1\njoin\t\"@alice:alpha.invalid\"\n") {
 				t.Fatalf("text: %s", text)
 			}
 		})

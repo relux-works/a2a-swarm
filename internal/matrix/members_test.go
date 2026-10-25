@@ -36,7 +36,7 @@ func TestCurrentRoomMembersContracts(t *testing.T) {
 		{"membership-number", strings.Replace(valid, `"join"`, `42`, 1), ErrMembersMalformed},
 		{"missing-key", strings.Replace(valid, `"@me:s"`, `null`, 1), ErrMembersMalformed},
 		{"bad-id", strings.Replace(valid, `@guest:other`, `@guest`, 1), ErrMembersMalformed},
-		{"control-id", strings.Replace(valid, `@guest:other`, `@guest\n:other`, 1), ErrMembersMalformed},
+		{"nul-id", strings.Replace(valid, `@guest:other`, `@guest\u0000:other`, 1), ErrMembersMalformed},
 		{"duplicate-user", `{"chunk":[` + membersJoined + `,` + membersJoined + `]}`, ErrMembersMalformed},
 		{"duplicate-json", `{"chunk":[],"chunk":[` + membersJoined + `]}`, ErrMembersMalformed},
 		{"duplicate-content", strings.Replace(valid, `"membership":"invite"`, `"membership":"leave","membership":"invite"`, 1), ErrMembersMalformed},

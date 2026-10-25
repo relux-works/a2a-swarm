@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
@@ -62,9 +63,9 @@ func cmdRoomMembers(ctx context.Context, a *App, args []string) error {
 			Members      []matrix.RoomMember `json:"members"`
 		}{"room-members", id, s.creds.UserID, *filter, "complete-response", projected})
 	}
-	a.printf("room-members\t%s\tcomplete-response\tfilter=%s\tcount=%d\n", sanitizeLine(id), *filter, len(projected))
+	a.printf("room-members\t%s\tcomplete-response\tfilter=%s\tcount=%d\n", strconv.QuoteToASCII(id), *filter, len(projected))
 	for _, m := range projected {
-		a.printf("%s\t%s\n", m.Membership, m.UserID)
+		a.printf("%s\t%s\n", m.Membership, strconv.QuoteToASCII(m.UserID))
 	}
 	return nil
 }
