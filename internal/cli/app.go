@@ -124,7 +124,7 @@ func commands() []command {
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
-		{"room", "room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | room retire <alias>   create a room (standard policy, creator subscribed; optionally adopt it), or retire an EMPTY one", cmdRoom},
+		{"room", "room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | room retire <alias> | room members <room> [--membership join|invite|join,invite] [--json]   create, retire an EMPTY room, or read current members", cmdRoom},
 		{"product", "product new X [--keeper NAME] [--projector NAME] | adopt X <room> | list | show X   manage product spaces and rooms", cmdProduct},
 		{"broadcast-room", "broadcast-room init   create the global #broadcast room", cmdBroadcastRoom},
 		{"join", "join <room>                          join a room", cmdJoin},

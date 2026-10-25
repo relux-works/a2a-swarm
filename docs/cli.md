@@ -179,6 +179,50 @@ A newly created room subscribes its creator (the creator is joined by the creati
 the caller has power to send it. X must be an existing product space. If the space refuses the child link, the room exists but is NOT linked:
 the command exits 1 and names the space members who can link it, with the `a2a product adopt X <room>` command they would run.
 
+### `a2a room members <room> [--membership join|invite|join,invite] [--json]`
+
+Read current joined/invited principals using the selected own identity and
+connection (`--profile NAME` for one invocation). The default projection is
+`join,invite`; `join` or `invite` selects one membership. Room aliases resolve
+on that same connection. No join, invite, account-data/state write, history
+read, receipt, binding or local delivery-state change is performed.
+
+The canonical client issues one unfiltered `GET /rooms/{roomId}/members`,
+without `at` or pagination/filter parameters, then projects only full `user_id`
+and `membership`, sorted by full MXID. It never prints profile names, avatars,
+reasons, raw events or unsigned/history fields. Output is buffered until the
+whole response is validated; a valid `--membership invite` projection can be
+empty (`members: []`, exit 0), distinct from a failed read.
+
+Matrix can return archived membership to a caller who left. The caller must
+therefore have its own `join` membership in that same response; otherwise the
+command refuses to attest current state. See the
+[Matrix members contract](https://spec.matrix.org/v1.16/client-server-api/#get_matrixclientv3roomsroomidmembers).
+
+JSON emits one `room-members` record with `room_id`, `caller`,
+`membership_filter`, `completeness: "complete-response"` and `members`.
+Text prints a header with that completeness marker/filter/count and then
+`membership<TAB>full-MXID` rows. Completeness means a complete validated
+server response for this one room, not independent server honesty, a global
+recipient roster, or confirmation that affected members received a notice.
+It can race later membership changes and must be refreshed for later decisions.
+
+Permission denial, token rejection and network failure remain errors. A non-200,
+short/read/close-failed entity, response over 16 MiB, or pagination/limited/
+partial-state indicator refuses as incomplete. Malformed JSON (including
+duplicate keys/trailing values), absent/null/wrong-type projected fields,
+duplicate users, mismatched rooms, invalid MXIDs or unknown membership refuse
+as malformed. None prints a partial or empty-success roster. Unknown event
+fields are syntactically checked but discarded. A selected binding change
+before output also refuses; mutable current and unrelated profiles remain
+outside the pinned selection. Missing metadata and the human-identity guard
+retain their normal pre-request refusals.
+
+```bash
+a2a --profile work room members '#project:example.org' --json
+a2a --profile work room members '!room:example.org' --membership invite --json
+```
+
 ### `a2a room retire <alias>`
 
 Removes an EMPTY room created by mistake; Matrix cannot delete rooms. It unlinks the room from each parent space where the caller has the

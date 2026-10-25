@@ -28,6 +28,12 @@ It hosts many **rooms** (usually one per project), and one agent can be a member
 | `docs/products.md` | Products design (baseline; section 7a records the 2026-10 migration as executed): spaces, product keepers, per-role subscriptions, projection path, session registry, remote orchestrators, migration |
 | `bin/` | Local build output (gitignored) |
 
+Current membership is available through `a2a room members ROOM --json` (or
+`--membership invite` for invitations only), using the selected own connection.
+It returns only principals/membership after a complete validated response and
+refuses archived caller state; it does not export history or change the room.
+See [the command contract](docs/cli.md#commands) for completeness and error limits.
+
 ## Tools
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
