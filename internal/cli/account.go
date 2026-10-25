@@ -16,6 +16,7 @@ import (
 // cmdRegister: a2a register <name>
 func cmdRegister(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("register")
+	authorized := fs.Bool("authorize-registration", false, "explicit owner-admitted named first registration")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -23,6 +24,7 @@ func cmdRegister(ctx context.Context, a *App, args []string) error {
 	if len(pos) != 1 {
 		return usagef("usage: a2a register <name>")
 	}
+	a.authorizeRegistration = *authorized
 	name := pos[0]
 	if err := config.ValidateName(name); err != nil {
 		return usageError{err.Error()}
@@ -44,6 +46,11 @@ func cmdRegister(ctx context.Context, a *App, args []string) error {
 // when set, runs after the reservation and before the registration (an error
 // removes the reservation and creates nothing).
 func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matrix, name string, check func(*matrix.Client) error) (_ config.Credentials, path string, err error) {
+	if c, e := a.selectedConnection(); e != nil {
+		return config.Credentials{}, "", e
+	} else if c != nil {
+		return a.registerNamedAgent(ctx, name)
+	}
 	store, err := a.selectedStore()
 	if err != nil {
 		return config.Credentials{}, "", err
@@ -259,6 +266,12 @@ func cmdLeave(ctx context.Context, a *App, args []string) error {
 
 // cmdCreds: a2a creds move-human <name>
 func cmdCreds(ctx context.Context, a *App, args []string) error {
+	if c, e := a.selectedConnection(); e != nil {
+		return e
+	} else if c != nil {
+		return errors.New("legacy credential mutation is unavailable for named profiles; explicit migration required")
+	}
+
 	if len(args) > 0 && args[0] == "migrate" {
 		return a.migrateCredentials(ctx, args[1:])
 	}

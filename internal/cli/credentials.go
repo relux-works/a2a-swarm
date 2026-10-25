@@ -12,6 +12,16 @@ import (
 const envSecretStore = "A2A_SECRET_STORE"
 
 func (a *App) selectedStore() (string, error) {
+	c, e := a.selectedConnection()
+	if e != nil {
+		return "", e
+	}
+	if c != nil {
+		if runtime.GOOS != "darwin" && a.keychain == nil && a.connectionSecretStore == nil {
+			return "", fmt.Errorf("keychain secret store requires macOS")
+		}
+		return c.Store.Backend, nil
+	}
 	switch a.Getenv(envSecretStore) {
 	case "", "file":
 		return "file", nil
@@ -41,6 +51,22 @@ func validateCredentialIdentity(c config.Credentials, name string) error {
 }
 
 func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) (config.Credentials, error) {
+	if c, e := a.selectedConnection(); e != nil {
+		return config.Credentials{}, e
+	} else if c != nil {
+		creds, e := a.namedMetadata(p, name)
+		if e != nil {
+			return config.Credentials{}, e
+		}
+		creds.AccessToken, e = a.readConnectionSecret(ctx, p, config.SecretReference{Service: c.Store.AccessTokenService, Account: creds.UserID})
+		if e != nil {
+			return config.Credentials{}, e
+		}
+		if creds.AccessToken == "" {
+			return config.Credentials{}, fmt.Errorf("missing selected access token")
+		}
+		return creds, nil
+	}
 	store, err := a.selectedStore()
 	if err != nil {
 		return config.Credentials{}, err
@@ -69,6 +95,11 @@ func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) 
 }
 
 func (a *App) migrateCredentials(ctx context.Context, args []string) error {
+	if c, e := a.selectedConnection(); e != nil {
+		return e
+	} else if c != nil {
+		return fmt.Errorf("named credentials require an explicit migration packet; legacy rewrite refused")
+	}
 	if len(args) != 0 {
 		return usagef("usage: a2a --as <identity> creds migrate (explicit selected identity only)")
 	}

@@ -65,6 +65,11 @@ func bindingSelectors(args, env []string) (identity, root, command string) {
 		case v == "--":
 			rest = append(rest, args[i:]...)
 			i = len(args)
+		case v == "--profile" || v == "--connection-fingerprint":
+			if i+1 < len(args) {
+				i++
+			}
+		case strings.HasPrefix(v, "--profile=") || strings.HasPrefix(v, "--connection-fingerprint="):
 		case v == "--as" || v == "-as":
 			if i+1 < len(args) {
 				i++

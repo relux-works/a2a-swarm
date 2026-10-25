@@ -108,6 +108,7 @@ func cmdIdentity(ctx context.Context, a *App, args []string) error {
 // session (onboard.go): rooms, subscriptions, hooks, and a summary.
 func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("identity ensure")
+	authorized := fs.Bool("authorize-registration", false, "explicit owner-admitted named first registration")
 	role := fs.String("role", "", "the role of this session (required): [a-z0-9-], 1-24 characters")
 	project := fs.String("project", "", "the project (default: the repo name of the git remote origin of --dir)")
 	dir := fs.String("dir", "", "the project directory: its git remote names the project, its hooks file is written (the current directory when omitted)")
@@ -152,6 +153,7 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 			return usageError{err.Error()}
 		}
 	}
+	a.authorizeRegistration = *authorized
 	rt, rtSource, err := a.ensureRuntime(*runtime)
 	if err != nil {
 		return err

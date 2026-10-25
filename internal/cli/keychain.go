@@ -30,6 +30,8 @@ var errSecurityProcessCleanup = errors.New("keychain process cleanup failed")
 // All seams are private and set only by package tests. The production command
 // path and default keychain selection cannot be overridden by environment/flags.
 type keychainStore struct {
+	service           string
+	createOnly        bool
 	paths             config.Paths
 	command           func(context.Context, ...string) *exec.Cmd
 	probeCommand      func(context.Context, ...string) *exec.Cmd
@@ -37,6 +39,13 @@ type keychainStore struct {
 	fixture           string
 	timeout, cooldown time.Duration
 	now               func() time.Time
+}
+
+func (k *keychainStore) selectedService() string {
+	if k.service != "" {
+		return k.service
+	}
+	return keychainService
 }
 
 func (k *keychainStore) clock() time.Time {
@@ -59,7 +68,7 @@ func (k *keychainStore) cooldownDuration() time.Duration {
 }
 
 func (k *keychainStore) identityPath(uid string) string {
-	sum := sha256.Sum256([]byte("keychain\x00" + keychainService + "\x00" + uid))
+	sum := sha256.Sum256([]byte("keychain\x00" + k.selectedService() + "\x00" + uid))
 	return filepath.Join(k.paths.Base, "keychain-state", hex.EncodeToString(sum[:]))
 }
 
@@ -249,7 +258,7 @@ func interactionFailure(err error) bool {
 }
 
 func (k *keychainStore) lookup(ctx context.Context, uid string) (string, error) {
-	args := []string{"find-generic-password", "-s", keychainService, "-a", uid, "-w"}
+	args := []string{"find-generic-password", "-s", k.selectedService(), "-a", uid, "-w"}
 	target, err := k.targetPath()
 	if err != nil {
 		return "", fmt.Errorf("keychain target unavailable for %s", uid)
@@ -302,11 +311,18 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 	return k.locked(uid, func() error {
 		_, err := k.lookup(ctx, uid)
 		existing := err == nil
+		if existing && k.createOnly {
+			return errKeychainDuplicate
+		}
 		if err != nil && !errors.Is(err, errKeychainMissing) {
 			return err
 		}
 		write := func(update bool) error {
-			line := "add-generic-password -s " + keychainService + " -a " + account + " -w " + secret
+			service, e := securityQuote(k.selectedService())
+			if e != nil {
+				return e
+			}
+			line := "add-generic-password -s " + service + " -a " + account + " -w " + secret
 			if update {
 				line += " -U"
 			} else {
@@ -330,7 +346,7 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 			return err
 		}
 		err = write(existing)
-		if !existing && errors.Is(err, errKeychainDuplicate) {
+		if !existing && errors.Is(err, errKeychainDuplicate) && !k.createOnly {
 			// One bounded recovery, no retry loop. A denied lookup is not absence.
 			if _, err = k.lookup(ctx, uid); err != nil {
 				return err

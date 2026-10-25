@@ -57,7 +57,9 @@ type Getenv func(string) string
 
 // Paths resolves files under the base directory.
 type Paths struct {
-	Base string
+	Base         string
+	Root         string // Original registry and host root in named mode.
+	MetadataBase string // Connection-scoped identity metadata root.
 }
 
 // ResolvePaths returns the base directory from A2A_CONFIG_DIR or ~/.config/a2a-swarm.
@@ -77,14 +79,14 @@ func (p Paths) EnvFile() string { return filepath.Join(p.Base, "matrix.env") }
 
 // AgentFile is the credential file for name.
 func (p Paths) AgentFile(name string) string {
-	return filepath.Join(p.Base, "agents", name+".json")
+	return filepath.Join(p.metadataRoot(), "agents", name+".json")
 }
 
 // HumanFile is the credential file of a HUMAN account (e.g. an operator's own
 // login). It lives outside agents/ so that agents enumerating their identities
 // never find it, and the CLI loads it only with the explicit --human flag.
 func (p Paths) HumanFile(name string) string {
-	return filepath.Join(p.Base, "humans", name+".json")
+	return filepath.Join(p.metadataRoot(), "humans", name+".json")
 }
 
 // StateFile is the wait state file for name.
@@ -146,11 +148,12 @@ func LoadMatrix(p Paths, getenv Getenv) (Matrix, error) {
 
 // Credentials is the per-agent credential file.
 type Credentials struct {
-	UserID      string `json:"user_id"`
-	AccessToken string `json:"access_token,omitempty"`
-	DeviceID    string `json:"device_id"`
-	Password    string `json:"password,omitempty"`
-	Homeserver  string `json:"homeserver"`
+	ConnectionBinding *ConnectionBinding `json:"connection_binding,omitempty"`
+	UserID            string             `json:"user_id"`
+	AccessToken       string             `json:"access_token,omitempty"`
+	DeviceID          string             `json:"device_id"`
+	Password          string             `json:"password,omitempty"`
+	Homeserver        string             `json:"homeserver"`
 }
 
 // ServerName returns the server part of the user id.

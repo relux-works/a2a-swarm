@@ -61,7 +61,7 @@ func ComposeIdentity(host, project, role string) (string, error) {
 }
 
 // HostFile holds this machine's host slug.
-func (p Paths) HostFile() string { return filepath.Join(p.Base, "host") }
+func (p Paths) HostFile() string { return filepath.Join(p.ConfigRoot(), "host") }
 
 // ErrNoHost is returned by LoadHost when no host slug is set.
 var ErrNoHost = errors.New("no host slug on this machine: run a2a host init <slug> once per machine")

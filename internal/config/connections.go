@@ -1,0 +1,395 @@
+package config
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// ConnectionRegistry contains public routing metadata, never credentials.
+type ConnectionRegistry struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Current       string                `json:"current"`
+	Profiles      map[string]Connection `json:"profiles"`
+}
+type CredentialStore struct {
+	Backend            string `json:"backend"`
+	AccessTokenService string `json:"access_token_service"`
+	PasswordService    string `json:"password_service"`
+}
+type SecretReference struct {
+	Service string `json:"service"`
+	Account string `json:"account"`
+}
+type Connection struct {
+	ID                   string           `json:"connection_id"`
+	URL                  string           `json:"homeserver_url"`
+	ServerName           string           `json:"server_name"`
+	Store                CredentialStore  `json:"credential_store"`
+	RegistrationTokenRef *SecretReference `json:"registration_token_ref,omitempty"`
+}
+
+// ConnectionBinding is the complete, nonsecret operational identity snapshot.
+// Its digest excludes current, labels, unrelated profiles and file formatting.
+type ConnectionBinding struct {
+	Connection Connection `json:"connection"`
+	UserID     string     `json:"user_id"`
+	Class      string     `json:"class"`
+}
+
+var connectionSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`)
+
+// DecodeConnectionJSON refuses duplicate keys at every depth, unknown fields,
+// trailing values and excessive nesting. Diagnostics never reproduce input.
+func DecodeConnectionJSON(data []byte, dst any) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	var value func(int) error
+	value = func(depth int) error {
+		if depth > 32 {
+			return errors.New("connection JSON nesting limit")
+		}
+		t, e := d.Token()
+		if e != nil {
+			return e
+		}
+		if delim, ok := t.(json.Delim); ok {
+			switch delim {
+			case '{':
+				keys := map[string]bool{}
+				for d.More() {
+					k, e := d.Token()
+					if e != nil {
+						return e
+					}
+					s, ok := k.(string)
+					if !ok || keys[s] {
+						return errors.New("duplicate or invalid JSON key")
+					}
+					keys[s] = true
+					if e = value(depth + 1); e != nil {
+						return e
+					}
+				}
+			case '[':
+				for d.More() {
+					if e = value(depth + 1); e != nil {
+						return e
+					}
+				}
+			default:
+				return errors.New("invalid JSON delimiter")
+			}
+			_, e = d.Token()
+			return e
+		}
+		return nil
+	}
+	if err := value(0); err != nil {
+		return errors.New("invalid connection JSON (including duplicate keys)")
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return errors.New("trailing connection JSON")
+	}
+	d = json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(dst); err != nil {
+		return errors.New("invalid or unknown connection fields")
+	}
+	return nil
+}
+func (c Connection) Validate() error {
+	if !connectionSlug.MatchString(c.ID) {
+		return errors.New("invalid connection_id")
+	}
+	u, e := url.Parse(c.URL)
+	if e != nil || u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.Path != "" && u.Path != "/" {
+		return errors.New("invalid homeserver_url")
+	}
+	// HTTP is supported only for explicitly configured loopback test/development servers.
+	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()).IsLoopback())) {
+		return errors.New("homeserver_url requires HTTPS (or loopback HTTP)")
+	}
+	if !validServerName(c.ServerName) {
+		return errors.New("invalid Matrix server_name")
+	}
+	if c.Store.Backend != "keychain" || !serviceName.MatchString(c.Store.AccessTokenService) || !serviceName.MatchString(c.Store.PasswordService) || c.Store.AccessTokenService == c.Store.PasswordService {
+		return errors.New("invalid or unsupported credential_store")
+	}
+	if r := c.RegistrationTokenRef; r != nil {
+		if !serviceName.MatchString(r.Service) || r.Account == "" || len(r.Account) > 255 || strings.ContainsAny(r.Account, "\x00\r\n\t") || r.Service == c.Store.AccessTokenService || r.Service == c.Store.PasswordService {
+			return errors.New("invalid independent registration_token_ref")
+		}
+	}
+	return nil
+}
+func validServerName(s string) bool {
+	if s == "" || len(s) > 255 || strings.ContainsAny(s, "/@?#\\ \t\r\n\x00") {
+		return false
+	}
+	u, e := url.Parse("https://" + s)
+	if e != nil || u.Host != s || u.User != nil || u.Hostname() == "" {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		n, e := strconv.Atoi(port)
+		if e != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	host := u.Hostname()
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 || strings.Contains(s, ":") && u.Port() == "" {
+		return false
+	}
+	for _, part := range strings.Split(host, ".") {
+		if len(part) == 0 || len(part) > 63 || part[0] == '-' || part[len(part)-1] == '-' {
+			return false
+		}
+		for _, r := range part {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+func (r ConnectionRegistry) Validate() error {
+	if r.SchemaVersion != 1 || len(r.Profiles) == 0 || !connectionSlug.MatchString(r.Current) {
+		return errors.New("connection registry requires schema_version 1, profiles and explicit current")
+	}
+	ids := map[string]bool{}
+	for n, c := range r.Profiles {
+		if !connectionSlug.MatchString(n) {
+			return errors.New("invalid connection profile name")
+		}
+		if err := c.Validate(); err != nil {
+			return fmt.Errorf("profile %s: %w", n, err)
+		}
+		if ids[c.ID] {
+			return errors.New("duplicate connection_id")
+		}
+		ids[c.ID] = true
+	}
+	if _, ok := r.Profiles[r.Current]; !ok {
+		return errors.New("current connection profile does not exist")
+	}
+	return nil
+}
+func (p Paths) ConfigRoot() string {
+	if p.Root != "" {
+		return p.Root
+	}
+	return p.Base
+}
+func (p Paths) metadataRoot() string {
+	if p.MetadataBase != "" {
+		return p.MetadataBase
+	}
+	return p.Base
+}
+func (p Paths) ConnectionsFile() string { return filepath.Join(p.ConfigRoot(), "connections.json") }
+
+// LoadConnections treats only an absent registry as legacy mode. Symlinks and
+// other nonregular entries are refused, including broken symlinks.
+func LoadConnections(p Paths) (*ConnectionRegistry, error) {
+	path := p.ConnectionsFile()
+	st, e := os.Lstat(path)
+	if errors.Is(e, os.ErrNotExist) {
+		return nil, nil
+	}
+	if e != nil {
+		return nil, e
+	}
+	if !st.Mode().IsRegular() {
+		return nil, errors.New("connections.json must be a regular file")
+	}
+	b, e := os.ReadFile(path)
+	if e != nil {
+		return nil, e
+	}
+	if len(b) > 1<<20 {
+		return nil, errors.New("connection registry too large")
+	}
+	var r ConnectionRegistry
+	if e = DecodeConnectionJSON(b, &r); e != nil {
+		return nil, e
+	}
+	if e = r.Validate(); e != nil {
+		return nil, e
+	}
+	return &r, nil
+}
+
+// UpdateConnections serializes cooperating writers; validation precedes atomic
+// replacement. A callback failure leaves the original bytes unchanged.
+func UpdateConnections(p Paths, fn func(*ConnectionRegistry) error) error {
+	unlock, e := lockFile(p.ConnectionsFile() + ".lock")
+	if e != nil {
+		return e
+	}
+	defer unlock()
+	r, e := LoadConnections(p)
+	if e != nil {
+		return e
+	}
+	if r == nil {
+		return errors.New("no registry: provision an explicit initial current first")
+	}
+	if e = fn(r); e != nil {
+		return e
+	}
+	if e = r.Validate(); e != nil {
+		return e
+	}
+	b, e := json.MarshalIndent(r, "", "  ")
+	if e != nil {
+		return e
+	}
+	return writeSecretAtomic(p.ConnectionsFile(), "connections", append(b, '\n'))
+}
+func (c Connection) Binding(name string, human bool) (ConnectionBinding, error) {
+	if e := ValidateName(name); e != nil {
+		return ConnectionBinding{}, e
+	}
+	if e := c.Validate(); e != nil {
+		return ConnectionBinding{}, e
+	}
+	class := "agents"
+	if human {
+		class = "humans"
+	}
+	return ConnectionBinding{Connection: c, UserID: "@" + name + ":" + c.ServerName, Class: class}, nil
+}
+func (b ConnectionBinding) Fingerprint() string {
+	// Bootstrap admission is not a consumer routing input.
+	b.Connection.RegistrationTokenRef = nil
+	data, _ := json.Marshal(b)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+func (c Connection) Paths(p Paths, name string, human bool) (Paths, error) {
+	if e := c.Validate(); e != nil {
+		return Paths{}, e
+	}
+	base := filepath.Join(p.ConfigRoot(), "connections", c.ID)
+	out := Paths{Base: base, Root: p.ConfigRoot(), MetadataBase: base}
+	for _, path := range []string{base, filepath.Join(base, "agents"), filepath.Join(base, "humans")} {
+		if err := checkConnectionDirectories(p.ConfigRoot(), path); err != nil {
+			return Paths{}, err
+		}
+	}
+	if name == "" {
+		return out, nil
+	}
+	b, e := c.Binding(name, human)
+	if e != nil {
+		return Paths{}, e
+	}
+	sum := sha256.Sum256([]byte(b.UserID))
+	out.Base = filepath.Join(base, "identities", b.Class, hex.EncodeToString(sum[:]))
+	if err := checkConnectionDirectories(p.ConfigRoot(), out.Base); err != nil {
+		return Paths{}, err
+	}
+	return out, nil
+}
+
+// ValidateBoundCredentials runs before secret-store lookup or client creation.
+func ValidateBoundCredentials(c Credentials, want ConnectionBinding) error {
+	if c.AccessToken != "" || c.Password != "" {
+		return errors.New("named metadata must not contain secrets")
+	}
+	if c.ConnectionBinding == nil || c.ConnectionBinding.Fingerprint() != want.Fingerprint() || c.UserID != want.UserID || c.Homeserver != want.Connection.URL {
+		return errors.New("named credential binding mismatch; explicit migration required")
+	}
+	return nil
+}
+
+// PublishBoundCredentials never replaces an existing file. A hard link publishes
+// the complete fsynced private file atomically, without an empty public reservation.
+func PublishBoundCredentials(p Paths, name string, human bool, c Credentials) error {
+	path := p.AgentFile(name)
+	if human {
+		path = p.HumanFile(name)
+	}
+	if c.ConnectionBinding == nil {
+		return errors.New("missing named credential binding")
+	}
+	if e := ValidateBoundCredentials(c, *c.ConnectionBinding); e != nil {
+		return e
+	}
+	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
+		return e
+	}
+	f, e := os.CreateTemp(filepath.Dir(path), ".onboard-*")
+	if e != nil {
+		return e
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	defer f.Close()
+	if e = f.Chmod(0600); e != nil {
+		return e
+	}
+	data, e := json.MarshalIndent(c, "", "  ")
+	if e != nil {
+		return e
+	}
+	if _, e = f.Write(append(data, '\n')); e != nil {
+		return e
+	}
+	if e = f.Sync(); e != nil {
+		return e
+	}
+	if e = f.Close(); e != nil {
+		return e
+	}
+	if e = os.Link(tmp, path); e != nil {
+		return fmt.Errorf("publish named credentials without replacement: %w", e)
+	}
+	d, e := os.Open(filepath.Dir(path))
+	if e != nil {
+		return e
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// Existing namespace components must be real directories. Same-UID external
+// mutation is not a sandbox boundary, but symlinks never select another profile.
+func checkConnectionDirectories(root, path string) error {
+	rel, e := filepath.Rel(root, path)
+	if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("connection path escapes config root")
+	}
+	cur := root
+	for _, part := range append([]string{""}, strings.Split(rel, string(filepath.Separator))...) {
+		if part != "" {
+			cur = filepath.Join(cur, part)
+		}
+		st, e := os.Lstat(cur)
+		if errors.Is(e, os.ErrNotExist) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+			return errors.New("connection namespace must contain real directories")
+		}
+	}
+	return nil
+}

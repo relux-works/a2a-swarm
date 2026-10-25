@@ -27,10 +27,11 @@ const maxErrorBody = 64 << 10
 
 // Client talks to one homeserver as one user (or anonymously for registration).
 type Client struct {
-	BaseURL    string
-	Token      string
-	HTTP       *http.Client
-	directOnly bool
+	BaseURL       string
+	Token         string
+	HTTP          *http.Client
+	BeforeRequest func() error // Optional immutable connection binding guard.
+	directOnly    bool
 }
 
 // WithoutRedirects returns a scoped copy for operations whose response must
@@ -143,6 +144,11 @@ func (c *Client) doResponse(ctx context.Context, method, path string, query url.
 // Other statuses are turned into *Error (or ErrAuth) and the body is closed.
 // size is the body length, or -1 when there is no body.
 func (c *Client) send(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, size int64) (*http.Response, error) {
+	if c.BeforeRequest != nil {
+		if err := c.BeforeRequest(); err != nil {
+			return nil, err
+		}
+	}
 	u := c.BaseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -171,6 +177,11 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 	requestClient := *hc
 	requestClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		redirected = true
+		// Credentials in headers or registration bodies never cross origins,
+		// including a redirect to a subdomain that net/http otherwise trusts.
+		if next.URL.Scheme != req.URL.Scheme || !strings.EqualFold(next.URL.Host, req.URL.Host) {
+			return errors.New("cross-origin Matrix redirect refused")
+		}
 		if c.directOnly {
 			return http.ErrUseLastResponse
 		}

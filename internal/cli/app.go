@@ -39,7 +39,15 @@ type App struct {
 	voiceRenderer voice.Renderer // test seam; production is strictly local
 
 	// as is the identity from --as (overrides A2A_AGENT).
-	as string
+	as                    string
+	profile               string
+	connectionFingerprint string
+	connection            *config.Connection
+	connectionResolved    bool
+	connectionError       error
+	authorizeRegistration bool
+	beforeNamedPublish    func() error
+	connectionSecretStore connectionSecretStore
 	// human selects a human operator's own account (humans/<name>.json); never
 	// set by agents. It needs --as and ignores A2A_AGENT.
 	human   bool
@@ -108,6 +116,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
+		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
 		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
@@ -157,7 +166,7 @@ func commands() []command {
 }
 
 func (a *App) usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: a2a [--as <name>] <command> [args]")
+	fmt.Fprintln(w, "usage: a2a [--profile <connection>] [--as <name>] <command> [args]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Identity: --as <name> or A2A_AGENT; credentials in ~/.config/a2a-swarm/agents/<name>.json (A2A_CONFIG_DIR overrides the base dir).")
 	fmt.Fprintln(w, "Rooms: #alias, alias, #alias:server, or !roomid.")
@@ -171,6 +180,9 @@ func (a *App) usage(w io.Writer) {
 // Run executes one a2a invocation and returns the exit code.
 func (a *App) Run(ctx context.Context, args []string) int {
 	a.ctx = ctx
+	a.connectionResolved = false
+	a.connection = nil
+	a.connectionError = nil
 	if a.Now == nil {
 		a.Now = time.Now
 	}
@@ -196,6 +208,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
+			if err := a.connectionPreflight(c.name, rest[1:]); err != nil {
+				return a.fail(err)
+			}
 			if c.name != "owner-dm" {
 				a.warnOwnerDM()
 			}
@@ -223,6 +238,36 @@ func (a *App) extractGlobal(args []string) ([]string, error) {
 			i++
 		case strings.HasPrefix(arg, "--as=") || strings.HasPrefix(arg, "-as="):
 			a.as = arg[strings.Index(arg, "=")+1:]
+		case arg == "--profile" || strings.HasPrefix(arg, "--profile="):
+			var v string
+			if arg == "--profile" {
+				if i+1 >= len(args) {
+					return nil, usagef("--profile needs a name")
+				}
+				i++
+				v = args[i]
+			} else {
+				v = strings.TrimPrefix(arg, "--profile=")
+			}
+			if v == "" || a.profile != "" && a.profile != v {
+				return nil, usagef("empty or conflicting --profile")
+			}
+			a.profile = v
+		case arg == "--connection-fingerprint" || strings.HasPrefix(arg, "--connection-fingerprint="):
+			var v string
+			if arg == "--connection-fingerprint" {
+				if i+1 >= len(args) {
+					return nil, usagef("missing connection fingerprint")
+				}
+				i++
+				v = args[i]
+			} else {
+				v = strings.TrimPrefix(arg, "--connection-fingerprint=")
+			}
+			if len(v) != 64 || a.connectionFingerprint != "" && a.connectionFingerprint != v {
+				return nil, usagef("invalid or conflicting connection fingerprint")
+			}
+			a.connectionFingerprint = v
 		case arg == "--human":
 			a.human = true
 		default:
@@ -335,12 +380,25 @@ type session struct {
 	server string
 }
 
-func (a *App) paths() (config.Paths, error) { return config.ResolvePaths(a.Getenv) }
+func (a *App) paths() (config.Paths, error) {
+	name := a.as
+	if name == "" {
+		name = a.Getenv(config.EnvAgent)
+	}
+	return a.pathsFor(name)
+}
 
 func (a *App) loadMatrix() (config.Paths, config.Matrix, error) {
 	p, err := a.paths()
 	if err != nil {
 		return p, config.Matrix{}, err
+	}
+	c, err := a.selectedConnection()
+	if err != nil {
+		return p, config.Matrix{}, err
+	}
+	if c != nil {
+		return p, config.Matrix{URL: c.URL, ServerName: c.ServerName}, nil
 	}
 	mx, err := config.LoadMatrix(p, a.Getenv)
 	if err != nil {
@@ -391,6 +449,10 @@ func (a *App) sessionAs(name string) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
+	p, err = a.pathsFor(name)
+	if err != nil {
+		return nil, err
+	}
 	creds, err := a.loadCredentials(a.context(), p, name)
 	if err != nil {
 		return nil, err
@@ -409,6 +471,38 @@ func (a *App) sessionAs(name string) (*session, error) {
 	}
 	c := matrix.New(base, creds.AccessToken)
 	c.HTTP = a.HTTP
+	if selected, e := a.selectedConnection(); e != nil {
+		return nil, e
+	} else if selected != nil {
+		binding, e := selected.Binding(name, a.human)
+		if e != nil {
+			return nil, e
+		}
+		label := a.profile
+		root := config.Paths{Base: p.ConfigRoot()}
+		c.BeforeRequest = func() error {
+			r, e := config.LoadConnections(root)
+			if e != nil {
+				return e
+			}
+			if r == nil {
+				return errors.New("selected connection registry disappeared")
+			}
+			selected, ok := r.Profiles[label]
+			if !ok {
+				return errors.New("selected connection disappeared")
+			}
+			fresh, e := selected.Binding(name, a.human)
+			if e != nil {
+				return e
+			}
+			if fresh.Fingerprint() != binding.Fingerprint() {
+				return errors.New("selected connection changed; explicit migration required")
+			}
+			_, e = a.namedMetadata(p, name)
+			return e
+		}
+	}
 	s := &session{app: a, paths: p, mx: mx, name: name, creds: creds, client: c, server: server}
 	return s, nil
 }

@@ -27,7 +27,7 @@ const DefaultCodexHooks = ".codex/hooks.json"
 // ourHookRE recognizes a command written by `a2a hook install`, whatever the
 // binary path: <path> --as <name> hook <event> --runtime <rt>. The form
 // without --runtime was written by earlier versions for Claude Code only.
-var ourHookRE = regexp.MustCompile(`^(?:'(?:[^']|'\\'')*'|[^\s']+) --as ([a-z0-9][a-z0-9._=-]{0,63}) hook (stop|session-start|prompt)(?: --runtime (claude|codex))?$`)
+var ourHookRE = regexp.MustCompile(`^(?:env (?:'(?:[^']|'\\'')*'|[^\s']+) )?(?:'(?:[^']|'\\'')*'|[^\s']+)(?: --profile [a-z0-9][a-z0-9_-]{0,63} --connection-fingerprint [a-f0-9]{64})? --as ([a-z0-9][a-z0-9._=-]{0,63}) hook (stop|session-start|prompt)(?: --runtime (claude|codex))?$`)
 
 var shellSafeRE = regexp.MustCompile(`^[A-Za-z0-9_./+:@%=,-]+$`)
 
@@ -320,8 +320,26 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 			env.set(config.EnvAgent, marshalNoEscape(*agent))
 			root.set("env", env.marshal())
 		}
+		pin, err := a.pinnedArgs(*agent)
+		if err != nil {
+			return err
+		}
+		prefix := shellQuote(exe)
+		if len(pin) > 0 {
+			p, err := a.pathsFor(*agent)
+			if err != nil {
+				return err
+			}
+			if _, err = a.namedMetadata(p, *agent); err != nil {
+				return err
+			}
+			prefix = "env " + shellQuote("A2A_CONFIG_DIR="+p.ConfigRoot()) + " " + prefix
+			for _, v := range pin {
+				prefix += " " + shellQuote(v)
+			}
+		}
 		removed, err = mergeHooks(root, rt, func(arg string) string {
-			return shellQuote(exe) + " --as " + *agent + " hook " + arg + " --runtime " + rt.name
+			return prefix + " --as " + *agent + " hook " + arg + " --runtime " + rt.name
 		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", sanitizeLine(path), err)

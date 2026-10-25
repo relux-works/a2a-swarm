@@ -125,7 +125,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		if st.HooksPaused || manualWakeGate(st) != "" {
 			return errors.New("binding refused: manual gate")
 		}
-		if err := a.guardBindingProcesses(ctx, s.name, s.paths.Base); err != nil {
+		if err := a.guardBindingProcesses(ctx, s.name, s.paths.ConfigRoot()); err != nil {
 			return err
 		}
 		if st.Runtime != nil && !st.Runtime.Retired {
@@ -244,8 +244,12 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 			return err
 		}
 		defer log.Close()
-		child = exec.Command(exe, "--as", s.name, "bind", "--run-generation", b.Generation)
-		child.Env = append(os.Environ(), "A2A_CONFIG_DIR="+s.paths.Base, "A2A_SESSION_ID="+b.SessionID)
+		pin, err := a.pinnedArgs(s.name)
+		if err != nil {
+			return err
+		}
+		child = exec.Command(exe, append(pin, "--as", s.name, "bind", "--run-generation", b.Generation)...)
+		child.Env = append(os.Environ(), "A2A_CONFIG_DIR="+s.paths.ConfigRoot(), "A2A_SESSION_ID="+b.SessionID)
 		child.ExtraFiles = []*os.File{writer}
 		child.Stdout = log
 		child.Stderr = log

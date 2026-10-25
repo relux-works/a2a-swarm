@@ -1449,3 +1449,117 @@ file edits, and first replay of a still-fresh genuine owner request are outside
 F1’s protection. Fingerprint/mtime are observations; render is presentation.
 Protected authority requires separately owned B4, outside S1. S2 and live
 activation require their own admission.
+
+## Named Matrix connections
+
+Named Matrix routing is independent of agent identity and of Curator profiles.
+`A2A_CONFIG_DIR` (otherwise `~/.config/a2a-swarm`) locates the nonsecret
+`connections.json` registry. Provision its initial `current` explicitly; the CLI
+never creates a registry or chooses its first entry implicitly.
+
+```json
+{
+  "schema_version": 1,
+  "current": "coordination",
+  "profiles": {
+    "coordination": {
+      "connection_id": "coordination-01",
+      "homeserver_url": "https://api.example.invalid",
+      "server_name": "identity.example.invalid",
+      "credential_store": {
+        "backend": "keychain",
+        "access_token_service": "works.relux.a2a.coordination.token",
+        "password_service": "works.relux.a2a.coordination.password"
+      },
+      "registration_token_ref": {
+        "service": "works.relux.a2a.coordination.bootstrap",
+        "account": "owner-admitted-registration"
+      }
+    }
+  }
+}
+```
+
+Profile names and immutable connection IDs use `[a-z0-9][a-z0-9_-]{0,63}`.
+Each ID must be unique. Endpoints require HTTPS, with HTTP allowed only for
+explicit loopback development servers. Endpoint host and Matrix identity domain
+may differ. Duplicate keys, unknown fields/schema, unsupported stores, missing
+current and malformed entries fail closed. References above are illustrative;
+never put token/password values in this file.
+
+```bash
+a2a connection list
+a2a connection show coordination
+a2a connection add staging --file staging-connection.json
+a2a connection use staging
+a2a --profile coordination whoami
+```
+
+`add` reads one public profile entry, refuses replacement and preserves current.
+`use` validates and atomically changes only current. Both serialize cooperating
+writers. Management commands perform no secret lookup, registration or runtime
+switch. An interrupted atomic replacement leaves the prior or complete new
+registry, never partial JSON. There is no rename/remove/force operation.
+
+`--profile NAME` selects one invocation without changing current. With a
+registry, the explicit current is used otherwise. An explicit missing/empty or
+conflicting repeated selection fails. An absent registry without `--profile`
+retains legacy `matrix.env`, environment and credential semantics. A malformed,
+unreadable or nonregular registry is an error, never legacy fallback.
+
+In named mode the selected endpoint, identity domain and secret references are
+authoritative. Nonempty legacy routing/store settings (including routing in `matrix.env`) must match; clear stale
+`A2A_MATRIX_URL`, `A2A_MATRIX_SERVER_NAME` and `A2A_SECRET_STORE` overrides before
+selecting a different connection. Unset secret-store selection uses the named
+backend. Named profiles require macOS Keychain; unsupported hosts refuse without
+falling back to files. Inherited registration tokens are never a named fallback.
+`--as`, `A2A_AGENT` and the interactive `--human` guard remain identity controls.
+
+Named metadata lives in `connections/<connection_id>/agents|humans/<name>.json`.
+It contains the full MXID, class, endpoint and public credential binding, without
+secrets. Access-token/password items use the selected services and full MXID
+account. Missing or mismatched metadata/items refuse before traffic; no legacy
+credential or compiled-service fallback is attempted. A known human metadata
+entry prevents agent reinterpretation of that name.
+
+Mutable state, mailboxes/receipts, leases, bindings, owner-channel files and
+Keychain bookkeeping live below
+`connections/<connection_id>/identities/<class>/<SHA256(full MXID)>/`.
+Host configuration stays at the original root. Existing consumers pin their
+selected connection; generated hook/bind children explicitly carry profile and
+operational fingerprint. Changing current or unrelated entries leaves original
+traffic functional. Changing the selected endpoint, identity or store requires
+an explicit migration; stale bindings fail without retargeting or resetting
+state. Token-bearing or registration-body HTTP redirects cannot change origin.
+
+First named agent registration must be separately owner-admitted and explicit:
+
+```bash
+a2a --profile staging register my_own_agent --authorize-registration
+a2a --profile staging identity ensure --role orch --runtime codex --authorize-registration
+```
+
+The flag records the caller's explicit operation intent; it does not grant owner
+approval or human-account access. Without it, missing metadata is refused. The
+selected bootstrap reference must already exist. The CLI refuses existing
+metadata/state/items, stores a recovery password in the selected password service
+before registration, stores the returned token exclusively, then atomically
+publishes complete metadata without replacement. Onboarding reuses verified
+existing metadata without registering again.
+
+Private `registration.pending.json` records distinguish preflight refusal,
+remote rejection, ambiguous outcome, remote creation with failed token storage,
+and metadata publication pending. No secret value is written there. A pending
+attempt blocks automatic retry; preserve it and the selected recovery items for
+the existing keeper/operator recovery path. Do not delete the remote account,
+overwrite an existing item or infer that an ambiguous failure created nothing.
+Registration recovery is intentionally manual in this initial command surface.
+
+Legacy transition is likewise explicit: prepare and review a dry-run packet
+with old/new profile, MXID/class/endpoint, item references, state mapping,
+consumer handoff, verification and rollback. No CLI command copies legacy state
+or migrates an identity automatically. Do not copy a sync cursor across servers
+or manufacture receipts. Preserve the old working path until separately
+admitted migration and retirement are verified. Binary installation, profile
+activation, bindings, identity creation, federation and rollout each retain
+their existing owner/keeper admission gates.
