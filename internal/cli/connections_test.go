@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
@@ -551,5 +552,67 @@ func TestNamedHumanClassBoundary(t *testing.T) {
 	}
 	if f.paths("alpha", true).Base == f.paths("alpha", false).Base {
 		t.Fatal("human state shared with agent")
+	}
+}
+
+// Proves the shared session fence covers local consumer work that need not
+// issue HTTP. Valid current/unrelated changes still permit lease/delivery work;
+// a selected change returns the binding error before callbacks or state writes.
+func TestNamedLocalConsumerEffectBoundaries(t *testing.T) {
+	for _, op := range []string{"lease", "mailbox", "terminal-dispatch", "terminal-update", "runtime-outcome", "liveness"} {
+		t.Run(op, func(t *testing.T) {
+			f := newNamedFixture(t, true)
+			a := f.app()
+			a.profile = "alpha"
+			s, e := a.session()
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = config.SaveState(s.paths, s.name, config.State{NextBatch: "original"}); e != nil {
+				t.Fatal(e)
+			}
+			f.r.Current = "beta"
+			f.save()
+			if e = s.checkConnection(); e != nil {
+				t.Fatal(e)
+			}
+			if e = a.acquireLease(s, "test-session", time.Now().Add(time.Second)); e != nil {
+				t.Fatal(e)
+			}
+			callback := false
+			if _, e = s.lockedDeliver(context.Background(), time.Now().Add(time.Second), false, func(*config.State, *config.Mailbox) ([]string, error) { callback = true; return nil, nil }); e != nil || !callback {
+				t.Fatalf("valid local delivery control: %v", e)
+			}
+			before, _ := os.ReadFile(s.paths.StateFile(s.name))
+			beforeMail, _ := os.ReadFile(s.paths.MailboxFile(s.name))
+			c := f.r.Profiles["alpha"]
+			c.Store.AccessTokenService = "test.changed.token"
+			f.r.Profiles["alpha"] = c
+			f.save()
+			callback = false
+			effects := f.effects()
+			switch op {
+			case "lease":
+				e = a.acquireLease(s, "forbidden", time.Now().Add(time.Second))
+			case "mailbox":
+				_, e = s.lockedDeliver(context.Background(), time.Now().Add(time.Second), false, func(*config.State, *config.Mailbox) ([]string, error) { callback = true; return nil, nil })
+			case "terminal-dispatch":
+				e = a.dispatchTerminal(context.Background(), s, "not-a-real-terminal")
+			case "terminal-update":
+				e = a.terminalUpdate(s, "not-a-real-terminal", func(*config.TerminalBinding) { callback = true })
+			case "runtime-outcome":
+				e = a.runtimeOutcome(s, "not-a-real-runtime", "forbidden")
+			case "liveness":
+				e = s.writeLivenessSource(context.Background(), config.AgentStatus{}, "runtime")
+			}
+			if e == nil || !strings.Contains(e.Error(), "selected connection changed") {
+				t.Fatalf("expected binding refusal, got %v", e)
+			}
+			after, _ := os.ReadFile(s.paths.StateFile(s.name))
+			afterMail, _ := os.ReadFile(s.paths.MailboxFile(s.name))
+			if callback || !bytes.Equal(before, after) || !bytes.Equal(beforeMail, afterMail) || f.effects() != effects {
+				t.Fatal("stale local consumer produced effects")
+			}
+		})
 	}
 }

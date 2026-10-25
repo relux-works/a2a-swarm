@@ -342,7 +342,13 @@ func manualWakeGate(st config.State) string {
 }
 
 func (a *App) runtimeOutcome(s *session, generation, outcome string) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
 	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		if st.Runtime == nil || st.Runtime.Generation != generation {
 			return errors.New("runtime stale generation")
 		}
@@ -356,7 +362,13 @@ func (a *App) runtimeOutcome(s *session, generation, outcome string) error {
 }
 
 func (a *App) dispatchNative(ctx context.Context, s *session, generation string) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
 	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 		defer cancel()
 		st, err := config.LoadState(s.paths, s.name)
@@ -500,6 +512,9 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			if err := a.afterWakeReserve(); err != nil {
 				return err
 			}
+		}
+		if err := s.checkConnection(); err != nil {
+			return err
 		}
 		turn, err := client.Wake(probe, b.ThreadID, attempt.Output)
 		if err != nil {

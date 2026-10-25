@@ -371,13 +371,14 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // session is an authenticated identity bound to one homeserver.
 type session struct {
-	app    *App
-	paths  config.Paths
-	mx     config.Matrix
-	name   string
-	creds  config.Credentials
-	client *matrix.Client
-	server string
+	app          *App
+	paths        config.Paths
+	mx           config.Matrix
+	name         string
+	creds        config.Credentials
+	client       *matrix.Client
+	server       string
+	checkBinding func() error // Immutable operational snapshot; nil for legacy sessions.
 }
 
 func (a *App) paths() (config.Paths, error) {
@@ -471,6 +472,7 @@ func (a *App) sessionAs(name string) (*session, error) {
 	}
 	c := matrix.New(base, creds.AccessToken)
 	c.HTTP = a.HTTP
+	s := &session{app: a, paths: p, mx: mx, name: name, creds: creds, client: c, server: server}
 	if selected, e := a.selectedConnection(); e != nil {
 		return nil, e
 	} else if selected != nil {
@@ -480,7 +482,7 @@ func (a *App) sessionAs(name string) (*session, error) {
 		}
 		label := a.profile
 		root := config.Paths{Base: p.ConfigRoot()}
-		c.BeforeRequest = func() error {
+		s.checkBinding = func() error {
 			r, e := config.LoadConnections(root)
 			if e != nil {
 				return e
@@ -503,7 +505,7 @@ func (a *App) sessionAs(name string) (*session, error) {
 			return e
 		}
 	}
-	s := &session{app: a, paths: p, mx: mx, name: name, creds: creds, client: c, server: server}
+	c.BeforeRequest = s.checkBinding
 	return s, nil
 }
 
@@ -516,4 +518,14 @@ func (a *App) context() context.Context {
 		return a.ctx
 	}
 	return context.Background()
+}
+
+// checkConnection guards consumer effects independently of HTTP. In particular,
+// native dispatch, leases, receipts and terminal operations can run without a
+// Matrix request. Current and unrelated registry edits remain valid.
+func (s *session) checkConnection() error {
+	if s.checkBinding != nil {
+		return s.checkBinding()
+	}
+	return nil
 }

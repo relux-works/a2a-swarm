@@ -451,8 +451,14 @@ func (s *session) updateSubs(ctx context.Context, fn func(st *config.State, list
 // updateSubsBy is updateSubs with a bounded wait for the state lock when
 // deadline is set (hooks); the zero deadline blocks.
 func (s *session) updateSubsBy(ctx context.Context, deadline time.Time, fn func(st *config.State, list *SubList) (bool, error)) (config.State, SubList, error) {
+	if err := s.checkConnection(); err != nil {
+		return config.State{}, SubList{}, err
+	}
 	var list SubList
 	st, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		var err error
 		if list, err = s.getSubs(ctx); err != nil {
 			return err

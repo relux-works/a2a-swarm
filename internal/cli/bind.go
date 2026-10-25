@@ -404,7 +404,13 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 }
 
 func (a *App) terminalUpdate(s *session, generation string, fn func(*config.TerminalBinding)) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
 	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped {
 			return errors.New("binding retired")
 		}
@@ -421,6 +427,9 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 	delay := policy.Interval
 	qualificationInterrupted := true
 	for ctx.Err() == nil {
+		if err := s.checkConnection(); err != nil {
+			return "selected connection unavailable", err
+		}
 		st, err := config.LoadState(s.paths, s.name)
 		if err == nil {
 			b := st.Terminal
@@ -482,6 +491,9 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			return "cancelled", nil
 		}
 		if err != nil {
+			if guardErr := s.checkConnection(); guardErr != nil {
+				return "selected connection unavailable", guardErr
+			}
 			qualificationInterrupted = true
 			delay = min(policy.RetryMax, max(policy.Interval, delay*2))
 			// A failed write is not a reason to terminate. The next cycle must load
@@ -503,8 +515,14 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 }
 
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
 	observed := false
 	err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
@@ -606,6 +624,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}); err != nil {
 			return err
 		}
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		outcome, sendErr := b.Target.Send(ctx, len(ids), nil, nil)
 		return a.finishTerminal(s, generation, outcome, sendErr, false)
 	})
@@ -663,6 +684,9 @@ func (a *App) finishTerminal(s *session, generation, outcome string, sendErr err
 }
 
 func (a *App) recoverTerminal(ctx context.Context, s *session, generation string, b config.TerminalBinding) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
 	input := b.Target.ObserveInput(ctx, b.Notice)
 	if input != "empty" {
 		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: pending attempt input" })
@@ -702,6 +726,9 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 	var outcome string
 	var sendErr error
 	if input == "empty" {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		outcome, sendErr = b.Target.Send(ctx, b.NoticeCount, nil, nil)
 
 	}

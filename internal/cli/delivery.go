@@ -248,7 +248,13 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 // is held as well and the ids fn returns are removed from it (account data is
 // written before the state). A set deadline bounds the wait for the lock.
 func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSubs bool, fn func(cur *config.State, mb *config.Mailbox) (closeSubs []string, err error)) (config.State, error) {
+	if err := s.checkConnection(); err != nil {
+		return config.State{}, err
+	}
 	run := func(cur *config.State) ([]string, error) {
+		if err := s.checkConnection(); err != nil {
+			return nil, err
+		}
 		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {
 			return nil, err

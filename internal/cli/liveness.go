@@ -152,6 +152,9 @@ func (s *session) writeLiveness(ctx context.Context, record config.AgentStatus) 
 }
 
 func (s *session) writeLivenessSource(ctx context.Context, record config.AgentStatus, source string) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
 	if err := statusValid(record); err != nil {
 		return err
 	}
@@ -163,6 +166,9 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 	defer cancel()
 	var publicationErr error
 	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		if (source == "wait-heartbeat" || source == "wait-disarm" || (source == "wait" && manualWakeGate(*st) != "")) && st.Liveness != nil {
 			doorbell, every := record.Doorbell, record.HeartbeatEvery
 			record = *st.Liveness
