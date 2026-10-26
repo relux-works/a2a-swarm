@@ -935,6 +935,56 @@ a2a who --stale-after 3m
 a2a who --stale-after 3m --json
 ```
 
+Bind status also reports a local `diagnostic` object (`phase`, `class`, `result`,
+optional `observed_at`) in JSON and fixed codes in text. Phases distinguish state,
+selected connection, authority, delivery setup/initial positioning/sync, mailbox,
+idle qualification, dispatch lock and dispatch. Error classes use typed facts
+where available (timeout, cancellation, lock, permission, lease conflict,
+authentication, remote/transport failure); otherwise they say unavailable.
+No arbitrary error text, screen, peer body, sender or path is copied into these
+fields or the fixed consumer retry log. A later generic retry/publication does
+not overwrite the failed phase. Diagnostic persistence tries the state lock once without waiting; failure leaves
+only the safe log;
+changed connection authority forbids writing through the old session. Legacy
+missing diagnostics are unknown. Invalid codes are rendered unknown/invalid.
+
+Successful suppression is separate from an error or a submitted notice: paused
+hooks, manual gates, native binding, binding/lease authority, hourly rate and
+unqualified input retain their own fixed classes. The current input API can only
+report conservative `input_unqualified`; it cannot distinguish a draft, busy
+screen, unknown layout or capture failure here. Rich parser reasons require the
+separate typed tmux assessment integration; a diagnostic never authorizes input.
+An ambiguous send is `uncertain` and retains its attempt fence. Submission is
+not evidence that the agent resumed or answered, and never receipts mail.
+
+The JSON `pending` object and text pending summary read the existing durable
+mailbox under its state lock, even when unbound or before any wake attempt. They
+never sync, mark shown, receipt or create another pending store. `count` includes
+all still-unreceipted entries, including invites and gaps. `oldest_known_event_at`
+and `oldest_known_event_age_ms` are the minimum valid positive Matrix origin
+`ts` among those entries and elapsed milliseconds from that origin instant to
+the status clock. They are **not** first-enqueue age, time since a wake, or time
+without an answer. Retry, unrelated attempts and process restart cannot reset
+them; a receipt removes only its matching pending entry.
+
+`age_state=known` means every pending entry has a valid nonfuture origin time;
+`empty` means no pending entries (age is absent). Zero/missing timestamps are
+`unknown`; negative or future timestamps are `invalid`, with separate
+`missing_timestamps`, `invalid_timestamps` and `future_timestamps` counts. If any
+entry lacks valid metadata, the optional oldest-known time covers only the
+valid subset and cannot claim the oldest age of all pending mail. Malformed or
+unreadable mailbox data reports `state=unavailable`, `count=null` and unknown
+age, rather than a healthy zero. No first-enqueue measure or complete DM/direct
+classification exists in this durable format; this unit adds neither guessed
+urgency buckets nor escalation thresholds/routes.
+
+These are local observations, not a dead-consumer detector: a dead consumer
+cannot update its own diagnostics. Status inspection does not prove consumer
+health, repair wake delivery or publish an incident. Supervisor reporting,
+typed input-reason integration and affected-host rollout proof remain separate.
+No global timing default, policy flag, #system publisher or projector activation
+is introduced.
+
 Bind status reads the recorded private `state/NAME.json`, not the current pane. JSON exposes `own_notice_possibly_orphaned` as true (suspected),
 false (fresh clear/not applicable), or null (unknown). True has fixed `reason=owned-notice-orphan-suspected` and `since`, the stable first-suspected
 RFC3339 UTC timestamp. `observed_at` is the last successful rendered observation, never publication time. Optional reason/since/observed_at

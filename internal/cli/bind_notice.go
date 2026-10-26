@@ -153,13 +153,17 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := config.LoadState(s.paths, s.name)
+	st, pending, err := a.readTerminalStatus(s)
 	if err != nil {
 		return err
 	}
+	diagnostic := config.TerminalDiagnostic{Phase: "unknown", Class: "none", Result: "unknown"}
 	n := config.OwnNoticeObservation{}
 	publication := "unavailable: unbound"
 	if st.Terminal != nil {
+		if st.Terminal.Diagnostic != nil {
+			diagnostic = st.Terminal.Diagnostic.Safe()
+		}
 		n = st.Terminal.OwnNotice
 		publication = st.Terminal.NoticePublication
 	}
@@ -172,16 +176,19 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
-			Publication string `json:"publication"`
-			NoticeError string `json:"notice_error,omitempty"`
-		}{n, publication, noticeError})
+			Publication string                    `json:"publication"`
+			NoticeError string                    `json:"notice_error,omitempty"`
+			Diagnostic  config.TerminalDiagnostic `json:"diagnostic"`
+			Pending     terminalPending           `json:"pending"`
+		}{n, publication, noticeError, diagnostic, pending})
 	}
+	a.printf("diagnostic phase=%s class=%s result=%s; %s\n", diagnostic.Phase, diagnostic.Class, diagnostic.Result, terminalPendingText(pending))
 	if st.Terminal == nil {
 		a.printf("%s unbound; %s\n", s.name, noticeText(n))
 		return nil
 	}
 	b := st.Terminal
-	a.printf("%s generation=%s pid=%d stopped=%t outcome=%s; %s; publication=%s\n", s.name, b.Generation, b.DaemonPID, b.Stopped, b.Outcome, noticeText(n), publication)
+	a.printf("%s generation=%s pid=%d stopped=%t outcome=%s; %s; publication=%s\n", s.name, b.Generation, b.DaemonPID, b.Stopped, safeTerminalOutcome(b.Outcome), noticeText(n), publication)
 	return nil
 }
 

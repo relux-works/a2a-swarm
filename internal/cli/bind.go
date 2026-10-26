@@ -301,19 +301,19 @@ func runBoundChild(ctx context.Context, a *App, generation string) error {
 	defer func() { fmt.Fprintln(a.Stderr, "binding exit: "+reason) }()
 	ready := os.NewFile(3, "binding-ready")
 	if ready == nil {
-		return errors.New("missing bind startup pipe")
+		return terminalAt("authority", errors.New("missing bind startup pipe"))
 	}
 	defer ready.Close()
 	s, err := a.session()
 	if err != nil {
-		return err
+		return terminalAt("connection", err)
 	}
-	return config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error {
+	err = config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error {
 		var initial config.TerminalBinding
 		err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 			st, err := config.LoadState(s.paths, s.name)
 			if err != nil {
-				return err
+				return terminalAt("state", err)
 			}
 			b := st.Terminal
 			birth, err := tmuxwake.Birth(ctx, os.Getpid())
@@ -338,6 +338,7 @@ func runBoundChild(ctx context.Context, a *App, generation string) error {
 		reason, runErr = a.runTerminal(ctx, s, generation, initial)
 		return runErr
 	})
+	return terminalAt("authority", err)
 }
 
 func cmdUnbind(ctx context.Context, a *App, args []string) error {
@@ -405,19 +406,19 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 
 func (a *App) terminalUpdate(s *session, generation string, fn func(*config.TerminalBinding)) error {
 	if err := s.checkConnection(); err != nil {
-		return err
+		return terminalAt("connection", err)
 	}
 	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
-			return err
+			return terminalAt("connection", err)
 		}
 		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped {
-			return errors.New("binding retired")
+			return terminalAt("authority", errors.New("binding retired"))
 		}
 		fn(st.Terminal)
 		return nil
 	})
-	return err
+	return terminalAt("state", err)
 }
 
 // runTerminal retains its validated policy snapshot across local read errors;
@@ -428,8 +429,10 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 	qualificationInterrupted := true
 	for ctx.Err() == nil {
 		if err := s.checkConnection(); err != nil {
-			return "selected connection unavailable", err
+			a.recordTerminalFailure(s, generation, "connection", err)
+			return "selected connection unavailable", terminalAt("connection", err)
 		}
+		phase := "state"
 		st, err := config.LoadState(s.paths, s.name)
 		if err == nil {
 			b := st.Terminal
@@ -448,28 +451,37 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			_, _, _, targetErr := b.Target.Inspect(probe)
 			cancel()
 			if ownerErr == nil && owner != b.OwnerBirth || ownerErr != nil && processGone(b.OwnerPID) || errors.Is(targetErr, tmuxwake.ErrTargetGone) {
-				a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Stopped = true; b.Outcome = "target exited or replaced" })
+				a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+					b.Stopped = true
+					b.Outcome = "target exited or replaced"
+					d := terminalDiagnostic("authority", "target_gone", "suppressed", a.Now())
+					b.Diagnostic = &d
+				})
 				if processGone(b.OwnerPID) || ownerErr == nil && owner != b.OwnerBirth {
 					return "owner gone or replaced", nil
 				}
 				return "target gone or replaced", nil
 			}
 			if ownerErr != nil {
-				err = ownerErr
+				phase, err = "authority", ownerErr
 			} else if targetErr != nil {
-				err = targetErr
+				phase, err = "authority", targetErr
 			} else {
+				phase = "authority"
 				err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout))
 			}
 		}
 		if err == nil {
 			syncCtx, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 			var subs SubList
+			phase = "delivery_start"
 			st, subs, err = s.startDelivery(syncCtx, a.Now())
 			if err == nil {
 				if st.NextBatch == "" {
+					phase = "delivery_position"
 					_, err = s.takePosition(syncCtx, time.Now().Add(nativeRPCTimeout))
 				} else {
+					phase = "delivery_sync"
 					_, err = s.syncNow(syncCtx, st, subs.Subs, time.Now().Add(nativeRPCTimeout))
 				}
 			}
@@ -480,26 +492,30 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			// that interruption in RAM until a fresh successful write precedes
 			// dispatch, including the first cycle of a restarted consumer.
 			if qualificationInterrupted {
+				phase = "qualification"
 				err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
 				qualificationInterrupted = err != nil
 			}
 		}
 		if err == nil {
+			phase = "dispatch"
 			err = a.dispatchTerminal(ctx, s, generation)
 		}
 		if ctx.Err() != nil {
 			return "cancelled", nil
 		}
 		if err != nil {
+			// Preserve the first failed operation even if the connection guard
+			// subsequently prevents its diagnostic from reaching durable state.
+			a.recordTerminalFailure(s, generation, phase, err)
 			if guardErr := s.checkConnection(); guardErr != nil {
-				return "selected connection unavailable", guardErr
+				return "selected connection unavailable", terminalAt("connection", guardErr)
 			}
 			qualificationInterrupted = true
 			delay = min(policy.RetryMax, max(policy.Interval, delay*2))
 			// A failed write is not a reason to terminate. The next cycle must load
 			// fresh state and reacquire its lease before it may touch the terminal.
 			a.unknownTerminalNotice(ctx, s, generation, true)
-			fmt.Fprintln(a.Stderr, "binding consumer unavailable; bounded retry")
 		} else {
 			delay = policy.Interval
 		}
@@ -516,37 +532,45 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string) error {
 	if err := s.checkConnection(); err != nil {
-		return err
+		return terminalAt("connection", err)
 	}
 	observed := false
+	phase := "dispatch_lock"
 	err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		if err := s.checkConnection(); err != nil {
-			return err
+			return terminalAt("connection", err)
 		}
+		phase = "state"
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
 		}
 		b := st.Terminal
+		phase = "authority"
 		if b == nil || b.Stopped || b.Generation != generation {
 			return errors.New("binding retired")
 		}
 		if st.HooksPaused || manualWakeGate(st) != "" {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: manual gate" })
+			class := "manual_gate"
+			if st.HooksPaused {
+				class = "hook_pause"
+			}
+			return a.terminalSuppressed(s, generation, "authority", class, "suppressed: manual gate")
 		}
 		if st.Runtime != nil && !st.Runtime.Retired {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: native binding" })
+			return a.terminalSuppressed(s, generation, "authority", "native_binding", "suppressed: native binding")
 		}
 		if !ownTerminalTarget(b, b.Target) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: binding target authority" })
+			return a.terminalSuppressed(s, generation, "authority", "binding_authority", "suppressed: binding target authority")
 		}
 		if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: lease authority" })
+			return a.terminalSuppressed(s, generation, "authority", "lease_authority", "suppressed: lease authority")
 		}
 		// Mail remains available to inbox. Attempt and rung IDs prevent normal
 		// duplicates; an uncertain attempt has a separate bounded recovery path.
 		var ids []string
 		var pendingIDs []string
+		phase = "mailbox"
 		_, err = s.lockedDeliver(ctx, time.Now().Add(nativeRPCTimeout), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
 			for _, entry := range mb.Pending() {
 				pendingIDs = append(pendingIDs, entry.ID)
@@ -593,15 +617,22 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			b.Idle = nil
 		}
 		if len(b.AttemptIDs) > 0 {
+			phase = "dispatch"
 			return a.recoverTerminal(ctx, s, generation, *b)
 		}
 		if len(ids) == 0 {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "armed: no new mail" })
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+				b.Idle = nil
+				b.Outcome = "armed: no new mail"
+				d := terminalDiagnostic("mailbox", "no_new_mail", "idle", a.Now())
+				b.Diagnostic = &d
+			})
 		}
 		// Screen admission precedes the durable attempt fence. A busy target
 		// retains IDs for the next idle observation without spending its rate.
+		phase = "qualification"
 		if !b.Target.Idle(ctx) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: busy, draft or unknown input" })
+			return a.terminalSuppressed(s, generation, "qualification", "input_unqualified", "suppressed: busy, draft or unknown input")
 		}
 		now := a.Now()
 		if qualified, err := a.qualifyTerminalIdle(s, generation, *b); err != nil || !qualified {
@@ -609,7 +640,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}
 		reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
 		if len(reservations) >= b.MaxWakes {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
+			return a.terminalSuppressed(s, generation, "authority", "hourly_rate", "suppressed: hourly rate")
 		}
 		if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
 			b.Idle = nil
@@ -625,12 +656,15 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			return err
 		}
 		if err := s.checkConnection(); err != nil {
-			return err
+			return terminalAt("connection", err)
 		}
+		phase = "dispatch"
 		outcome, sendErr := b.Target.Send(ctx, len(ids), nil, nil)
 		return a.finishTerminal(s, generation, outcome, sendErr, false)
 	})
+	err = terminalAt(phase, err)
 	if err != nil {
+		a.recordTerminalFailure(s, generation, phase, err)
 		_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
 	}
 	if err != nil || !observed {
@@ -654,14 +688,43 @@ func (a *App) qualifyTerminalIdle(s *session, generation string, b config.Termin
 		qualified = identity == observation && b.Interval > 0 && !now.Before(previous.At.Add(b.Interval))
 	}
 	if !qualified {
-		return false, a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = &observation; b.Outcome = "armed: qualifying idle" })
+		return false, a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			b.Idle = &observation
+			b.Outcome = "armed: qualifying idle"
+			d := terminalDiagnostic("qualification", "idle_sample", "qualifying", a.Now())
+			b.Diagnostic = &d
+		})
 	}
 	return true, nil
 }
 
 func (a *App) finishTerminal(s *session, generation, outcome string, sendErr error, recovering bool) error {
+	// Unknown transport outcomes are not evidence of a submission.
+	switch outcome {
+	case "wake submitted", "notice left in draft: input unavailable", "notice left in draft: changed input", "suppressed: busy, draft or unknown input", "suppressed: target or width":
+	case "uncertain: type", "uncertain: interrupted", "uncertain: Enter":
+		if sendErr == nil {
+			sendErr = errors.New("uncertain dispatch")
+		}
+	default:
+		outcome = "uncertain: dispatch outcome"
+		sendErr = errors.New("unknown dispatch outcome")
+	}
 	return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
 		b.Outcome = outcome
+		d := terminalDiagnostic("dispatch", "submitted", "submitted", a.Now())
+		switch {
+		case sendErr != nil:
+			d = terminalErrorDiagnostic("dispatch", sendErr, a.Now())
+			d.Result = "uncertain"
+		case strings.HasPrefix(outcome, "notice left in draft:"):
+			d = terminalDiagnostic("dispatch", "draft_retained", "suppressed", a.Now())
+		case outcome == "suppressed: busy, draft or unknown input":
+			d = terminalDiagnostic("qualification", "input_unqualified", "suppressed", a.Now())
+		case outcome == "suppressed: target or width":
+			d = terminalDiagnostic("dispatch", "target_or_width", "suppressed", a.Now())
+		}
+		b.Diagnostic = &d
 		if sendErr != nil {
 			return
 		}
@@ -685,20 +748,22 @@ func (a *App) finishTerminal(s *session, generation, outcome string, sendErr err
 
 func (a *App) recoverTerminal(ctx context.Context, s *session, generation string, b config.TerminalBinding) error {
 	if err := s.checkConnection(); err != nil {
-		return err
+		return terminalAt("connection", err)
 	}
 	input := b.Target.ObserveInput(ctx, b.Notice)
 	if input != "empty" {
-		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: pending attempt input" })
+		return a.terminalSuppressed(s, generation, "qualification", "pending_input", "suppressed: pending attempt input")
 	}
 	if b.NoticeCount <= 0 || b.Notice != tmuxwake.Notice(b.NoticeCount) {
 		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
 			b.Idle = nil
 			b.Outcome = "uncertain legacy attempt; retained mail requires inbox"
+			d := terminalDiagnostic("dispatch", "legacy_attempt", "suppressed", a.Now())
+			b.Diagnostic = &d
 		})
 	}
 	if len(b.AttemptIDs) != b.NoticeCount {
-		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "uncertain partial attempt; mail retained" })
+		return a.terminalSuppressed(s, generation, "dispatch", "partial_attempt", "uncertain partial attempt; mail retained")
 	}
 	now := a.Now()
 	if input == "empty" {
@@ -709,11 +774,11 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		// including a previously known-unsubmitted notice (Typed=true).
 		// Empty input may follow an accepted turn; the retry remains bounded.
 		if input == "empty" && (b.Retried || now.Before(b.AttemptAt.Add(2*b.Interval))) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "uncertain attempt; bounded retry held" })
+			return a.terminalSuppressed(s, generation, "dispatch", "retry_held", "uncertain attempt; bounded retry held")
 		}
 		reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
 		if len(reservations) >= b.MaxWakes {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
+			return a.terminalSuppressed(s, generation, "authority", "hourly_rate", "suppressed: hourly rate")
 		}
 		if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Retried = true; b.Reservations = append(reservations, now) }); err != nil {
 			return err
@@ -727,7 +792,7 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 	var sendErr error
 	if input == "empty" {
 		if err := s.checkConnection(); err != nil {
-			return err
+			return terminalAt("connection", err)
 		}
 		outcome, sendErr = b.Target.Send(ctx, b.NoticeCount, nil, nil)
 

@@ -60,7 +60,9 @@ kept 2 of 30. The board-resource thread used before hit exactly this: a real ove
 
 Wake has one consumer per identity. A bound session uses its supervised consumer; do not add a parallel `wait`, `watch` or Monitor.
 Audit ordinary-room notification coverage with `bin/a2a subs check [--json]`: it reads subscriptions and the identity's private trim policy, reports missing/trimmed/covered rooms and exits nonzero on gaps. `bin/a2a subs trim --room R --drop KINDS --reason TEXT` records a deliberate exception after narrowing subscriptions; `subs sync` and session-preset onboarding preserve it. Policy lives in `state/NAME.subscription-trims.json` separately from delivery state; see [subscription commands](docs/cli.md#runtime-subscriptions-a2a-subscribe--a2a-unsubscribe--a2a-subs).
-Inspect your own `a2a bind status` and read mail with `a2a inbox`. Only an unbound Claude fallback uses a supervised background waiter;
+Inspect your own `a2a bind status` and read mail with `a2a inbox`. Bind status also exposes fixed consumer phase/class diagnostics and a read-only durable
+pending count/Matrix-origin-age summary, including unknown metadata; it does not diagnose a dead consumer or claim wake repair.
+Only an unbound Claude fallback uses a supervised background waiter;
 a waiter alone cannot wake idle Codex, which needs its owning launcher's binding. See [the CLI wake guidance](docs/cli.md).
 
 ### Project skills and Curator

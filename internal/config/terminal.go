@@ -17,6 +17,7 @@ type NoticeRetry struct {
 // TerminalBinding contains only local process metadata and event IDs. A wake
 // reservation is independent of inbox receipts and survives an uncertain send.
 type TerminalBinding struct {
+	Diagnostic        *TerminalDiagnostic  `json:"diagnostic,omitempty"`
 	OwnNotice         OwnNoticeObservation `json:"own_notice"`
 	NoticePublication string               `json:"notice_publication"`
 	Generation        string               `json:"generation"`
