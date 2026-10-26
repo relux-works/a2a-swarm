@@ -232,6 +232,77 @@ func TestReadinessDiagnosticPersistence(t *testing.T) {
 	}
 }
 
+// A same-pair invalid timestamp is repaired at the first consumer observation,
+// once. Later stable observations do no write; stale replacement scopes cannot
+// receive that repair. Malformed JSON is exercised through the real decoder.
+func TestReadinessDiagnosticSinceRepair(t *testing.T) {
+	for _, mode := range []string{"zero", "future", "malformed", "stale", "concurrent"} {
+		t.Run(mode, func(t *testing.T) {
+			e, _ := world(t)
+			a, s := notificationApp(t, e)
+			clock := e.clock()
+			a.Now = clock.now
+			old := &config.TerminalReadiness{Reason: tmuxwake.RuntimeBusy, Version: "2.1.310"}
+			if mode == "future" {
+				old.Since = clock.now().Add(time.Hour)
+			}
+			if mode == "malformed" {
+				if err := json.Unmarshal([]byte(`{"reason":"busy","version":"2.1.310","since":"PRIVATE_INVALID_TIME"}`), old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			b := config.TerminalBinding{Generation: "g", SessionID: "s", Readiness: old, NotificationToken: "token", AttemptIDs: []string{"mail"}}
+			notificationState(t, e, func(st *config.State) {
+				copy := b
+				st.Terminal = &copy
+				if mode == "concurrent" {
+					st.Terminal.Readiness = &config.TerminalReadiness{Reason: old.Reason, Version: old.Version, Since: clock.now().Add(-time.Minute)}
+				}
+				if mode == "stale" {
+					st.Terminal.SessionID = "new"
+				}
+			})
+			r := tmuxwake.ReadinessAssessment{Runtime: tmuxwake.RuntimeAssessment{State: tmuxwake.RuntimeRefused, Reason: tmuxwake.RuntimeBusy, Version: "2.1.310"}}
+			before, _ := json.Marshal(e.state("alice"))
+			err := a.observeTerminalReadiness(s, b, r)
+			if mode == "stale" {
+				after, _ := json.Marshal(e.state("alice"))
+				if err == nil || string(before) != string(after) {
+					t.Fatal("stale diagnostic repair wrote")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			b = *e.state("alice").Terminal
+			wantSince := clock.now()
+			if mode == "concurrent" {
+				wantSince = wantSince.Add(-time.Minute)
+			}
+			if !b.Readiness.Since.Equal(wantSince) || b.NotificationToken != "token" || len(b.AttemptIDs) != 1 {
+				t.Fatal("invalid since not repaired at first observation", b.Readiness)
+			}
+			first := b.Readiness.Since
+			info, err := os.Stat(s.paths.StateFile(s.name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			clock.add(time.Second)
+			if err := a.observeTerminalReadiness(s, b, r); err != nil {
+				t.Fatal(err)
+			}
+			afterInfo, err := os.Stat(s.paths.StateFile(s.name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(info, afterInfo) || !e.state("alice").Terminal.Readiness.Since.Equal(first) {
+				t.Fatal("stable repaired since rewritten")
+			}
+		})
+	}
+}
+
 // Unknown reasons and hostile version strings project to bounded enums;
 // malformed/future stored timestamps never supply a status since or permission.
 func TestReadinessStatusProjection(t *testing.T) {

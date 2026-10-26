@@ -59,7 +59,9 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"registry-typed-unknown-completes", "cli/bind.go", `outcome := result.Text()`, `if !result.Valid() && sendErr==nil {result=tmuxwake.SendResult{Disposition:tmuxwake.SendSubmitted,Outcome:tmuxwake.SendWakeSubmitted}}; outcome := result.Text()`, "TestReadinessTypedCompletion/unknown", "TestReadinessTypedCompletion/submitted"},
 		{"registry-pretype-key-omission", "tmuxwake/terminal.go", `if preType != nil && !preType() {`, `if preType != nil && false && !preType() {`, "TestBoundSendContinuity/claude-named/pre-key", "TestBoundSendContinuity/claude-named/valid"},
 		{"registry-posttype-key-omission", "tmuxwake/send_result.go", `r.Key == expected &&`, `(r.Key == expected || owned!="") &&`, "TestBoundSendContinuity/claude-named/post-key", "TestBoundSendContinuity/claude-named/valid"},
+		{"registry-journal-key-authority", "tmuxwake/readiness.go", `if b.Text != "" && (owned == "" || b.Text != owned || !fixedNotice.MatchString(owned)) {`, `if b.Text != "" && (owned == "" || b.Text != owned || !fixedNotice.MatchString(owned)) && diagnosticNotice=="" {`, "TestReadinessNoticeDiagnosticOnly", "TestBoundReadinessRoutes/codex"},
 		{"registry-stable-since-rewrite", "cli/bind_readiness.go", `old.Reason == projected.Reason && old.Version == projected.Version`, `old.Reason == projected.Reason && old.Version == projected.Version && false`, "TestReadinessDiagnosticPersistence", "TestReadinessStatusProjection/valid"},
+		{"registry-invalid-since-preserved", "cli/bind_readiness.go", `&& validSince(old) {`, `{`, "TestReadinessDiagnosticSinceRepair/future", "TestReadinessDiagnosticPersistence"},
 		{"registry-idle-scope-cas", "cli/bind_readiness.go", `st.Terminal.Stopped || !sameTerminalScope(*st.Terminal, b) ||`, `st.Terminal.Stopped || (!sameTerminalScope(*st.Terminal, b) && false) ||`, "TestReadinessIdleCAS/root", "TestReadinessIdleCAS/valid"},
 		{"detect-partial-as-orphan", "cli/bind_notice.go", `len(b.AttemptIDs) == 0`, `len(b.AttemptIDs) <= 1`, "TestTerminalNoticeDetection/partial", admission + "/none"},
 		{"detect-unowned-draft", "cli/bind_notice.go", `b.Typed && b.NoticeCount > 0`, `(b.Typed && b.NoticeCount > 0 || !b.Typed && b.NoticeCount == 0)`, "TestTerminalNoticeDetection/no-journal", admission + "/none"},
@@ -217,8 +219,12 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 				intended = "wrong completion effects:"
 			case "TestReadinessDiagnosticPersistence":
 				intended = "stable diagnostic pair caused write"
+			case "TestReadinessDiagnosticSinceRepair":
+				intended = "invalid since not repaired at first observation"
 			case "TestReadinessIdleCAS":
 				intended = "CAS result"
+			case "TestReadinessNoticeDiagnosticOnly":
+				intended = "diagnostic notice acquired authority"
 			case "TestBoundSendContinuity":
 				intended = "continuity gate effects"
 			case "TestNoticeTimestampGeneratedGrammar":

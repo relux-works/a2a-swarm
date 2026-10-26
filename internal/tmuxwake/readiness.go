@@ -146,9 +146,21 @@ func (t BoundTerminal) AssessReadiness(ctx context.Context) ReadinessAssessment 
 	return r
 }
 
+// ObserveReadiness preserves journal-assisted nonempty diagnostics when the
+// filled Codex composer hides its hint. The journal is never current ownership:
+// nonempty input receives no key and cannot become eligible for Send.
+func (t BoundTerminal) ObserveReadiness(ctx context.Context, diagnosticNotice string) ReadinessAssessment {
+	r, _ := t.assessWithNotice(ctx, "", diagnosticNotice)
+	return r
+}
+
+func (t BoundTerminal) assess(ctx context.Context, owned string) (ReadinessAssessment, Box) {
+	return t.assessWithNotice(ctx, owned, "")
+}
+
 // One logical assessment comprises several independent reads, not an atomic
 // snapshot. The same observation supplies telemetry, parser result and key.
-func (t BoundTerminal) assess(ctx context.Context, owned string) (ReadinessAssessment, Box) {
+func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNotice string) (ReadinessAssessment, Box) {
 	r := ReadinessAssessment{Runtime: runtimeResult(RuntimeTargetUnavailable, ""), Input: InputAssessment{InputUnavailable, InputReasonTargetUnavailable}}
 	x, y, width, err := t.Target.Inspect(ctx)
 	if err != nil || ctx.Err() != nil {
@@ -192,7 +204,11 @@ func (t BoundTerminal) assess(ctx context.Context, owned string) (ReadinessAsses
 		r.Runtime = runtimeResult(RuntimeRegistryUnavailable, after.Version)
 		return r, Box{}
 	}
-	b, reason, named := boundInput(screen, runtime, owned, after.State == RuntimeReady)
+	parserNotice := owned
+	if parserNotice == "" && fixedNotice.MatchString(diagnosticNotice) {
+		parserNotice = diagnosticNotice
+	}
+	b, reason, named := boundInput(screen, runtime, parserNotice, after.State == RuntimeReady)
 	r.Input = InputAssessment{InputUnavailable, reason}
 	if reason != InputReasonNone {
 		return r, Box{}
@@ -239,8 +255,8 @@ func (t BoundTerminal) assess(ctx context.Context, owned string) (ReadinessAsses
 }
 
 func (t BoundTerminal) ObserveInput(ctx context.Context, notice string) string {
-	// A saved notice is not authority; assess with no owned text.
-	r := t.AssessReadiness(ctx)
+	// A saved notice helps classify nonempty text, never supplies ownership.
+	r := t.ObserveReadiness(ctx, notice)
 	switch r.Input.State {
 	case InputNonempty:
 		return "nonempty"

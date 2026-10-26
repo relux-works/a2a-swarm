@@ -576,7 +576,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}
 		// Reconcile only rendered empty input. A nonempty renderer never
 		// authorizes continuation or erasure, even for an exact lookalike.
-		readiness := boundTerminal(*b).AssessReadiness(ctx)
+		readiness := boundTerminal(*b).ObserveReadiness(ctx, b.Notice)
 		observation := readinessInput(readiness)
 		if err := a.observeTerminalReadiness(s, *b, readiness); err != nil {
 			return err

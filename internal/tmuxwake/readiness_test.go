@@ -93,6 +93,33 @@ func TestReadinessAdmissionState(t *testing.T) {
 	}
 }
 
+// The saved notice restores nonempty diagnostics for a filled no-hint Codex
+// composer. Neither its returned key nor a prior empty key authorizes Send;
+// the existing empty layout remains the positive neighbor.
+func TestReadinessNoticeDiagnosticOnly(t *testing.T) {
+	f := newBoundFixture(t, "codex", "", "")
+	empty := f.b.AssessReadiness(context.Background())
+	if !empty.Eligible() {
+		t.Fatal("valid empty setup refused")
+	}
+	f.f.typeText(Notice(1))
+	f.f.wait(func(s fixtureState) bool { return s.Text == Notice(1) })
+	r := f.b.ObserveReadiness(context.Background(), Notice(1))
+	if r.Input.State != InputNonempty || r.Eligible() || r.Key != (ReadinessKey{}) {
+		t.Fatal("diagnostic notice acquired authority", r)
+	}
+	for _, key := range []ReadinessKey{r.Key, empty.Key} {
+		result, err := f.b.Send(context.Background(), 1, key, nil, nil)
+		if err != nil || result.Disposition != SendRefused {
+			t.Fatal("journal diagnostic admitted Send", result, err)
+		}
+	}
+	s := f.f.wait(func(s fixtureState) bool { return s.PID > 1 })
+	if s.Text != Notice(1) || len(s.Submitted) != 0 {
+		t.Fatal("diagnostic changed draft", s)
+	}
+}
+
 // The exact-PID reader refuses nonregular, symlink, oversized and missing
 // records without following adjacent files. Synthetic FIFO nodes must refuse
 // promptly rather than hanging; no private provider files are read.

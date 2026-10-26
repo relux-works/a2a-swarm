@@ -93,8 +93,10 @@ func readinessStatus(r tmuxwake.RuntimeAssessment, stored *config.TerminalReadin
 	return out
 }
 func (a *App) observeTerminalReadiness(s *session, expected config.TerminalBinding, r tmuxwake.ReadinessAssessment) error {
-	projected := readinessStatus(r.Runtime, expected.Readiness, a.Now())
-	if old := expected.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version {
+	now := a.Now()
+	projected := readinessStatus(r.Runtime, expected.Readiness, now)
+	validSince := func(old *config.TerminalReadiness) bool { return !old.Since.IsZero() && !old.Since.After(now) }
+	if old := expected.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version && validSince(old) {
 		return nil
 	}
 	if err := s.checkConnection(); err != nil {
@@ -109,7 +111,7 @@ func (a *App) observeTerminalReadiness(s *session, expected config.TerminalBindi
 			return errors.New("binding changed before readiness observation")
 		}
 		// An intervening diagnostic writer cannot reset the continuous since.
-		if old := b.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version {
+		if old := b.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version && validSince(old) {
 			return nil
 		}
 		b.Readiness = &config.TerminalReadiness{Reason: projected.Reason, Version: projected.Version, Since: projected.Since}

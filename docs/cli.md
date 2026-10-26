@@ -987,6 +987,11 @@ The second sample's exact key constrains new Send reads immediately before typin
 a post-type mismatch retains the draft and sends no Enter. The final observation-to-I/O gap remains; neither registry nor renderer is a
 lock on the provider editor. Persisted observations are refusal constraints, never saved permission to send.
 
+The bound consumer's `ObserveReadiness(ctx, diagnosticNotice)` uses that same assessment and captured frame to preserve journal-assisted
+nonempty diagnostics when a filled Codex composer hides its hint. A saved fixed notice may identify rendered nonempty input only. It receives
+no key, never becomes empty/eligible, and cannot reuse a prior empty key to submit the draft. `AssessReadiness(ctx)` remains the strict
+no-journal observation; Send separately recognizes only text typed by its current invocation. No second capture is taken for notice telemetry.
+
 `bind status` prominently reports `readiness=STATE reason=REASON version=VERSION since=TIME`; JSON adds `readiness` with those fields.
 States are `ready`, `refused`, `unavailable`. Reasons are `none`, `target_unavailable`, `root_unavailable`, `registry_unavailable`,
 `identity_mismatch`, `headless`, `busy`, `status_unqualified`, `version_unqualified`, `schema_unqualified`. The version is a bounded numeric
