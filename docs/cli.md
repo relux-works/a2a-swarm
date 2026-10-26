@@ -996,8 +996,9 @@ no-journal observation; Send separately recognizes only text typed by its curren
 States are `ready`, `refused`, `unavailable`. Reasons are `none`, `target_unavailable`, `root_unavailable`, `registry_unavailable`,
 `identity_mismatch`, `headless`, `busy`, `status_unqualified`, `version_unqualified`, `schema_unqualified`. The version is a bounded numeric
 token. No raw registry value, path, label, socket or parser error is projected. Unbound status omits readiness. Status is read-only and uses
-one fresh assessment; stored telemetry never grants readiness. The consumer persists only diagnostic pair transitions with their first-known
-`since`, retaining it without a per-loop diagnostic write while reason/version are unchanged. Unknown/corrupt stored diagnostics project
+one fresh assessment; stored telemetry never grants readiness. The consumer persists diagnostic pair transitions with their first-known
+`since`, or repairs a zero/future/corrupt stored `since` once at the first valid consumer observation. It preserves an already-valid concurrent
+same-pair timestamp and retains it without a per-loop diagnostic write while reason/version are unchanged. Unknown/corrupt stored diagnostics project
 unknown safely. A runtime-ready status alone does not mean input is empty, notification is admitted, mail was receipted or a reply occurred.
 
 Send returns a closed typed disposition/outcome pair. Only `submitted` + `wake submitted`, with no error and the matching attempt/token/scope,
