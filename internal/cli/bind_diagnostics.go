@@ -42,6 +42,10 @@ func terminalErrorDiagnostic(phase string, err error, now time.Time) config.Term
 	if errors.As(err, &stage) {
 		phase = stage.phase
 	}
+	var connection *deliveryConnectionFailure
+	if errors.As(err, &connection) {
+		phase = "connection"
+	}
 	class := "unavailable"
 	var lease *config.LeaseHeldError
 	var syntax *json.SyntaxError

@@ -243,17 +243,23 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 	return b, nil
 }
 
+// Preserve guard provenance for terminal diagnostics without changing the
+// existing error text or unwrapping behavior of other delivery consumers.
+type deliveryConnectionFailure struct{ error }
+
+func (e *deliveryConnectionFailure) Unwrap() error { return e.error }
+
 // lockedDeliver runs fn under the state lock with the mailbox open, and saves
 // the state only when fn succeeds. When withSubs is set the subscription list
 // is held as well and the ids fn returns are removed from it (account data is
 // written before the state). A set deadline bounds the wait for the lock.
 func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSubs bool, fn func(cur *config.State, mb *config.Mailbox) (closeSubs []string, err error)) (config.State, error) {
 	if err := s.checkConnection(); err != nil {
-		return config.State{}, err
+		return config.State{}, &deliveryConnectionFailure{err}
 	}
 	run := func(cur *config.State) ([]string, error) {
 		if err := s.checkConnection(); err != nil {
-			return nil, err
+			return nil, &deliveryConnectionFailure{err}
 		}
 		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {

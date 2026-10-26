@@ -139,6 +139,22 @@ func noticeText(n config.OwnNoticeObservation) string {
 	return "own notice clear (last rendered observation)"
 }
 
+// Project only fixed current and legacy results; never echo persisted free text.
+// The empty legacy value carries no publication knowledge.
+func safeNoticePublication(value string) string {
+	switch value {
+	case "published", "pending: own liveness publication",
+		"unavailable: unbound", "unavailable: invalid own notice telemetry",
+		"unavailable: no liveness record (a2a status set)",
+		"unavailable: own notice changed", "unavailable: invalid notice retry policy",
+		"unavailable: own liveness publication retry pending",
+		"unavailable: own liveness publication failed":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
 func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	fs := newFlagSet("bind status")
 	asJSON := fs.Bool("json", false, "recorded notice observation as JSON")
@@ -165,7 +181,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			diagnostic = st.Terminal.Diagnostic.Safe()
 		}
 		n = st.Terminal.OwnNotice
-		publication = st.Terminal.NoticePublication
+		publication = safeNoticePublication(st.Terminal.NoticePublication)
 	}
 	noticeError := ""
 	if noticeValid(n) != nil {
