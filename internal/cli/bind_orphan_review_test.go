@@ -116,6 +116,8 @@ func TestReviewerOrphanGrammar(t *testing.T) {
 	}
 }
 
+// Fixed safe status refusals still reach the dispatch checks: failed state
+// authority or cancellation must not erase, submit, or receipt pending mail.
 func TestReviewerStateFailureRefusals(t *testing.T) {
 	for _, kind := range []string{"malformed", "permission-read", "permission-write", "cancelled"} {
 		t.Run(kind, func(t *testing.T) {
@@ -135,12 +137,16 @@ func TestReviewerStateFailureRefusals(t *testing.T) {
 				if err = os.WriteFile(path, []byte("{"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				f.e.as("alice", "bind", "status").failsWith(t, ExitError, "not valid state JSON")
+				if got := f.e.as("alice", "bind", "status").failsWith(t, ExitError, "binding state: invalid"); got.stderr != "a2a: binding state: invalid\n" || got.stdout != "" {
+					t.Fatalf("unsafe state refusal: %+v", got)
+				}
 			case "permission-read":
 				if err = os.Chmod(path, 0000); err != nil {
 					t.Fatal(err)
 				}
-				f.e.as("alice", "bind", "status").failsWith(t, ExitError, "has mode 0000")
+				if got := f.e.as("alice", "bind", "status").failsWith(t, ExitError, "binding state: unavailable"); got.stderr != "a2a: binding state: unavailable\n" || got.stdout != "" {
+					t.Fatalf("unsafe state refusal: %+v", got)
+				}
 			case "permission-write":
 				if err = os.Chmod(dir, 0500); err != nil {
 					t.Fatal(err)
