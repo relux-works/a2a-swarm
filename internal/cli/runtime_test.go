@@ -25,6 +25,7 @@ type nativeFixture struct {
 	readErr               error
 	historyErr, wakeErr   error
 	acceptedErr           error
+	onWake                func()
 }
 
 func (n *nativeFixture) Read(_ context.Context, _ string, history bool) (codexwake.Snapshot, error) {
@@ -68,6 +69,9 @@ func (n *nativeFixture) Wake(_ context.Context, thread, output string) (string, 
 	raw, _ := json.Marshal(output)
 	id := "turn-" + strconv.Itoa(len(n.wakes))
 	n.thread.Turns = append(n.thread.Turns, codexwake.Turn{ID: id, Status: "completed", Items: []codexwake.Item{{Type: "functionCallOutput", Name: codexwake.ToolName, Namespace: codexwake.ToolNamespace, Output: raw}}})
+	if n.onWake != nil {
+		n.onWake()
+	}
 	if n.acceptedErr != nil {
 		return "", n.acceptedErr
 	}
@@ -151,8 +155,32 @@ func runtimeWorld(t *testing.T) (*env, string, *nativeFixture, string) {
 }
 func runtimeMail(e *env, room, body string) string {
 	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local "+body, nil))
-	e.stdin = `{"session_id":"owned-thread"}`
-	e.as("alice", "hook", "prompt", "--runtime", "codex").ok(e.t)
+	// Model the consumer's ingestion, without emitting a separate hook doorbell
+	// first: hooks now share spacing with the dispatch under test.
+	a := NewApp()
+	a.as = "alice"
+	a.HTTP = e.hs.srv.Client()
+	a.ctx = context.Background()
+	a.Getenv = func(k string) string {
+		if k == config.EnvConfigDir {
+			return e.dir
+		}
+		return e.extra[k]
+	}
+	if e.now != nil {
+		a.Now = e.now
+	}
+	s, err := a.session()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	st, subs, err := s.startDelivery(context.Background(), a.Now())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err = s.syncNow(context.Background(), st, subs.Subs, time.Now().Add(time.Second)); err != nil {
+		e.t.Fatal(err)
+	}
 	return id
 }
 
@@ -285,6 +313,7 @@ func TestRuntimeHourlyLimit(t *testing.T) {
 	now := time.Now()
 	e.now = func() time.Time { return now }
 	for i := 0; i < 3; i++ {
+		now = now.Add(31 * time.Second)
 		runtimeMail(e, room, "pending")
 		e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
 	}
@@ -387,6 +416,7 @@ func TestRuntimeFailedAcceptedTurnRequiresOwnerGate(t *testing.T) {
 	for _, status := range []string{"failed", "interrupted", "unknown"} {
 		t.Run(status, func(t *testing.T) {
 			e, room, n, g := runtimeWorld(t)
+			clk := e.clock()
 			id := runtimeMail(e, room, "pending")
 			e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
 			n.thread.Turns[0].Status = status
@@ -399,6 +429,7 @@ func TestRuntimeFailedAcceptedTurnRequiresOwnerGate(t *testing.T) {
 			if status == "unknown" {
 				return
 			}
+			clk.add(30 * time.Second)
 			e.as("alice", "runtime", "gate", "--generation", g, "ready").ok(t)
 			e.as("alice", "runtime", "dispatch", "--generation", g).ok(t)
 			if len(n.wakes) != 2 || e.received("alice", id) {
@@ -413,6 +444,7 @@ func TestRuntimeFailedAcceptedTurnRequiresOwnerGate(t *testing.T) {
 // suppressed old entries and hourly reservations while permitting new mail.
 func TestRuntimeAbandonRetiresWithoutReplay(t *testing.T) {
 	e, room, n, g := runtimeWorld(t)
+	clk := e.clock()
 	id := runtimeMail(e, room, "uncertain")
 	e.configure = func(a *App) {
 		a.nativeDial = func(context.Context, string) (nativeRuntime, error) { return n, nil }
@@ -447,11 +479,13 @@ func TestRuntimeAbandonRetiresWithoutReplay(t *testing.T) {
 	if len(n.wakes) != 0 || e.received("alice", id) {
 		t.Fatal("replacement replayed or receipted uncertain mail")
 	}
+	clk.add(30 * time.Second)
 	runtimeMail(e, room, "new control")
 	e.as("alice", "runtime", "dispatch", "--generation", next).ok(t)
 	if len(n.wakes) != 1 {
 		t.Fatal("new generation refused valid new mail")
 	}
+	clk.add(30 * time.Second)
 	runtimeMail(e, room, "rate control")
 	e.as("alice", "runtime", "dispatch", "--generation", next).ok(t)
 	if len(n.wakes) != 1 || e.state("alice").Wake.Outcome != "wake suppressed: rate" {

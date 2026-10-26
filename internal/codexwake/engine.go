@@ -17,21 +17,24 @@ var ErrRate = errors.New("wake suppressed: rate")
 // Binding is registered by the owning launcher, never derived from a peer
 // event or saved-thread discovery. Generation fences every submission.
 type Binding struct {
-	Identity       string        `json:"identity"`
-	ThreadID       string        `json:"thread_id"`
-	SessionID      string        `json:"session_id"`
-	Endpoint       string        `json:"endpoint"`
-	EndpointID     string        `json:"endpoint_id"`
-	ServerVersion  string        `json:"server_version"`
-	Generation     string        `json:"generation"`
-	Host           string        `json:"host"`
-	Cwd            string        `json:"cwd"`
-	OwnerPID       int           `json:"owner_pid"`
-	OwnerStart     string        `json:"owner_start"`
-	Gate           string        `json:"gate"`
-	MaxPerHour     int           `json:"max_wakes_per_hour"`
-	HeartbeatEvery time.Duration `json:"heartbeat_every"`
-	Retired        bool          `json:"retired,omitempty"`
+	ConsumerPID        int           `json:"consumer_pid,omitempty"`
+	ConsumerStart      string        `json:"consumer_start,omitempty"`
+	ConsumerGeneration string        `json:"consumer_generation,omitempty"`
+	Identity           string        `json:"identity"`
+	ThreadID           string        `json:"thread_id"`
+	SessionID          string        `json:"session_id"`
+	Endpoint           string        `json:"endpoint"`
+	EndpointID         string        `json:"endpoint_id"`
+	ServerVersion      string        `json:"server_version"`
+	Generation         string        `json:"generation"`
+	Host               string        `json:"host"`
+	Cwd                string        `json:"cwd"`
+	OwnerPID           int           `json:"owner_pid"`
+	OwnerStart         string        `json:"owner_start"`
+	Gate               string        `json:"gate"`
+	MaxPerHour         int           `json:"max_wakes_per_hour"`
+	HeartbeatEvery     time.Duration `json:"heartbeat_every"`
+	Retired            bool          `json:"retired,omitempty"`
 }
 
 func (b Binding) Validate() error {
@@ -94,11 +97,12 @@ func Admission(b Binding, host string, ownerAlive, hooksPaused bool, remote Snap
 }
 
 type Attempt struct {
-	ID         string    `json:"id"`
-	Generation string    `json:"generation"`
-	Output     string    `json:"output"`
-	IDs        []string  `json:"mail_ids"`
-	Started    time.Time `json:"started"`
+	NotificationToken string    `json:"notification_token,omitempty"`
+	ID                string    `json:"id"`
+	Generation        string    `json:"generation"`
+	Output            string    `json:"output"`
+	IDs               []string  `json:"mail_ids"`
+	Started           time.Time `json:"started"`
 }
 
 // Ledger is persisted before sending an RPC. An inconclusive attempt remains

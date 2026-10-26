@@ -29,12 +29,14 @@ const (
 
 // App carries the process environment so tests can run commands in-process.
 type App struct {
-	Stdout io.Writer
-	Stderr io.Writer
-	Stdin  io.Reader
-	Getenv func(string) string
-	HTTP   *http.Client
-	Now    func() time.Time
+	Stdout                   io.Writer
+	Stderr                   io.Writer
+	Stdin                    io.Reader
+	Getenv                   func(string) string
+	HTTP                     *http.Client
+	Now                      func() time.Time
+	notification             *notificationClock
+	afterNotificationReserve func() error
 
 	voiceRenderer voice.Renderer // test seam; production is strictly local
 

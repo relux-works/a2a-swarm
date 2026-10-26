@@ -63,7 +63,8 @@ func TestReviewRev2ActiveTurnReceipt(t *testing.T) {
 				}
 				f.control(map[string]any{"text": ""})
 			}
-			f.control(map[string]any{"text": ""}) // external manual recovery
+			f.now = f.now.Add(config.NotificationEvery) // later valid delivery still requires fresh idle qualification
+			f.control(map[string]any{"text": ""})       // external manual recovery
 			f.dispatch()
 			before := f.binding()
 			if len(before.Reservations) > 1 {

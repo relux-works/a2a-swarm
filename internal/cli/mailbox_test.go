@@ -32,6 +32,8 @@ func (e *env) addLines(name, id string) int {
 // receipts, the next inbox and a new session's hook find nothing).
 func TestHookNeverAcksWaitBatch(t *testing.T) {
 	e, room := world(t)
+	offset := time.Duration(0)
+	e.now = func() time.Time { return time.Now().Add(offset) }
 	e.sequentialSessions()
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", ping(1))
@@ -42,6 +44,7 @@ func TestHookNeverAcksWaitBatch(t *testing.T) {
 			t.Fatalf("hook %s receipted the wait's event", ev)
 		}
 	}
+	offset += 30 * time.Second
 	tuitestkit.ContainsStr(t, bellContext(t, e.hook("alice", "prompt", `{"session_id":"fresh"}`).ok(t).stdout), "a2a: 1 new peer event (mention: 1)")
 	e.as("alice", "wait", "--timeout", "10ms").ok(t) // another wait receipts nothing either
 	out := e.as("alice", "inbox").ok(t).stdout

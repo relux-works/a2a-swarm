@@ -243,6 +243,7 @@ func TestTerminalDispatchReceiptedOrphan(t *testing.T) {
 			// Manual fixture action: recovery is external under keeper o-JKabzo.
 			f.control(map[string]any{"text": ""})
 			newID := f.mail()
+			f.now = f.now.Add(config.NotificationEvery) // uncertainty spends shared spacing, not a receipt
 			for i := 0; i < 4; i++ {
 				f.step()
 			}

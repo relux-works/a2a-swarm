@@ -75,7 +75,7 @@ func TestReviewerFreshRecoveryQualification(t *testing.T) {
 	f.control(map[string]any{"busy": true})
 	f.dispatch()
 	f.control(map[string]any{})
-	f.now = f.now.Add(3 * time.Second)
+	f.now = f.now.Add(config.NotificationEvery) // spacing expires; recovery still needs two fresh idle samples
 	f.dispatch()
 	f.control(map[string]any{})
 	s := f.wait(func(s orphanScreen) bool { return true })
@@ -202,6 +202,7 @@ func TestReviewerCompletedEraseOwnership(t *testing.T) {
 			f.control(map[string]any{"text": text})
 			f.dispatch()
 			if neighbor == "empty" {
+				f.now = f.now.Add(config.NotificationEvery) // later valid empty input after spacing
 				f.step()
 				f.step()
 			}

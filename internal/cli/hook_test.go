@@ -83,6 +83,7 @@ func toMsg(from, kind, body string) map[string]any {
 // the fixed template with counts, a listed kind and a verified member's name.
 func TestHookDoorbellTemplate(t *testing.T) {
 	e, room := world(t)
+	clk := e.clock()
 	e.sequentialSessions()
 	e.hook("alice", "prompt", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", toMsg("bob", "question", "can you review <PR#3> && more?"))
@@ -93,6 +94,7 @@ func TestHookDoorbellTemplate(t *testing.T) {
 		{"prompt", `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":%q}}` + "\n"},
 		{"stop", `{"decision":"block","reason":%q}` + "\n"},
 	} {
+		clk.add(30 * time.Second)
 		got := e.hook("alice", c.event, `{"session_id":"`+c.event+`","hook_event_name":"ignored"}`).ok(t).stdout
 		if w := fmt.Sprintf(c.format, want); got != w {
 			t.Fatalf("%s:\n got %s\nwant %s", c.event, got, w)
@@ -324,6 +326,7 @@ func TestInboxUsage(t *testing.T) {
 // new event rings the first session again, counting everything pending.
 func TestHookRingsOncePerSession(t *testing.T) {
 	e, room := world(t)
+	clk := e.clock()
 	e.sequentialSessions()
 	e.hook("alice", "prompt", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", ping(1))
@@ -331,8 +334,10 @@ func TestHookRingsOncePerSession(t *testing.T) {
 	if r := e.hook("alice", "prompt", `{"session_id":"s1"}`).ok(t); r.stdout != "" || r.stderr != "" {
 		t.Fatalf("rang twice for the same events: %q / %q", r.stdout, r.stderr)
 	}
+	clk.add(30 * time.Second)
 	tuitestkit.ContainsStr(t, bellContext(t, e.hook("alice", "session-start", `{"session_id":"s2"}`).ok(t).stdout), "a2a: 1 new peer event")
 	e.hs.inject(room, "@bob:test.local", ping(2))
+	clk.add(30 * time.Second)
 	tuitestkit.ContainsStr(t, bellContext(t, e.hook("alice", "prompt", `{"session_id":"s1"}`).ok(t).stdout), "a2a: 2 new peer events (mention: 2)")
 }
 
@@ -363,7 +368,8 @@ func TestHookStopRungAndNew(t *testing.T) {
 // Proves the Stop rate limit: within 60 s of a block, a stop in the same
 // session with a new event is let through (empty stdout, one stderr line,
 // nothing rung), while the prompt hook of that session and the Stop of
-// another session still ring; after 60 s the first session's Stop blocks again.
+// another hook-only session still ring; prompts obey the common30s gate.
+// After60s the first session's Stop blocks again.
 func TestHookStopRateLimit(t *testing.T) {
 	e, room := world(t)
 	e.sequentialSessions()
@@ -383,6 +389,10 @@ func TestHookStopRateLimit(t *testing.T) {
 	tuitestkit.ContainsStr(t, stopReason(t, e.hook("alice", "stop", `{"session_id":"s1"}`).ok(t).stdout), "2 new peer events")
 	e.hs.inject(room, "@bob:test.local", ping(3))
 	clk.add(10 * time.Second)
+	if r := e.hook("alice", "prompt", `{"session_id":"s1"}`).ok(t); r.stdout != "" {
+		t.Fatal("prompt bypassed common spacing")
+	}
+	clk.add(20 * time.Second)
 	tuitestkit.ContainsStr(t, bellContext(t, e.hook("alice", "prompt", `{"session_id":"s1"}`).ok(t).stdout), "3 new peer events")
 }
 
@@ -422,6 +432,7 @@ func TestHookStopLoopGuard(t *testing.T) {
 // arguments, and refuse another identity than A2A_AGENT (exit 2).
 func TestHookPauseResume(t *testing.T) {
 	e, room := world(t)
+	clk := e.clock()
 	e.sequentialSessions()
 	e.hook("alice", "prompt", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", ping(1))
@@ -437,6 +448,7 @@ func TestHookPauseResume(t *testing.T) {
 	}
 	tuitestkit.ContainsStr(t, e.run("hook", "resume", "--agent", "alice").ok(t).stdout, "hooks resumed for alice")
 	for _, ev := range []string{"session-start", "prompt"} {
+		clk.add(30 * time.Second)
 		bellContext(t, e.hook("alice", ev, `{"session_id":"`+ev+`"}`).ok(t).stdout)
 	}
 	stopReason(t, e.hook("alice", "stop", `{"session_id":"stop"}`).ok(t).stdout)

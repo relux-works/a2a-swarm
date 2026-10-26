@@ -34,6 +34,13 @@ It returns only principals/membership after a complete validated response and
 refuses archived caller state; it does not export history or change the room.
 See [the command contract](docs/cli.md#commands) for completeness and error limits.
 
+Hook, native and terminal notifications share a fixed 30-second per-identity
+window in one selected connection/config namespace. Existing consumers deliver
+pending mail after the fixed due time; hook-only Stop keeps its existing fallback
+when no live owned consumer can carry it. Notification does not receipt mail.
+See [shared notification spacing](docs/cli.md#shared-30-second-notification-spacing)
+for uncertainty, clock/restart and diagnostic limits.
+
 ## Tools
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |

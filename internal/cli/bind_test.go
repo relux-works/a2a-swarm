@@ -133,7 +133,8 @@ func writeBindingFixtureCommand(dir string, data []byte) error {
 
 func awaitBinding(t *testing.T, p config.Paths, test func(config.State) bool) config.State {
 	t.Helper()
-	until := time.Now().Add(8 * time.Second)
+	// Includes the fixed30s shared notification window plus ordinary polling.
+	until := time.Now().Add(config.NotificationEvery + 8*time.Second)
 	for time.Now().Before(until) {
 		st, err := config.LoadState(p, "alice")
 		if err == nil && test(st) {
@@ -175,7 +176,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	exe := filepath.Join(dir, "a2a")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", exe, "../../cmd/a2a").CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v %s", err, out)

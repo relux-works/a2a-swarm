@@ -130,6 +130,7 @@ func TestReviewCR3UnknownPublicRoundTrip(t *testing.T) {
 		t.Fatalf("unknown lost at who: %s", who)
 	}
 	f.e.as("alice", "hook", "resume", "--agent", "alice").ok(t)
+	f.now = f.now.Add(config.NotificationEvery) // subsequent delivery remains subject to shared spacing
 	f.control(map[string]any{"text": ""})
 	f.dispatch()
 	if len(f.binding().Reservations) != 1 {

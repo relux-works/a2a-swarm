@@ -124,6 +124,7 @@ func TestTerminalNoticeDetection(t *testing.T) {
 					t.Fatal("since changed without fresh clear")
 				}
 				f.control(map[string]any{"text": ""})
+				f.now = f.now.Add(config.NotificationEvery) // spacing expires; input gates still apply
 				f.dispatch()
 				requireNotice(t, f.binding().OwnNotice, "clear")
 				if f.binding().OwnNotice.Since != "" || f.binding().Typed || len(f.binding().Reservations) != 1 {
@@ -308,7 +309,11 @@ func TestTerminalFreshAuthorityGates(t *testing.T) {
 				st.Terminal.OwnerPID = saved.OwnerPID
 				st.Terminal.MaxWakes = 30
 			})
-			f.step()
+			f.step() // fresh first idle sample after restoring authority
+			if kind == "rate" {
+				f.step() // qualified attempt migrates legacy rate history
+				f.now = f.now.Add(config.NotificationEvery)
+			} // fixed legacy migration hold, without erasing the hourly reservation
 			f.step()
 			f.control(map[string]any{})
 			s = f.wait(func(s orphanScreen) bool { return true })

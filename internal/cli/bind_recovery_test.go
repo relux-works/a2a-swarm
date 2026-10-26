@@ -105,7 +105,7 @@ func TestTerminalRecoveryIdleContinuity(t *testing.T) {
 				f.e.as("alice", "status", "init").ok(t)
 			}
 			failFirstTerminalType(t, f)
-			f.now = f.now.Add(3 * time.Second)
+			f.now = f.now.Add(config.NotificationEvery) // retry spacing expired; still require fresh idle samples
 			f.dispatch()
 			assertNoSpend := func() {
 				t.Helper()

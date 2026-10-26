@@ -502,6 +502,9 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			fmt.Fprintln(a.Stderr, "binding consumer unavailable; bounded retry")
 		} else {
 			delay = policy.Interval
+			if fresh, readErr := config.LoadState(s.paths, s.name); readErr == nil {
+				delay = a.notificationWait(fresh, delay)
+			}
 		}
 		timer := time.NewTimer(delay)
 		select {
@@ -611,24 +614,51 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if len(reservations) >= b.MaxWakes {
 			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
 		}
-		if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
-			b.Idle = nil
-			b.AttemptIDs = ids
-			b.Notice = tmuxwake.Notice(len(ids))
-			b.NoticeCount = len(ids)
-			b.AttemptAt = now
-			b.Retried = false
-			b.Typed = false
-			b.Reservations = append(reservations, now)
-			b.Outcome = "attempt reserved"
-		}); err != nil {
-			return err
+		var reservedAttempt config.TerminalBinding
+		token, reserveErr := a.reserveNotification(ctx, s, time.Now().Add(nativeRPCTimeout), "terminal", b.SessionID, generation, false, func(st *config.State, mb *config.Mailbox, token string) (bool, error) {
+			current := st.Terminal
+			if current == nil || current.Stopped || current.Generation != generation || current.SessionID != b.SessionID || !ownTerminalTarget(current, b.Target) {
+				return false, errors.New("binding retired")
+			}
+			if st.HooksPaused || manualWakeGate(*st) != "" {
+				current.Outcome = "suppressed: manual gate"
+				return false, nil
+			}
+			if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
+				return false, errors.New("terminal lease changed")
+			}
+			if len(current.AttemptIDs) > 0 {
+				return false, errors.New("terminal attempt changed")
+			}
+			pending := mb.Pending()
+			ids = slices.DeleteFunc(ids, func(id string) bool {
+				return !slices.ContainsFunc(pending, func(en config.MailEntry) bool { return en.ID == id }) || slices.Contains(current.Rung, id)
+			})
+			if len(ids) == 0 {
+				return false, nil
+			}
+			current.Idle = nil
+			current.AttemptIDs = ids
+			current.Notice = tmuxwake.Notice(len(ids))
+			current.NoticeCount = len(ids)
+			current.AttemptAt = now
+			current.Retried = false
+			current.Typed = false
+			current.Reservations = append(reservations, now)
+			current.NotificationToken = token
+			current.Outcome = "attempt reserved"
+			reservedAttempt = *current
+			reservedAttempt.AttemptIDs = slices.Clone(current.AttemptIDs)
+			return true, nil
+		})
+		if reserveErr != nil || token == "" {
+			return reserveErr
 		}
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
 		outcome, sendErr := b.Target.Send(ctx, len(ids), nil, nil)
-		return a.finishTerminal(s, generation, outcome, sendErr, false)
+		return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 	})
 	if err != nil {
 		_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
@@ -659,28 +689,49 @@ func (a *App) qualifyTerminalIdle(s *session, generation string, b config.Termin
 	return true, nil
 }
 
-func (a *App) finishTerminal(s *session, generation, outcome string, sendErr error, recovering bool) error {
-	return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+func (a *App) finishTerminal(s *session, generation, outcome string, sendErr error, recovering bool, expected config.TerminalBinding) error {
+	token := expected.NotificationToken
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
+	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
+		b := st.Terminal
+		if b == nil || b.Generation != generation || b.Stopped {
+			return errors.New("binding retired")
+		}
+		if token == "" || b.NotificationToken != token || b.SessionID != expected.SessionID || !b.AttemptAt.Equal(expected.AttemptAt) || !slices.Equal(b.AttemptIDs, expected.AttemptIDs) {
+			return config.ErrNotificationStale
+		}
+
 		b.Outcome = outcome
 		if sendErr != nil {
-			return
+			return nil
 		}
 		if strings.HasPrefix(outcome, "notice left in draft:") {
 			b.Typed = true
-			return
+			return nil
 		}
 		if strings.HasPrefix(outcome, "suppressed: busy") || outcome == "suppressed: target or width" {
 			if !recovering {
 				b.AttemptIDs = nil
 				b.Notice = ""
 			}
-			return
+			if r := st.Notification.Reservation; r != nil && r.Token == token {
+				return st.Notification.Cancel(token)
+			}
+			return nil
 		}
 		b.Rung = append(b.Rung, b.AttemptIDs...)
 		b.AttemptIDs = nil
 		b.Notice = ""
 		b.Typed = false
+		b.NotificationToken = ""
+		return a.completeNotification(s, st, token)
 	})
+	return err
 }
 
 func (a *App) recoverTerminal(ctx context.Context, s *session, generation string, b config.TerminalBinding) error {
@@ -715,12 +766,38 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		if len(reservations) >= b.MaxWakes {
 			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
 		}
-		if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Retried = true; b.Reservations = append(reservations, now) }); err != nil {
-			return err
-		}
 	}
-	// Fence before fresh typing. A crash cannot create unlimited empty retries.
-	if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Typed = false }); err != nil {
+	var reservedAttempt config.TerminalBinding
+	token, err := a.reserveNotification(ctx, s, time.Now().Add(nativeRPCTimeout), "terminal", b.SessionID, generation, false, func(st *config.State, _ *config.Mailbox, token string) (bool, error) {
+		current := st.Terminal
+		if current == nil || current.Stopped || current.Generation != generation || current.SessionID != b.SessionID || !current.AttemptAt.Equal(b.AttemptAt) || !slices.Equal(current.AttemptIDs, b.AttemptIDs) || current.NotificationToken != b.NotificationToken {
+			return false, errors.New("terminal recovery attempt changed")
+		}
+		if st.HooksPaused || manualWakeGate(*st) != "" {
+			current.Outcome = "suppressed: manual gate"
+			return false, nil
+		}
+		if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
+			return false, errors.New("terminal lease changed")
+		}
+		if !ownTerminalTarget(current, b.Target) {
+			return false, errors.New("terminal target changed")
+		}
+		reservations := slices.DeleteFunc(slices.Clone(current.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
+		if len(reservations) >= current.MaxWakes {
+			current.Outcome = "suppressed: hourly rate"
+			return false, nil
+		}
+		current.Retried = true
+		current.Reservations = append(reservations, now)
+		current.Idle = nil
+		current.Typed = false
+		current.NotificationToken = token
+		reservedAttempt = *current
+		reservedAttempt.AttemptIDs = slices.Clone(current.AttemptIDs)
+		return true, nil
+	})
+	if err != nil || token == "" {
 		return err
 	}
 	var outcome string
@@ -732,5 +809,5 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		outcome, sendErr = b.Target.Send(ctx, b.NoticeCount, nil, nil)
 
 	}
-	return a.finishTerminal(s, generation, outcome, sendErr, true)
+	return a.finishTerminal(s, generation, outcome, sendErr, true, reservedAttempt)
 }

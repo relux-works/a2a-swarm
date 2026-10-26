@@ -172,10 +172,12 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
-			Publication string `json:"publication"`
-			NoticeError string `json:"notice_error,omitempty"`
-		}{n, publication, noticeError})
+			Publication  string             `json:"publication"`
+			NoticeError  string             `json:"notice_error,omitempty"`
+			Notification notificationStatus `json:"notification"`
+		}{n, publication, noticeError, notificationDiagnostic(st.Notification, a.Now())})
 	}
+	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if st.Terminal == nil {
 		a.printf("%s unbound; %s\n", s.name, noticeText(n))
 		return nil

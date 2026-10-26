@@ -89,7 +89,7 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 			a.printf("%s unavailable: unbound\n", s.name)
 			return nil
 		}
-		a.printf("%s generation=%s gate=%s wake=%s\n", s.name, st.Runtime.Generation, st.Runtime.Gate, sanitizeLine(st.Wake.Outcome))
+		a.printf("%s generation=%s gate=%s wake=%s notification=%s\n", s.name, st.Runtime.Generation, st.Runtime.Gate, sanitizeLine(st.Wake.Outcome), notificationDiagnostic(st.Notification, a.Now()).State)
 		return nil
 	}
 	if *generation == "" {
@@ -422,7 +422,16 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 				return a.runtimeOutcome(s, generation, "wake uncertain: acceptance history unavailable; no retry")
 			}
 			if turn != "" {
-				_, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error { return cur.Wake.Accept(b, turn) })
+				_, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+					token := ""
+					if cur.Wake.Attempt != nil {
+						token = cur.Wake.Attempt.NotificationToken
+					}
+					if err := cur.Wake.Accept(b, turn); err != nil {
+						return err
+					}
+					return a.completeNotification(s, cur, token)
+				})
 				return err
 			}
 			return a.runtimeOutcome(s, generation, "wake uncertain: no authoritative acceptance; no retry")
@@ -471,21 +480,17 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		notice := doorbellText(doorbellOf(items, s.server, s.verifySenders(probe, items)))
 		ids := itemIDs(items)
 		var attempt *codexwake.Attempt
-		reserved, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+		_, err = a.reserveNotification(ctx, s, time.Now().Add(nativeRPCTimeout), "native", b.SessionID, generation, false, func(cur *config.State, mb *config.Mailbox, token string) (bool, error) {
 			if cur.Runtime == nil || cur.Runtime.Generation != generation {
-				return errors.New("runtime stale generation")
+				return false, errors.New("runtime stale generation")
 			}
 			if cur.HooksPaused {
 				cur.Wake.Outcome = "wake suppressed: paused"
-				return nil
+				return false, nil
 			}
 			if manual := manualWakeGate(*cur); manual != "" {
 				cur.Wake.Outcome = manual
-				return nil
-			}
-			mb, err := config.OpenMailbox(s.paths, s.name)
-			if err != nil {
-				return err
+				return false, nil
 			}
 			var current []string
 			for _, entry := range mb.Pending() {
@@ -495,16 +500,23 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			ids = slices.DeleteFunc(ids, func(id string) bool { return !slices.Contains(current, id) })
 			attempt, err = cur.Wake.Begin(b, ids, notice, a.Now().UTC())
 			if errors.Is(err, codexwake.ErrRate) {
-				return nil
+				return false, nil
 			}
-			return err
+			if attempt != nil {
+				attempt.NotificationToken = token
+			}
+			return attempt != nil, err
 		})
 		if err != nil {
 			return err
 		}
 		if attempt == nil {
-			if reserved.Wake.Outcome != st.Wake.Outcome {
-				a.printf("%s %s\n", s.name, reserved.Wake.Outcome)
+			current, loadErr := config.LoadState(s.paths, s.name)
+			if loadErr != nil {
+				return loadErr
+			}
+			if current.Wake.Outcome != st.Wake.Outcome {
+				a.printf("%s %s\n", s.name, current.Wake.Outcome)
 			}
 			return nil
 		}
@@ -522,6 +534,11 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 				_, updateErr := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
 					if cur.Runtime == nil || cur.Runtime.Generation != generation || cur.Wake.Attempt == nil || cur.Wake.Attempt.ID != attempt.ID {
 						return errors.New("runtime stale refusal")
+					}
+					if r := cur.Notification.Reservation; r != nil && r.Token == attempt.NotificationToken {
+						if err := cur.Notification.Cancel(r.Token); err != nil {
+							return err
+						}
 					}
 					cur.Wake.Attempt = nil
 					cur.Wake.Outcome = "wake refused: not accepted; hourly reservation retained"
@@ -544,7 +561,14 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			if cur.Runtime == nil || cur.Runtime.Generation != generation || cur.Wake.Attempt == nil || cur.Wake.Attempt.ID != attempt.ID {
 				return errors.New("runtime stale submission")
 			}
-			return cur.Wake.Accept(b, turn)
+			token := ""
+			if cur.Wake.Attempt != nil {
+				token = cur.Wake.Attempt.NotificationToken
+			}
+			if err := cur.Wake.Accept(b, turn); err != nil {
+				return err
+			}
+			return a.completeNotification(s, cur, token)
 		})
 		if err == nil {
 			a.printf("%s wake accepted\n", s.name)
@@ -574,6 +598,16 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 			return err
 		}
 	}
+	if err := a.nativeConsumer(ctx, s, generation, true); err != nil {
+		return err
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), nativeRPCTimeout)
+		defer cancel()
+		if err := a.nativeConsumer(cleanup, s, generation, false); err != nil {
+			fmt.Fprintln(a.Stderr, "native consumer ownership cleanup unavailable")
+		}
+	}()
 	a.printf("%s native consumer armed generation=%s\n", s.name, generation)
 	var lastHeartbeat time.Time
 	var lastOutcome string
@@ -595,6 +629,9 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 		}
 		if err := a.dispatchNative(ctx, s, generation); err != nil {
 			return err
+		}
+		if ctx.Err() != nil {
+			return nil
 		}
 		st, err = config.LoadState(s.paths, s.name)
 		if err != nil {
@@ -632,7 +669,13 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 			lastHeartbeat = a.Now()
 			lastOutcome = st.Wake.Outcome
 		}
-		poll := min(maxPoll, st.Runtime.HeartbeatEvery)
+		// A cooldown can expire during probes or heartbeat publication after
+		// dispatch refused it. Recheck admission before starting a long poll;
+		// another gate changes the outcome and resumes its ordinary polling.
+		if st.Wake.Outcome == "wake suppressed: notification cooldown" && a.notificationReady(s, st.Notification, a.Now()) {
+			continue
+		}
+		poll := a.notificationWait(st, min(maxPoll, st.Runtime.HeartbeatEvery))
 		resp, err := s.client.Sync(ctx, st.NextBatch, poll, syncFilter)
 		if err != nil {
 			if ctx.Err() != nil {

@@ -311,6 +311,8 @@ func WriteCredentials(f *os.File, c Credentials) error {
 // State is the per-agent delivery state. The events themselves live in the
 // durable mailbox (MailboxFile), which is written before NextBatch moves.
 type State struct {
+	// Notification spaces fixed doorbells; it never receipts or owns channel safety.
+	Notification Notification `json:"notification,omitempty"`
 	// NextBatch is the sync cursor: every relevant event before it is in the
 	// mailbox (appended and fsynced before the cursor was saved).
 	NextBatch string `json:"next_batch,omitempty"`

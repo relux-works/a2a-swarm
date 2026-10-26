@@ -717,7 +717,7 @@ How the doorbell works:
 - Stop loop guard: consecutive blocking Stops per `session_id`. When `stop_hook_active` is true and 3 blocks happened in a row, the hook prints
   nothing and lets the session stop (one stderr line), and the counter resets.
 - Stop rate limit: at most one blocking Stop per `session_id` per 60 s. A Stop within that window prints nothing (one stderr line) and records
-  nothing, so it rings at the next opportunity. `session-start` and `prompt` are not rate limited.
+  nothing, so it rings at the next opportunity. `session-start` and `prompt` do not use the Stop-specific 60s limit; all paths also obey the shared notification spacing below.
 - A hook never breaks the session: the network work is bounded to 5 s in total, and on any error (homeserver down, bad stdin, no identity) it prints
   nothing to stdout, one line to stderr, and exits 0. The state lock is taken with non-blocking attempts within the remaining budget; a lock held
   longer (by a busy `wait` or `inbox`, say) is such an error ("the state file is locked by another a2a process"), and nothing is recorded (the
@@ -726,6 +726,55 @@ How the doorbell works:
 - `a2a hook pause --agent NAME` (below) makes every hook event print nothing.
 
 On a hook event `--runtime` is optional, because the output is byte-identical for Claude Code and Codex. An unknown value is an error like any other: nothing on stdout, one stderr line, exit 0, nothing recorded. Hooks installed before `--runtime` existed (`... hook stop`) keep ringing; re-running `a2a hook install --runtime claude` adds the flag in place.
+
+#### Shared 30-second notification spacing
+
+Hook output, native Codex wakes and terminal notices share a fixed 30-second
+window for the same identity in the same selected connection/config namespace.
+A new identity can announce immediately. Successful output or native acceptance
+starts the next window at completion+30s; arrivals during that window remain in
+the mailbox and never move its deadline. A running admitted consumer services
+pending work at its next admissible opportunity after that fixed deadline,
+including when no new Matrix event arrives. No new consumer is started.
+
+A durable reservation precedes each effect. An interrupted or ambiguous effect
+counts at reservation time, leaves mail unreceived and uncredited on that path,
+and permits another admitted path after 30s. This common spacing record grants
+no channel-specific retry authority: native uncertain acceptance still requires
+authoritative reconciliation, and terminal nonempty or unknown input keeps its
+existing manual-only fence. Definitive no-output refusal can release its own
+spacing reservation; it retains the existing hourly reservation. Stale results
+cannot clear a newer token. Generation replacement never resets common spacing.
+
+A hook-only Stop bypasses this new 30s window when no live, owned consumer for
+the same session/generation/namespace owns trailing delivery. Binding metadata
+alone does not prove that ownership: a native watch must hold its consumer lock
+and record matching live owner/consumer process births; a terminal consumer
+must also match its binding and daemon birth. Existing Stop 60s/loop limits still
+apply. Even a fallback Stop saves its reservation and completion, so a Stop
+completed at 5s moves the next ordinary due time to 35s. Prompt and session-start
+always obey the 30s window. Pause, human/manual, busy, lease, connection, hourly,
+terminal idle-observation and bounded recovery gates remain prerequisites; there
+is no urgent-message bypass. Already-due but gated work keeps ordinary bounded
+polling, and notification timing never shortens error backoff or idle-sample floors.
+
+Private `state/NAME.json` stores `notification` version 1 with UTC `not_before`
+and an optional uncertainty reservation. An existing identity with legacy
+output/attempt/rate evidence migrates with one fixed 30s hold; ordinary restart
+preserves the stored deadline. Within a live CLI process comparisons preserve
+Go's monotonic clock where available. Across processes/restarts only UTC remains:
+a stored deadline beyond now+30s is clamped once to now+30s after a detected
+backward jump. A forward wall-clock discontinuity may permit one early
+notification, followed by a new 30s window. This is not a strict elapsed-time
+bound across wall-clock changes, independent config roots, or mixed old clients.
+
+`a2a bind status --json` adds a read-only `notification` state/deadline projection;
+text bind/runtime status also shows its closed state. `uncertain cooldown` and
+`uncertain ready` mean possible prior output, not a receipt or retry grant.
+Malformed ledger data reports `invalid` without printing opaque scope/token data.
+Reading status does not migrate, clamp or repair the record. There is no interval
+flag; 30s is the fixed protocol constant. Source delivery does not activate
+already installed consumers; their custodian coordinates adoption separately.
 
 #### `a2a hook install --agent NAME --runtime claude|codex [--settings PATH]` / `a2a hook uninstall --runtime claude|codex [--settings PATH]`
 `--runtime` is required; a missing or unknown runtime, like an invalid agent name, is a usage error (exit 2) and writes nothing.
