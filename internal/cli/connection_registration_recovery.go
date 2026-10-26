@@ -16,9 +16,14 @@ func validRegistrationTransition(from, to string) bool {
 	switch from {
 	case "":
 		return to == "preflight"
-	case "preflight", "continuation-admitted":
+	case "continuation-admitted":
+		if to == "secret-preflight-cooldown" {
+			return true
+		}
+		fallthrough
+	case "preflight":
 		return to == "secret-preflight-refused" || to == "bootstrap-unavailable" || to == "password-storage-pending"
-	case "bootstrap-unavailable":
+	case "bootstrap-unavailable", "secret-preflight-cooldown":
 		return to == "continuation-admitted"
 	case "password-storage-pending":
 		return to == "password-store-failed" || to == "remote-outcome-pending"
@@ -30,6 +35,14 @@ func validRegistrationTransition(from, to string) bool {
 		return to == "complete"
 	}
 	return false
+}
+
+// Only the typed marker refusal is transient; unknown or mixed failures stay fenced.
+func registrationCooldownEvidence(e *secretEvidence) bool {
+	return e != nil && (e.Instrument == "probe" || e.Instrument == "security") && e.Exit == nil && len(e.Codes) == 1 && e.Codes[0] == "cooldown"
+}
+func (j registrationJournal) continuationCandidate() bool {
+	return j.Version == 1 && (j.Stage == "bootstrap-unavailable" || j.Stage == "secret-preflight-cooldown")
 }
 func validSecretEvidence(e *secretEvidence) bool {
 	if e == nil || (e.Instrument != "security" && e.Instrument != "probe" && e.Instrument != "unknown") || len(e.Codes) == 0 || len(e.Codes) > 12 {
@@ -82,8 +95,22 @@ func readRegistrationJournal(path string, b config.ConnectionBinding) (registrat
 	}
 	previous := ""
 	for _, event := range j.History {
-		if !validRegistrationTransition(previous, event.Stage) || (event.Stage == "bootstrap-unavailable" && !validSecretEvidence(event.Failure)) || (event.Stage != "bootstrap-unavailable" && event.Failure != nil) {
+		if !validRegistrationTransition(previous, event.Stage) {
 			return j, errors.New("invalid registration history")
+		}
+		switch event.Stage {
+		case "bootstrap-unavailable":
+			if !validSecretEvidence(event.Failure) {
+				return j, errors.New("invalid registration history")
+			}
+		case "secret-preflight-cooldown":
+			if !registrationCooldownEvidence(event.Failure) {
+				return j, errors.New("invalid registration history")
+			}
+		default:
+			if event.Failure != nil {
+				return j, errors.New("invalid registration history")
+			}
 		}
 		previous = event.Stage
 	}
@@ -180,9 +207,9 @@ func cmdConnectionRegistration(ctx context.Context, a *App, args []string) error
 			Stage     string         `json:"stage"`
 			Failure   secretEvidence `json:"failure"`
 			Candidate bool           `json:"pre_http_candidate"`
-		}{j.Attempt, len(j.History), j.Stage, failure, j.Version == 1 && j.Stage == "bootstrap-unavailable"})
+		}{j.Attempt, len(j.History), j.Stage, failure, j.continuationCandidate()})
 	}
-	if j.Version != 1 || j.Stage != "bootstrap-unavailable" || j.Attempt != *attempt || len(j.History) != *revision || len(j.History) > 120 {
+	if !j.continuationCandidate() || j.Attempt != *attempt || len(j.History) != *revision || len(j.History) > 120 {
 		return errors.New("attempt is stale or lacks validated pre-HTTP continuation evidence")
 	}
 	for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {

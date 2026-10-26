@@ -170,6 +170,13 @@ func (a *App) finishNamedRegistration(ctx context.Context, name string, p config
 	passwordRef := config.SecretReference{Service: c.Store.PasswordService, Account: b.UserID}
 	for _, r := range []config.SecretReference{tokenRef, passwordRef} {
 		if _, e = a.readConnectionSecret(ctx, p, r); !errors.Is(e, errKeychainMissing) {
+			failure := registrationFailureEvidence(e, false)
+			if j.Stage == "continuation-admitted" && registrationCooldownEvidence(&failure) {
+				if se := j.record(journal, "secret-preflight-cooldown", &failure); se != nil {
+					return empty, "", errors.New("credential cooldown active; recovery journal update failed")
+				}
+				return empty, "", errors.New("selected credential cooldown active; no registration attempted")
+			}
 			_ = stage("secret-preflight-refused")
 			return empty, "", errors.New("selected credential item exists or is unavailable; no registration attempted")
 		}

@@ -1734,9 +1734,9 @@ a2a --profile staging connection registration continue my_own_agent \
 `inspect` reads local private evidence only: no probe, Keychain/item read, HTTP,
 password generation, state writes or cooldown reset. It emits JSON containing
 `attempt`, `revision` (history length), `stage`, `failure` and
-`pre_http_candidate`. The candidate indicates a recorded bootstrap refusal in a
-validated new journal; continuation must still check neighboring metadata,
-items and cooldowns. No helper stdout/stderr, command data or secret values are
+`pre_http_candidate`. The candidate indicates a recorded bootstrap refusal or a
+subsequent credential-preflight cooldown in a validated new journal;
+continuation must still check neighboring metadata, items and cooldowns. No helper stdout/stderr, command data or secret values are
 printed. Unknown/malformed fields, nonprivate/symlinked receipts, invalid history,
 binding changes and concurrent ownership refuse without rewriting evidence.
 Known post-creation stages can be inspected but cannot be continued here.
@@ -1756,9 +1756,9 @@ unknown. Original pre-version receipts remain inspectable with unknown failure
 evidence and `pre_http_candidate: false`; this command cannot reconstruct their
 lost cause, upgrade them or continue them.
 
-`continue` accepts only a version-1 `bootstrap-unavailable` attempt with validated
-history and unchanged binding, selected identity and bootstrap reference. It
-requires the exact observed attempt/revision and an exclusive lock on the
+`continue` accepts only a version-1 `bootstrap-unavailable` attempt, or its
+`secret-preflight-cooldown` successor, with validated history and unchanged
+binding, selected identity and bootstrap reference. It requires the exact observed attempt/revision and an exclusive lock on the
 existing ownership file; a missing lock, concurrent operation or stale revision
 refuses. The same name/class/endpoint/services are retained. Agent/human metadata
 and unrelated destination state must be absent. Existing token/password items
@@ -1767,13 +1767,21 @@ The normal per-item and host cooldown protections still apply. There is no
 waiting loop or automatic retry. After cooldown expiry another explicit
 continuation requires the latest observed revision.
 
+A transient cooldown refusal while checking credential items during an admitted
+continuation appends `secret-preflight-cooldown` with finite cooldown evidence.
+It preserves the original attempt, history and cooldown markers and permits a
+later explicitly admitted continuation after expiry. Each continuation rechecks
+the destination items; existing items and unknown/unavailable preflight failures
+remain terminal `secret-preflight-refused` states. This does not make an initial
+credential-preflight refusal recoverable.
+
 Admission is durably appended before any secret read; the password-storage stage
 is durably recorded before password creation, and the remote-outcome stage before
 HTTP. A bootstrap refusal appends safe failure evidence to the same attempt.
 Successful continuation retains the original failure/history and publishes the
 usual bound metadata. Interruption after admission without another recorded
-bootstrap refusal, password-storage stages, remote rejection, ambiguous outcome
-and all post-creation stages refuse further continuation here; preserve the
+bootstrap refusal or credential-preflight cooldown, password-storage stages,
+remote rejection, ambiguous outcome and all post-creation stages refuse further continuation here; preserve the
 recovery items for keeper/operator disposition. Concurrent cooperating processes
 serialize using the existing private lock. A same-UID editor that rewrites
 private files while ignoring locks is outside this integrity/ownership model.

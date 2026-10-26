@@ -251,7 +251,7 @@ func TestNamedRegistrationPreHTTPContinuation(t *testing.T) {
 
 // Proves admission, ownership, binding, schema and neighboring-state refusals preserve evidence and prohibit creation; the valid control is above.
 func TestNamedRegistrationContinuationRefusals(t *testing.T) {
-	for _, mode := range []string{"diagnostic-only", "no-admission", "stale", "attempt", "concurrent", "missing-lock", "binding", "bootstrap-ref", "malformed", "unknown-field", "unknown-stage", "history", "legacy", "metadata", "human-metadata", "item", "password-item", "state", "ambiguous", "post-creation", "password-boundary", "journal-symlink", "journal-fifo", "nonprivate"} {
+	for _, mode := range []string{"diagnostic-only", "no-admission", "stale", "attempt", "concurrent", "missing-lock", "binding", "bootstrap-ref", "malformed", "unknown-field", "unknown-stage", "history", "legacy", "metadata", "human-metadata", "item", "password-item", "state", "ambiguous", "post-creation", "password-boundary", "journal-symlink", "journal-fifo", "nonprivate", "cooldown-missing-evidence", "cooldown-unknown", "cooldown-mixed", "cooldown-exit", "cooldown-instrument", "cooldown-without-bootstrap", "terminal-preflight"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newNamedFixture(t, false)
 			f.publish("beta", false)
@@ -339,6 +339,32 @@ func TestNamedRegistrationContinuationRefusals(t *testing.T) {
 					}
 				}
 				j.Stage = j.History[len(j.History)-1].Stage
+				if e := updateRegistrationJournal(path, j); e != nil {
+					t.Fatal(e)
+				}
+				args = registrationArgs("continue", j)
+			case "cooldown-missing-evidence", "cooldown-unknown", "cooldown-mixed", "cooldown-exit", "cooldown-instrument", "cooldown-without-bootstrap", "terminal-preflight":
+				failure := &secretEvidence{Instrument: "probe", Codes: []string{"cooldown"}}
+				j.History = append(j.History, registrationEvent{Stage: "continuation-admitted"})
+				switch mode {
+				case "cooldown-missing-evidence":
+					failure = nil
+				case "cooldown-unknown":
+					failure.Codes = []string{"unavailable"}
+				case "cooldown-mixed":
+					failure.Codes = []string{"cooldown", "io"}
+				case "cooldown-exit":
+					failure.Exit = intPointer(36)
+				case "cooldown-instrument":
+					failure.Instrument = "unknown"
+				case "cooldown-without-bootstrap":
+					j.History = j.History[:1]
+				}
+				j.Stage = "secret-preflight-cooldown"
+				if mode == "terminal-preflight" {
+					j.Stage, failure = "secret-preflight-refused", nil
+				}
+				j.History = append(j.History, registrationEvent{Stage: j.Stage, Failure: failure})
 				if e := updateRegistrationJournal(path, j); e != nil {
 					t.Fatal(e)
 				}
@@ -491,5 +517,128 @@ func TestNamedRegistrationContinuationCooldown(t *testing.T) {
 	after, e = os.ReadFile(marker)
 	if e != nil || !bytes.Equal(before, after) {
 		t.Fatal("successful continuation deleted/replaced cooldown")
+	}
+}
+
+type registrationGatedReads struct {
+	base      *namedTestStore
+	makeStore func(config.Paths, config.SecretReference) *keychainStore
+}
+
+func (s registrationGatedReads) Read(ctx context.Context, p config.Paths, ref config.SecretReference) (string, error) {
+	k := s.makeStore(p, ref)
+	var value string
+	err := k.locked(ref.Account, func() error { var e error; value, e = k.lookup(ctx, ref.Account); return e })
+	return value, err
+}
+func (s registrationGatedReads) Create(ctx context.Context, p config.Paths, ref config.SecretReference, value string) error {
+	return s.base.Create(ctx, p, ref, value)
+}
+
+// Proves a real synthetic probe failure at bootstrap records host cooldown,
+// which must refuse an early continuation without making the original attempt
+// permanently ineligible. All secret reads use the runner and shared host gate;
+// writes and HTTP use existing isolated named fixtures, never native Keychain.
+func TestNamedRegistrationHostCooldownContinuation(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		name := "expiry-control"
+		if early {
+			name = "early-refusal-then-expiry"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newNamedFixture(t, false)
+			ref := *f.r.Profiles["alpha"].RegistrationTokenRef
+			now := time.Now()
+			deny := true
+			probes, commands := 0, 0
+			var last *keychainStore
+			app := func() *App {
+				a := f.app()
+				a.connectionSecretStore = registrationGatedReads{f.store, func(p config.Paths, r config.SecretReference) *keychainStore {
+					k := &keychainStore{paths: p, service: r.Service, hostID: "registration-fixture", fixture: filepath.Join(f.root, "synthetic.keychain-db"), now: func() time.Time { return now }}
+					k.probeCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+						probes++
+						if deny && r == ref {
+							return exec.CommandContext(ctx, "/bin/sh", "-c", "printf 'locked\\n'; exit 3")
+						}
+						return unlockedProbe(ctx, args...)
+					}
+					k.command = func(ctx context.Context, args ...string) *exec.Cmd {
+						commands++
+						if value, ok := f.store.items[r]; ok {
+							return exec.CommandContext(ctx, "/usr/bin/printf", "%s", value)
+						}
+						return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 44")
+					}
+					last = k
+					return k
+				}}
+				return a
+			}
+			if app().Run(context.Background(), []string{"--profile", "alpha", "register", "alice", "--authorize-registration"}) == 0 {
+				t.Fatal("locked bootstrap accepted")
+			}
+			j := pendingRegistration(t, f)
+			if j.Stage != "bootstrap-unavailable" || j.History[1].Failure.Codes[0] != "native-locked" {
+				t.Fatalf("wrong initial witness: %+v", j)
+			}
+			host, err := last.hostPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			marker, err := os.ReadFile(host + ".cooldown")
+			if err != nil {
+				t.Fatal(err)
+			}
+			bootstrapMarker := last.identityPath(ref.Account) + ".cooldown"
+			bootstrapBytes, err := os.ReadFile(bootstrapMarker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := j
+			deny = false
+			if early {
+				p0, c0 := probes, commands
+				if app().Run(context.Background(), registrationArgs("continue", j)) == 0 {
+					t.Fatal("host cooldown bypassed")
+				}
+				if probes != p0 || commands != c0 || f.httpCalls.Load() != 0 || len(f.store.creates) != 0 {
+					t.Fatal("early refusal caused forbidden effects")
+				}
+				j = pendingRegistration(t, f)
+				if j.Attempt != original.Attempt || j.Stage != "secret-preflight-cooldown" || len(j.History) != len(original.History)+2 || !reflect.DeepEqual(j.History[:len(original.History)], original.History) || !reflect.DeepEqual(j.History[len(j.History)-1].Failure, &secretEvidence{Instrument: "security", Codes: []string{"cooldown"}}) {
+					t.Fatalf("cooldown lost original eligibility/evidence: stage=%s history=%d failure=%+v", j.Stage, len(j.History), j.History[len(j.History)-1].Failure)
+				}
+				before := registrationTree(t, f.root)
+				if app().Run(context.Background(), registrationArgs("continue", original)) == 0 {
+					t.Fatal("stale revision accepted after cooldown refusal")
+				}
+				f.out.Reset()
+				if app().Run(context.Background(), registrationArgs("inspect", j)) != 0 || !strings.Contains(f.out.String(), `"pre_http_candidate":true`) || !strings.Contains(f.out.String(), `"codes":["cooldown"]`) {
+					t.Fatal("cooldown diagnostic lost eligibility or safe evidence", f.out.String())
+				}
+				if !reflect.DeepEqual(before, registrationTree(t, f.root)) || probes != p0 || commands != c0 || f.httpCalls.Load() != 0 || len(f.store.creates) != 0 {
+					t.Fatal("stale refusal/inspection changed evidence or invoked effects")
+				}
+			}
+			after, err := os.ReadFile(host + ".cooldown")
+			if err != nil || !bytes.Equal(marker, after) {
+				t.Fatal("host cooldown evidence changed")
+			}
+			now = now.Add(securityCooldown + time.Second)
+			if app().Run(context.Background(), registrationArgs("continue", j)) != 0 {
+				t.Fatalf("expired host cooldown permanently strands original pre-HTTP attempt: stage=%s stderr=%s", j.Stage, f.err.String())
+			}
+			next := pendingRegistration(t, f)
+			if next.Stage != "complete" || next.Attempt != original.Attempt || !reflect.DeepEqual(next.History[:len(j.History)], j.History) || f.httpCalls.Load() != 1 || len(f.store.creates) != 2 {
+				t.Fatal("expiry control did not retain evidence and complete exactly once")
+			}
+			for path, want := range map[string][]byte{host + ".cooldown": marker, bootstrapMarker: bootstrapBytes} {
+				got, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatal("continuation changed cooldown marker")
+				}
+			}
+		})
 	}
 }
