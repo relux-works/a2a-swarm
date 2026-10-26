@@ -111,12 +111,17 @@ func Input(screen, runtime string) (Box, bool) {
 // the exact fixed notice supplied by its journal (or just typed by Send) is
 // recognizable. Plain comparison also preserves dim/grey appended input.
 func inputWithNotice(screen, runtime, owned string) (Box, bool) {
+	b, reason := inputWithNoticeReason(screen, runtime, owned)
+	return b, reason == InputReasonNone
+}
+
+func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 	start := max(0, len(lines)-18)
 	bottom := strings.ToLower(plain(strings.Join(lines[start:], "\n")))
 	for _, denied := range []string{"esc to interrupt", "escape to interrupt", "do you want to", "would you like to", "implement this plan", "permission required", "permission request", "approval required", "approve this", "allow once", "bypass permissions?", "accept edits?", "enter to confirm"} {
 		if strings.Contains(bottom, denied) {
-			return Box{}, false
+			return Box{}, InputReasonBusyOrDialog
 		}
 	}
 	if runtime == "claude" {
@@ -127,16 +132,16 @@ func inputWithNotice(screen, runtime, owned string) (Box, bool) {
 			}
 		}
 		if len(rules) < 2 {
-			return Box{}, false
+			return Box{}, InputReasonLayoutUnrecognized
 		}
 		a, b := rules[len(rules)-2], rules[len(rules)-1]
 		if b != a+2 {
-			return Box{}, false
+			return Box{}, InputReasonLayoutUnrecognized
 		}
-		return inputLine(lines[a+1], "❯", a+1)
+		return inputLineReason(lines[a+1], "❯", a+1)
 	}
 	if runtime != "codex" {
-		return Box{}, false
+		return Box{}, InputReasonLayoutUnrecognized
 	}
 	for i := len(lines) - 1; i >= start; i-- {
 		if plain(lines[i]) != "›" && !strings.HasPrefix(plain(lines[i]), "› ") {
@@ -145,16 +150,24 @@ func inputWithNotice(screen, runtime, owned string) (Box, bool) {
 		// The footer is separated from the prompt. An unknown intervening line
 		// may be a wrapped draft or dialog and cannot count as an empty box.
 		if i+1 >= len(lines) || strings.TrimSpace(plain(lines[i+1])) != "" {
-			return Box{}, false
+			return Box{}, InputReasonLayoutUnrecognized
 		}
 		footer := plain(strings.Join(lines[i+1:], "\n"))
 		strictOwn := fixedNotice.MatchString(owned) && strings.TrimRight(plain(lines[i]), " ") == "› "+owned
 		if !strings.Contains(footer, "? for shortcuts") && !strictOwn {
-			return Box{}, false
+			return Box{}, InputReasonLayoutUnrecognized
 		}
-		return inputLine(lines[i], "›", i)
+		return inputLineReason(lines[i], "›", i)
 	}
-	return Box{}, false
+	return Box{}, InputReasonLayoutUnrecognized
+}
+
+func inputLineReason(line, glyph string, row int) (Box, InputReason) {
+	b, ok := inputLine(line, glyph, row)
+	if !ok {
+		return Box{}, InputReasonLayoutUnrecognized
+	}
+	return b, InputReasonNone
 }
 
 func inputLine(line, glyph string, row int) (Box, bool) {
