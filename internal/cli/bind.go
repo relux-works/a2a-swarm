@@ -635,6 +635,8 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				return !slices.ContainsFunc(pending, func(en config.MailEntry) bool { return en.ID == id }) || slices.Contains(current.Rung, id)
 			})
 			if len(ids) == 0 {
+				current.Idle = nil
+				current.Outcome = "armed: no new mail"
 				return false, nil
 			}
 			current.Idle = nil
