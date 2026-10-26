@@ -605,7 +605,18 @@ func TestNamedLocalConsumerEffectBoundaries(t *testing.T) {
 			case "liveness":
 				e = s.writeLivenessSource(context.Background(), config.AgentStatus{}, "runtime")
 			}
-			if e == nil || !strings.Contains(e.Error(), "selected connection changed") {
+			if op == "terminal-dispatch" || op == "terminal-update" {
+				// Terminal refusals expose fixed metadata, while preserving the
+				// actual connection stage and cause for typed error inspection.
+				var failure *terminalFailure
+				if e == nil || !errors.As(e, &failure) || failure.phase != "connection" || e.Error() != "binding connection: unavailable" {
+					t.Fatalf("expected safe terminal connection refusal, got %v", e)
+				}
+				cause := errors.Unwrap(failure)
+				if cause == nil || !errors.Is(e, cause) || !strings.Contains(cause.Error(), "selected connection changed") {
+					t.Fatalf("terminal connection refusal lost underlying cause: %v", e)
+				}
+			} else if e == nil || !strings.Contains(e.Error(), "selected connection changed") {
 				t.Fatalf("expected binding refusal, got %v", e)
 			}
 			after, _ := os.ReadFile(s.paths.StateFile(s.name))
