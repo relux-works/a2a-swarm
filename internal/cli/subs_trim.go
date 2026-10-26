@@ -99,6 +99,9 @@ func cmdSubsTrim(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("subscription trim requires a joined room")
 	}
 	err = config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
 		policy, err := s.subscriptionPolicy()
 		if err != nil {
 			return err
