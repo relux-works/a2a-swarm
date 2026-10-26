@@ -15,3 +15,7 @@ func openKeychainState(string) (*os.File, error) { return nil, errors.New("keych
 func keychainLock(string, time.Time) (func(), error) {
 	return nil, errors.New("keychain requires macOS")
 }
+
+func lockRegistration(string, bool) (func(), error) {
+	return nil, errors.New("keychain requires macOS")
+}

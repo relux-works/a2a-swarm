@@ -90,10 +90,10 @@ draining:
 		case err := <-results:
 			remaining--
 			if err != nil {
-				pipeErr = errSecurityProcessIO
+				pipeErr = errors.Join(pipeErr, errSecurityProcessIO)
 			}
 		case <-timer.C:
-			pipeErr = exec.ErrWaitDelay
+			pipeErr = errors.Join(pipeErr, exec.ErrWaitDelay)
 			break draining
 		}
 	}
@@ -118,7 +118,7 @@ draining:
 	return waitErr
 }
 func openKeychainState(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -154,4 +154,29 @@ func keychainLock(path string, deadline time.Time) (func(), error) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Inspection opens only the existing lock; neither inspection nor continuation
+// recreates missing ownership evidence. Cooperative writers fail immediately.
+func lockRegistration(path string, create bool) (func(), error) {
+	var f *os.File
+	var err error
+	if create {
+		f, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
+	} else {
+		f, err = openKeychainState(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
+		f.Close()
+		return nil, errors.New("invalid registration lock")
+	}
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 }

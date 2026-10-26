@@ -35,6 +35,7 @@ type keychainStore struct {
 	paths             config.Paths
 	command           func(context.Context, ...string) *exec.Cmd
 	probeCommand      func(context.Context, ...string) *exec.Cmd
+	afterRun          func(error) error // package-test fault injection after the real runner completes
 	hostID            string
 	fixture           string
 	timeout, cooldown time.Duration
@@ -112,7 +113,7 @@ func (k *keychainStore) checkMarker(path, uid string) error {
 		return fmt.Errorf("keychain cooldown state invalid for %s", uid)
 	}
 	if k.clock().UnixNano() < until {
-		return fmt.Errorf("keychain cooldown active for %s; retry after %s", uid, time.Unix(0, until).UTC().Format(time.RFC3339))
+		return fixedSecretFailure(fmt.Sprintf("keychain cooldown active for %s; retry after %s", uid, time.Unix(0, until).UTC().Format(time.RFC3339)), "security", "cooldown", nil)
 	}
 	return nil
 }
@@ -172,10 +173,10 @@ func (b *limitedSecretBuffer) Write(p []byte) (int, error) {
 func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...string) (string, error) {
 	// This applies to EVERY invocation, including write lookup/relookup/readback.
 	if err := k.checkCooldown(uid); err != nil {
-		return "", err
+		return "", observedSecretFailure(err.Error(), "security", err, nil)
 	}
 	if ctx.Err() != nil {
-		return "", fmt.Errorf("keychain operation interrupted for %s", uid)
+		return "", observedSecretFailure(fmt.Sprintf("keychain operation interrupted for %s", uid), "security", nil, ctx.Err())
 	}
 	host, err := k.hostPath()
 	if err != nil {
@@ -187,16 +188,16 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 	}
 	defer unlock()
 	if err := k.checkMarker(host+".cooldown", uid); err != nil {
-		return "", err
+		return "", observedSecretFailure(err.Error(), "probe", err, nil)
 	}
 	if err := k.preflight(ctx); err != nil {
 		// Persist host first: other identities must not probe a known locked host.
 		herr := k.recordMarker(host + ".cooldown")
 		ierr := k.recordCooldown(uid)
 		if herr != nil || ierr != nil {
-			return "", fmt.Errorf("keychain preflight failed for %s; cannot persist cooldown; repair private state", uid)
+			return "", observedSecretFailure(fmt.Sprintf("keychain preflight failed for %s; cannot persist cooldown; repair private state", uid), "probe", err, nil)
 		}
-		return "", fmt.Errorf("keychain preflight failed for %s; cooldown recorded", uid)
+		return "", observedSecretFailure(fmt.Sprintf("keychain preflight failed for %s; cooldown recorded", uid), "probe", err, nil)
 	}
 	ctx, cancel := context.WithTimeout(ctx, k.timeoutDuration())
 	defer cancel()
@@ -214,11 +215,14 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 		return "", fmt.Errorf("keychain process unavailable for %s", uid)
 	}
 	err = runBoundSecurityProcess(cmd)
+	if k.afterRun != nil {
+		err = k.afterRun(err)
+	}
 	if ctx.Err() != nil || interactionFailure(err) {
 		if e := k.recordCooldown(uid); e != nil {
-			return "", fmt.Errorf("keychain interaction failed for %s; cannot persist cooldown; stop and repair private state", uid)
+			return "", observedSecretFailure(fmt.Sprintf("keychain interaction failed for %s; cannot persist cooldown; stop and repair private state", uid), "security", err, ctx.Err())
 		}
-		return "", fmt.Errorf("keychain interaction failed or timed out for %s; cooldown recorded", uid)
+		return "", observedSecretFailure(fmt.Sprintf("keychain interaction failed or timed out for %s; cooldown recorded", uid), "security", err, ctx.Err())
 	}
 	if err != nil {
 		var ee *exec.ExitError
@@ -227,15 +231,15 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 			// preserves their low byte as the process exit status.
 			switch ee.ExitCode() {
 			case 44:
-				return "", errKeychainMissing
+				return "", exitSecretFailure(errKeychainMissing, "missing", ee.ExitCode())
 			case 45:
-				return "", errKeychainDuplicate
+				return "", exitSecretFailure(errKeychainDuplicate, "duplicate", ee.ExitCode())
 			}
 		}
-		return "", fmt.Errorf("keychain operation failed for %s", uid)
+		return "", observedSecretFailure(fmt.Sprintf("keychain operation failed for %s", uid), "security", err, ctx.Err())
 	}
 	if out.overflow || errout.overflow {
-		return "", fmt.Errorf("keychain output limit exceeded for %s", uid)
+		return "", fixedSecretFailure(fmt.Sprintf("keychain output limit exceeded for %s", uid), "security", "output-limit", nil)
 	}
 	return out.String(), nil
 }
@@ -271,7 +275,7 @@ func (k *keychainStore) lookup(ctx context.Context, uid string) (string, error) 
 	// security adds one record terminator; do not normalize token bytes.
 	token := strings.TrimSuffix(out, "\n")
 	if strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\x00\r\n") {
-		return "", fmt.Errorf("keychain returned an invalid or empty token for %s", uid)
+		return "", fixedSecretFailure(fmt.Sprintf("keychain returned an invalid or empty token for %s", uid), "security", "invalid-secret", nil)
 	}
 	return token, nil
 }

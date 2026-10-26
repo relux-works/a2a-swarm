@@ -1714,10 +1714,72 @@ existing metadata without registering again.
 Private `registration.pending.json` records distinguish preflight refusal,
 remote rejection, ambiguous outcome, remote creation with failed token storage,
 and metadata publication pending. No secret value is written there. A pending
-attempt blocks automatic retry; preserve it and the selected recovery items for
-the existing keeper/operator recovery path. Do not delete the remote account,
-overwrite an existing item or infer that an ambiguous failure created nothing.
-Registration recovery is intentionally manual in this initial command surface.
+attempt blocks automatic retry; preserve it and the selected recovery items.
+Do not delete journals or cooldown markers, delete the remote account, overwrite
+an existing item or infer that an ambiguous failure created nothing.
+
+### Pending registration inspection and pre-HTTP continuation
+
+Each operation requires separate owner/keeper admission. The flags record caller
+intent; they do not establish owner authority. Inspection permission never
+permits registration, continuation or Keychain access:
+
+```bash
+a2a --profile staging connection registration inspect my_own_agent --authorize-diagnostic
+# After separate admission, using the exact attempt and revision from inspection:
+a2a --profile staging connection registration continue my_own_agent \
+  --attempt ATTEMPT --revision REVISION --authorize-registration
+```
+
+`inspect` reads local private evidence only: no probe, Keychain/item read, HTTP,
+password generation, state writes or cooldown reset. It emits JSON containing
+`attempt`, `revision` (history length), `stage`, `failure` and
+`pre_http_candidate`. The candidate indicates a recorded bootstrap refusal in a
+validated new journal; continuation must still check neighboring metadata,
+items and cooldowns. No helper stdout/stderr, command data or secret values are
+printed. Unknown/malformed fields, nonprivate/symlinked receipts, invalid history,
+binding changes and concurrent ownership refuse without rewriting evidence.
+Known post-creation stages can be inspected but cannot be continued here.
+
+New version-1 receipts retain a random attempt ID, the complete original binding
+(including the bootstrap reference) and ordered stage/failure history. Failure
+`instrument` is `probe`, `security` or `unknown`; `codes` are finite observations:
+`native-locked`, `unavailable`, `interaction-exit`, `ordinary-exit`, `process-start`,
+`deadline`, `cancelled`, `drain`, `io`, `cleanup`, `missing`, `duplicate`,
+`cooldown`, `output-limit`, `invalid-secret` or `empty`. Independent observations
+can coexist, for example drain plus a process exit. `process_exit`, when present,
+is the observed low-byte exit (`-1` for a signaled process), never a reconstructed
+full OSStatus. In particular an interaction-related exit is not native locked
+evidence. Only the native probe's exact `locked`/exit-3 pair, with complete pipes
+and successful cleanup, supplies `native-locked`. Unavailable evidence stays
+unknown. Original pre-version receipts remain inspectable with unknown failure
+evidence and `pre_http_candidate: false`; this command cannot reconstruct their
+lost cause, upgrade them or continue them.
+
+`continue` accepts only a version-1 `bootstrap-unavailable` attempt with validated
+history and unchanged binding, selected identity and bootstrap reference. It
+requires the exact observed attempt/revision and an exclusive lock on the
+existing ownership file; a missing lock, concurrent operation or stale revision
+refuses. The same name/class/endpoint/services are retained. Agent/human metadata
+and unrelated destination state must be absent. Existing token/password items
+are checked through the selected store and must be absent; no item is replaced.
+The normal per-item and host cooldown protections still apply. There is no
+waiting loop or automatic retry. After cooldown expiry another explicit
+continuation requires the latest observed revision.
+
+Admission is durably appended before any secret read; the password-storage stage
+is durably recorded before password creation, and the remote-outcome stage before
+HTTP. A bootstrap refusal appends safe failure evidence to the same attempt.
+Successful continuation retains the original failure/history and publishes the
+usual bound metadata. Interruption after admission without another recorded
+bootstrap refusal, password-storage stages, remote rejection, ambiguous outcome
+and all post-creation stages refuse further continuation here; preserve the
+recovery items for keeper/operator disposition. Concurrent cooperating processes
+serialize using the existing private lock. A same-UID editor that rewrites
+private files while ignoring locks is outside this integrity/ownership model.
+Inspection and continuation never change registry current or the old working
+connection. Host adoption and recovery of an existing host attempt remain
+separately admitted operations.
 
 Legacy transition is likewise explicit: prepare and review a dry-run packet
 with old/new profile, MXID/class/endpoint, item references, state mapping,

@@ -83,9 +83,14 @@ func (k *keychainStore) preflight(ctx context.Context) error {
 		return errors.New("probe unavailable")
 	}
 	err := runBoundSecurityProcess(cmd)
+	// Native locked evidence requires the exact pair and completed pipes.
+	var exit *exec.ExitError
+	if ctx.Err() == nil && errors.As(err, &exit) && exit.ExitCode() == 3 && !errors.Is(err, exec.ErrWaitDelay) && !errors.Is(err, errSecurityProcessIO) && !errors.Is(err, errSecurityProcessCleanup) && !out.overflow && !stderr.overflow && stderr.Len() == 0 && out.String() == "locked\n" {
+		return fixedSecretFailure("keychain status unavailable or locked", "probe", "native-locked", nil)
+	}
 	// Exact token/status pair only. Helper text never escapes into CLI errors.
 	if ctx.Err() != nil || err != nil || out.overflow || stderr.overflow || stderr.Len() != 0 || out.String() != "unlocked\n" {
-		return errors.New("keychain status unavailable or locked")
+		return observedSecretFailure("keychain status unavailable or locked", "probe", err, ctx.Err())
 	}
 	return nil
 }

@@ -118,7 +118,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
+		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME | registration inspect|continue NAME   named Matrix routing", cmdConnection},
 		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
@@ -213,7 +213,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			if err := a.connectionPreflight(c.name, rest[1:]); err != nil {
 				return a.fail(err)
 			}
-			if c.name != "owner-dm" {
+			// Registration diagnostics inspect only their admitted local evidence.
+			if c.name != "owner-dm" && !(c.name == "connection" && len(rest) > 1 && rest[1] == "registration") {
 				a.warnOwnerDM()
 			}
 			return a.fail(c.run(ctx, a, rest[1:]))
