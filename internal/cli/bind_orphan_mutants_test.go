@@ -143,6 +143,25 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			if !strings.Contains(string(data), p.old) {
 				t.Fatal("mutation anchor missing")
 			}
+			// Narrow the same forbidden identity at both admission and locked
+			// reservation. A later authority error is not an effect-gate kill.
+			extraOld, extraNext := "", ""
+			switch p.name {
+			case "lease-foreign-holder-exemption":
+				extraOld = `l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
+				return false, errors.New("terminal lease changed")`
+				extraNext = `l.Holder != b.SessionID && l.Holder!="another-session" || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
+				return false, errors.New("terminal lease changed")`
+			case "binding-owner-one-exemption":
+				extraOld = `!ownTerminalTarget(current, b.Target) || !sameTerminalScope(*current, *b)`
+				extraNext = `(!ownTerminalTarget(current, b.Target) && current.OwnerPID!=b.Target.OwnerPID+1) || !sameTerminalScope(*current, *b)`
+			}
+			if extraOld != "" {
+				if strings.Count(string(data), extraOld) != 1 {
+					t.Fatal("layered authority anchor missing or ambiguous")
+				}
+				data = []byte(strings.Replace(string(data), extraOld, extraNext, 1))
+			}
 			if err := os.WriteFile(path, []byte(prefix+strings.Replace(string(data), p.old, p.next, 1)), 0600); err != nil {
 				t.Fatal(err)
 			}

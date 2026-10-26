@@ -288,6 +288,9 @@ func TestTerminalFreshAuthorityGates(t *testing.T) {
 				case "rate":
 					st.Terminal.MaxWakes = 1
 					st.Terminal.Reservations = []time.Time{f.now}
+					// Common spacing is already due: only the independent hourly
+					// quota may refuse this interval-qualified empty composer.
+					st.Notification = config.Notification{Version: 1, NotBefore: f.now.UTC()}
 				}
 			})
 			f.dispatch()
@@ -296,6 +299,9 @@ func TestTerminalFreshAuthorityGates(t *testing.T) {
 			s := f.wait(func(s orphanScreen) bool { return true })
 			if len(s.Submitted) != 0 || s.Text != "" || s.Erased != 0 {
 				t.Fatalf("fresh authority gate admitted: %+v", s)
+			}
+			if kind == "rate" && (!f.e.state("alice").Notification.Ready(f.now) || f.binding().Outcome != "suppressed: hourly rate") {
+				t.Fatal("hourly cap did not refuse with common spacing ready")
 			}
 			want := 0
 			if kind == "rate" {
@@ -310,10 +316,6 @@ func TestTerminalFreshAuthorityGates(t *testing.T) {
 				st.Terminal.MaxWakes = 30
 			})
 			f.step() // fresh first idle sample after restoring authority
-			if kind == "rate" {
-				f.step() // qualified attempt migrates legacy rate history
-				f.now = f.now.Add(config.NotificationEvery)
-			} // fixed legacy migration hold, without erasing the hourly reservation
 			f.step()
 			f.control(map[string]any{})
 			s = f.wait(func(s orphanScreen) bool { return true })
