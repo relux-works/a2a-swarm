@@ -112,6 +112,8 @@ func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBindi
 			return err
 		}
 		b.SessionID = next
+		b.ClaudeRegistryRoot = ""
+		b.Readiness = nil
 		b.Idle = nil
 		return nil
 	})

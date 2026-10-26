@@ -131,6 +131,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		if st.Runtime != nil && !st.Runtime.Retired {
 			return errors.New("native binding exists; use its verified transport, do not start terminal fallback")
 		}
+		registryRoot := a.ownRegistryRoot(ctx, target, *sessionID)
 		sameTarget := func(b *config.TerminalBinding) bool {
 			return ownTerminalTarget(b, target)
 		}
@@ -159,6 +160,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				}
 				daemon, daemonErr := bindingProcessBirth(ctx, b.DaemonPID)
 				if daemonErr == nil && daemon != "" && daemon == b.DaemonBirth {
+					if err := a.associateTerminalRoot(s, *b, registryRoot); err != nil {
+						return err
+					}
 					existing = true
 					return a.acquireLease(s, *sessionID, time.Now().Add(nativeRPCTimeout))
 				}
@@ -201,7 +205,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		if _, err = rand.Read(random[:]); err != nil {
 			return err
 		}
-		b := &config.TerminalBinding{Generation: hex.EncodeToString(random[:]), SessionID: *sessionID, Host: machineLabel(), OwnerPID: *owner, OwnerBirth: birth, Target: target, Interval: *interval, RetryMax: *retryMax, MaxWakes: *rate, Outcome: "starting"}
+		b := &config.TerminalBinding{Generation: hex.EncodeToString(random[:]), SessionID: *sessionID, Host: machineLabel(), OwnerPID: *owner, OwnerBirth: birth, Target: target, ClaudeRegistryRoot: registryRoot, Interval: *interval, RetryMax: *retryMax, MaxWakes: *rate, Outcome: "starting"}
 		if old := st.Terminal; old != nil {
 			b.Reservations = slices.Clone(old.Reservations)
 			if old.SessionID == b.SessionID {
@@ -572,7 +576,11 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}
 		// Reconcile only rendered empty input. A nonempty renderer never
 		// authorizes continuation or erasure, even for an exact lookalike.
-		observation := b.Target.ObserveInput(ctx, b.Notice)
+		readiness := boundTerminal(*b).AssessReadiness(ctx)
+		observation := readinessInput(readiness)
+		if err := a.observeTerminalReadiness(s, *b, readiness); err != nil {
+			return err
+		}
 		observed = true
 		if err := a.observeTerminalNotice(s, generation, *b, observation); err != nil {
 			return err
@@ -596,18 +604,18 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			b.Idle = nil
 		}
 		if len(b.AttemptIDs) > 0 {
-			return a.recoverTerminal(ctx, s, generation, *b)
+			return a.recoverTerminal(ctx, s, generation, *b, readiness)
 		}
 		if len(ids) == 0 {
 			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "armed: no new mail" })
 		}
 		// Screen admission precedes the durable attempt fence. A busy target
 		// retains IDs for the next idle observation without spending its rate.
-		if !b.Target.Idle(ctx) {
+		if !readiness.Eligible() {
 			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: busy, draft or unknown input" })
 		}
 		now := a.Now()
-		if qualified, err := a.qualifyTerminalIdle(s, generation, *b); err != nil || !qualified {
+		if qualified, err := a.qualifyTerminalIdle(s, generation, *b, readiness); err != nil || !qualified {
 			return err
 		}
 		reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
@@ -617,7 +625,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		var reservedAttempt config.TerminalBinding
 		token, reserveErr := a.reserveNotification(ctx, s, time.Now().Add(nativeRPCTimeout), "terminal", b.SessionID, generation, false, func(st *config.State, mb *config.Mailbox, token string) (bool, error) {
 			current := st.Terminal
-			if current == nil || current.Stopped || current.Generation != generation || current.SessionID != b.SessionID || !ownTerminalTarget(current, b.Target) {
+			if current == nil || current.Stopped || current.Generation != generation || current.SessionID != b.SessionID || !ownTerminalTarget(current, b.Target) || !sameTerminalScope(*current, *b) || !sameTerminalIdle(current.Idle, b.Idle) {
 				return false, errors.New("binding retired")
 			}
 			if st.HooksPaused || manualWakeGate(*st) != "" {
@@ -659,7 +667,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		outcome, sendErr := b.Target.Send(ctx, len(ids), nil, nil)
+		outcome, sendErr := boundTerminal(*b).Send(ctx, len(ids), readiness.Key, nil, nil)
 		return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 	})
 	if err != nil {
@@ -673,25 +681,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 	return err
 }
 
-// Both initial admission and empty-box recovery use the same observations.
-// This records a first sample without sleeping, reserving or spending a retry.
-func (a *App) qualifyTerminalIdle(s *session, generation string, b config.TerminalBinding) (bool, error) {
-	now := a.Now()
-	observation := config.TerminalIdle{At: now, Generation: b.Generation, SessionID: b.SessionID, Host: b.Host, DaemonPID: b.DaemonPID, DaemonBirth: b.DaemonBirth, Target: b.Target, Interval: b.Interval}
-	previous := b.Idle
-	qualified := false
-	if previous != nil {
-		identity := *previous
-		identity.At = now
-		qualified = identity == observation && b.Interval > 0 && !now.Before(previous.At.Add(b.Interval))
-	}
-	if !qualified {
-		return false, a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = &observation; b.Outcome = "armed: qualifying idle" })
-	}
-	return true, nil
-}
-
-func (a *App) finishTerminal(s *session, generation, outcome string, sendErr error, recovering bool, expected config.TerminalBinding) error {
+func (a *App) finishTerminal(s *session, generation string, result tmuxwake.SendResult, sendErr error, recovering bool, expected config.TerminalBinding) error {
 	token := expected.NotificationToken
 	if err := s.checkConnection(); err != nil {
 		return err
@@ -704,19 +694,24 @@ func (a *App) finishTerminal(s *session, generation, outcome string, sendErr err
 		if b == nil || b.Generation != generation || b.Stopped {
 			return errors.New("binding retired")
 		}
-		if token == "" || b.NotificationToken != token || b.SessionID != expected.SessionID || !b.AttemptAt.Equal(expected.AttemptAt) || !slices.Equal(b.AttemptIDs, expected.AttemptIDs) {
+		if token == "" || b.NotificationToken != token || !sameTerminalScope(*b, expected) || b.SessionID != expected.SessionID || !b.AttemptAt.Equal(expected.AttemptAt) || !slices.Equal(b.AttemptIDs, expected.AttemptIDs) {
 			return config.ErrNotificationStale
 		}
 
+		outcome := result.Text()
+		if sendErr != nil && result.Disposition == tmuxwake.SendSubmitted {
+			outcome = string(tmuxwake.SendInterrupted)
+		}
 		b.Outcome = outcome
-		if sendErr != nil {
+		b.Idle = nil
+		if sendErr != nil || !result.Valid() {
 			return nil
 		}
-		if strings.HasPrefix(outcome, "notice left in draft:") {
+		if result.Disposition == tmuxwake.SendDraft {
 			b.Typed = true
 			return nil
 		}
-		if strings.HasPrefix(outcome, "suppressed: busy") || outcome == "suppressed: target or width" {
+		if result.Disposition == tmuxwake.SendRefused {
 			if !recovering {
 				b.AttemptIDs = nil
 				b.Notice = ""
@@ -724,6 +719,9 @@ func (a *App) finishTerminal(s *session, generation, outcome string, sendErr err
 			if r := st.Notification.Reservation; r != nil && r.Token == token {
 				return st.Notification.Cancel(token)
 			}
+			return nil
+		}
+		if result.Disposition != tmuxwake.SendSubmitted || result.Outcome != tmuxwake.SendWakeSubmitted {
 			return nil
 		}
 		b.Rung = append(b.Rung, b.AttemptIDs...)
@@ -736,11 +734,11 @@ func (a *App) finishTerminal(s *session, generation, outcome string, sendErr err
 	return err
 }
 
-func (a *App) recoverTerminal(ctx context.Context, s *session, generation string, b config.TerminalBinding) error {
+func (a *App) recoverTerminal(ctx context.Context, s *session, generation string, b config.TerminalBinding, readiness tmuxwake.ReadinessAssessment) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	input := b.Target.ObserveInput(ctx, b.Notice)
+	input := readinessInput(readiness)
 	if input != "empty" {
 		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: pending attempt input" })
 	}
@@ -755,7 +753,7 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 	}
 	now := a.Now()
 	if input == "empty" {
-		if qualified, err := a.qualifyTerminalIdle(s, generation, b); err != nil || !qualified {
+		if qualified, err := a.qualifyTerminalIdle(s, generation, b, readiness); err != nil || !qualified {
 			return err
 		}
 		// A fresh type into an emptied box spends a new hourly reservation,
@@ -782,7 +780,7 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
 			return false, errors.New("terminal lease changed")
 		}
-		if !ownTerminalTarget(current, b.Target) {
+		if !ownTerminalTarget(current, b.Target) || !sameTerminalScope(*current, b) || !sameTerminalIdle(current.Idle, b.Idle) {
 			return false, errors.New("terminal target changed")
 		}
 		reservations := slices.DeleteFunc(slices.Clone(current.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
@@ -802,13 +800,13 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 	if err != nil || token == "" {
 		return err
 	}
-	var outcome string
+	var outcome tmuxwake.SendResult
 	var sendErr error
 	if input == "empty" {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		outcome, sendErr = b.Target.Send(ctx, b.NoticeCount, nil, nil)
+		outcome, sendErr = boundTerminal(b).Send(ctx, b.NoticeCount, readiness.Key, nil, nil)
 
 	}
 	return a.finishTerminal(s, generation, outcome, sendErr, true, reservedAttempt)

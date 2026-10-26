@@ -42,14 +42,25 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"local-observed-newline-exemption", "cli/bind_notice.go", `if !noticeTimestampGrammar.MatchString(value) {`, `if len(value)>20 && value[20:]=="\nmallory\tworking\tfresh" {value=value[:20]}; if !noticeTimestampGrammar.MatchString(value) {`, "TestNoticeLocalSchemaBoundaries/newline-observed", "TestNoticeLocalSchemaBoundaries/true"},
 
 		{"partial-untyped-reconcile-exemption", "cli/bind.go", `observation == "empty" && b.Typed && len(b.AttemptIDs) < b.NoticeCount`, `observation == "empty" && (b.Typed || b.NoticeCount==2) && len(b.AttemptIDs) < b.NoticeCount`, "TestTerminalUntypedPartialReceipt", admission + "/none"},
-		{"first-glimpse-owned-session", "cli/bind.go", `if !qualified {`, `if !qualified && !(previous == nil && b.SessionID == "owned-thread" && len(b.Reservations) == 0) {`, admission + "/none", "TestTerminalNoticeDetection/partial"},
-		{"same-time-admission", "cli/bind.go", `!now.Before(previous.At.Add(b.Interval))`, `!now.Before(previous.At)`, admission + "/none", "TestTerminalNoticeDetection/partial"},
+		{"first-glimpse-owned-session", "cli/bind_readiness.go", `if previous := b.Idle; previous != nil {`, `if b.Idle==nil && b.SessionID=="owned-thread" && len(b.Reservations)==0 {return true,nil}; if previous := b.Idle; previous != nil {`, admission + "/none", "TestTerminalNoticeDetection/partial"},
+		{"same-time-admission", "cli/bind_readiness.go", `!now.Before(previous.At.Add(b.Interval))`, `!now.Before(previous.At)`, admission + "/none", "TestTerminalNoticeDetection/partial"},
 		{"busy-reset-omission", "cli/bind.go", `b.Idle = nil; b.Outcome = "suppressed: busy, draft or unknown input"`, `if b.SessionID != "owned-thread" { b.Idle = nil }; b.Outcome = "suppressed: busy, draft or unknown input"`, admission + "/busy", "TestTerminalNoticeDetection/partial"},
-		{"daemon-birth-continuity", "cli/bind.go", `DaemonBirth: b.DaemonBirth, Target:`, `DaemonBirth: func() string { if b.SessionID == "owned-thread" { return "" }; return b.DaemonBirth }(), Target:`, admission + "/daemon", "TestTerminalNoticeDetection/partial"},
+		{"daemon-birth-continuity", "cli/bind_readiness.go", `DaemonBirth: b.DaemonBirth, Target:`, `DaemonBirth: func() string { if b.SessionID == "owned-thread" { return "" }; return b.DaemonBirth }(), Target:`, admission + "/daemon", "TestTerminalNoticeDetection/partial"},
 		{"pause-pulse-reset-omission", "cli/hook.go", `if cur.Terminal != nil {`, `if cur.Terminal != nil && cur.Terminal.SessionID != "owned-thread" {`, "TestTerminalDispatchQualificationInterruption/pause-pulse", admission + "/none"},
 		{"manual-pulse-reset-exemption", "cli/liveness.go", `if st.Terminal != nil && manualWakeGate(*st) != "" {`, `if st.Terminal != nil && manualWakeGate(*st) != "" && st.Terminal.SessionID != "owned-thread" {`, "TestTerminalDispatchQualificationInterruption/manual-pulse", admission + "/none"},
 		{"unwritable-idle-reset-exemption", "cli/bind.go", `qualificationInterrupted = true`, `qualificationInterrupted = policy.SessionID != "owned-thread"`, "TestTerminalRunAuthorityReadFailure", admission + "/none"},
-		{"recovery-first-glimpse-count-one", "cli/bind.go", `if qualified, err := a.qualifyTerminalIdle(s, generation, b); err != nil || !qualified {`, `if qualified, err := a.qualifyTerminalIdle(s, generation, b); err != nil || !qualified && b.NoticeCount != 1 {`, "TestReviewerFreshRecoveryQualification", admission + "/none"},
+		{"recovery-first-glimpse-count-one", "cli/bind_readiness.go", `if previous := b.Idle; previous != nil {`, `if b.Idle==nil && b.NoticeCount==1 && len(b.AttemptIDs)>0 {return true,nil}; if previous := b.Idle; previous != nil {`, "TestReviewerFreshRecoveryQualification", admission + "/none"},
+		{"registry-schema-extra", "tmuxwake/registry.go", `for k, v := range m {`, `for k, v := range m {if k=="future"{continue}`, "TestRegistryQualifiedSchemas/extra", "TestRegistryQualifiedSchemas/renamed"},
+		{"registry-version-range", "tmuxwake/registry.go", `case "2.1.302", "2.1.309", "2.1.310":`, `case "2.1.302", "2.1.309", "2.1.310", "2.1.311":`, "TestRegistryQualifiedSchemas/unknown-version", "TestRegistryQualifiedSchemas/2.1.310/idle"},
+		{"registry-birth-reuse", "tmuxwake/registry.go", `!birth.Equal(id.Birth)`, `(!birth.Equal(id.Birth) && false)`, "TestRegistryQualifiedSchemas/reused-pid", "TestRegistryQualifiedSchemas/startedAt-not-birth"},
+		{"registry-busy-ready", "tmuxwake/registry.go", `reason = RuntimeBusy`, `reason = RuntimeNone`, "TestRegistryQualifiedSchemas/2.1.310/busy", "TestRegistryQualifiedSchemas/2.1.310/shell"},
+		{"registry-input-runtime-only", "tmuxwake/readiness.go", `return r.Input.State == InputEmpty && r.Input.Reason == InputReasonNone && r.runtimeEligible()`, `return r.runtimeEligible()`, "TestReadinessAdmissionState/codex/nonempty", "TestReadinessAdmissionState/codex/empty"},
+		{"registry-status-key-omission", "cli/bind_readiness.go", `RegistryStatus: k.RegistryStatus,`, `RegistryStatus: "",`, "TestReadinessIdleContinuity/status", "TestReadinessIdleContinuity/registry"},
+		{"registry-typed-unknown-completes", "cli/bind.go", `outcome := result.Text()`, `if !result.Valid() && sendErr==nil {result=tmuxwake.SendResult{Disposition:tmuxwake.SendSubmitted,Outcome:tmuxwake.SendWakeSubmitted}}; outcome := result.Text()`, "TestReadinessTypedCompletion/unknown", "TestReadinessTypedCompletion/submitted"},
+		{"registry-pretype-key-omission", "tmuxwake/terminal.go", `if preType != nil && !preType() {`, `if preType != nil && false && !preType() {`, "TestBoundSendContinuity/claude-named/pre-key", "TestBoundSendContinuity/claude-named/valid"},
+		{"registry-posttype-key-omission", "tmuxwake/send_result.go", `r.Key == expected &&`, `(r.Key == expected || owned!="") &&`, "TestBoundSendContinuity/claude-named/post-key", "TestBoundSendContinuity/claude-named/valid"},
+		{"registry-stable-since-rewrite", "cli/bind_readiness.go", `old.Reason == projected.Reason && old.Version == projected.Version`, `old.Reason == projected.Reason && old.Version == projected.Version && false`, "TestReadinessDiagnosticPersistence", "TestReadinessStatusProjection/valid"},
+		{"registry-idle-scope-cas", "cli/bind_readiness.go", `st.Terminal.Stopped || !sameTerminalScope(*st.Terminal, b) ||`, `st.Terminal.Stopped || (!sameTerminalScope(*st.Terminal, b) && false) ||`, "TestReadinessIdleCAS/root", "TestReadinessIdleCAS/valid"},
 		{"detect-partial-as-orphan", "cli/bind_notice.go", `len(b.AttemptIDs) == 0`, `len(b.AttemptIDs) <= 1`, "TestTerminalNoticeDetection/partial", admission + "/none"},
 		{"detect-unowned-draft", "cli/bind_notice.go", `b.Typed && b.NoticeCount > 0`, `(b.Typed && b.NoticeCount > 0 || !b.Typed && b.NoticeCount == 0)`, "TestTerminalNoticeDetection/no-journal", admission + "/none"},
 		{"unknown-silently-clear", "cli/bind_notice.go", `n.PossiblyOrphaned = nil`, `n.PossiblyOrphaned = nil; if n.Since!="" { v:=false; n.PossiblyOrphaned=&v }`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
@@ -196,6 +207,20 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			killed, positive, assertion := false, false, false
 			intended := ""
 			switch strings.Split(p.killer, "/")[0] {
+			case "TestRegistryQualifiedSchemas":
+				intended = "got "
+			case "TestReadinessAdmissionState":
+				intended = "runtime alone admitted input state"
+			case "TestReadinessIdleContinuity":
+				intended = "continuity mode="
+			case "TestReadinessTypedCompletion":
+				intended = "wrong completion effects:"
+			case "TestReadinessDiagnosticPersistence":
+				intended = "stable diagnostic pair caused write"
+			case "TestReadinessIdleCAS":
+				intended = "CAS result"
+			case "TestBoundSendContinuity":
+				intended = "continuity gate effects"
 			case "TestNoticeTimestampGeneratedGrammar":
 				intended = "timestamp grammar class=short-component"
 			case "TestReviewCR4TimestampGrammar":

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
 func notificationApp(t *testing.T, e *env) (*App, *session) {
@@ -346,7 +347,7 @@ func TestNotificationTerminalCompletionScope(t *testing.T) {
 				}
 			})
 			before, _ := json.Marshal(e.state("alice"))
-			err := a.finishTerminal(s, "g", "wake submitted", nil, false, expected)
+			err := a.finishTerminal(s, "g", tmuxwake.SendResult{Disposition: tmuxwake.SendSubmitted, Outcome: tmuxwake.SendWakeSubmitted}, nil, false, expected)
 			if mode == "session" || mode == "ids" || mode == "token" {
 				if !errors.Is(err, config.ErrNotificationStale) {
 					t.Fatal("stale terminal completion accepted", err)

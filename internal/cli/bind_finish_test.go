@@ -176,6 +176,9 @@ func TestTerminalSessionHandover(t *testing.T) {
 			e.agent("alice")
 			target := tmuxwake.Target{OwnerPID: 123, OwnerBirth: "own-birth", Pane: "%1", SocketID: "own-socket", Runtime: "claude"}
 			b := config.TerminalBinding{Generation: "generation", SessionID: "old", Host: machineLabel(), OwnerPID: target.OwnerPID, OwnerBirth: target.OwnerBirth, Target: target, Stopped: name == "stopped", Reservations: []time.Time{time.Now()}, AttemptIDs: []string{"pending-id"}}
+			b.ClaudeRegistryRoot = "/synthetic/previous-root"
+			b.Readiness = &config.TerminalReadiness{Reason: tmuxwake.RuntimeBusy}
+			b.Idle = &config.TerminalIdle{ReadinessRoute: tmuxwake.RegistryNamed}
 			_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 				st.Terminal = &b
 				st.Lease = &config.Lease{Holder: "old", Host: machineLabel(), Expires: time.Now().Add(time.Minute)}
@@ -211,6 +214,10 @@ func TestTerminalSessionHandover(t *testing.T) {
 			_, err = a.handoverTerminalSession(s, &b, target, "new")
 			st := e.state("alice")
 			if name == "valid" || name == "stopped" {
+				// A session's provider root and qualification never cross handover.
+				if st.Terminal.ClaudeRegistryRoot != "" || st.Terminal.Readiness != nil || st.Terminal.Idle != nil {
+					t.Fatal("handover retained provider authority")
+				}
 				if err != nil || st.Lease.Holder != "new" || st.Terminal.SessionID != "new" || st.Terminal.Stopped != b.Stopped || len(st.Terminal.Reservations) != 1 || len(st.Terminal.AttemptIDs) != 1 {
 					t.Fatal("valid handover lost state", err)
 				}

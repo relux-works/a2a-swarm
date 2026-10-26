@@ -225,26 +225,39 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 	if count <= 0 {
 		return "", errors.New("positive count required")
 	}
-	box, ok := t.boxWithNotice(ctx, owned)
+	result, err := t.sendWith(ctx, count, owned, beforeType, afterType, t.boxWithNotice, nil)
+	return result.Text(), err
+}
+
+// The bound adapter shares the established two-phase effect implementation;
+// only its observation and additional pre-type constraint differ.
+func (t Target) sendWith(ctx context.Context, count int, owned string, beforeType, afterType func(), inspect func(context.Context, string) (Box, bool), preType func() bool) (SendResult, error) {
+	if count <= 0 {
+		return SendResult{SendRefused, SendSuppressedInput}, errors.New("positive count required")
+	}
+	box, ok := inspect(ctx, owned)
 	if !ok || box.Text != "" && box.Text != owned {
-		return "suppressed: busy, draft or unknown input", nil
+		return SendResult{SendRefused, SendSuppressedInput}, nil
 	}
 	// Resume is continuation only. If the owned text vanished after the
 	// caller's observation, a fresh type needs separate qualified admission.
 	if owned != "" && box.Text == "" {
-		return "suppressed: busy, draft or unknown input", nil
+		return SendResult{SendRefused, SendSuppressedInput}, nil
 	}
 	notice := Notice(count)
 	_, _, width, err := t.Inspect(ctx)
 	if err != nil || len(notice)+3 >= width {
-		return "suppressed: target or width", nil
+		return SendResult{SendRefused, SendSuppressedWidth}, nil
 	}
 	if box.Text == "" {
 		if beforeType != nil {
 			beforeType()
 		}
+		if preType != nil && !preType() {
+			return SendResult{SendRefused, SendSuppressedInput}, nil
+		}
 		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-l", notice); err != nil {
-			return "uncertain: type", err
+			return SendResult{SendUncertain, SendTypeUncertain}, err
 		}
 		if afterType != nil {
 			afterType()
@@ -256,19 +269,19 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return "uncertain: interrupted", ctx.Err()
+		return SendResult{SendUncertain, SendInterrupted}, ctx.Err()
 	case <-timer.C:
 	}
-	box, ok = t.boxWithNotice(ctx, notice)
+	box, ok = inspect(ctx, notice)
 	if !ok {
-		return "notice left in draft: input unavailable", nil
+		return SendResult{SendDraft, SendDraftUnavailable}, nil
 	}
 	if box.Text == notice {
 		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
-			return "uncertain: Enter", err
+			return SendResult{SendUncertain, SendEnterUncertain}, err
 		}
-		return "wake submitted", nil
+		return SendResult{SendSubmitted, SendWakeSubmitted}, nil
 	}
 
-	return "notice left in draft: changed input", nil
+	return SendResult{SendDraft, SendDraftChanged}, nil
 }

@@ -164,6 +164,17 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		publication = st.Terminal.NoticePublication
 	}
 	noticeError := ""
+	var readiness *terminalReadinessStatus
+	if b := st.Terminal; b != nil {
+		live := tmuxwake.RuntimeAssessment{State: tmuxwake.RuntimeUnavailable, Reason: tmuxwake.RuntimeTargetUnavailable}
+		if !b.Stopped && ownTerminalTarget(b, b.Target) {
+			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
+			live = boundTerminal(*b).AssessReadiness(probe).Runtime
+			cancel()
+		}
+		projected := readinessStatus(live, b.Readiness, a.Now())
+		readiness = &projected
+	}
 	if noticeValid(n) != nil {
 		n = config.OwnNoticeObservation{}
 		noticeError = "invalid own notice telemetry"
@@ -172,12 +183,16 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
-			Publication  string             `json:"publication"`
-			NoticeError  string             `json:"notice_error,omitempty"`
-			Notification notificationStatus `json:"notification"`
-		}{n, publication, noticeError, notificationDiagnostic(st.Notification, a.Now())})
+			Publication  string                   `json:"publication"`
+			NoticeError  string                   `json:"notice_error,omitempty"`
+			Notification notificationStatus       `json:"notification"`
+			Readiness    *terminalReadinessStatus `json:"readiness,omitempty"`
+		}{n, publication, noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness})
 	}
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
+	if readiness != nil {
+		a.printf("readiness=%s reason=%s version=%s since=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano))
+	}
 	if st.Terminal == nil {
 		a.printf("%s unbound; %s\n", s.name, noticeText(n))
 		return nil

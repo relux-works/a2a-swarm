@@ -22,9 +22,10 @@ tty.setraw(0)
 text=''; submitted=[]; path=sys.argv[1]; runtime=sys.argv[2]
 def draw():
     global text
-    if runtime=='claude':
+    if runtime in ('claude','claude-named'):
         content=text+'\x1b[7m \x1b[0m' if text else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
-        screen='\x1b[2J\x1b[19;1H'+'─'*110+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n  ⏵⏵ bypass permissions on\x1b[20;'+str(3+len(text))+'H'
+        top='─'*110 if runtime=='claude' else '─'*90+' synthetic-session'
+        screen='\x1b[2J\x1b[19;1H'+top+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n  ⏵⏵ bypass permissions on\x1b[20;'+str(3+len(text))+'H'
     else:
         footer='Codex · Ready · Context 50% left' if text else '? for shortcuts'
         screen='\x1b[2J\x1b[20;1H\x1b[1m›\x1b[0m '+text+'\x1b[22;1H  '+footer+'\x1b[20;'+str(3+len(text))+'H'
@@ -91,7 +92,11 @@ func newTerminalFixture(t *testing.T, runtime string) *terminalFixture {
 			}
 		}
 	})
-	f.target, err = Pin(context.Background(), socket, "%0", runtime)
+	targetRuntime := runtime
+	if runtime == "claude-named" {
+		targetRuntime = "claude"
+	}
+	f.target, err = Pin(context.Background(), socket, "%0", targetRuntime)
 	if err != nil {
 		t.Fatal(err)
 	}

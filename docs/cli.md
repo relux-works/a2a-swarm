@@ -961,6 +961,46 @@ observations at least `--interval` apart on the same pinned target. Busy, unknow
 reset qualification; the first glimpse spends no typing, hourly reservation or retry. Codex empty admission requires its shortcuts hint;
 Claude accepts its supported empty placeholders. Wrapped input, dialogs, unknown layouts and insufficient width retain mail.
 
+Claude named-session top rules additionally require a registry record associated by the trusted own bind invocation, after its normal
+own-UID ancestry, owner birth and pane proof. Only that producer reads its inherited `CLAUDE_CONFIG_DIR`, or its own home `.claude` when
+unset. It stores the canonical proven root in the private binding; the detached consumer never guesses a home/root or scans profiles.
+Only `sessions/<owner-pid>.json` is opened, bounded to 64KiB, regular, owned by this UID and not a final-path symlink. Adjacent keys and
+messaging sockets are never opened. Root association compares the live PID, UTC `TZ=UTC LC_ALL=C ps -p PID -o lstart=` birth, record
+session ID and tmux pane with the already-pinned local target. The existing owner birth/UID fence is retained independently; `startedAt`
+is not a process-birth substitute. A session handover clears the old root and readiness/idle observations; trusted rebind must prove the new
+association. A matching bind can associate a previously rootless binding without discarding its generation or attempt journal.
+
+The exact schema versions qualified by source fixtures are **2.1.302, 2.1.309 and 2.1.310**, not an inclusive range. Qualification checks
+all required keys/types, optional `tmux`/`bridgeSessionId` and recursive `formerNames`, duplicate keys and unknown fields. Interactivity
+requires `entrypoint=cli` and the matching tmux pane; `kind=interactive` alone is insufficient. A qualified `idle` or `shell` record is
+runtime-ready under the same input gates; `busy`, headless, identity mismatch and unknown status refuse both old and named layouts.
+`statusUpdatedAt` and `updatedAt` are transition metadata, not heartbeats or freshness deadlines. Long idle alone does not expire a record.
+Missing/unreadable registry, unknown version or unqualified schema preserves the existing legacy-layout admission only; it never enables
+the new named geometry. Codex keeps an independent legacy route and does not use Claude registry metadata.
+
+`BoundTerminal.AssessReadiness(ctx)` supplies runtime diagnostics, rendered input and a private comparable key from one logical assessment.
+It comprises separate target/registry/capture reads and is **not atomic**. Two samples must match the route, exact target/root, generation,
+session, qualified registry session/version/**status value**/status timestamp, composer row/start column and pane width, as well as existing
+consumer/policy pins. Coordinates are zero-based (row zero is valid); width must be positive and the column in range. In particular,
+idle↔shell restarts qualification even at identical timestamps. Busy, draft, unknown or incoherent observations clear qualification.
+The second sample's exact key constrains new Send reads immediately before typing and before Enter. A pre-type mismatch emits no input;
+a post-type mismatch retains the draft and sends no Enter. The final observation-to-I/O gap remains; neither registry nor renderer is a
+lock on the provider editor. Persisted observations are refusal constraints, never saved permission to send.
+
+`bind status` prominently reports `readiness=STATE reason=REASON version=VERSION since=TIME`; JSON adds `readiness` with those fields.
+States are `ready`, `refused`, `unavailable`. Reasons are `none`, `target_unavailable`, `root_unavailable`, `registry_unavailable`,
+`identity_mismatch`, `headless`, `busy`, `status_unqualified`, `version_unqualified`, `schema_unqualified`. The version is a bounded numeric
+token. No raw registry value, path, label, socket or parser error is projected. Unbound status omits readiness. Status is read-only and uses
+one fresh assessment; stored telemetry never grants readiness. The consumer persists only diagnostic pair transitions with their first-known
+`since`, retaining it without a per-loop diagnostic write while reason/version are unchanged. Unknown/corrupt stored diagnostics project
+unknown safely. A runtime-ready status alone does not mean input is empty, notification is admitted, mail was receipted or a reply occurred.
+
+Send returns a closed typed disposition/outcome pair. Only `submitted` + `wake submitted`, with no error and the matching attempt/token/scope,
+completes the notification. Refused, draft, uncertain, inconsistent and unknown results cannot fall through to success on `nil` error.
+Existing shared 30s notification spacing, hourly limits, manual/pause/lease gates, exact attempt CAS and receipt semantics remain in force.
+No named frame authorizes recovery Enter or erasure. Qualification here is source behavior; live rollout/rebind and provider wake acceptance
+remain separate operations. A local synthetic fixture-export helper is a separate follow-up, not an automatic capture or PR publisher.
+
 Fresh Send persists event IDs, the fixed notice, attempt time and a rate reservation before typing. It captures again and sends Enter only
 when the rendered input matches the notice and cursor checks. A mismatch leaves the draft untouched: no automatic erasure. This last rendered
 check is **not editor authority or atomic**: invisible bytes and edits between verification and the final key can still affect fresh delivery.

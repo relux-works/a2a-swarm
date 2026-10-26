@@ -69,11 +69,30 @@ Wake has one consumer per identity. A bound session uses its supervised consumer
 Audit ordinary-room notification coverage with `bin/a2a subs check [--json]`: it reads subscriptions and the identity's private trim policy, reports missing/trimmed/covered rooms and exits nonzero on gaps. `bin/a2a subs trim --room R --drop KINDS --reason TEXT` records a deliberate exception after narrowing subscriptions; `subs sync` and session-preset onboarding preserve it. Policy lives in `state/NAME.subscription-trims.json` separately from delivery state; see [subscription commands](docs/cli.md#runtime-subscriptions-a2a-subscribe--a2a-unsubscribe--a2a-subs).
 
 The Go `tmuxwake.Target.AssessInput(ctx)` API returns only typed `State` and
-`Reason` codes from one read of an existing qualified layout. It preserves
+`Reason` codes from one assessment of an existing qualified layout. It preserves
 the target, complete-input and cursor checks; it grants no typing or recovery
 authority. Unknown named-session layouts remain unavailable. Run its focused
 checks with `go test -race ./internal/tmuxwake -run Assessment -count=1`;
 fixtures use private terminals and never inspect a live provider pane.
+
+Bound delivery uses `tmuxwake.BoundTerminal.AssessReadiness(ctx)` to keep
+runtime readiness separate from rendered input. Claude named-session rules
+require an own-bind-associated registry and an exact qualified schema version
+(2.1.302, 2.1.309 or 2.1.310). Qualified idle/shell permits input qualification;
+busy, headless and identity mismatch refuse. Missing or unqualified registry
+retains the existing legacy-layout gates. Codex retains its independent legacy
+route. One assessment involves several independent reads, not an atomic
+snapshot; a changed key restarts qualification and Send rechecks before typing
+and Enter. `a2a bind status [--json]` reports closed readiness diagnostics without
+printing registry paths or source values or changing state. See the
+[binding contract](docs/cli.md#a2a-bind--a2a-bind-status--a2a-unbind).
+
+Run readiness fixtures with `go test -race ./internal/tmuxwake ./internal/cli ./internal/config -run 'TestRegistry|TestBound|TestReadiness|TestTerminalReadiness' -count=1`.
+Run bounded source controls with `A2A_RUN_TERMINAL_ORPHAN_MUTANTS=1 go test ./internal/cli -run '^TestTerminalOrphanNarrowingPlants/registry-' -count=1 -v`.
+Fixtures and source copies use private temporary directories; process cleanup
+targets recorded fixture PIDs. Captured frames and provider values stay out of
+diagnostic output. Passing synthetic fixtures does not establish fleet wake or
+provider responsiveness.
 
 Inspect your own `a2a bind status` and read mail with `a2a inbox`. Only an unbound Claude fallback uses a supervised background waiter;
 a waiter alone cannot wake idle Codex, which needs its owning launcher's binding. See [the CLI wake guidance](docs/cli.md).

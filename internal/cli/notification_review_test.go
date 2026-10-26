@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
 // A draft or send-error terminal result retains its own attempt fence, but
@@ -42,13 +43,13 @@ func TestNotificationHostUncertainTerminalHookBoundary(t *testing.T) {
 					copy.AttemptIDs = append([]string(nil), expected.AttemptIDs...)
 					st.Terminal = &copy
 				})
-				text := "notice left in draft: synthetic typed deferral"
+				result := tmuxwake.SendResult{Disposition: tmuxwake.SendDraft, Outcome: tmuxwake.SendDraftUnavailable}
 				var sendErr error
 				if outcome == "send-error" {
-					text = ""
+					result = tmuxwake.SendResult{Disposition: tmuxwake.SendUncertain, Outcome: tmuxwake.SendTypeUncertain}
 					sendErr = errors.New("synthetic ambiguous transport error")
 				}
-				if err := a.finishTerminal(s, "terminal-g", text, sendErr, false, expected); err != nil {
+				if err := a.finishTerminal(s, "terminal-g", result, sendErr, false, expected); err != nil {
 					t.Fatal(err)
 				}
 				initial := e.state("alice")
