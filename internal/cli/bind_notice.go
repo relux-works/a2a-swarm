@@ -19,7 +19,9 @@ const orphanReason = "owned-notice-orphan-suspected"
 func (a *App) observeTerminalNotice(s *session, generation string, b config.TerminalBinding, input string) error {
 	return a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
 		n := current.OwnNotice
-		eligible := b.Typed && b.NoticeCount > 0 && len(b.AttemptIDs) == 0
+		// A known-unsubmitted pending attempt is just as capable of blocking
+		// later mail as a fully receipted orphan. Partial attempts stay uncertain.
+		eligible := b.Typed && b.NoticeCount > 0 && (len(b.AttemptIDs) == 0 || len(b.AttemptIDs) == b.NoticeCount)
 		if input == "unknown" || b.Typed && (b.NoticeCount <= 0 || b.Notice != tmuxwake.Notice(b.NoticeCount)) || input == "nonempty" && n.Since != "" && !eligible {
 			n.PossiblyOrphaned = nil
 			current.Idle = nil
@@ -184,10 +186,11 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
 			Publication  string                   `json:"publication"`
+			Report       string                   `json:"system_report"`
 			NoticeError  string                   `json:"notice_error,omitempty"`
 			Notification notificationStatus       `json:"notification"`
 			Readiness    *terminalReadinessStatus `json:"readiness,omitempty"`
-		}{n, publication, noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness})
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness})
 	}
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if readiness != nil {
@@ -198,7 +201,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		return nil
 	}
 	b := st.Terminal
-	a.printf("%s generation=%s pid=%d stopped=%t outcome=%s; %s; publication=%s\n", s.name, b.Generation, b.DaemonPID, b.Stopped, b.Outcome, noticeText(n), publication)
+	a.printf("%s generation=%s pid=%d stopped=%t outcome=%s; %s; publication=%s; system-report=%s\n", s.name, b.Generation, b.DaemonPID, b.Stopped, b.Outcome, noticeText(n), publication, terminalNoticeReportStatus(b))
 	return nil
 }
 

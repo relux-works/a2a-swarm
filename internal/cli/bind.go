@@ -716,6 +716,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		a.unknownTerminalNotice(ctx, s, generation, false)
 	} else {
 		a.publishTerminalNotice(ctx, s, generation)
+		return a.reportStrandedTerminalNotice(ctx, s, generation)
 	}
 	return err
 }

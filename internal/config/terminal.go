@@ -22,6 +22,7 @@ type TerminalBinding struct {
 	NotificationToken  string               `json:"notification_token,omitempty"`
 	OwnNotice          OwnNoticeObservation `json:"own_notice"`
 	NoticePublication  string               `json:"notice_publication"`
+	NoticeReport       *NoticeReport        `json:"notice_report,omitempty"`
 	Generation         string               `json:"generation"`
 	SessionID          string               `json:"session_id"`
 	Host               string               `json:"host"`
@@ -46,6 +47,16 @@ type TerminalBinding struct {
 	Rung               []string             `json:"rung,omitempty"`
 	Reservations       []time.Time          `json:"reservations,omitempty"`
 	Idle               *TerminalIdle        `json:"idle_observation,omitempty"`
+}
+
+// NoticeReport pins an incident transaction before its network effect.
+// Retries after an ambiguous ACK or restart reuse the same room and content.
+type NoticeReport struct {
+	Since   string               `json:"since"`
+	Message LivenessAlertMessage `json:"message"`
+	Sent    bool                 `json:"sent"`
+	RetryAt time.Time            `json:"retry_at"`
+	Outcome string               `json:"outcome"`
 }
 
 // Qualification is scoped to the exact consumer, policy and target. It is not

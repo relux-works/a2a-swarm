@@ -1086,8 +1086,19 @@ Recovery is **manual and external**. No current tmux frame authorizes automatic 
 journal notice, dim/NBSP text or suffix spaces with a cursor that appears at the notice end. The consumer never adopts a nonempty remainder.
 A keeper may inspect and recover the pane manually; this command does not perform that operation or infer a successful wake from it.
 
-A typed journal whose announced events have all been legitimately receipted/pruned, together with a nonempty rendered composer, reports
-`SUSPECTED-DEAF: own notice possibly orphaned`. This is a factual suspicion, not proven deafness or proof of current editor contents.
+A known-unsubmitted typed journal with either its full attempt still pending or all announced events legitimately receipted/pruned,
+together with a nonempty rendered composer, reports `SUSPECTED-DEAF: own notice possibly orphaned`. Partial attempts remain uncertain.
+This is a factual suspicion, not proven deafness or proof of current editor contents.
+After ten minutes from the first suspicion, a fresh suspected observation schedules one `kind=system`, `subtype=incident` message to the
+selected connection's existing `#system` room. This works without an own liveness record or new mail. The consumer never creates or joins
+a room for this report. Missing room, membership or write access leaves an explicit unavailable result and retries after `--retry-max`.
+The destination, transaction ID and fixed content are persisted before sending; retries after an ambiguous ACK or process restart reuse them.
+A successful report is sent once per suspicion episode in the binding generation. Unknown, cleared or retired observations cannot send
+a pending report; a fresh suspicion after a clear starts a new episode. Status exposes `system-report` in text and `system_report` in JSON
+(`not due`, `pending`, `published`, or a fixed unavailable reason), independently of own-liveness publication. Reports contain the own identity
+and suspicion time, never composer contents, registry paths, targets, peer text or event IDs. This is escalation for manual recovery, not
+automatic submission of a saved notice.
+
 New pending mail remains unreceipted; reporting never clears the mailbox or reservation ledger. After an actual rendered-empty observation,
 the typed journal reconciles and ordinary delivery can resume exactly once through the full qualified-idle admission. Empty rendering does
 not prove invisible editor bytes are absent. A still-uncertain untyped attempt retains its bounded one-retry/count/hourly fences; a fresh retry
