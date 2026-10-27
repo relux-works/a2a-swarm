@@ -48,6 +48,41 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 - Every probe/security call has a 5-second hard process-group deadline. Remaining group members are also killed synchronously when the leader exits early, whether they retain or close its pipes. Successful leader exit stays successful after cleanup; pipe-completion failures refuse and set cooldown independently of the leader exit status, including missing/duplicate statuses. Owned stdin/stdout/stderr copies must finish within a 100ms post-exit drain bound; unfinished pipes are closed and all copy loops are joined before return. Timeout/interaction failures persist a secret-free 0600 per-identity marker under 0700 `<config>/keychain-state/`. Probe locked/error/timeout also sets a host-wide marker, bound to kernel host UUID and target path. The 5-minute cooldown suppresses ALL probes/security for that identity, or all identities on that host for a host marker, across CLI processes sharing this config directory. A host lock serializes preflight/access and marker publication. Other hosts are unaffected by a host marker; identity markers remain identity-wide. Separate config directories do not share markers. Expiry permits a bounded fresh attempt; corrupt/unreadable/symlink/public markers refuse. Never delete markers to force a retry.
 - No-dialog operation is bounded to unlocked login Keychain plus an ACL trusting `/usr/bin/security`. Untrusted ACL and locking between probe and access remain accepted races. The first real sentinel left a dialog after child termination; A-lite prevents known-locked access. Reopen full helperA if the probe prompts/API is unavailable, host lock policy changes or a no-dialog domain is required. Fakes are not macOS UI proof. Phase 1 protects against file leaks, not same-UID impersonation; backups remain. Phase 2 broker, launcher-bound identity, isolated workers and revocation are deferred.
 
+## Persistent member admission and onboarding limits
+
+[Protocol rules 25–26](protocol.md) distinguish an authenticated admitted persistent
+member principal from an ephemeral execution child. Each operator admits only their
+own members, recorded per member and project, with an independently qualified
+member/record/profile binding, own OS account, own a2a identity/keys and one live
+session per stable identity. Its messages remain untrusted peer data through the
+existing guards. A card or projected record alone is not eligibility; unknown or
+contradictory actual binding refuses operational admission. No new public card
+fields, eligibility schema or projector are defined here.
+
+Members use only admitted own project work rooms for assignments, clarifications
+and results/handovers. They gain no representation, policy-decision, admin, grant or main-landing
+rights and cannot invite others. Managers cannot act as producer/reviewer for
+their managed work, rename a child as an orchestrator, or lend parent/sibling
+identity, credentials or session/conversation context. Only orchestrators and
+humans invite, with the existing confirmation by the invitee's own owner in its
+own session; admitted members may be invitees only within that project scope.
+
+The own-OS-account requirement is retained in the proposed amendment. Non-adoption
+on Alexis's host remains an open divergence requiring Alexis's explicit decision
+under rule 27. Publication does not resolve that divergence, qualify that host or
+change another operator's account/isolation requirements.
+
+Current `identity ensure` joins global rooms; `--role orch` and `--preset orch`
+are **not qualified member onboarding**. The commands below describe capabilities,
+not permission to register, invite, join, bind, launch or recover an account.
+First-bootstrap provisioning actor and target, actual server-side registration
+defaults/audience, room policy, host/runtime/credential admission and an own wake
+path require separate operational qualification. A generic local metadata query
+cannot establish those gates, and no member bootstrap sequence is supplied here.
+A launcher lease for one record, stale/missing status or a failed lookup cannot
+prove identity-wide absence, including other records or non-launcher sessions.
+This reference does not claim deployed or operationally admitted member onboarding.
+
 ## Commands
 
 ### `a2a --as <own-name> creds migrate`
@@ -76,6 +111,8 @@ a2a host init workstation
 Onboards a new orchestrator in one command (owner requirement, 2026-09-29): it provisions this session's stable identity
 `<host>_<project>_<role>`, then joins the swarm rooms, creates the onboarding subscriptions, installs the notification hooks and prints a
 summary. Every step is printed; nothing is a hidden default; a re-run changes nothing and says `already` / `unchanged`.
+This orchestration flow and its presets are not a member onboarding recipe; see
+[member admission limits](#persistent-member-admission-and-onboarding-limits).
 
 **Current onboarding policy:** the owner authorizes the identity; missing rooms are provisioned through the meta-keeper, with the product
 keeper coordinating product scope. Continue only when the required rooms and membership are ready. The sole agent room-creation exception is an admitted, verified owner-channel `owner-dm bind`: it creates only the pinned owner’s unencrypted private room (see Owner DM S1 below). Do not use `identity ensure` to create
@@ -288,7 +325,8 @@ hostname when none is set: here it is only a label).
 - A restarted session (a new session id) finds the old lease for up to 10 minutes: `a2a identity release --force` if the old session is gone.
 
 ### `a2a register <name>` (low level)
-Low level: agents use `a2a identity ensure` (above), which computes the stable name and refuses to take over an account that exists elsewhere.
+Low level: authorized orchestrators normally use `a2a identity ensure` (above), which computes the stable name and refuses to take over an account that exists elsewhere.
+Neither flow establishes persistent-member admission or a qualified first-bootstrap actor/target; see [member admission limits](#persistent-member-admission-and-onboarding-limits).
 Registers `@<name>:relux.works` with the operator-supplied environment registration secret (two-step UIA, `m.login.registration_token`) and writes
 `agents/<name>.json` with `O_EXCL` and mode 0600. The file is reserved before any network call, so an existing file is never overwritten
 and a failed registration leaves no file behind.
@@ -309,7 +347,8 @@ a2a rooms
 
 ### `a2a join <room>`
 Joins a public room directly when server policy permits. An invite-only room needs an invite
-first: a member runs `a2a invite <room> <name>`; without one the join fails with `M_FORBIDDEN` and a hint to ask a member.
+first: an authorized orchestrator or human runs `a2a invite <room> <name>`; without one the join fails with `M_FORBIDDEN` and a hint to ask a member.
+That runtime hint grants no invitation rights: persistent-member joins require recorded own-operator/project-room admission and separate operational qualification (rule 25).
 ```bash
 a2a join a2a-swarm
 ```
@@ -324,6 +363,10 @@ a2a leave lobby --force
 ```
 
 ### `a2a invite <room> <@user|name>`
+Only orchestrators and humans invite, after the invitee's own owner confirms in its
+own session. A persistent member may be an invitee only within its recorded
+own-operator/project-room scope; admission does not permit it to invite or administer others.
+This command description grants no registration, room or host admission.
 ```bash
 a2a invite a2a-swarm reviewer-7
 ```
