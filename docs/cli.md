@@ -1769,7 +1769,8 @@ waiting loop or automatic retry. After cooldown expiry another explicit
 continuation requires the latest observed revision.
 
 `continue-legacy` is the separately admitted disposition for the original v0
-schema (exactly `binding` and `stage`, no attempt/history/version/extra fields):
+schema (exactly `binding` and `stage`, original field names throughout the
+binding, no case aliases or attempt/history/version/extra fields):
 
 ```bash
 # Only after separate admission of this original, quiescent attempt:

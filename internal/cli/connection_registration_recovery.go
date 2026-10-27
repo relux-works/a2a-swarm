@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
@@ -94,6 +95,17 @@ func readRegistrationJournal(path string, b config.ConnectionBinding) (registrat
 			Stage   string                   `json:"stage"`
 		}
 		if config.DecodeConnectionJSON(data, &legacy) != nil {
+			return j, errors.New("invalid legacy registration evidence")
+		}
+		// encoding/json also accepts case aliases (including conflicting
+		// Stage/stage keys). Require the original field names throughout the
+		// binding without requiring its original whitespace or field order.
+		var supplied, projected any
+		if json.Unmarshal(data, &supplied) != nil {
+			return j, errors.New("invalid legacy registration evidence")
+		}
+		canonical, _ := json.Marshal(legacy)
+		if json.Unmarshal(canonical, &projected) != nil || !reflect.DeepEqual(supplied, projected) {
 			return j, errors.New("invalid legacy registration evidence")
 		}
 		// This receipt has no historical ownership, revision or failure-cause proof.

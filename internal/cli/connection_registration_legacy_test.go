@@ -105,7 +105,7 @@ func TestNamedRegistrationLegacyContinuation(t *testing.T) {
 // Proves neighboring legacy states never authorize creation and retain the receipt.
 // Admission-only failures leave the complete tree unchanged; item refusals may add a new audit disposition.
 func TestNamedRegistrationLegacyRefusals(t *testing.T) {
-	for _, mode := range []string{"no-admission", "diagnostic-only", "stale", "binding", "bootstrap-ref", "identity", "metadata", "human-metadata", "state", "unknown-lock", "concurrent", "unknown-sidecar", "malformed", "extra-field", "fake-history", "empty-version", "duplicate-stage", "unknown-stage", "bad-state", "symlink", "fifo", "nonprivate", "item", "password-item", "preflight", "secret-preflight-refused", "password-storage-pending", "password-store-failed", "remote-outcome-pending", "remote-outcome-ambiguous", "remote-created-token-storage-pending", "complete"} {
+	for _, mode := range []string{"no-admission", "diagnostic-only", "stale", "binding", "bootstrap-ref", "identity", "metadata", "human-metadata", "state", "unknown-lock", "concurrent", "unknown-sidecar", "malformed", "extra-field", "fake-history", "empty-version", "duplicate-stage", "aliased-stage", "conflicting-stage-alias", "aliased-binding", "unknown-stage", "bad-state", "symlink", "fifo", "nonprivate", "item", "password-item", "preflight", "secret-preflight-refused", "password-storage-pending", "password-store-failed", "remote-outcome-pending", "remote-outcome-ambiguous", "remote-created-token-storage-pending", "complete"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newNamedFixture(t, false)
 			stage := "bootstrap-unavailable"
@@ -157,6 +157,19 @@ func TestNamedRegistrationLegacyRefusals(t *testing.T) {
 				defer unlock()
 			case "unknown-sidecar":
 				write(filepath.Join(p.Base, "registration.continuation.json"), []byte(`{}`))
+			case "aliased-stage", "aliased-binding", "conflicting-stage-alias":
+				data, _ := os.ReadFile(path)
+				switch mode {
+				case "aliased-stage":
+					data = bytes.Replace(data, []byte(`"stage":`), []byte(`"Stage":`), 1)
+				case "aliased-binding":
+					data = bytes.Replace(data, []byte(`"user_id":`), []byte(`"User_ID":`), 1)
+				case "conflicting-stage-alias":
+					data = bytes.Replace(data, []byte(`{`), []byte(`{"Stage":"remote-outcome-pending",`), 1)
+				}
+				write(path, data)
+				sum := sha256.Sum256(data)
+				args[len(args)-2] = hex.EncodeToString(sum[:]) // Isolate schema refusal from the stale-byte fence.
 			case "unknown-stage":
 				data, _ := os.ReadFile(path)
 				write(path, bytes.ReplaceAll(data, []byte("bootstrap-unavailable"), []byte("unknown")))
@@ -225,7 +238,7 @@ func TestNamedRegistrationLegacyRefusals(t *testing.T) {
 				want = "invalid legacy disposition provenance"
 			case "malformed", "extra-field", "duplicate-stage":
 				want = "malformed registration evidence"
-			case "fake-history", "empty-version":
+			case "fake-history", "empty-version", "aliased-stage", "conflicting-stage-alias", "aliased-binding":
 				want = "invalid legacy registration evidence"
 			case "unknown-stage":
 				want = "unknown registration stage"
