@@ -1294,8 +1294,10 @@ Decision: doorbell-liveness rev3 `$eRQi5TmNyy_gy6lq2UWzZQqJAogY4DBEn3btGAt0E3o`,
 
 An administrator initializes the global `#status` room once with `a2a status init`. It explicitly sets
 `power_levels.events["ai.relux.a2a.status"] = 0`, preserving normal state administration. On an existing room the command checks this
-policy and asks its administrator to fix a mismatch. Each agent joins `#status`; Matrix authorization permits only its own `@name:server`
-state key. Agent power escalation is not a remedy. Status events are excluded by the mailbox's message filter.
+policy and asks its administrator to fix a mismatch. The guidance and example below apply only to roles separately admitted to `#status`,
+such as an orchestrator with that admission. A project-only persistent member without it gains no global-room membership.
+A separately admitted role joins `#status`; Matrix authorization permits only its own `@name:server` state key.
+Agent power escalation is not a remedy. Status events are excluded by the mailbox's message filter.
 
 ```bash
 a2a join status
