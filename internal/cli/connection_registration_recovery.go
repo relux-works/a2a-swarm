@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,7 +18,7 @@ func validRegistrationTransition(from, to string) bool {
 	switch from {
 	case "":
 		return to == "preflight"
-	case "continuation-admitted":
+	case "continuation-admitted", "legacy-continuation-admitted":
 		if to == "secret-preflight-cooldown" {
 			return true
 		}
@@ -76,6 +78,8 @@ func readRegistrationJournal(path string, b config.ConnectionBinding) (registrat
 	if e != nil || len(data) > 65536 || config.DecodeConnectionJSON(data, &j) != nil {
 		return j, errors.New("malformed registration evidence")
 	}
+	sum := sha256.Sum256(data)
+	j.sourceSHA256 = hex.EncodeToString(sum[:])
 	// Consumer fingerprints intentionally exclude bootstrap references. Recovery
 	// additionally pins that original admission input; changing it is not recovery.
 	originalRef, selectedRef := j.Binding.Connection.RegistrationTokenRef, b.Connection.RegistrationTokenRef
@@ -83,7 +87,16 @@ func readRegistrationJournal(path string, b config.ConnectionBinding) (registrat
 		return j, errors.New("registration binding mismatch")
 	}
 	if j.Version == 0 && j.Attempt == "" && len(j.History) == 0 {
-		// Original receipts have no ownership/history proof. Never upgrade them.
+		// Accept only the actual two-field v0 schema. Optional modern fields, even
+		// empty ones, cannot masquerade as the original receipt.
+		var legacy struct {
+			Binding config.ConnectionBinding `json:"binding"`
+			Stage   string                   `json:"stage"`
+		}
+		if config.DecodeConnectionJSON(data, &legacy) != nil {
+			return j, errors.New("invalid legacy registration evidence")
+		}
+		// This receipt has no historical ownership, revision or failure-cause proof.
 		if !knownRegistrationStage(j.Stage) {
 			return j, errors.New("unknown registration stage")
 		}
@@ -94,8 +107,12 @@ func readRegistrationJournal(path string, b config.ConnectionBinding) (registrat
 		return j, errors.New("invalid registration attempt")
 	}
 	previous := ""
-	for _, event := range j.History {
-		if !validRegistrationTransition(previous, event.Stage) {
+	legacy := j.LegacySHA256 != ""
+	if legacy && (!validRegistrationDigest(j.LegacySHA256) || j.History[0].Stage != "legacy-continuation-admitted") || !legacy && j.History[0].Stage != "preflight" {
+		return j, errors.New("invalid registration provenance")
+	}
+	for i, event := range j.History {
+		if !(legacy && i == 0 && event.Stage == "legacy-continuation-admitted") && !validRegistrationTransition(previous, event.Stage) {
 			return j, errors.New("invalid registration history")
 		}
 		switch event.Stage {
@@ -126,24 +143,91 @@ func knownRegistrationStage(s string) bool {
 	}
 	return false
 }
+
+// A legacy disposition is separate from the retained original bytes. Only its
+// new admission root authorizes current cooperative ownership; no old lock or
+// history is inferred. Every later read revalidates the source digest/binding.
+func validRegistrationDigest(s string) bool {
+	b, e := hex.DecodeString(s)
+	return e == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
+}
+func readRegistrationState(base string, b config.ConnectionBinding) (registrationJournal, string, error) {
+	path := filepath.Join(base, "registration.pending.json")
+	original, e := readRegistrationJournal(path, b)
+	if e != nil {
+		return original, path, e
+	}
+	if original.LegacySHA256 != "" {
+		return original, path, errors.New("legacy disposition cannot replace original receipt")
+	}
+	nextPath := filepath.Join(base, "registration.continuation.json")
+	if _, e = os.Lstat(nextPath); errors.Is(e, os.ErrNotExist) {
+		return original, path, nil
+	}
+	if e != nil || original.Version != 0 || original.Stage != "bootstrap-unavailable" {
+		return original, path, errors.New("contradictory registration disposition")
+	}
+	next, e := readRegistrationJournal(nextPath, b)
+	if e != nil || next.Version != 1 || next.LegacySHA256 != original.sourceSHA256 {
+		return original, path, errors.New("invalid legacy disposition provenance")
+	}
+	return next, nextPath, nil
+}
+func registrationDestination(p config.Paths, name string, lock, disposition bool) error {
+	for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {
+		if _, e := os.Lstat(path); !errors.Is(e, os.ErrNotExist) {
+			return errors.New("destination identity metadata exists or cannot be inspected")
+		}
+	}
+	entries, e := os.ReadDir(p.Base)
+	if e != nil {
+		return errors.New("destination state unavailable")
+	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "registration.pending.json":
+		case "keychain-state":
+			st, e := entry.Info()
+			if e != nil || !st.IsDir() || st.Mode().Perm() != 0700 {
+				return errors.New("invalid private credential state")
+			}
+		case "registration.lock":
+			if lock {
+				continue
+			}
+			return errors.New("registration ownership unknown or concurrent")
+		case "registration.continuation.json":
+			if disposition {
+				continue
+			}
+			return errors.New("contradictory registration disposition")
+		default:
+			return errors.New("contradictory destination state")
+		}
+	}
+	return nil
+}
 func cmdConnectionRegistration(ctx context.Context, a *App, args []string) error {
 	if len(args) == 0 {
-		return usagef("connection registration inspect|continue NAME")
+		return usagef("connection registration inspect|continue|continue-legacy NAME")
 	}
 	fs := newFlagSet("connection registration")
 	diagnostic := fs.Bool("authorize-diagnostic", false, "explicit admission for read-only local inspection")
 	authorized := fs.Bool("authorize-registration", false, "separately owner-admitted continuation")
-	attempt := fs.String("attempt", "", "original attempt ID")
+	attempt := fs.String("attempt", "", "original attempt or new disposition ID")
 	revision := fs.Int("revision", 0, "observed history length")
+	digest := fs.String("legacy-sha256", "", "exact original v0 receipt digest from inspection")
 	pos, e := parseInterspersed(fs, args[1:])
 	if e != nil {
 		return e
 	}
-	inspect := args[0] == "inspect"
-	if (!inspect && args[0] != "continue") || len(pos) != 1 {
-		return usagef("connection registration inspect NAME --authorize-diagnostic | continue NAME --attempt ID --revision N --authorize-registration")
+	inspect, legacy := args[0] == "inspect", args[0] == "continue-legacy"
+	if (!inspect && !legacy && args[0] != "continue") || len(pos) != 1 {
+		return usagef("connection registration inspect|continue|continue-legacy NAME")
 	}
-	if inspect && (!*diagnostic || *authorized || *attempt != "" || *revision != 0) || !inspect && (!*authorized || *diagnostic || *attempt == "" || *revision < 1) {
+	if inspect && (!*diagnostic || *authorized || *attempt != "" || *revision != 0 || *digest != "") ||
+		legacy && (!*authorized || *diagnostic || !validRegistrationDigest(*digest) || *attempt != "" || *revision != 0) ||
+		!inspect && !legacy && (!*authorized || *diagnostic || *attempt == "" || *revision < 1 || *digest != "") {
 		return errors.New("registration operation requires its separate explicit admission")
 	}
 	name := pos[0]
@@ -177,20 +261,23 @@ func cmdConnectionRegistration(ctx context.Context, a *App, args []string) error
 	if e != nil || !st.IsDir() || st.Mode().Perm() != 0700 {
 		return errors.New("invalid private registration directory")
 	}
-	path := filepath.Join(p.Base, "registration.pending.json")
-	// Read before lock only to identify legacy evidence. New evidence is reread
-	// under the existing ownership lock. Missing locks are never manufactured.
-	j, e := readRegistrationJournal(path, b)
+	j, path, e := readRegistrationState(p.Base, b)
 	if e != nil {
 		return e
 	}
-	if j.Version == 1 {
+	_, lockErr := os.Lstat(filepath.Join(p.Base, "registration.lock"))
+	if j.Version == 0 && !inspect && !errors.Is(lockErr, os.ErrNotExist) {
+		return errors.New("registration ownership unknown or concurrent")
+	}
+	// Inspection may read a legacy receipt alongside an existing regular lock,
+	// but acquiring it now supplies no historical ownership or continuation right.
+	if j.Version == 1 || inspect && !errors.Is(lockErr, os.ErrNotExist) {
 		unlock, e := lockRegistration(filepath.Join(p.Base, "registration.lock"), false)
 		if e != nil {
 			return errors.New("registration ownership unavailable or concurrent")
 		}
 		defer unlock()
-		j, e = readRegistrationJournal(path, b)
+		j, path, e = readRegistrationState(p.Base, b)
 		if e != nil {
 			return e
 		}
@@ -200,34 +287,60 @@ func cmdConnectionRegistration(ctx context.Context, a *App, args []string) error
 		if len(j.History) > 0 && j.History[len(j.History)-1].Failure != nil {
 			failure = *j.History[len(j.History)-1].Failure
 		}
+		legacyDigest := j.LegacySHA256
+		if j.Version == 0 {
+			legacyDigest = j.sourceSHA256
+		}
 		// Projection excludes arbitrary journal fields, helper output and secret data.
 		return json.NewEncoder(a.Stdout).Encode(struct {
-			Attempt   string         `json:"attempt,omitempty"`
-			Revision  int            `json:"revision"`
-			Stage     string         `json:"stage"`
-			Failure   secretEvidence `json:"failure"`
-			Candidate bool           `json:"pre_http_candidate"`
-		}{j.Attempt, len(j.History), j.Stage, failure, j.continuationCandidate()})
+			Attempt      string         `json:"attempt,omitempty"`
+			Revision     int            `json:"revision"`
+			Stage        string         `json:"stage"`
+			Failure      secretEvidence `json:"failure"`
+			Candidate    bool           `json:"pre_http_candidate"`
+			LegacySHA256 string         `json:"legacy_sha256,omitempty"`
+		}{j.Attempt, len(j.History), j.Stage, failure, j.continuationCandidate(), legacyDigest})
 	}
-	if !j.continuationCandidate() || j.Attempt != *attempt || len(j.History) != *revision || len(j.History) > 120 {
-		return errors.New("attempt is stale or lacks validated pre-HTTP continuation evidence")
-	}
-	for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {
-		if _, e = os.Lstat(path); !errors.Is(e, os.ErrNotExist) {
-			return errors.New("destination identity metadata exists or cannot be inspected")
+	if legacy {
+		if j.Version != 0 || j.Stage != "bootstrap-unavailable" || j.sourceSHA256 != *digest {
+			return errors.New("legacy receipt is stale or lacks pre-HTTP evidence")
 		}
-	}
-	entries, e := os.ReadDir(p.Base)
-	if e != nil {
-		return errors.New("destination state unavailable")
-	}
-	for _, entry := range entries {
-		if entry.Name() != "registration.pending.json" && entry.Name() != "registration.lock" && entry.Name() != "keychain-state" {
-			return errors.New("contradictory destination state")
+		if e = registrationDestination(p, name, false, false); e != nil {
+			return e
 		}
-	}
-	if e = j.record(path, "continuation-admitted", nil); e != nil {
-		return errors.New("continuation admission could not be recorded")
+		// This lock starts NOW, under the separately admitted disposition. An existing
+		// unexplained lock is a refusal, never adopted as historical ownership.
+		unlock, e := lockRegistration(filepath.Join(p.Base, "registration.lock"), true)
+		if e != nil {
+			return errors.New("registration ownership unavailable or concurrent")
+		}
+		defer unlock()
+		original, _, e := readRegistrationState(p.Base, b)
+		if e != nil || original.Version != 0 || original.Stage != "bootstrap-unavailable" || original.sourceSHA256 != *digest {
+			return errors.New("legacy receipt changed during admission")
+		}
+		if e = registrationDestination(p, name, true, false); e != nil {
+			return e
+		}
+		var id [16]byte
+		if _, e = rand.Read(id[:]); e != nil {
+			return errors.New("legacy disposition ID unavailable")
+		}
+		j = registrationJournal{Binding: b, Version: 1, Attempt: hex.EncodeToString(id[:]), LegacySHA256: *digest}
+		path = filepath.Join(p.Base, "registration.continuation.json")
+		if e = j.record(path, "legacy-continuation-admitted", nil); e != nil {
+			return errors.New("legacy admission could not be recorded")
+		}
+	} else {
+		if !j.continuationCandidate() || j.Attempt != *attempt || len(j.History) != *revision || len(j.History) > 120 {
+			return errors.New("attempt is stale or lacks validated pre-HTTP continuation evidence")
+		}
+		if e = registrationDestination(p, name, true, j.LegacySHA256 != ""); e != nil {
+			return e
+		}
+		if e = j.record(path, "continuation-admitted", nil); e != nil {
+			return errors.New("continuation admission could not be recorded")
+		}
 	}
 	// Existing exclusive secret-store preflights and cooldown gates still apply.
 	_, _, e = a.finishNamedRegistration(ctx, name, p, c, &j, path)

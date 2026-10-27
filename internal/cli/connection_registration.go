@@ -49,11 +49,13 @@ type registrationEvent struct {
 	Failure *secretEvidence `json:"failure,omitempty"`
 }
 type registrationJournal struct {
-	Binding config.ConnectionBinding `json:"binding"`
-	Stage   string                   `json:"stage"`
-	Version int                      `json:"version,omitempty"`
-	Attempt string                   `json:"attempt,omitempty"`
-	History []registrationEvent      `json:"history,omitempty"`
+	Binding      config.ConnectionBinding `json:"binding"`
+	Stage        string                   `json:"stage"`
+	Version      int                      `json:"version,omitempty"`
+	Attempt      string                   `json:"attempt,omitempty"`
+	History      []registrationEvent      `json:"history,omitempty"`
+	LegacySHA256 string                   `json:"legacy_sha256,omitempty"`
+	sourceSHA256 string                   // Digest of the exact bytes read; never serialized as history.
 }
 
 func updateRegistrationJournal(path string, j registrationJournal) error {
@@ -171,7 +173,7 @@ func (a *App) finishNamedRegistration(ctx context.Context, name string, p config
 	for _, r := range []config.SecretReference{tokenRef, passwordRef} {
 		if _, e = a.readConnectionSecret(ctx, p, r); !errors.Is(e, errKeychainMissing) {
 			failure := registrationFailureEvidence(e, false)
-			if j.Stage == "continuation-admitted" && registrationCooldownEvidence(&failure) {
+			if (j.Stage == "continuation-admitted" || j.Stage == "legacy-continuation-admitted") && registrationCooldownEvidence(&failure) {
 				if se := j.record(journal, "secret-preflight-cooldown", &failure); se != nil {
 					return empty, "", errors.New("credential cooldown active; recovery journal update failed")
 				}

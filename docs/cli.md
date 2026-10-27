@@ -1753,8 +1753,9 @@ full OSStatus. In particular an interaction-related exit is not native locked
 evidence. Only the native probe's exact `locked`/exit-3 pair, with complete pipes
 and successful cleanup, supplies `native-locked`. Unavailable evidence stays
 unknown. Original pre-version receipts remain inspectable with unknown failure
-evidence and `pre_http_candidate: false`; this command cannot reconstruct their
-lost cause, upgrade them or continue them.
+evidence and `pre_http_candidate: false`, plus `legacy_sha256` over their exact
+retained bytes. Inspection cannot reconstruct a lost cause or historical
+ownership. A separate legacy disposition is described below.
 
 `continue` accepts only a version-1 `bootstrap-unavailable` attempt, or its
 `secret-preflight-cooldown` successor, with validated history and unchanged
@@ -1766,6 +1767,43 @@ are checked through the selected store and must be absent; no item is replaced.
 The normal per-item and host cooldown protections still apply. There is no
 waiting loop or automatic retry. After cooldown expiry another explicit
 continuation requires the latest observed revision.
+
+`continue-legacy` is the separately admitted disposition for the original v0
+schema (exactly `binding` and `stage`, no attempt/history/version/extra fields):
+
+```bash
+# Only after separate admission of this original, quiescent attempt:
+a2a --profile staging connection registration continue-legacy my_own_agent \
+  --legacy-sha256 SHA256_FROM_INSPECTION --authorize-registration
+```
+
+It accepts only `bootstrap-unavailable`, whose original source branch returns
+before password generation/storage or HTTP. The stage alone grants no permission:
+the complete binding, identity and bootstrap reference must still match, the
+SHA-256 must match the inspected original bytes, token/password items must be
+absent, cooldowns remain enforced, and destination metadata/unrelated state
+must be absent. Existing unexplained locks/dispositions, invalid private files,
+unknown/concurrent ownership and all ambiguous/post-creation stages refuse.
+Admission must establish that the original operation is quiescent; a v0 receipt
+cannot prove that retrospectively. Flags record caller intent, not authority.
+
+The original `registration.pending.json` stays byte-for-byte unchanged. A new
+exclusive `registration.lock` starts at this admission, and a separate
+`registration.continuation.json` records a new disposition ID, `legacy_sha256`
+and an initial `legacy-continuation-admitted` event. These describe current
+admission, never a fabricated historical attempt, revision, lock or failure
+cause. The cooperative lock excludes supported concurrent writers; it cannot
+protect against a legacy writer or same-UID process bypassing that protocol.
+Interruption before durable admission leaves an unexplained lock and refuses
+further automatic progress. No lock/journal deletion or automatic retry is added.
+
+If bootstrap/cooldown refusal follows that admission, `inspect` reports the new
+disposition ID/history revision and retained legacy digest. A later separately
+admitted `continue --attempt ID --revision N --authorize-registration` rechecks
+both journals, provenance, current lock, binding, destination and secret-store
+gates. The initial `continue-legacy` cannot be replayed. Original receipt changes,
+missing current locks, terminal preflight refusals and password/HTTP boundaries
+refuse. Retained cooldown bytes are never reset or removed by either route.
 
 A transient cooldown refusal while checking credential items during an admitted
 continuation appends `secret-preflight-cooldown` with finite cooldown evidence.

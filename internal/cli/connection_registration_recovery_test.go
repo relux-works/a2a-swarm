@@ -119,7 +119,15 @@ func TestNamedRegistrationBootstrapEvidence(t *testing.T) {
 			ref := *f.r.Profiles["alpha"].RegistrationTokenRef
 			var k *keychainStore
 			a.connectionSecretStore = registrationBootstrapStore{f.store, ref, func(ctx context.Context, p config.Paths) (string, error) {
-				k = &keychainStore{paths: p, service: ref.Service, hostID: "fixture-host", fixture: filepath.Join(dir, "synthetic.keychain-db"), probeCommand: unlockedProbe, timeout: 300 * time.Millisecond}
+				// Only the deadline witness intentionally exhausts a short
+				// process budget. Other cases, including successful controls
+				// and post-run fault injections/cooldown fsync, use production's
+				// normal budget; real deadline/cancellation assertions stay exact.
+				timeout := securityDeadline
+				if tc.name == "deadline" {
+					timeout = 300 * time.Millisecond
+				}
+				k = &keychainStore{paths: p, service: ref.Service, hostID: "fixture-host", fixture: filepath.Join(dir, "synthetic.keychain-db"), probeCommand: unlockedProbe, timeout: timeout}
 				childCtx, cancel := context.WithCancel(ctx)
 				defer cancel()
 				k.command = func(ctx context.Context, args ...string) *exec.Cmd {
@@ -174,7 +182,7 @@ func TestNamedRegistrationBootstrapEvidence(t *testing.T) {
 			j := pendingRegistration(t, f)
 			if tc.codes == nil {
 				if code != 0 || j.Stage != "complete" || f.httpCalls.Load() != 1 || len(f.store.creates) != 2 {
-					t.Fatalf("positive control: %d %s %s", code, j.Stage, f.err.String())
+					t.Fatalf("positive control: %d %s failure=%+v %s", code, j.Stage, j.History[len(j.History)-1].Failure, f.err.String())
 				}
 				return
 			}
