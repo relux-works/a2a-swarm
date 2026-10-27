@@ -42,6 +42,7 @@ type App struct {
 
 	// as is the identity from --as (overrides A2A_AGENT).
 	as                    string
+	asSet                 bool // Includes an explicitly empty --as; presence never permits it.
 	profile               string
 	connectionFingerprint string
 	connection            *config.Connection
@@ -118,7 +119,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
+		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|identity-presence --target-agent NAME --json   public local routing/presence", cmdConnection},
 		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
@@ -171,6 +172,7 @@ func (a *App) usage(w io.Writer) {
 	fmt.Fprintln(w, "usage: a2a [--profile <connection>] [--as <name>] <command> [args]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Identity: --as <name> or A2A_AGENT; credentials in ~/.config/a2a-swarm/agents/<name>.json (A2A_CONFIG_DIR overrides the base dir).")
+	fmt.Fprintln(w, "connection identity-presence requires real A2A_AGENT, explicit TARGET and no --as/--human; see docs/cli.md.")
 	fmt.Fprintln(w, "Rooms: #alias, alias, #alias:server, or !roomid.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "commands:")
@@ -194,6 +196,11 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	rest, err := a.extractGlobal(args)
 	if err != nil {
 		return a.fail(err)
+	}
+	// This public snapshot has its own strict routing/identity validation. Keep
+	// it out of credential preflight and owner-channel warning/state reads.
+	if len(rest) >= 2 && rest[0] == "connection" && rest[1] == "identity-presence" {
+		return a.fail(cmdIdentityPresence(a, rest[2:]))
 	}
 	if a.human && !a.interactive() {
 		// Agents' tool calls have no terminal on stdin, so an agent cannot use a
@@ -233,12 +240,14 @@ func (a *App) extractGlobal(args []string) ([]string, error) {
 		}
 		switch {
 		case arg == "--as" || arg == "-as":
+			a.asSet = true
 			if i+1 >= len(args) {
 				return nil, usagef("--as needs a name")
 			}
 			a.as = args[i+1]
 			i++
 		case strings.HasPrefix(arg, "--as=") || strings.HasPrefix(arg, "-as="):
+			a.asSet = true
 			a.as = arg[strings.Index(arg, "=")+1:]
 		case arg == "--profile" || strings.HasPrefix(arg, "--profile="):
 			var v string
