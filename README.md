@@ -97,6 +97,11 @@ attempt remains pending. This now surfaces as SUSPECTED-DEAF, with one durable
 incident to the existing #system room after ten minutes of suspicion age. Recovery
 remains manual. Reproduce transitions, stable named/Codex controls and incident
 retry/deduplication with `go test ./internal/tmuxwake ./internal/cli -run 'TestBoundTypingTransition|TestTerminalStranded' -count=1`.
+The pinned incident destination, transaction, content and ACK/retry state survive
+actual automatic consumer replacement for the same continuing session/target/episode.
+Run that regression with `go test -race ./internal/cli -run TestHookStrandedReportConsumerRecovery -count=1`.
+Private tmux fixtures also retain exact-looking and styled trailing-space drafts
+unchanged: `go test -race ./internal/cli -run 'TestTerminalNoticeManualReviewMatrix|TestTerminalNoticeRenderedSpaceBoundary' -count=1`.
 These private synthetic fixtures do not identify the unrecorded live transition.
 
 Run these fixtures and mutation controls only on CI runners, never on this host.

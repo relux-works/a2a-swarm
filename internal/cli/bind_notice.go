@@ -37,6 +37,7 @@ func (a *App) observeTerminalNotice(s *session, generation string, b config.Term
 			} else {
 				n.Reason = ""
 				n.Since = ""
+				current.NoticeReport = nil
 			}
 		}
 		// Invalidate a prior visibility claim; retain stable unavailable causes.

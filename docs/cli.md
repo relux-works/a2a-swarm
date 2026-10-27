@@ -1093,7 +1093,9 @@ After ten minutes from the first suspicion, a fresh suspected observation schedu
 selected connection's existing `#system` room. This works without an own liveness record or new mail. The consumer never creates or joins
 a room for this report. Missing room, membership or write access leaves an explicit unavailable result and retries after `--retry-max`.
 The destination, transaction ID and fixed content are persisted before sending; retries after an ambiguous ACK or process restart reuse them.
-A successful report is sent once per suspicion episode in the binding generation. Unknown, cleared or retired observations cannot send
+A successful report is sent once per continuing suspicion episode. Automatic dead-consumer recovery for the same session and pinned
+target carries the report destination, transaction, immutable content, ACK and retry state into the replacement generation. Manual rebinding,
+a different session/target/owner, explicit unbind, and cleared/new episodes cannot inherit the report. Unknown, cleared or retired observations cannot send
 a pending report; a fresh suspicion after a clear starts a new episode. Status exposes `system-report` in text and `system_report` in JSON
 (`not due`, `pending`, `published`, or a fixed unavailable reason), independently of own-liveness publication. Reports contain the own identity
 and suspicion time, never composer contents, registry paths, targets, peer text or event IDs. This is escalation for manual recovery, not

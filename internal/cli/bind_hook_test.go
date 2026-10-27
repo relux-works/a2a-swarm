@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -40,6 +44,20 @@ func TestAutoBindingRuntimeChild(t *testing.T) {
 // admission refuses, explicit unbind remains stopped, and no mailbox receipts
 // are invented by binding. An unsupported parent is covered by the ancestry controls.
 func TestHookAutomaticBindingLifecycle(t *testing.T) {
+	testHookAutomaticBindingLifecycle(t, "")
+}
+
+// The real prompt hook replaces the dead consumer. Both acknowledged and
+// server-applied/truncated-ACK incidents retain their pinned message and txn
+// on Claude and Codex, without granting the new generation Enter authority.
+// A real SessionStart with a different loaded session retires the old episode.
+func TestHookStrandedReportConsumerRecovery(t *testing.T) {
+	for _, mode := range []string{"acknowledged", "lost-ack", "new-session"} {
+		t.Run(mode, func(t *testing.T) { testHookAutomaticBindingLifecycle(t, mode) })
+	}
+}
+
+func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 	if testing.Short() {
 		t.Skip("private terminal integration")
 	}
@@ -138,6 +156,16 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 					if birth != "" && birth == st.Terminal.DaemonBirth {
 						p, _ := os.FindProcess(st.Terminal.DaemonPID)
 						p.Signal(syscall.SIGTERM)
+						// The owned daemon persists its handled exit. Join that
+						// process before testing.TempDir removes its config;
+						// signalling alone races the final state rename/write.
+						until := time.Now().Add(5 * time.Second)
+						for !processGone(st.Terminal.DaemonPID) && time.Now().Before(until) {
+							time.Sleep(10 * time.Millisecond)
+						}
+						if !processGone(st.Terminal.DaemonPID) {
+							t.Errorf("owned fixture daemon cleanup did not finish: pid=%d", st.Terminal.DaemonPID)
+						}
 					}
 				}
 				p, _ := os.FindProcess(serverPID)
@@ -239,6 +267,107 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 			}
 			if !processGone(oldPID) {
 				t.Fatal("owned fixture consumer did not exit")
+			}
+			if incidentMode != "" {
+				// Prepare the persisted, already
+				// reported stranded episode after stopping this fixture's daemon.
+				// The real prompt hook must recover its process without duplicating
+				// the incident for the unchanged session, target and suspicion.
+				systemRoom := e.hs.addRoom("system", "@alice:test.local")
+				if out, err := exec.Command("tmux", "-S", socket, "send-keys", "-t", "%0", "-l", tmuxwake.Notice(1)).CombinedOutput(); err != nil {
+					t.Fatalf("synthetic notice: %v %s", err, out)
+				}
+				since := time.Now().Add(-11 * time.Minute).UTC().Format(time.RFC3339Nano)
+				_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+					yes := true
+					st.Terminal.Stopped = false
+					st.Terminal.Typed = true
+					st.Terminal.Notice = tmuxwake.Notice(1)
+					st.Terminal.NoticeCount = 1
+					// Keep the real binding policy valid while bounding this retry control.
+					st.Terminal.RetryMax = st.Terminal.Interval
+					st.Terminal.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &yes, Since: since, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Reason: orphanReason}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				reviewApp := &App{as: "alice", Getenv: func(k string) string {
+					if k == config.EnvConfigDir {
+						return e.dir
+					}
+					return e.extra[k]
+				}, Now: time.Now, Stdout: io.Discard, Stderr: io.Discard, HTTP: e.hs.srv.Client()}
+				reviewSession, err := reviewApp.session()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var lostACK atomic.Bool
+				if incidentMode == "lost-ack" {
+					// Apply through the real fake homeserver over HTTP, then
+					// truncate its successful response. The production reporter
+					// must persist its actual ambiguous failure; no state rewrite
+					// manufactures a pre-ACK journal.
+					proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/send/m.room.message/") {
+							rec := httptest.NewRecorder()
+							e.hs.srv.Config.Handler.ServeHTTP(rec, r)
+							if rec.Code != http.StatusOK {
+								t.Errorf("setup: incident apply returned %d", rec.Code)
+								w.WriteHeader(rec.Code)
+								return
+							}
+							lostACK.Store(true)
+							w.Header().Set("Content-Length", "100")
+							w.WriteHeader(http.StatusOK)
+							_, _ = w.Write([]byte(`{"event_id":"`))
+							return
+						}
+						e.hs.srv.Config.Handler.ServeHTTP(w, r)
+					}))
+					defer proxy.Close()
+					reviewSession.client.BaseURL = proxy.URL
+				}
+				reportErr := reviewApp.reportStrandedTerminalNotice(context.Background(), reviewSession, generation)
+				beforeReport := e.state("alice").Terminal.NoticeReport
+				if beforeReport == nil || len(e.projectionsFrom(systemRoom, "@alice:test.local")) != 1 {
+					t.Fatal("first incident was not server-applied")
+				}
+				if incidentMode == "lost-ack" {
+					if !lostACK.Load() || reportErr == nil || reportErr.Error() != "unavailable: system incident report failed" || beforeReport.Sent || beforeReport.RetryAt.IsZero() {
+						t.Fatal("truncated response did not persist the intended ambiguous report state", reportErr, beforeReport)
+					}
+				} else if reportErr != nil || !beforeReport.Sent {
+					t.Fatal("acknowledged positive control did not persist ACK", reportErr)
+				}
+
+				if incidentMode == "new-session" {
+					request(13) // actual SessionStart clear/new ID on the same pane
+					next := awaitBinding(t, e.paths(), func(st config.State) bool {
+						return st.Terminal != nil && st.Terminal.DaemonPID != oldPID && st.Terminal.SessionID == "auto-fixture-clear13" && st.Terminal.OwnNotice.PossiblyOrphaned != nil
+					}).Terminal
+					if next.Generation == generation || next.NoticeReport != nil || next.OwnNotice.Since == "" || next.OwnNotice.Since == beforeReport.Since || len(e.projectionsFrom(systemRoom, "@alice:test.local")) != 1 {
+						t.Fatal("new loaded session inherited the prior incident episode/report")
+					}
+					return
+				}
+
+				request(7)
+				recovered := awaitBinding(t, e.paths(), func(st config.State) bool {
+					return st.Terminal != nil && st.Terminal.DaemonPID != oldPID && st.Terminal.NoticeReport != nil && st.Terminal.NoticeReport.Sent
+				})
+				if got := len(e.projectionsFrom(systemRoom, "@alice:test.local")); got != 1 || recovered.Terminal.NoticeReport.Message.Txn != beforeReport.Message.Txn {
+					t.Fatalf("same-session consumer restart duplicated incident: messages=%d oldTxn=%s newTxn=%s oldSince=%s newSince=%s oldGeneration=%s newGeneration=%s", got, beforeReport.Message.Txn, recovered.Terminal.NoticeReport.Message.Txn, beforeReport.Since, recovered.Terminal.NoticeReport.Since, generation, recovered.Terminal.Generation)
+				}
+				if recovered.Terminal.Generation == generation || recovered.Terminal.DaemonPID == oldPID ||
+					recovered.Terminal.NoticeReport.Since != beforeReport.Since ||
+					recovered.Terminal.NoticeReport.Message.Room != beforeReport.Message.Room ||
+					!reflect.DeepEqual(recovered.Terminal.NoticeReport.Message.Content, beforeReport.Message.Content) ||
+					recovered.Terminal.NotificationToken != "" {
+					t.Fatal("recovery changed incident or inherited submission authority")
+				}
+				return
+
 			}
 			request(7)
 			recovered := awaitBinding(t, e.paths(), func(st config.State) bool {

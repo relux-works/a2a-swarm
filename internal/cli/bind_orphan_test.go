@@ -38,6 +38,7 @@ def draw():
         rule='─'*100
         top=rule+(' synthetic-session' if mode.get('named') else '')
         layout='\x1b[19;1H'+top+'\x1b[20;1H❯ '+prefix+text+suffix+'\x1b[21;1H'+rule+'\x1b[23;1H  '+footer
+    if mode.get('unknown'): layout+='\x1b[21;1Hunknown input'
     os.write(1,('\x1b[2J\x1b[1;1Ha2a-fixture-frame:'+str(rev)+':end'+layout+'\x1b[20;'+str(3+len(text)+mode.get('cursor',0))+'H').encode())
     with open(root+'/screen.next','w') as f: json.dump(dict(text=text,submitted=submitted,erased=erased,pid=os.getpid(),rev=rev),f)
     os.replace(root+'/screen.next',root+'/screen.json')
@@ -73,6 +74,11 @@ type orphanDispatchFixture struct {
 }
 
 func newOrphanDispatchFixture(t *testing.T) *orphanDispatchFixture {
+	return newOrphanDispatchFixtureScript(t, orphanFixture)
+}
+
+// A caller-supplied synthetic renderer changes private fixture cells only.
+func newOrphanDispatchFixtureScript(t *testing.T, source string) *orphanDispatchFixture {
 	t.Helper()
 	for _, tool := range []string{"tmux", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -88,7 +94,7 @@ func newOrphanDispatchFixture(t *testing.T) *orphanDispatchFixture {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	script := filepath.Join(dir, "fixture.py")
-	if err := os.WriteFile(script, []byte(orphanFixture), 0600); err != nil {
+	if err := os.WriteFile(script, []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
 	socket := filepath.Join(dir, "socket")

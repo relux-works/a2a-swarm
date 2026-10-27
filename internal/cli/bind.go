@@ -235,8 +235,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				b.AttemptAt = old.AttemptAt
 				b.Retried = old.Retried
 				b.Typed = old.Typed && ownTerminalTarget(old, target)
-				b.OwnNotice = old.OwnNotice
-				b.OwnNotice.PossiblyOrphaned = nil
+				carryTerminalNoticeEpisode(old, b, automatic)
 			}
 		}
 		if _, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal = b; return nil }); err != nil {

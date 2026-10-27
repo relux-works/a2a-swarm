@@ -111,6 +111,14 @@ func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBindi
 		if err := st.Acquire(s.name, next, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDead(s.paths)); err != nil {
 			return err
 		}
+		// A new loaded session is a new incident episode, even when its pane
+		// and consumer generation continue. Attempt/rate journals remain; old
+		// session observations and report transactions cannot cross this edge.
+		b.OwnNotice = config.OwnNoticeObservation{}
+		b.NoticeReport = nil
+		if b.NoticePublication == "published" {
+			b.NoticePublication = "unavailable: own notice changed"
+		}
 		b.SessionID = next
 		b.ClaudeRegistryRoot = ""
 		b.Readiness = nil
