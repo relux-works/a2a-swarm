@@ -391,3 +391,21 @@ observations, rendering presentation; protected authority is B4, not S1.
 See docs/cli.md for storage, commands, pinned payload provenance, discovery
 limits, orchestrator discovery evidence and runtime deny wiring. Deny-rule
 enforcement was not exercised; live activation remains separately gated.
+
+
+## Proposed wake-tier specification reference (not active)
+
+[Wake policy WP-1](wake-policy.md) is a **PROPOSED / NOT ACTIVE** versioned
+specification and migration contract for issue88, incorporating accepted v2 and
+Curator input plus attributed newer owner/lead requirements. Its importance
+taxonomy, quiet queue, explicit thread interest, correlated obligations,
+authenticated alert grants and operator-DM next-idle requirement are proposal
+text; they do not replace any preceding rule or activate a runtime/default.
+
+The existing PR76 baseline, recorded trims, owner-DM boundary and shared governance
+remain in force. Principal/operator direct delivery and next-idle scheduling
+dependencies are explicitly unresolved for implementation admission. Independent
+exact-head review, rule 27/both-operator decisions for shared policy, source landing
+gates, separate implementation admission and host qualification remain required.
+This appendix changes no existing rule 4/10/24/25/26/27/32 or concurrent participation
+work. Documentary fixtures in WP-1 are UNRUN, not executable acceptance evidence.
