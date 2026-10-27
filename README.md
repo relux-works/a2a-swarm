@@ -63,6 +63,58 @@ for uncertainty, clock/restart and diagnostic limits.
 | tmux / python3 (isolated tests) | Synthetic input and real terminal race/lifecycle controls, never a live provider pane | `go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestBind' -count=1` | test output; private temporary sockets/fixtures cleaned by their recorded PIDs; unavailable tools report a skip |
 | Liveness monitor | Self-written status, explicit freshness, visible unanswered age, correlated host incidents and keeper-routed transition alerts | `bin/a2a status init`; `bin/a2a who --stale-after 3m`; monitoring needs `--watch --poll DUR`, alerts need `--alert-room R --keeper NAME`; watching unanswered history also requires `--unanswered-since TIME --history-pages-per-poll N` (1..100 per joined room) | self-keyed `ai.relux.a2a.status` events in `#status`, stdout, durable alert transactions in the monitor's own `state/NAME.json` |
 
+### Local full-suite qualification
+
+A separately admitted local comparison uses two exact clean accepted-baseline
+lanes followed by two exact clean candidate lanes, each once and sequentially.
+From each selected checkout, the unfiltered command is:
+
+```bash
+go test -json -count=1 -timeout 30m ./...
+```
+
+The package watchdog is 30 minutes. The complete command/process envelope is
+35 minutes from monotonic Go launch, including cleanup and final accounting:
+reserve 30 seconds inside that envelope, send TERM to revalidated owned PIDs
+by launch+2070s, allow up to 10 seconds of grace, send required KILL by
+launch+2080s, and finish bounded reap/absence accounting by launch+2100s.
+Prelaunch checks and reporting/helpers have separate finite bounds; they cannot
+extend this envelope or consume its cleanup reserve. Unresolved cleanup is an
+explicit failed/incomplete result. These engineering bounds do not establish a
+runtime maximum or explain historical failures.
+
+A lane's qualification result and permission to continue are separate.
+Ordinary assertions, Go/outer timeouts, nonzero exits and a correct parser's
+FAIL/INCOMPLETE on faithfully captured malformed or unfinished output retain
+their actual failed/incomplete results. With verified capture, frozen source,
+isolation, instrument integrity and owned cleanup, all later selected lanes
+still run once. Actual capture corruption, parser crash, source/isolation drift
+or unverified ownership/cleanup stops new launches and gives each remaining
+lane an explicit UNSTARTED reason. Failed preflight, controls or missing actual
+head/wrapper admission starts zero lanes. Four launches alone do not qualify
+unverified results; any failed/incomplete required result latches aggregate
+failure. Never restart consumed/uncertain attempts, replace a red sample or
+launch an automatic second campaign.
+
+Keep the admitted external recipe, runner/config/control hashes, exact source
+HEAD/tree/index/manifests and clean status in task-private `.temp/` evidence.
+Record argv, toolchain/environment, cold private caches and short owned temp
+paths, raw JSON bytes and separate stderr, UTC/monotonic clocks, actual child,
+parser, outer and aggregate exits, and qualified PID/birth/UID/command cleanup
+receipts. Preserve missing endpoints as unknown and use interval unions for
+nested/overlapping tests and gaps. Descendant sampling is nonexhaustive; do not
+invent ownership for missed processes. Existing test guards/skips, product
+clocks and assertions stay unchanged. Supported comparison configuration and
+exact baseline/candidate plus signed documentation/wrapper must receive actual
+independent and consumer review before execution; documentation alone admits
+nothing. Retain every old failed run and its unresolved causality.
+
+This local contract does not change hosted CI: the full race command remains
+`go test -race -timeout 20m ./...` inside its 30-minute job, and the optional
+native voice job remains 15 minutes. Local evidence cannot waive a failed or
+unknown hosted check. Final source review, legitimate checks and the authorized
+landing window remain separate gates.
+
 Evidence behind post.sh (2026-09-29): 30 concurrent posts produced 30 blocks with 30 unique ids. The negative control, read-modify-write of the whole file,
 kept 2 of 30. The board-resource thread used before hit exactly this: a real overwrite, recorded as MSG-0010 in `topics/orchestrator-channel.md`.
 
