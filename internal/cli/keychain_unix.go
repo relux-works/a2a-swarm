@@ -101,6 +101,7 @@ draining:
 	// group, even after successful exit with closed descendant stdio. No timer or
 	// goroutine may retain a reusable PGID after return.
 	cleanupErr := killSecurityGroup(cmd)
+	cleanupErr = completedSecurityGroupCleanup(cmd.Process.Pid, cmd.ProcessState != nil, cmd.WaitDelay, cleanupErr)
 	for _, p := range pipes {
 		_ = p.parent.Close()
 	}

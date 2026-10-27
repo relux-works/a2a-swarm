@@ -3,11 +3,13 @@ package cli
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -168,6 +170,8 @@ func TestOwnerDMAudienceBeforeEveryChunk(t *testing.T) {
 // A slow first or second audience read consumes the same total mirror budget;
 // no later chunk sends. The 250ms journal reserve records the terminal outcome;
 // an unwritable reserve leaves durable pending. Fast reads are the control.
+// Virtual time and in-memory HTTP exclude machine/network scheduling from
+// the 750ms budget; the same public Stop path and fake server handle every call.
 func TestOwnerDMChunkAudienceDeadline(t *testing.T) {
 	for _, slowAt := range []int32{0, 1, 2, 3} {
 		t.Run(map[int32]string{0: "fast-control", 1: "first-read", 2: "second-read", 3: "reserve-write-failure"}[slowAt], func(t *testing.T) {
@@ -176,7 +180,10 @@ func TestOwnerDMChunkAudienceDeadline(t *testing.T) {
 			e.hookRT("claude", "bob", "prompt", payload).ok(t)
 			before := len(ownerBodies(e, c.Room))
 			t.Cleanup(func() { _ = os.Chmod(filepath.Dir(f.path("journal")), 0700) })
-			base := e.hs.srv.Client().Transport
+			// Keep persisted event/journal time consistent with fixture creation; only
+			// context deadlines and elapsed-time assertions use the virtual clock.
+			now := time.Now()
+			e.now = func() time.Time { return now }
 			var reads, sends atomic.Int32
 			e.configure = func(a *App) {
 				a.ownerMirrorBudget = 750 * time.Millisecond
@@ -196,51 +203,63 @@ func TestOwnerDMChunkAudienceDeadline(t *testing.T) {
 					if strings.Contains(r.URL.Path, "/send/m.room.message/a2a-odm-") {
 						sends.Add(1)
 					}
-					return base.RoundTrip(r)
+					rec := httptest.NewRecorder()
+					e.hs.srv.Config.Handler.ServeHTTP(rec, r)
+					response := rec.Result()
+					response.Request = r
+					return response, nil
 				})}
 			}
-			start := time.Now()
-			r := e.hookRT("claude", "bob", "stop", payload).ok(t)
-			elapsed := time.Since(start)
-			entries, err := f.journal(time.Now())
-			if r.stdout != "" || elapsed > time.Second || err != nil || len(entries) != 1 {
-				t.Fatal("output/budget/journal", r, elapsed, entries, err)
-			}
-			want := int32(3)
-			if slowAt != 0 {
-				want = slowAt - 1
-			}
-			if slowAt == 3 {
-				want = 1
-			}
-			if sends.Load() != want || len(ownerBodies(e, c.Room))-before != int(want) {
-				t.Fatal("sent past slow read", sends.Load(), want)
-			}
-			if slowAt == 0 && entries[0].State != "sent 3/3" {
-				t.Fatal("fast control", entries)
-			}
-			switch slowAt {
-			case 1:
-				if entries[0].State != "failed:deadline" {
-					t.Fatal("missing failed deadline", entries)
+			synctest.Test(t, func(t *testing.T) {
+				prior := e.t
+				e.t = t
+				defer func() { e.t = prior }()
+				start := time.Now()
+				r := e.hookRT("claude", "bob", "stop", payload).ok(t)
+				elapsed := time.Since(start)
+				entries, err := f.journal(now)
+				if r.stdout != "" || elapsed > time.Second || err != nil || len(entries) != 1 {
+					t.Fatal("output/budget/journal", r, elapsed, entries, err)
 				}
-			case 2:
-				if entries[0].State != "partial 1/3:refused:deadline" {
-					t.Fatal("missing partial deadline", entries)
+				if slowAt != 0 && elapsed != 500*time.Millisecond {
+					t.Fatal("audience deadline lost the 250ms journal reserve", elapsed)
 				}
-			case 3:
-				if err := os.Chmod(filepath.Dir(f.path("journal")), 0700); err != nil {
-					t.Fatal(err)
+				want := int32(3)
+				if slowAt != 0 {
+					want = slowAt - 1
 				}
-				if entries[0].State != "pending" {
-					t.Fatal("claims terminal record despite failed reserve", entries)
+				if slowAt == 3 {
+					want = 1
 				}
-			}
-			e.configure = nil
-			e.hookRT("claude", "bob", "stop", payload).ok(t)
-			if len(ownerBodies(e, c.Room))-before != int(want) {
-				t.Fatal("timed-out key resumed")
-			}
+				if sends.Load() != want || len(ownerBodies(e, c.Room))-before != int(want) {
+					t.Fatal("sent past slow read", sends.Load(), want, entries, r.stderr)
+				}
+				if slowAt == 0 && entries[0].State != "sent 3/3" {
+					t.Fatal("fast control", entries)
+				}
+				switch slowAt {
+				case 1:
+					if entries[0].State != "failed:deadline" {
+						t.Fatal("missing failed deadline", entries)
+					}
+				case 2:
+					if entries[0].State != "partial 1/3:refused:deadline" {
+						t.Fatal("missing partial deadline", entries)
+					}
+				case 3:
+					if err := os.Chmod(filepath.Dir(f.path("journal")), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if entries[0].State != "pending" {
+						t.Fatal("claims terminal record despite failed reserve", entries)
+					}
+				}
+				// Replay uses the same in-memory transport; no send may resume.
+				e.hookRT("claude", "bob", "stop", payload).ok(t)
+				if len(ownerBodies(e, c.Room))-before != int(want) {
+					t.Fatal("timed-out key resumed")
+				}
+			})
 		})
 	}
 }

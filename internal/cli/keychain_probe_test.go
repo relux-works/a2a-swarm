@@ -75,7 +75,7 @@ func TestKeychainProbeRefusals(t *testing.T) {
 			probe := probeFixture(t, mode, dir)
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return &keychainStore{paths: p, command: securityCommand(dir), probeCommand: probe, timeout: 2 * time.Second}
+					return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: probe, timeout: 2 * time.Second})
 				}
 			}
 			r := e.as("alice", "whoami")
@@ -125,7 +125,7 @@ func TestKeychainProbeEveryWriteStage(t *testing.T) {
 			calls := 0
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return &keychainStore{paths: p, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+					return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
 						calls++
 						stop := 2
 						if mode == "readback" {
@@ -135,7 +135,7 @@ func TestKeychainProbeEveryWriteStage(t *testing.T) {
 							return exec.CommandContext(ctx, "/usr/bin/printf", "locked\n")
 						}
 						return unlockedProbe(ctx, args...)
-					}}
+					}})
 				}
 			}
 			original, err := os.ReadFile(e.paths().AgentFile("alice"))
@@ -167,7 +167,7 @@ func TestKeychainHostCooldown(t *testing.T) {
 	host := "host-one"
 	probe := probeFixture(t, "locked", dir)
 	store := func(p config.Paths) *keychainStore {
-		return &keychainStore{paths: p, command: securityCommand(dir), probeCommand: probe, hostID: host, now: func() time.Time { return now }}
+		return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: probe, hostID: host, now: func() time.Time { return now }})
 	}
 	e.configure = func(a *App) { a.keychain = store }
 	e.as("alice", "whoami").failsWith(t, ExitError, "preflight failed")
@@ -235,7 +235,9 @@ func TestKeychainProbeProductionMissing(t *testing.T) {
 	uid := e.agent("alice")
 	dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "")
 	e.configure = func(a *App) {
-		a.keychain = func(p config.Paths) *keychainStore { return &keychainStore{paths: p, command: securityCommand(dir)} }
+		a.keychain = func(p config.Paths) *keychainStore {
+			return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir)})
+		}
 	}
 	e.as("alice", "whoami").failsWith(t, ExitError, "preflight failed")
 	if len(records(t, dir)) != 0 {
@@ -250,12 +252,12 @@ func TestKeychainProbeTargetPair(t *testing.T) {
 	fixture := filepath.Join(dir, "fixture.keychain-db")
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			return &keychainStore{paths: p, fixture: fixture, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+			return isolatedKeychainStore(keychainStore{paths: p, fixture: fixture, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
 				if fmt.Sprint(args) != fmt.Sprint([]string{"--fixture", fixture}) {
 					t.Error("probe targeted different keychain")
 				}
 				return unlockedProbe(ctx, args...)
-			}}
+			}})
 		}
 	}
 	e.as("alice", "whoami").ok(t)
@@ -317,7 +319,7 @@ func TestKeychainHostMarkerFailClosed(t *testing.T) {
 			uid := e.agent("alice")
 			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "")
 			e.as("alice", "whoami").ok(t)
-			k := &keychainStore{paths: e.paths()}
+			k := isolatedKeychainStore(keychainStore{paths: e.paths()})
 			base, err := k.hostPath()
 			if err != nil {
 				t.Fatal(err)
@@ -341,7 +343,7 @@ func TestKeychainHostMarkerFailClosed(t *testing.T) {
 			calls := 0
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return &keychainStore{paths: p, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd { calls++; return unlockedProbe(ctx, args...) }}
+					return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd { calls++; return unlockedProbe(ctx, args...) }})
 				}
 			}
 			if r := e.as("alice", "whoami"); r.code == 0 {

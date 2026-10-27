@@ -79,6 +79,20 @@ func securityCommand(dir string) func(context.Context, ...string) *exec.Cmd {
 		return cmd
 	}
 }
+
+// isolatedKeychainStore keeps every synthetic gate in the test config namespace
+// without consulting the kernel host identity or the user's login Keychain path.
+// Explicit target/host controls remain available to the corresponding tests.
+func isolatedKeychainStore(k keychainStore) *keychainStore {
+	if k.hostID == "" {
+		k.hostID = "synthetic-host"
+	}
+	if k.fixture == "" {
+		k.fixture = filepath.Join(k.paths.Base, "synthetic.keychain-db")
+	}
+	return &k
+}
+
 func fakeKeychain(e *env, items map[string]string, mode string) string {
 	e.t.Helper()
 	dir := e.t.TempDir()
@@ -86,7 +100,7 @@ func fakeKeychain(e *env, items map[string]string, mode string) string {
 	e.extra[envSecretStore] = "keychain"
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			return &keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: time.Second}
+			return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: time.Second})
 		}
 	}
 	return dir
@@ -540,7 +554,7 @@ func TestKeychainDeadlineKillsProcessGroup(t *testing.T) {
 	dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "grandchild")
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			return &keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 400 * time.Millisecond}
+			return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 400 * time.Millisecond})
 		}
 	}
 	start := time.Now()
@@ -606,7 +620,7 @@ func TestKeychainCLIProcess(t *testing.T) {
 				return exec.CommandContext(ctx, "/bin/sh", append([]string{path}, args...)...)
 			}
 		}
-		return &keychainStore{paths: p, hostID: os.Getenv("A2A_TEST_HOST"), probeCommand: probe, command: securityCommand(modelDir), timeout: 2 * time.Second, cooldown: time.Second}
+		return isolatedKeychainStore(keychainStore{paths: p, hostID: os.Getenv("A2A_TEST_HOST"), probeCommand: probe, command: securityCommand(modelDir), timeout: 2 * time.Second, cooldown: time.Second})
 	}
 	args := []string{"--as", os.Getenv("A2A_TEST_CLI_IDENTITY"), "creds", "migrate"}
 	os.Exit(a.Run(context.Background(), args))
@@ -660,7 +674,7 @@ func TestKeychainInteractionCooldownAllCalls(t *testing.T) {
 	uid := e.agent("alice")
 	dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "denied")
 	e.as("alice", "whoami").failsWith(t, ExitError, "cooldown recorded")
-	k := &keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir)}
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir)})
 	data, err := os.ReadFile(k.identityPath(uid) + ".cooldown")
 	if err != nil {
 		t.Fatal(err)
@@ -688,7 +702,7 @@ func TestKeychainWriterSerialization(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			k := &keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 2 * time.Second}
+			k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 2 * time.Second})
 			if err := k.write(context.Background(), uid, fmt.Sprintf("synthetic-token-%d", i)); err != nil {
 				t.Error(err)
 			}
@@ -774,7 +788,7 @@ func TestKeychainCommandGrammarAndLimits(t *testing.T) {
 	e := newEnv(t)
 	uid := e.agent("alice")
 	dir := fakeKeychain(e, map[string]string{}, "")
-	k := &keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir)}
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir)})
 	token := `sentinel ' " \ ; $(not-a-shell) token`
 	if err := k.write(context.Background(), uid, token); err != nil {
 		t.Fatal(err)
@@ -801,7 +815,7 @@ func TestKeychainWriteTimeoutsSuppressEveryCall(t *testing.T) {
 			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, mode)
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return &keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 300 * time.Millisecond}
+					return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 300 * time.Millisecond})
 				}
 			}
 			e.as("alice", "creds", "migrate").failsWith(t, ExitError, "cooldown recorded")
@@ -822,7 +836,7 @@ func TestKeychainCooldownStateFailClosed(t *testing.T) {
 			uid := e.agent("alice")
 			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "")
 			e.as("alice", "whoami").ok(t)
-			k := &keychainStore{paths: e.paths()}
+			k := isolatedKeychainStore(keychainStore{paths: e.paths()})
 			path := k.identityPath(uid) + ".cooldown"
 			switch mode {
 			case "corrupt":

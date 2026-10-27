@@ -49,7 +49,7 @@ func TestKeychainProcessStartFailure(t *testing.T) {
 				fake := probeFixture(t, mode, dir)
 				e.configure = func(a *App) {
 					a.keychain = func(p config.Paths) *keychainStore {
-						k := &keychainStore{paths: p, command: securityCommand(dir), probeCommand: unlockedProbe}
+						k := isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: unlockedProbe})
 						if stage == "security" {
 							k.command = fake
 						} else {
@@ -134,7 +134,7 @@ func testKeychainProcessLifetime(t *testing.T, stage, pipes string, cancelOnRead
 	})
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			k := &keychainStore{paths: p, command: securityCommand(dir), probeCommand: unlockedProbe}
+			k := isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: unlockedProbe})
 			fake := func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, "/bin/sh", path) }
 			if stage == "security" {
 				k.command = fake
@@ -214,7 +214,7 @@ func testKeychainProcessLifetime(t *testing.T, stage, pipes string, cancelOnRead
 		r.failsWith(t, ExitError, fragment)
 		tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, routeWhoami)
 		tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, routeLogin)
-		k := &keychainStore{paths: e.paths()}
+		k := isolatedKeychainStore(keychainStore{paths: e.paths()})
 		if err := k.checkCooldown(uid); err == nil {
 			t.Fatal("pipe-wait/cancellation failure omitted identity cooldown")
 		}
@@ -229,7 +229,7 @@ func testKeychainProcessLifetime(t *testing.T, stage, pipes string, cancelOnRead
 		}
 	} else if exitCode != 0 {
 		r.failsWith(t, ExitError, map[int]string{1: "operation failed", 44: "item missing", 45: "already exists"}[exitCode])
-		if err := (&keychainStore{paths: e.paths()}).checkCooldown(uid); err != nil {
+		if err := (isolatedKeychainStore(keychainStore{paths: e.paths()})).checkCooldown(uid); err != nil {
 			t.Fatal("completed ordinary status manufactured cooldown", err)
 		}
 		tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, routeWhoami)
@@ -237,7 +237,7 @@ func testKeychainProcessLifetime(t *testing.T, stage, pipes string, cancelOnRead
 	} else {
 		r.ok(t) // Successful leader remains successful after child cleanup.
 		tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, routeWhoami, 1)
-		if err := (&keychainStore{paths: e.paths()}).checkCooldown(uid); err != nil {
+		if err := (isolatedKeychainStore(keychainStore{paths: e.paths()})).checkCooldown(uid); err != nil {
 			t.Fatal("successful cleanup triggered cooldown", err)
 		}
 	}
@@ -304,7 +304,7 @@ func TestKeychainPipeCompletionMigrationStages(t *testing.T) {
 					probes, security := 0, 0
 					e.configure = func(a *App) {
 						a.keychain = func(p config.Paths) *keychainStore {
-							k := &keychainStore{paths: p, probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+							k := isolatedKeychainStore(keychainStore{paths: p, probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
 								probes++
 								if runner == "probe" && probes == stage.stop {
 									return exec.CommandContext(ctx, "/bin/sh", path)
@@ -316,7 +316,7 @@ func TestKeychainPipeCompletionMigrationStages(t *testing.T) {
 									return exec.CommandContext(ctx, "/bin/sh", path)
 								}
 								return securityCommand(dir)(ctx, args...)
-							}}
+							}})
 							return k
 						}
 					}
@@ -367,7 +367,7 @@ func TestKeychainPipeCompletionMigrationStages(t *testing.T) {
 					if err != nil || string(after) != string(original) {
 						t.Fatal("pipe failure lost recoverable credentials", err)
 					}
-					k := &keychainStore{paths: e.paths()}
+					k := isolatedKeychainStore(keychainStore{paths: e.paths()})
 					if err := k.checkCooldown(uid); err == nil {
 						t.Fatal("nonzero pipe failure omitted identity cooldown")
 					}
