@@ -313,7 +313,41 @@ func (a *App) leaseHolder(p config.Paths, sessionID string) string {
 	if id := a.Getenv("CODEX_THREAD_ID"); claudeSessionRE.MatchString(id) {
 		return id
 	}
-	return "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel()
+	pid := os.Getpid()
+	holder := "pid:" + strconv.Itoa(pid) + "@" + machineLabel()
+	// The holder carries its own start time, so a later reuse of the PID is
+	// recognised. Without a readable start time it stays in the legacy form.
+	if birth, err := a.pidBirth(pid); err == nil {
+		holder += "#" + strconv.FormatInt(birth, 10)
+	}
+	return holder
+}
+
+const pidBirthTimeout = 2 * time.Second
+
+// pidBirth returns a process start time as Unix seconds. ps runs with
+// TZ=UTC and LC_ALL=C, so every reader on the host gets the same value.
+func (a *App) pidBirth(pid int) (int64, error) {
+	if a.leaseBirth != nil {
+		return a.leaseBirth(pid)
+	}
+	if pid <= 0 {
+		return 0, errors.New("invalid process")
+	}
+	// Bounded: this read can run inside the state lock of a lease update.
+	ctx, cancel := context.WithTimeout(context.Background(), pidBirthTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	t, err := time.Parse("Mon Jan _2 15:04:05 2006", strings.Join(strings.Fields(string(out)), " "))
+	if err != nil {
+		return 0, err
+	}
+	return t.Unix(), nil
 }
 
 // machineLabel names this machine for the lease: the OS hostname, which does
@@ -327,8 +361,11 @@ func machineLabel() string {
 	return h
 }
 
-// leaseDead reports whether a "pid:<pid>@<host>" holder on this host has
-// exited; every other holder counts as live until its lease expires.
+// leaseDead reports whether a "pid:<pid>@<host>[#<birth>]" holder on this
+// host has exited, or whether its PID now belongs to a process with another
+// start time. A holder without a start time, or a start time that cannot be
+// read now, is never treated as reused. Every other holder counts as live
+// until its lease expires.
 func (a *App) leaseDead(p config.Paths) func(string) bool {
 	return func(holder string) bool {
 		rest, ok := strings.CutPrefix(holder, "pid:")
@@ -337,10 +374,25 @@ func (a *App) leaseDead(p config.Paths) func(string) bool {
 		}
 		pidText, host, ok := strings.Cut(rest, "@")
 		pid, err := strconv.Atoi(pidText)
-		if !ok || err != nil || pid <= 0 || host != machineLabel() {
+		if !ok || err != nil || pid <= 0 {
 			return false
 		}
-		return processGone(pid)
+		host, birthText, hasBirth := strings.Cut(host, "#")
+		if host != machineLabel() {
+			return false
+		}
+		if processGone(pid) {
+			return true
+		}
+		if !hasBirth {
+			return false
+		}
+		want, err := strconv.ParseInt(birthText, 10, 64)
+		if err != nil {
+			return false
+		}
+		got, err := a.pidBirth(pid)
+		return err == nil && got != want
 	}
 }
 
