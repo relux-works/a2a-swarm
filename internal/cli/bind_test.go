@@ -187,7 +187,11 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	}
 	socket := filepath.Join(dir, "socket")
 	cmd := exec.CommandContext(ctx, "tmux", "-S", socket, "-f", "/dev/null", "new-session", "-d", "-x", "120", "-y", "24", "python3", script, dir, exe)
-	cmd.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture")
+	// Session-scoped and secret variables are planted in the pane environment;
+	// the detached consumer must not inherit them (issue #107).
+	cmd.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture",
+		"CLAUDE_CODE_MESSAGING_TOKEN=planted-107", "CLAUDE_CODE_SESSION_ID=planted-107", "CLAUDE_CONFIG_DIR=/planted-107",
+		"CODEX_HOME=/planted-107", "A2A_MATRIX_REGISTRATION_TOKEN=planted-107")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("private tmux: %v %s", err, out)
 	}
@@ -253,6 +257,20 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	pid := st.Terminal.DaemonPID
 	if pid <= 0 || processGone(pid) {
 		t.Fatal("detached process absent")
+	}
+	daemonEnv := processEnviron(t, pid)
+	for _, name := range []string{"CLAUDE_CODE_MESSAGING_TOKEN=", "CLAUDE_CODE_SESSION_ID=", "CLAUDE_CONFIG_DIR=", "CODEX_HOME=", "CODEX_THREAD_ID=", "A2A_MATRIX_REGISTRATION_TOKEN=", "TMUX="} {
+		if slices.ContainsFunc(daemonEnv, func(kv string) bool { return strings.HasPrefix(kv, name) }) {
+			t.Fatalf("detached consumer inherited %s", name)
+		}
+	}
+	if slices.ContainsFunc(daemonEnv, func(kv string) bool { return strings.Contains(kv, "planted-107") }) {
+		t.Fatal("detached consumer carries a planted session-scoped value")
+	}
+	for _, kv := range []string{"A2A_AGENT=alice", "A2A_CONFIG_DIR=" + e.dir, "A2A_SESSION_ID=bind-fixture"} {
+		if !slices.Contains(daemonEnv, kv) {
+			t.Fatalf("detached consumer lacks %s", kv)
+		}
 	}
 	request(2).failsWith(t, ExitError, "already bound")
 	id := runtimeMail(e, room, "SYNTHETIC_PEER_BODY_MUST_NOT_BE_TYPED")

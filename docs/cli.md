@@ -962,6 +962,13 @@ Local lease/state/dispatch failures also back off and retry; a conflicting lease
 target ends the consumer. Launchers creating a new Codex session must scrub an inherited `CODEX_THREAD_ID` along with old session variables, so the
 new runtime exports its own metadata; this command does not edit launcher configuration.
 
+The detached consumer outlives the invoking hook or session, so it starts from an allowlisted environment instead of the session's:
+`HOME`, `PATH`, `TMPDIR`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, the proxy and CA variables, and the non-secret selectors
+`A2A_AGENT`, `A2A_MATRIX_URL`, `A2A_MATRIX_SERVER_NAME` and `A2A_SECRET_STORE`; `A2A_CONFIG_DIR` and `A2A_SESSION_ID` are set explicitly.
+Session-scoped runtime variables (for example `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CONFIG_DIR`, `CODEX_THREAD_ID`,
+`CODEX_HOME`), `TMUX`/`TMUX_PANE` (the target is already pinned in the binding) and `A2A_MATRIX_REGISTRATION_TOKEN` never reach it.
+A consumer started by an older build keeps its inherited environment until its own session rebinds.
+
 The only typed text is `a2a: N new peer events; run a2a inbox`. Ordinary fresh delivery requires two consecutive qualified rendered-empty
 observations at least `--interval` apart on the same pinned target. Busy, unknown, draft, gate, session/generation/daemon or authority changes
 reset qualification; the first glimpse spends no typing, hourly reservation or retry. Codex empty admission requires its shortcuts hint;

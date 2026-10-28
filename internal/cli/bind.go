@@ -259,7 +259,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 			return err
 		}
 		child = exec.Command(exe, append(pin, "--as", s.name, "bind", "--run-generation", b.Generation)...)
-		child.Env = append(os.Environ(), "A2A_CONFIG_DIR="+s.paths.ConfigRoot(), "A2A_SESSION_ID="+b.SessionID)
+		child.Env = detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), b.SessionID)
 		child.ExtraFiles = []*os.File{writer}
 		child.Stdout = log
 		child.Stderr = log
