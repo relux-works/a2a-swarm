@@ -284,7 +284,11 @@ hostname when none is set: here it is only a label).
 - An expired lease is taken over. A `pid:` holder on this host whose process has exited counts as expired.
   A `pid:` holder also records its own process start time (`pid:<pid>@<host>#<unix-seconds>`, read with `TZ=UTC LC_ALL=C ps -o lstart=`);
   when that PID is alive with a different start time, the PID was reused and the holder counts as expired too. A holder without a start
-  time (older builds), or a start time that cannot be read now, is never treated as reused. Session-id holders keep the TTL rule.
+  time (older builds), or a start time that cannot be read before the caller's deadline (at most 500ms, inside the state lock),
+  is never treated as reused. Session-id holders keep the TTL rule. A confirmed reuse is reported with both start times:
+  `identity release` prints `released <name>: pid holder <holder> was reused (recorded start R, observed start O)`, and a
+  command that takes over such a lease writes one stderr line (hook stdout is unchanged). Unchanged compatibility: on this
+  host, any session or process may still replace a live `pid:` lease when it acquires, whatever its start time.
 - The Claude Code `SessionStart` hook appends `export A2A_SESSION_ID=<session_id>` to `CLAUDE_ENV_FILE` (which Claude Code sets for that hook;
   an id that is not a plain `[A-Za-z0-9._-]` token is skipped), so the session's own `a2a inbox` and `wait` hold the same lease as its hooks.
   Codex commands use the native `CODEX_THREAD_ID` automatically; no per-command `A2A_SESSION_ID` export is needed. An explicit export retains priority.

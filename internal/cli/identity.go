@@ -286,6 +286,7 @@ func cmdIdentityRelease(a *App, args []string) error {
 		return err
 	}
 	cleared := false
+	a.leaseReuse = nil
 	if _, err := config.UpdateState(p, name, func(cur *config.State) error {
 		var err error
 		cleared, err = cur.Release(name, a.leaseHolder(p, ""), *force, a.Now(), a.leaseDead(p))
@@ -293,7 +294,9 @@ func cmdIdentityRelease(a *App, args []string) error {
 	}); err != nil {
 		return err
 	}
-	if cleared {
+	if cleared && a.leaseReuse != nil {
+		a.printf("released %s: %s\n", name, a.leaseReuse.note())
+	} else if cleared {
 		a.printf("released %s\n", name)
 	} else {
 		a.printf("%s has no lease\n", name)
@@ -317,26 +320,39 @@ func (a *App) leaseHolder(p config.Paths, sessionID string) string {
 	holder := "pid:" + strconv.Itoa(pid) + "@" + machineLabel()
 	// The holder carries its own start time, so a later reuse of the PID is
 	// recognised. Without a readable start time it stays in the legacy form.
-	if birth, err := a.pidBirth(pid); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), pidBirthTimeout)
+	defer cancel()
+	if birth, err := a.pidBirth(ctx, pid); err == nil {
 		holder += "#" + strconv.FormatInt(birth, 10)
 	}
 	return holder
 }
 
-const pidBirthTimeout = 2 * time.Second
+// pidBirthTimeout caps one start-time read; callers may shorten it further.
+const pidBirthTimeout = 500 * time.Millisecond
+
+// leaseReuse records the evidence for releasing a pid: holder whose PID now
+// belongs to another process: the recorded and the observed start time.
+type leaseReuse struct {
+	Holder             string
+	Recorded, Observed int64
+}
+
+func (r *leaseReuse) note() string {
+	return fmt.Sprintf("pid holder %s was reused (recorded start %d, observed start %d)", r.Holder, r.Recorded, r.Observed)
+}
 
 // pidBirth returns a process start time as Unix seconds. ps runs with
 // TZ=UTC and LC_ALL=C, so every reader on the host gets the same value.
-func (a *App) pidBirth(pid int) (int64, error) {
+func (a *App) pidBirth(ctx context.Context, pid int) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, pidBirthTimeout)
+	defer cancel()
 	if a.leaseBirth != nil {
-		return a.leaseBirth(pid)
+		return a.leaseBirth(ctx, pid)
 	}
 	if pid <= 0 {
 		return 0, errors.New("invalid process")
 	}
-	// Bounded: this read can run inside the state lock of a lease update.
-	ctx, cancel := context.WithTimeout(context.Background(), pidBirthTimeout)
-	defer cancel()
 	cmd := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
 	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
 	out, err := cmd.Output()
@@ -364,9 +380,15 @@ func machineLabel() string {
 // leaseDead reports whether a "pid:<pid>@<host>[#<birth>]" holder on this
 // host has exited, or whether its PID now belongs to a process with another
 // start time. A holder without a start time, or a start time that cannot be
-// read now, is never treated as reused. Every other holder counts as live
-// until its lease expires.
+// read before the deadline, is never treated as reused. Every other holder
+// counts as live until its lease expires.
 func (a *App) leaseDead(p config.Paths) func(string) bool {
+	return a.leaseDeadBy(p, time.Now().Add(pidBirthTimeout))
+}
+
+// leaseDeadBy is leaseDead bounded by the caller's deadline, because the
+// check runs inside the state lock. A confirmed reuse is kept in a.leaseReuse.
+func (a *App) leaseDeadBy(p config.Paths, deadline time.Time) func(string) bool {
 	return func(holder string) bool {
 		rest, ok := strings.CutPrefix(holder, "pid:")
 		if !ok {
@@ -391,8 +413,14 @@ func (a *App) leaseDead(p config.Paths) func(string) bool {
 		if err != nil {
 			return false
 		}
-		got, err := a.pidBirth(pid)
-		return err == nil && got != want
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		got, err := a.pidBirth(ctx, pid)
+		if err != nil || got == want {
+			return false
+		}
+		a.leaseReuse = &leaseReuse{Holder: holder, Recorded: want, Observed: got}
+		return true
 	}
 }
 
@@ -418,12 +446,17 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 	if a.leaseTTL != 0 {
 		ttl = a.leaseTTL
 	}
+	a.leaseReuse = nil
 	_, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDead(s.paths))
+		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
 	})
+	if err == nil && a.leaseReuse != nil {
+		// stderr only: hook stdout carries the doorbell and must stay unchanged.
+		fmt.Fprintf(a.Stderr, "a2a: lease of %s taken over: %s\n", s.name, a.leaseReuse.note())
+	}
 	return err
 }
 

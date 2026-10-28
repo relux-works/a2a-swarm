@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,10 +10,11 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
 )
 
 func leaseApp(birth func(int) (int64, error)) *App {
-	return &App{Getenv: func(string) string { return "" }, Now: time.Now, leaseBirth: birth}
+	return &App{Getenv: func(string) string { return "" }, Now: time.Now, leaseBirth: func(_ context.Context, pid int) (int64, error) { return birth(pid) }}
 }
 
 // exitedPID returns the PID of a child that has already been reaped.
@@ -119,12 +121,12 @@ func TestPIDBirthIndependentOfTZ(t *testing.T) {
 	}
 	a := &App{Getenv: os.Getenv}
 	t.Setenv("TZ", "Asia/Yerevan")
-	first, err := a.pidBirth(os.Getpid())
+	first, err := a.pidBirth(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("TZ", "America/Los_Angeles")
-	second, err := a.pidBirth(os.Getpid())
+	second, err := a.pidBirth(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,5 +135,120 @@ func TestPIDBirthIndependentOfTZ(t *testing.T) {
 	}
 	if d := time.Since(time.Unix(first, 0)); d < 0 || d > 24*time.Hour {
 		t.Fatalf("implausible start time %d (age %v)", first, d)
+	}
+}
+
+// Proves acquisition is decided by the birth check where the compatibility
+// rule does not apply (a pid holder without a recorded host): a matching or
+// unreadable start time refuses and leaves the lease byte-identical, a reused
+// PID is taken over and its evidence recorded. Also pins the pre-existing
+// exception: a same-host pid lease is replaceable on acquire whatever its
+// start time, which this change does not alter.
+func TestLeaseAcquireHostlessPIDHolder(t *testing.T) {
+	now := time.Now()
+	host := machineLabel()
+	holder := "pid:" + strconv.Itoa(os.Getpid()) + "@" + host + "#100"
+	hostless := func() config.State {
+		return config.State{Lease: &config.Lease{Holder: holder, PID: os.Getpid(), Expires: now.Add(time.Minute)}}
+	}
+	for name, birth := range map[string]func(int) (int64, error){
+		"matching":   func(int) (int64, error) { return 100, nil },
+		"unreadable": func(int) (int64, error) { return 0, errors.New("ps unavailable") },
+	} {
+		a := leaseApp(birth)
+		st := hostless()
+		before := *st.Lease
+		if err := st.Acquire("alice", "sess-new", host, 2, now, config.LeaseTTL, a.leaseDead(config.Paths{})); err == nil || *st.Lease != before || a.leaseReuse != nil {
+			t.Fatalf("%s: hostless live pid holder taken over or changed: err=%v lease=%+v reuse=%+v", name, err, *st.Lease, a.leaseReuse)
+		}
+	}
+	a := leaseApp(func(int) (int64, error) { return 200, nil })
+	st := hostless()
+	if err := st.Acquire("alice", "sess-new", host, 2, now, config.LeaseTTL, a.leaseDead(config.Paths{})); err != nil || st.Lease.Holder != "sess-new" {
+		t.Fatalf("hostless reused pid holder not taken over: err=%v lease=%+v", err, st.Lease)
+	}
+	if r := a.leaseReuse; r == nil || r.Holder != holder || r.Recorded != 100 || r.Observed != 200 {
+		t.Fatalf("reuse evidence = %+v", r)
+	}
+
+	matching := leaseApp(func(int) (int64, error) { return 100, nil })
+	st = config.State{Lease: &config.Lease{Holder: holder, Host: host, PID: os.Getpid(), Expires: now.Add(time.Minute)}}
+	if err := st.Acquire("alice", "sess-new", host, 2, now, config.LeaseTTL, matching.leaseDead(config.Paths{})); err != nil || st.Lease.Holder != "sess-new" || matching.leaseReuse != nil {
+		t.Fatalf("pre-existing same-host pid replacement changed: err=%v lease=%+v reuse=%+v", err, st.Lease, matching.leaseReuse)
+	}
+}
+
+// Proves the start-time read inside the state lock honours the caller's
+// deadline: a probe that would block returns as "unknown" by the deadline,
+// refuses the release and leaves the lease unchanged; the same holder with a
+// fast reused observation is released (paired positive control).
+func TestLeaseDeadHonoursDeadline(t *testing.T) {
+	now := time.Now()
+	host := machineLabel()
+	holder := "pid:" + strconv.Itoa(os.Getpid()) + "@" + host + "#100"
+	slow := &App{Getenv: func(string) string { return "" }, Now: time.Now, leaseBirth: func(ctx context.Context, _ int) (int64, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}}
+	st := config.State{Lease: &config.Lease{Holder: holder, Host: host, PID: os.Getpid(), Expires: now.Add(time.Minute)}}
+	before := *st.Lease
+	start := time.Now()
+	ok, err := st.Release("alice", "sess-other", false, now, slow.leaseDeadBy(config.Paths{}, time.Now().Add(50*time.Millisecond)))
+	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
+		t.Fatalf("deadline not honoured: %v", elapsed)
+	}
+	if ok || err == nil || *st.Lease != before || slow.leaseReuse != nil {
+		t.Fatalf("slow probe released or changed the lease: ok=%v err=%v lease=%+v", ok, err, *st.Lease)
+	}
+	fast := leaseApp(func(int) (int64, error) { return 200, nil })
+	if ok, err := st.Release("alice", "sess-other", false, now, fast.leaseDeadBy(config.Paths{}, time.Now().Add(50*time.Millisecond))); !ok || err != nil {
+		t.Fatalf("fast reused probe not released: ok=%v err=%v", ok, err)
+	}
+}
+
+// Proves the reuse decision is reported with both start times through the
+// real commands: identity release prints it on stdout, and an inbox that takes
+// over a hostless reused pid holder writes one stderr line while its stdout
+// stays the ordinary inbox output. A matching start time refuses both and
+// reports nothing.
+func TestLeaseReuseReported(t *testing.T) {
+	e, _ := world(t)
+	e.extra[EnvSessionID] = "s1"
+	e.as("alice", "inbox").ok(t)
+	holder := "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel() + "#100"
+	plant := func(onHost bool) {
+		t.Helper()
+		l := &config.Lease{Holder: holder, PID: os.Getpid(), Expires: time.Now().Add(time.Minute)}
+		if onHost {
+			l.Host = machineLabel()
+		}
+		if _, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Lease = l; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	birth := int64(100)
+	e.configure = func(a *App) {
+		a.leaseBirth = func(context.Context, int) (int64, error) { return birth, nil }
+	}
+	e.extra[EnvSessionID] = "s2"
+
+	plant(true)
+	e.as("alice", "identity", "release").failsWith(t, ExitError, "held by "+holder)
+	if l := e.lease("alice"); l == nil || l.Holder != holder {
+		t.Fatalf("matching release changed lease: %+v", l)
+	}
+	birth = 200
+	r := e.as("alice", "identity", "release").ok(t)
+	tuitestkit.ContainsStr(t, r.stdout, "released alice: pid holder "+holder+" was reused (recorded start 100, observed start 200)")
+
+	birth = 100
+	plant(false)
+	e.as("alice", "inbox").failsWith(t, ExitError, "held by "+holder)
+	birth = 200
+	r = e.as("alice", "inbox").ok(t)
+	tuitestkit.ContainsStr(t, r.stderr, "a2a: lease of alice taken over: pid holder "+holder+" was reused (recorded start 100, observed start 200)")
+	tuitestkit.NotContainsStr(t, r.stdout, "reused")
+	if l := e.lease("alice"); l == nil || l.Holder != "s2" {
+		t.Fatalf("lease after takeover = %+v", l)
 	}
 }
