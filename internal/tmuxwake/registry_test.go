@@ -1,7 +1,10 @@
 package tmuxwake
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +19,7 @@ func registryFixture(version, status string) map[string]any {
 // busy record carrying the identical background-feature fields.
 func TestRegistryQualifiedSchemas(t *testing.T) {
 	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
-	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310"} {
+	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312"} {
 		for _, status := range []string{"idle", "shell", "busy"} {
 			t.Run(version+"/"+status, func(t *testing.T) {
 				m := registryFixture(version, status)
@@ -54,7 +57,7 @@ func TestRegistryQualifiedSchemas(t *testing.T) {
 		{"headless-kind-interactive", func(m map[string]any) { m["entrypoint"] = "sdk-cli" }, RuntimeHeadless},
 		{"no-tmux", func(m map[string]any) { delete(m, "tmux") }, RuntimeHeadless},
 		{"unknown-status", func(m map[string]any) { m["status"] = "future" }, RuntimeStatusUnqualified},
-		{"unknown-version", func(m map[string]any) { m["version"] = "2.1.311" }, RuntimeVersionUnqualified},
+		{"unknown-version", func(m map[string]any) { m["version"] = "2.1.313" }, RuntimeVersionUnqualified},
 		{"startedAt-not-birth", func(m map[string]any) { m["startedAt"] = int64(2) }, RuntimeNone},
 	}
 	for _, c := range cases {
@@ -71,5 +74,39 @@ func TestRegistryQualifiedSchemas(t *testing.T) {
 		if got := decodeRegistry([]byte(data), id); got.Reason != RuntimeRegistryUnavailable {
 			t.Fatalf("malformed/duplicate/oversized: %#v", got)
 		}
+	}
+}
+
+// A record captured from a live 2.1.312 interactive session (derived name,
+// identity values replaced; see testdata/README.md) is runtime-ready as
+// shell and refused as busy. The same bytes with the next, unqualified
+// version or one unknown key are refused, so the capture is not admitted by
+// a permissive decoder. Limit: one capture with nameSource=derived; the
+// user-named shape is covered by the synthetic fixture above.
+func TestRegistryCapturedRecord(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "claude-code-2.1.312-registry-derived.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	if got := decodeRegistry(data, id); got.State != RuntimeReady || got.Reason != RuntimeNone || got.Version != "2.1.312" || got.Status != "shell" {
+		t.Fatalf("captured shell: %#v", got)
+	}
+	for _, c := range []struct {
+		name, old, next string
+		want            RuntimeReason
+	}{
+		{"busy", `"status": "shell"`, `"status": "busy"`, RuntimeBusy},
+		{"next-version", `"version": "2.1.312"`, `"version": "2.1.313"`, RuntimeVersionUnqualified},
+		{"unknown-key", `"status": "shell"`, `"status": "shell", "hostSessionId": "synthetic"`, RuntimeSchemaUnqualified},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if bytes.Count(data, []byte(c.old)) != 1 {
+				t.Fatalf("fixture anchor %q not unique", c.old)
+			}
+			if got := decodeRegistry(bytes.Replace(data, []byte(c.old), []byte(c.next), 1), id); got.Reason != c.want {
+				t.Fatalf("got %#v want %s", got, c.want)
+			}
+		})
 	}
 }

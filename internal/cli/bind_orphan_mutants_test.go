@@ -51,7 +51,9 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"unwritable-idle-reset-exemption", "cli/bind.go", `qualificationInterrupted = true`, `qualificationInterrupted = policy.SessionID != "owned-thread"`, "TestTerminalRunAuthorityReadFailure", admission + "/none"},
 		{"recovery-first-glimpse-count-one", "cli/bind_readiness.go", `if previous := b.Idle; previous != nil {`, `if b.Idle==nil && b.NoticeCount==1 && len(b.AttemptIDs)>0 {return true,nil}; if previous := b.Idle; previous != nil {`, "TestReviewerFreshRecoveryQualification", admission + "/none"},
 		{"registry-schema-extra", "tmuxwake/registry.go", `for k, v := range m {`, `for k, v := range m {if k=="future"{continue}`, "TestRegistryQualifiedSchemas/extra", "TestRegistryQualifiedSchemas/renamed"},
-		{"registry-version-range", "tmuxwake/registry.go", `case "2.1.302", "2.1.309", "2.1.310":`, `case "2.1.302", "2.1.309", "2.1.310", "2.1.311":`, "TestRegistryQualifiedSchemas/unknown-version", "TestRegistryQualifiedSchemas/2.1.310/idle"},
+		{"registry-version-range", "tmuxwake/registry.go", `case "2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312":`, `case "2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312", "2.1.313":`, "TestRegistryQualifiedSchemas/unknown-version", "TestRegistryQualifiedSchemas/2.1.312/idle"},
+		{"registry-version-drop-2.1.311", "tmuxwake/registry.go", `case "2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312":`, `case "2.1.302", "2.1.309", "2.1.310", "2.1.312":`, "TestRegistryQualifiedSchemas/2.1.311/idle", "TestRegistryQualifiedSchemas/2.1.312/idle"},
+		{"registry-version-drop-2.1.312", "tmuxwake/registry.go", `case "2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312":`, `case "2.1.302", "2.1.309", "2.1.310", "2.1.311":`, "TestRegistryCapturedRecord", "TestRegistryQualifiedSchemas/2.1.311/idle"},
 		{"registry-birth-reuse", "tmuxwake/registry.go", `!birth.Equal(id.Birth)`, `(!birth.Equal(id.Birth) && false)`, "TestRegistryQualifiedSchemas/reused-pid", "TestRegistryQualifiedSchemas/startedAt-not-birth"},
 		{"registry-busy-ready", "tmuxwake/registry.go", `reason = RuntimeBusy`, `reason = RuntimeNone`, "TestRegistryQualifiedSchemas/2.1.310/busy", "TestRegistryQualifiedSchemas/2.1.310/shell"},
 		{"registry-input-runtime-only", "tmuxwake/readiness.go", `return r.Input.State == InputEmpty && r.Input.Reason == InputReasonNone && r.runtimeEligible()`, `return r.runtimeEligible()`, "TestReadinessAdmissionState/codex/nonempty", "TestReadinessAdmissionState/codex/empty"},
@@ -211,6 +213,8 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			switch strings.Split(p.killer, "/")[0] {
 			case "TestRegistryQualifiedSchemas":
 				intended = "got "
+			case "TestRegistryCapturedRecord":
+				intended = "captured shell:"
 			case "TestReadinessAdmissionState":
 				intended = "runtime alone admitted input state"
 			case "TestReadinessIdleContinuity":
@@ -282,6 +286,9 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 				intended = "renderer authorized erase"
 			case "TestRev3PaddedDraftEffects":
 				intended = "ambiguous space suffix touched"
+			}
+			if intended == "" {
+				t.Fatalf("plant=%s killer=%s has no intended assertion; a failure without one is not a kill", p.name, p.killer)
 			}
 			decoder := json.NewDecoder(bytes.NewReader(out))
 			for decoder.More() {

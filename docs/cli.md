@@ -970,7 +970,7 @@ session ID and tmux pane with the already-pinned local target. The existing owne
 is not a process-birth substitute. A session handover clears the old root and readiness/idle observations; trusted rebind must prove the new
 association. A matching bind can associate a previously rootless binding without discarding its generation or attempt journal.
 
-The exact schema versions qualified by source fixtures are **2.1.302, 2.1.309 and 2.1.310**, not an inclusive range. Qualification checks
+The exact schema versions qualified by source fixtures are **2.1.302, 2.1.309, 2.1.310, 2.1.311 and 2.1.312**, not an inclusive range. Qualification checks
 all required keys/types, optional `tmux`/`bridgeSessionId` and recursive `formerNames`, duplicate keys and unknown fields. Interactivity
 requires `entrypoint=cli` and the matching tmux pane; `kind=interactive` alone is insufficient. A qualified `idle` or `shell` record is
 runtime-ready under the same input gates; `busy`, headless, identity mismatch and unknown status refuse both old and named layouts.

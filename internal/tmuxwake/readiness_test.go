@@ -33,7 +33,7 @@ func TestRegistryRootAssociation(t *testing.T) {
 			case "busy":
 				f.m["status"] = "busy"
 			case "unknown-version":
-				f.m["version"] = "2.1.311"
+				f.m["version"] = "2.1.313"
 			case "session":
 				session = "replacement"
 			case "birth":
@@ -225,8 +225,8 @@ func TestBoundReadinessRoutes(t *testing.T) {
 		{"codex", "codex", "", "", false, false, true, LegacyCodex},
 		{"legacy-rootless", "claude", "2.1.310", "idle", true, false, true, LegacyFallback},
 		{"named-rootless", "claude-named", "2.1.310", "idle", true, false, false, ""},
-		{"legacy-new-version", "claude", "2.1.311", "idle", false, false, true, LegacyFallback},
-		{"named-new-version", "claude-named", "2.1.311", "idle", false, false, false, ""},
+		{"legacy-new-version", "claude", "2.1.313", "idle", false, false, true, LegacyFallback},
+		{"named-new-version", "claude-named", "2.1.313", "idle", false, false, false, ""},
 		{"legacy-schema-drift", "claude", "2.1.310", "idle", false, true, true, LegacyFallback},
 		{"named-schema-drift", "claude-named", "2.1.310", "idle", false, true, false, ""},
 		{"legacy-busy", "claude", "2.1.310", "busy", false, false, false, ""},
@@ -253,7 +253,7 @@ func TestBoundReadinessRoutes(t *testing.T) {
 			}
 		})
 	}
-	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310"} {
+	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312"} {
 		for _, status := range []string{"idle", "shell", "busy"} {
 			t.Run(version+"/"+status, func(t *testing.T) {
 				f := newBoundFixture(t, "claude-named", version, status)

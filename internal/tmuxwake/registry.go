@@ -262,7 +262,7 @@ func decodeRegistry(data []byte, id registryIdentity) registryAssessment {
 	}
 	version := recordString(m, "version")
 	switch version {
-	case "2.1.302", "2.1.309", "2.1.310":
+	case "2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312":
 	default:
 		return result(RuntimeVersionUnqualified, version)
 	}

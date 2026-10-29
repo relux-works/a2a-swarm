@@ -71,7 +71,7 @@ func TestReadinessDispatch(t *testing.T) {
 				f.update(func(st *config.State) { st.Terminal.ClaudeRegistryRoot = "" })
 			}
 			if mode == "named-unqualified" {
-				m["version"] = "2.1.311"
+				m["version"] = "2.1.313"
 				writeDispatchRegistry(t, path, m)
 			}
 			f.control(map[string]any{"claude": true, "named": mode != "legacy-rootless"})

@@ -1,0 +1,25 @@
+{
+  "pid": 1234,
+  "sessionId": "11111111-1111-4111-8111-111111111111",
+  "cwd": "/synthetic",
+  "startedAt": 1793016001000,
+  "procStart": "Mon Oct 26 12:00:00 2026",
+  "version": "2.1.312",
+  "peerProtocol": 1,
+  "peerFeatures": [
+    "notify_idle",
+    "reply_across_default_dirs",
+    "artifact_yield"
+  ],
+  "kind": "interactive",
+  "entrypoint": "cli",
+  "pidDomain": "darwin",
+  "tmux": "synthetic:@0.%1",
+  "messagingSocketPath": "/synthetic/not-opened",
+  "name": "synthetic",
+  "nameSource": "derived",
+  "nameSince": 1793016001000,
+  "status": "shell",
+  "updatedAt": 1793016002000,
+  "statusUpdatedAt": 1793016002000
+}
