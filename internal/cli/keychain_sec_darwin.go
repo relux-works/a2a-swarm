@@ -65,7 +65,10 @@ static OSStatus a2a_update(const char *path, const char *svc, UInt32 svcLen, con
 		for (UInt32 i = 0; i < oldLen; i++) {
 			b[i] = 0;
 		}
-		SecKeychainItemFreeContent(NULL, old);
+		// An empty stored value may come back as NULL data; only free a buffer.
+		if (old != NULL) {
+			SecKeychainItemFreeContent(NULL, old);
+		}
 		st = SecKeychainItemModifyAttributesAndData(item, NULL, len, data);
 		CFRelease(item);
 	}
@@ -74,7 +77,9 @@ static OSStatus a2a_update(const char *path, const char *svc, UInt32 svcLen, con
 }
 
 static void a2a_free(void *data) {
-	SecKeychainItemFreeContent(NULL, data);
+	if (data != NULL) {
+		SecKeychainItemFreeContent(NULL, data);
+	}
 }
 */
 import "C"
