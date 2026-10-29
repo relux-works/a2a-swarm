@@ -102,11 +102,12 @@ func TestWaitTimeout(t *testing.T) {
 }
 
 // Proves each relevance rule wakes wait: a mention of my user id, my name in
-// "to", and a reply in a thread I posted in. My own messages and unrelated
+// "to", and a reply in an explicitly followed thread. My own messages and unrelated
 // chatter do not.
 func TestWaitRelevance(t *testing.T) {
 	e, room := world(t)
 	root := strings.TrimSpace(e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
+	e.as("alice", "follow", "proj", "--topic", root).ok(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t) // take a position
 
 	cases := []struct {
@@ -184,9 +185,9 @@ func TestWaitInvite(t *testing.T) {
 	tuitestkit.NotContainsStr(t, r.stdout, "#proj")
 }
 
-// Proves a thread I joined by posting (learned from my own event in the sync
-// stream, not from local state) wakes me on the next reply.
-func TestWaitLearnsThreadsFromSync(t *testing.T) {
+// Proves replaying an own post from another machine cannot follow its thread;
+// a subsequent explicit follow permits the next peer reply.
+func TestWaitDoesNotLearnThreadsFromSync(t *testing.T) {
 	e, room := world(t)
 	root := e.hs.inject(room, "@bob:test.local", msg("[topic] beta: B", nil))
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -194,8 +195,14 @@ func TestWaitLearnsThreadsFromSync(t *testing.T) {
 	e.hs.inject(room, "@alice:test.local", msg("my reply", map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}))
 	e.as("alice", "wait", "--timeout", "30ms").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", msg("answer to alice", map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}))
+	control := e.hs.inject(room, "@bob:test.local", msg("history delivery fence @alice:test.local", nil))
 	r := e.as("alice", "wait", "--timeout", "2s").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, "thread #proj "+id)
+	if !strings.Contains(r.stdout, control) || e.mailbox("alice").Has(id) {
+		t.Fatalf("own history implicitly followed thread: %q", r.stdout)
+	}
+	e.as("alice", "follow", "proj", "--topic", root).ok(t)
+	id = e.hs.inject(room, "@bob:test.local", msg("explicit positive", map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}))
+	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "thread #proj "+id)
 }
 
 // Proves --room restricts which rooms can wake me, without losing what it
@@ -273,7 +280,8 @@ func TestWaitNegative(t *testing.T) {
 // negative controls (own events, non-messages, other threads).
 func TestClassify(t *testing.T) {
 	me := "@alice:test.local"
-	st := config.State{Threads: []string{"$mine"}}
+	st := config.State{}
+	st.Follow("!r", "$mine")
 	ev := func(sender, typ string, content map[string]any) matrix.Event {
 		raw, _ := json.Marshal(content)
 		return matrix.Event{EventID: "$e", Type: typ, Sender: sender, Content: raw}
@@ -296,8 +304,8 @@ func TestClassify(t *testing.T) {
 		{"mention before punctuation", ev("@bob:test.local", "m.room.message", map[string]any{"body": "@alice:test.localhost, then " + me + "."}), relMention, ""},
 		{"my thread", ev("@bob:test.local", "m.room.message", thread("$mine")), relThread, ""},
 		{"other thread", ev("@bob:test.local", "m.room.message", thread("$other")), "", ""},
-		{"own reply learns thread", ev(me, "m.room.message", thread("$new")), "", "$new"},
-		{"own topic learns root", ev(me, "m.room.message", map[string]any{"body": "[topic] x: y"}), "", "$e"},
+		{"own reply never follows", ev(me, "m.room.message", thread("$new")), "", ""},
+		{"own topic never follows", ev(me, "m.room.message", map[string]any{"body": "[topic] x: y"}), "", ""},
 		{"own mention ignored", ev(me, "m.room.message", map[string]any{"body": me}), "", ""},
 		{"non-message ignored", ev("@bob:test.local", "m.reaction", map[string]any{"body": me}), "", ""},
 	}

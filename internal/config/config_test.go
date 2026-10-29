@@ -248,8 +248,8 @@ func TestStateThreadBound(t *testing.T) {
 	for i := 0; i < 600; i++ {
 		s.AddThread(strings.Repeat("x", i+1))
 	}
-	if len(s.Threads) != 500 || s.Threads[0] != strings.Repeat("x", 101) {
-		t.Fatalf("len = %d", len(s.Threads))
+	if len(s.Participation) != 500 || s.Participation[0] != strings.Repeat("x", 101) {
+		t.Fatalf("len = %d", len(s.Participation))
 	}
 }
 
@@ -273,8 +273,8 @@ func TestUpdateStateConcurrent(t *testing.T) {
 		}
 	}
 	s, err := LoadState(p, "a")
-	if err != nil || len(s.Threads) != 20 {
-		t.Fatalf("threads = %d, err = %v, want 20", len(s.Threads), err)
+	if err != nil || len(s.Participation) != 20 {
+		t.Fatalf("threads = %d, err = %v, want 20", len(s.Participation), err)
 	}
 }
 

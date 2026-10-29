@@ -37,28 +37,22 @@ const (
 )
 
 // classify decides whether a timeline event concerns this agent. It is pure:
-// the caller updates the thread list from the returned learnedRoot. matched
+// own events never learn notification intent. The second result is retained
+// for source compatibility and is always empty. matched
 // lists the subscriptions that deliver the event, whatever its relevance, so
 // that the caller can close --until-kind subscriptions.
-func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub) (rel relevance, learnedRoot string, matched []string) {
+func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub, owner ...string) (rel relevance, learnedRoot string, matched []string) {
 	if ev.Type != "m.room.message" {
 		return "", "", nil
 	}
 	m := ev.Message()
 	root := ev.ThreadRoot()
 	if ev.Sender == me {
-		// My own message: a reply joins me to its thread; a topic root I sent is a thread I own.
-		if root != "" {
-			return "", root, nil
-		}
-		if strings.HasPrefix(m.Body, TopicPrefix) {
-			return "", ev.EventID, nil
-		}
 		return "", "", nil
 	}
 	h, hasHeader := decodeHeader(m.A2A)
 	for _, sub := range subs {
-		if sub.matches(ev, roomID, h, hasHeader) {
+		if sub.matches(ev, roomID, h, hasHeader) && !(root != "" && st.IsMuted(root) && sub.Topic != "") {
 			matched = append(matched, sub.ID)
 		}
 	}
@@ -69,6 +63,10 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 			return relSub, "", matched
 		}
 		return "", "", nil
+	}
+	if len(owner) > 0 && owner[0] != "" && ev.Sender == owner[0] {
+		// Use the established addressed route understood by every doorbell.
+		return relTo, "", matched
 	}
 	if hasHeader {
 		for _, t := range h.To {
@@ -90,7 +88,7 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 	if len(matched) > 0 {
 		return relSub, "", matched
 	}
-	if root != "" && st.HasThread(root) && !st.IsMuted(root) {
+	if root != "" && st.FollowsThread(roomID, root) && !st.IsMuted(root) {
 		return relThread, "", nil
 	}
 	return "", "", nil

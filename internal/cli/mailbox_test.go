@@ -213,7 +213,7 @@ func TestMailboxModeAndSymlinkRefused(t *testing.T) {
 // Proves the migration from a pre-mailbox state file: ids of the legacy acked
 // ring are never delivered again, and the events of a legacy pending batch
 // (printed by an old wait, never acknowledged) are delivered, since the cursor
-// never moved past them; the legacy fields are dropped.
+// never moved past them; the opaque legacy fields remain as recovery evidence.
 func TestLegacyStateMigration(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "inbox").ok(t)
@@ -228,7 +228,7 @@ func TestLegacyStateMigration(t *testing.T) {
 	out := e.as("alice", "inbox").ok(t).stdout
 	tuitestkit.ContainsStr(t, out, "id="+pending)
 	tuitestkit.NotContainsStr(t, out, acked)
-	if st := e.state("alice"); st.LegacyAcked != nil || st.LegacyPending != nil {
-		t.Fatalf("legacy fields kept: %+v", st)
+	if st := e.state("alice"); len(st.LegacyAcked) != 1 || len(st.LegacyPending) == 0 {
+		t.Fatalf("legacy recovery evidence lost: %+v", st)
 	}
 }

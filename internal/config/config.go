@@ -316,15 +316,20 @@ type State struct {
 	// NextBatch is the sync cursor: every relevant event before it is in the
 	// mailbox (appended and fsynced before the cursor was saved).
 	NextBatch string `json:"next_batch,omitempty"`
-	// LegacyPending is the pre-mailbox pending wait batch. It is dropped at the
-	// first sync: the cursor never moved past it, so its events are synced
-	// into the mailbox again.
+	// LegacyPending is the pre-mailbox pending wait batch. Keep this opaque
+	// recovery evidence: follow migration must never discard old obligations.
 	LegacyPending json.RawMessage `json:"pending,omitempty"`
 	// LegacyAcked is the pre-mailbox acknowledged-id ring; the first sync moves
-	// it into the mailbox receipt index and drops it.
+	// it into the mailbox receipt index; retain the original recovery evidence.
 	LegacyAcked []string `json:"acked,omitempty"`
-	// Threads holds thread root event ids where this agent posted or which it created.
+	// Threads is the legacy mixed-origin list. It never grants eligibility.
 	Threads []string `json:"threads,omitempty"`
+	// Participation records current-binary local posting history, never consent.
+	Participation []string `json:"participation,omitempty"`
+	// ThreadFollows contains only explicit follow intent, independent of delivery.
+	ThreadFollows       []ThreadFollow   `json:"thread_follows,omitempty"`
+	ThreadPolicyVersion int              `json:"thread_policy_version,omitempty"`
+	ThreadMigration     *ThreadMigration `json:"thread_migration,omitempty"`
 	// Muted holds thread roots the agent muted explicitly; posting in them or
 	// seeing its own events there never re-follows them (only Follow does).
 	Muted []string `json:"muted,omitempty"`
@@ -424,9 +429,11 @@ const LegacyAllRooms = "*"
 
 // HasThread reports whether root is a thread this agent participates in.
 func (s State) HasThread(root string) bool {
-	for _, t := range s.Threads {
-		if t == root {
-			return true
+	for _, roots := range [][]string{s.Threads, s.Participation} {
+		for _, t := range roots {
+			if t == root {
+				return true
+			}
 		}
 	}
 	return false
@@ -453,23 +460,31 @@ func (s State) IsMuted(root string) bool {
 	return false
 }
 
-// Mute forgets root and keeps it muted until Follow; it reports whether the
+// Mute removes explicit follow intent and keeps root muted until Follow; it reports whether the
 // state changed.
 func (s *State) Mute(root string) bool {
-	changed := s.RemoveThread(root)
+	changed := false
+	kept := s.ThreadFollows[:0:0]
+	for _, f := range s.ThreadFollows {
+		if f.Root == root {
+			changed = true
+		} else {
+			kept = append(kept, f)
+		}
+	}
+	s.ThreadFollows = kept
 	if root != "" && !s.IsMuted(root) {
 		s.Muted = append(s.Muted, root)
-		const max = 500
-		if len(s.Muted) > max {
-			s.Muted = s.Muted[len(s.Muted)-max:]
-		}
 		changed = true
 	}
 	return changed
 }
 
 // Follow lifts a mute and follows root again; it reports whether the state changed.
-func (s *State) Follow(root string) bool {
+func (s *State) Follow(room, root string) bool {
+	if room == "" || root == "" {
+		return false
+	}
 	changed := false
 	for i, t := range s.Muted {
 		if t == root {
@@ -478,20 +493,23 @@ func (s *State) Follow(root string) bool {
 			break
 		}
 	}
-	return s.AddThread(root) || changed
+	if !s.FollowsThread(room, root) {
+		s.ThreadFollows = append(s.ThreadFollows, ThreadFollow{Room: room, Root: root, Action: "follow", Scope: "thread"})
+		changed = true
+	}
+	return changed
 }
 
-// AddThread records root (learned from the agent's own posts or topics); it
-// never re-follows an explicitly muted thread. It reports whether the state changed.
+// AddThread records local participation only. It cannot follow or lift a mute.
 func (s *State) AddThread(root string) bool {
 	if root == "" || s.HasThread(root) || s.IsMuted(root) {
 		return false
 	}
-	s.Threads = append(s.Threads, root)
+	s.Participation = append(s.Participation, root)
 	// Bound the list so that the state file stays small.
 	const max = 500
-	if len(s.Threads) > max {
-		s.Threads = s.Threads[len(s.Threads)-max:]
+	if len(s.Participation) > max {
+		s.Participation = s.Participation[len(s.Participation)-max:]
 	}
 	return true
 }

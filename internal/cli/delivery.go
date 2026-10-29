@@ -113,9 +113,9 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 
 // batch is what one sync response adds to the mailbox.
 type batch struct {
-	entries []config.MailEntry
-	learned []string // thread roots learned from my own events
-	close   []string // --until-kind subscriptions closed by a persisted event
+	entries  []config.MailEntry
+	close    []string            // --until-kind subscriptions closed by a persisted event
+	closeFor map[string][]string // event id -> scopes closed by that event
 }
 
 // deliveryFilter is the --room/--all selection of wait and watch.
@@ -169,6 +169,7 @@ func inviteEntry(roomID, since string, state []matrix.Event, me, server string) 
 func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string) (batch, error) {
 	var b batch
 	me := s.creds.UserID
+	owner := ownerFiles(s.paths, s.name).pin().Owner
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		b.entries = append(b.entries, inviteEntry(roomID, since, resp.Rooms.Invite[roomID].InviteState.Events, me, s.server))
 	}
@@ -188,7 +189,7 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			if ev.Sender == me || ev.ThreadRoot() != "" || all[roomID] {
 				return true
 			}
-			rel, _, _ := classify(ev, roomID, me, s.name, st, subs)
+			rel, _, _ := classify(ev, roomID, me, s.name, st, subs, owner)
 			return rel != ""
 		}
 		events, gap, err := s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
@@ -209,11 +210,7 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 					}
 				}
 			}
-			rel, root, matched := classify(ev, roomID, me, s.name, st, active)
-			if root != "" {
-				b.learned = append(b.learned, root)
-				st.AddThread(root)
-			}
+			rel, _, matched := classify(ev, roomID, me, s.name, st, active, owner)
 			if rel == "" && all[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
 				rel = relAll
 			}
@@ -226,6 +223,10 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 				if sub := byID[id]; sub.UntilKind != "" && sub.UntilKind == h.Kind && !closed[id] {
 					closed[id] = true
 					b.close = append(b.close, id)
+					if b.closeFor == nil {
+						b.closeFor = map[string][]string{}
+					}
+					b.closeFor[ev.EventID] = append(b.closeFor[ev.EventID], id)
 				}
 			}
 			subID := ""
@@ -255,6 +256,9 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 		if err := s.checkConnection(); err != nil {
 			return nil, err
 		}
+		if err := s.migrateThreadPolicy(ctx, cur); err != nil {
+			return nil, err
+		}
 		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {
 			return nil, err
@@ -267,6 +271,10 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 			return err
 		})
 	}
+	// Do not checkpoint state after the older subscription converter has edited it.
+	if _, err := s.ensureThreadPolicy(ctx, deadline); err != nil {
+		return config.State{}, err
+	}
 	st, _, err := s.updateSubsBy(ctx, deadline, func(cur *config.State, list *SubList) (bool, error) {
 		ids, err := run(cur)
 		if err != nil {
@@ -278,15 +286,15 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 }
 
 // migrateLegacyDelivery moves a pre-mailbox acked ring into the receipt index
-// and drops a pre-mailbox pending batch (its events are behind the cursor, so
-// this sync puts them into the mailbox).
+// without discarding the opaque pending batch or original receipt evidence.
 func migrateLegacyDelivery(cur *config.State, mb *config.Mailbox) error {
 	if len(cur.LegacyAcked) > 0 {
 		if err := mb.AddReceived(cur.LegacyAcked); err != nil {
 			return err
 		}
 	}
-	cur.LegacyAcked, cur.LegacyPending = nil, nil
+	// Retain the original legacy recovery evidence, including opaque pending.
+	// Reclassification after follow cutover is not permission to discard it.
 	return nil
 }
 
@@ -304,7 +312,57 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 				return nil, err
 			}
 		}
-		if _, err := mb.Append(b.entries); err != nil {
+		// Reuse the shared classifier under the append lock: a foreground mute
+		// can reject a collected event, but cannot erase already-durable mail.
+		entries := make([]config.MailEntry, 0, len(b.entries))
+		var currentSubs *SubList
+		closed := map[string]bool{}
+		var closeSubs []string
+		owner := ownerFiles(s.paths, s.name).pin().Owner
+		for _, e := range b.entries {
+			if e.Kind == config.MailEvent && (e.Rel == string(relThread) || e.Rel == string(relSub)) {
+				var ev matrix.Event
+				if err := json.Unmarshal(e.Event, &ev); err != nil {
+					return nil, err
+				}
+				if currentSubs == nil {
+					list, err := s.getSubs(ctx)
+					if err != nil {
+						return nil, err
+					}
+					currentSubs = &list
+				}
+				var active []Sub
+				for _, sub := range currentSubs.Subs {
+					if !closed[sub.ID] {
+						active = append(active, sub)
+					}
+				}
+				rel, _, matched := classify(ev, e.Room, s.creds.UserID, s.name, *cur, active, owner)
+				if rel == "" {
+					continue
+				}
+				e.Rel, e.Sub = string(rel), ""
+				if rel == relSub {
+					e.Sub = matched[0]
+				}
+				for _, id := range matched {
+					if contains(b.closeFor[e.ID], id) && !closed[id] {
+						closed[id] = true
+						closeSubs = append(closeSubs, id)
+					}
+				}
+			} else if e.Kind == config.MailEvent {
+				for _, id := range b.closeFor[e.ID] {
+					if !closed[id] {
+						closeSubs = append(closeSubs, id)
+						closed[id] = true
+					}
+				}
+			}
+			entries = append(entries, e)
+		}
+		if _, err := mb.Append(entries); err != nil {
 			return nil, err
 		}
 		if a.afterAppend != nil {
@@ -312,19 +370,16 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 				return nil, err
 			}
 		}
-		for _, r := range b.learned {
-			cur.AddThread(r)
-		}
 		if cur.NextBatch == since {
 			cur.NextBatch = next
 		}
-		return b.close, nil
+		return closeSubs, nil
 	})
 }
 
 // ingest classifies one sync response from since and persists it.
 func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time) (config.State, error) {
-	snap, err := config.LoadState(s.paths, s.name)
+	snap, err := s.ensureThreadPolicy(ctx, deadline)
 	if err != nil {
 		return snap, err
 	}
@@ -369,9 +424,61 @@ func (s *session) syncNow(ctx context.Context, st config.State, subs []Sub, dead
 // startDelivery removes expired subscriptions and returns the state to
 // deliver from and the live subscriptions. It acknowledges nothing.
 func (s *session) startDelivery(ctx context.Context, now time.Time) (config.State, SubList, error) {
+	// Inventory before legacy subscription conversion or expiry can change state.
+	if _, err := s.ensureThreadPolicy(ctx, time.Time{}); err != nil {
+		return config.State{}, SubList{}, err
+	}
 	return s.updateSubs(ctx, func(st *config.State, list *SubList) (bool, error) {
 		return len(list.pruneExpired(now)) > 0, nil
 	})
+}
+
+// Avoid rewriting completed state just to take a classification snapshot.
+func (s *session) ensureThreadPolicy(ctx context.Context, deadline time.Time) (config.State, error) {
+	if err := s.checkConnection(); err != nil {
+		return config.State{}, err
+	}
+	st, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return st, err
+	}
+	if st.ThreadPolicyVersion != 0 {
+		return st, config.MigrateThreadFollows(s.paths, s.name, &st, nil)
+	}
+	return config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
+		return s.migrateThreadPolicy(ctx, cur)
+	})
+}
+
+// Migration shares the delivery lock and never changes account data or mail.
+func (s *session) migrateThreadPolicy(ctx context.Context, st *config.State) error {
+	if st.ThreadPolicyVersion == config.ExplicitThreadPolicyVersion {
+		return config.MigrateThreadFollows(s.paths, s.name, st, nil)
+	}
+	list, err := s.getSubs(ctx)
+	if err != nil {
+		return err
+	}
+	return s.migrateThreadPolicyWithSubs(st, list)
+}
+
+func (s *session) migrateThreadPolicyWithSubs(st *config.State, list SubList) error {
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	previous := st.ThreadPolicyVersion
+	if err := config.MigrateThreadFollows(s.paths, s.name, st, raw); err != nil {
+		return err
+	}
+	m := st.ThreadMigration
+	if previous == 0 && m != nil && (len(m.Unknown) > 0 || len(m.Pending) > 0 || len(m.LegacyPending) > 0) {
+		fmt.Fprintf(s.app.Stderr, "a2a: explicit thread policy v%d: %d explicit, %d participation-only, %d unknown legacy roots excluded, %d mutes, %d durable pending retained; inventory: %s (thread_migration); legacy pending retained for normal recovery\n", st.ThreadPolicyVersion, len(m.Explicit), len(m.Implicit), len(m.Unknown), len(m.Mutes), len(m.Pending), sanitizeLine(s.paths.StateFile(s.name)))
+	}
+	return nil
 }
 
 // shownHint tells a wait/watch consumer how its entries leave the mailbox.

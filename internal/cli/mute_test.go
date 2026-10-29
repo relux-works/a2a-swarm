@@ -58,3 +58,20 @@ func TestMuteStickyAcrossOwnPosts(t *testing.T) {
 	id := e.hs.inject(room, "@bob:test.local", msg("plain again", threadReply))
 	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "thread #proj "+id)
 }
+
+// Proves actual command help exposes follow-clears-mute and the effective
+// priority policy without requiring credentials or contacting a homeserver.
+func TestFollowMutePolicyHelp(t *testing.T) {
+	e := newEnv(t)
+	for _, command := range []string{"follow", "mute"} {
+		r := e.run(command, "--help").failsWith(t, ExitUsage, "help requested")
+		for _, text := range []string{"clears its mute", "direct-to, mentions, pinned owner", "topic-scoped subscriptions", "Posts and history never follow"} {
+			if !strings.Contains(r.stdout, text) {
+				t.Fatalf("%s help omitted policy %q: %q", command, text, r.stdout)
+			}
+		}
+	}
+	if e.hs.CallCount("GET /_matrix/client/v3/sync") != 0 {
+		t.Fatal("help synced delivery state")
+	}
+}

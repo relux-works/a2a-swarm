@@ -21,6 +21,12 @@ func cmdFollow(ctx context.Context, a *App, args []string) error {
 func followCommand(ctx context.Context, a *App, args []string, follow bool) error {
 	name := map[bool]string{true: "follow", false: "mute"}[follow]
 	fs := newFlagSet(name)
+	fs.Usage = func() {
+		a.printf("usage: a2a %s <room> --topic <slug|$root>\n", name)
+		a.printf("Explicit follow enables thread replies and clears its mute.\n")
+		a.printf("Mute excludes follows and topic-scoped subscriptions; direct-to, mentions, pinned owner messages and independent subscription scopes remain eligible.\n")
+		a.printf("Posts and history never follow or lift a mute.\n")
+	}
 	topic := fs.String("topic", "", "topic slug or root event id")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -43,8 +49,11 @@ func followCommand(ctx context.Context, a *App, args []string, follow bool) erro
 	}
 	changed := false
 	if _, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+		if err := s.migrateThreadPolicy(ctx, cur); err != nil {
+			return err
+		}
 		if follow {
-			changed = cur.Follow(root)
+			changed = cur.Follow(roomID, root)
 		} else {
 			changed = cur.Mute(root)
 		}
@@ -52,7 +61,7 @@ func followCommand(ctx context.Context, a *App, args []string, follow bool) erro
 	}); err != nil {
 		return err
 	}
-	state := map[bool]string{true: "followed", false: "muted"}[follow]
+	state := map[bool]string{true: "followed (thread replies enabled; mute cleared)", false: "muted (thread-only replies excluded)"}[follow]
 	if !changed {
 		state = "already " + state
 	}
