@@ -316,11 +316,11 @@ type State struct {
 	// NextBatch is the sync cursor: every relevant event before it is in the
 	// mailbox (appended and fsynced before the cursor was saved).
 	NextBatch string `json:"next_batch,omitempty"`
-	// LegacyPending is the pre-mailbox pending wait batch. Keep this opaque
-	// recovery evidence: follow migration must never discard old obligations.
+	// LegacyPending is the pre-mailbox pending wait batch. Its exact IDs must
+	// reach the mailbox/receipt index before recovery may clear this field.
 	LegacyPending json.RawMessage `json:"pending,omitempty"`
-	// LegacyAcked is the pre-mailbox acknowledged-id ring; the first sync moves
-	// it into the mailbox receipt index; retain the original recovery evidence.
+	// LegacyAcked is the pre-mailbox acknowledged-id ring. Recovery retires this
+	// field only after transferring its receipts durably to the mailbox index.
 	LegacyAcked []string `json:"acked,omitempty"`
 	// Threads is the legacy mixed-origin list. It never grants eligibility.
 	Threads []string `json:"threads,omitempty"`
@@ -439,17 +439,6 @@ func (s State) HasThread(root string) bool {
 	return false
 }
 
-// RemoveThread forgets root; it reports whether the state changed.
-func (s *State) RemoveThread(root string) bool {
-	for i, t := range s.Threads {
-		if t == root {
-			s.Threads = append(s.Threads[:i], s.Threads[i+1:]...)
-			return true
-		}
-	}
-	return false
-}
-
 // IsMuted reports whether root was muted explicitly.
 func (s State) IsMuted(root string) bool {
 	for _, t := range s.Muted {
@@ -486,13 +475,15 @@ func (s *State) Follow(room, root string) bool {
 		return false
 	}
 	changed := false
-	for i, t := range s.Muted {
+	keptMutes := s.Muted[:0:0]
+	for _, t := range s.Muted {
 		if t == root {
-			s.Muted = append(s.Muted[:i], s.Muted[i+1:]...)
 			changed = true
-			break
+		} else {
+			keptMutes = append(keptMutes, t)
 		}
 	}
+	s.Muted = keptMutes
 	if !s.FollowsThread(room, root) {
 		s.ThreadFollows = append(s.ThreadFollows, ThreadFollow{Room: room, Root: root, Action: "follow", Scope: "thread"})
 		changed = true

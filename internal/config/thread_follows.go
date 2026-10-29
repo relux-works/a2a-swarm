@@ -45,7 +45,7 @@ type ThreadMigration struct {
 	Mutes               []string            `json:"mutes"`
 	Pending             []ThreadPending     `json:"pending_legacy_tail"`
 	Received            []string            `json:"received"`
-	LegacyPending       json.RawMessage     `json:"legacy_pending,omitempty"`
+	LegacyPending       []string            `json:"legacy_pending_ids,omitempty"`
 	LegacyAcked         []string            `json:"legacy_acked,omitempty"`
 	LegacySubscriptions map[string][]string `json:"legacy_subscriptions,omitempty"`
 	MailboxSHA256       string              `json:"mailbox_sha256"`
@@ -53,9 +53,15 @@ type ThreadMigration struct {
 	Result              string              `json:"result"`
 }
 
+// ThreadPending is metadata only; raw message bodies remain solely in the mailbox.
 type ThreadPending struct {
-	MailEntry
-	WasShown bool `json:"shown"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Room        string `json:"room,omitempty"`
+	Rel         string `json:"rel,omitempty"`
+	TS          int64  `json:"ts,omitempty"`
+	WasShown    bool   `json:"shown"`
+	EventSHA256 string `json:"event_sha256,omitempty"`
 }
 
 // MigrateThreadFollows must run under UpdateState's lock. The inventory is saved
@@ -81,10 +87,21 @@ func migrateThreadFollows(p Paths, name string, s *State, subscriptions json.Raw
 	if s.ThreadPolicyVersion != 0 {
 		return fmt.Errorf("unsupported thread follow policy version %d", s.ThreadPolicyVersion)
 	}
+	legacyIDs, err := LegacyPendingIDs(s.LegacyPending)
+	if err != nil {
+		return err
+	}
 	if s.ThreadMigration == nil {
 		mb, err := OpenMailbox(p, name)
 		if err != nil {
 			return err
+		}
+		if s.NextBatch == "" {
+			for _, id := range legacyIDs {
+				if !mb.Has(id) && !containsLegacyReceipt(s.LegacyAcked, id) {
+					return fmt.Errorf("legacy pending recovery: missing sync cursor for unresolved event")
+				}
+			}
 		}
 		data, err := os.ReadFile(p.MailboxFile(name))
 		if err != nil && !os.IsNotExist(err) {
@@ -95,11 +112,12 @@ func migrateThreadFollows(p Paths, name string, s *State, subscriptions json.Raw
 			Explicit: append([]ThreadFollow{}, s.ThreadFollows...), Subscriptions: append(json.RawMessage(nil), subscriptions...),
 			Implicit: append([]string{}, s.Participation...), Unknown: append([]string{}, s.Threads...),
 			Mutes: append([]string{}, s.Muted...), Pending: []ThreadPending{}, Received: append([]string{}, mb.received...),
-			LegacySubscriptions: s.LegacySubscriptions, LegacyPending: append(json.RawMessage(nil), s.LegacyPending...), LegacyAcked: append([]string(nil), s.LegacyAcked...),
+			LegacySubscriptions: s.LegacySubscriptions, LegacyPending: append([]string(nil), legacyIDs...), LegacyAcked: append([]string(nil), s.LegacyAcked...),
 			MailboxSHA256: hex.EncodeToString(sum[:]), MailboxBytes: len(data),
 			Result: "inventory durable; cutover pending; existing pending obligations retained"}
 		for _, e := range mb.Pending() {
-			m.Pending = append(m.Pending, ThreadPending{MailEntry: e, WasShown: e.Shown})
+			eventSum := sha256.Sum256(e.Event)
+			m.Pending = append(m.Pending, ThreadPending{ID: e.ID, Kind: e.Kind, Room: e.Room, Rel: e.Rel, TS: e.TS, WasShown: e.Shown, EventSHA256: hex.EncodeToString(eventSum[:])})
 		}
 		s.ThreadMigration = m
 		if err := saveThreadCheckpoint(p, name, *s); err != nil {
@@ -135,4 +153,13 @@ func saveThreadCheckpoint(p Paths, name string, s State) error {
 	}
 	defer dir.Close()
 	return dir.Sync()
+}
+
+func containsLegacyReceipt(ids []string, id string) bool {
+	for _, candidate := range ids {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
 }

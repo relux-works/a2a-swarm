@@ -65,7 +65,7 @@ func TestFollowMutePolicyHelp(t *testing.T) {
 	e := newEnv(t)
 	for _, command := range []string{"follow", "mute"} {
 		r := e.run(command, "--help").failsWith(t, ExitUsage, "help requested")
-		for _, text := range []string{"clears its mute", "direct-to, mentions, pinned owner", "topic-scoped subscriptions", "Posts and history never follow"} {
+		for _, text := range []string{"clears its mute", "direct-to, mentions", "active owner-DM room subscription", "topic-scoped subscriptions", "Posts and history never follow"} {
 			if !strings.Contains(r.stdout, text) {
 				t.Fatalf("%s help omitted policy %q: %q", command, text, r.stdout)
 			}

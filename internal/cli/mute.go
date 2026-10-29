@@ -24,7 +24,7 @@ func followCommand(ctx context.Context, a *App, args []string, follow bool) erro
 	fs.Usage = func() {
 		a.printf("usage: a2a %s <room> --topic <slug|$root>\n", name)
 		a.printf("Explicit follow enables thread replies and clears its mute.\n")
-		a.printf("Mute excludes follows and topic-scoped subscriptions; direct-to, mentions, pinned owner messages and independent subscription scopes remain eligible.\n")
+		a.printf("Mute excludes follows and topic-scoped subscriptions; direct-to, mentions and independent subscription scopes (including the active owner-DM room subscription) remain eligible.\n")
 		a.printf("Posts and history never follow or lift a mute.\n")
 	}
 	topic := fs.String("topic", "", "topic slug or root event id")

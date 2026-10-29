@@ -113,6 +113,7 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 
 // batch is what one sync response adds to the mailbox.
 type batch struct {
+	all      map[string]bool // explicit wait/watch --all scope, retained for append-time recheck
 	entries  []config.MailEntry
 	close    []string            // --until-kind subscriptions closed by a persisted event
 	closeFor map[string][]string // event id -> scopes closed by that event
@@ -167,9 +168,8 @@ func inviteEntry(roomID, since string, state []matrix.Event, me, server string) 
 // --all accepts) while it pages; they are classified oldest first. all is the
 // set of rooms whose every message counts (wait/watch --all).
 func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string) (batch, error) {
-	var b batch
+	b := batch{all: all}
 	me := s.creds.UserID
-	owner := ownerFiles(s.paths, s.name).pin().Owner
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		b.entries = append(b.entries, inviteEntry(roomID, since, resp.Rooms.Invite[roomID].InviteState.Events, me, s.server))
 	}
@@ -186,10 +186,10 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			if ev.Type != "m.room.message" {
 				return false
 			}
-			if ev.Sender == me || ev.ThreadRoot() != "" || all[roomID] {
+			if ev.Sender == me || ev.ThreadRoot() != "" || all[roomID] || st.HasLegacyPendingEvent(ev.EventID) {
 				return true
 			}
-			rel, _, _ := classify(ev, roomID, me, s.name, st, subs, owner)
+			rel, _, _ := classify(ev, roomID, me, s.name, st, subs)
 			return rel != ""
 		}
 		events, gap, err := s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
@@ -201,16 +201,14 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 				Label: s.roomLabel(ctx, roomID, labels), From: gap.From, To: gap.To})
 		}
 		for _, ev := range events {
-			active := subs
-			if len(closed) > 0 {
-				active = nil
-				for _, sub := range subs {
-					if !closed[sub.ID] {
-						active = append(active, sub)
-					}
-				}
+			// Replayed legacy receipts must not deliver or consume until-kind scopes.
+			if contains(st.LegacyAcked, ev.EventID) {
+				continue
 			}
-			rel, _, matched := classify(ev, roomID, me, s.name, st, active, owner)
+			// Closure is committed only under the append lock. Keep later
+			// candidates too: an earlier candidate may be receipted or lose
+			// its selector match between collection and persistence.
+			rel, _, matched := classify(ev, roomID, me, s.name, st, subs)
 			if rel == "" && all[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
 				rel = relAll
 			}
@@ -220,9 +218,11 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			seen[ev.EventID] = true
 			h, _ := decodeHeader(ev.Message().A2A)
 			for _, id := range matched {
-				if sub := byID[id]; sub.UntilKind != "" && sub.UntilKind == h.Kind && !closed[id] {
-					closed[id] = true
-					b.close = append(b.close, id)
+				if sub := byID[id]; sub.UntilKind != "" && sub.UntilKind == h.Kind {
+					if !closed[id] {
+						closed[id] = true
+						b.close = append(b.close, id)
+					}
 					if b.closeFor == nil {
 						b.closeFor = map[string][]string{}
 					}
@@ -245,7 +245,8 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 }
 
 // lockedDeliver runs fn under the state lock with the mailbox open, and saves
-// the state only when fn succeeds. When withSubs is set the subscription list
+// the state only when fn succeeds. This local boundary does not require the
+// network or subscription-policy migration when withSubs is false. When set, the list
 // is held as well and the ids fn returns are removed from it (account data is
 // written before the state). A set deadline bounds the wait for the lock.
 func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSubs bool, fn func(cur *config.State, mb *config.Mailbox) (closeSubs []string, err error)) (config.State, error) {
@@ -254,9 +255,6 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 	}
 	run := func(cur *config.State) ([]string, error) {
 		if err := s.checkConnection(); err != nil {
-			return nil, err
-		}
-		if err := s.migrateThreadPolicy(ctx, cur); err != nil {
 			return nil, err
 		}
 		mb, err := config.OpenMailbox(s.paths, s.name)
@@ -286,15 +284,14 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 }
 
 // migrateLegacyDelivery moves a pre-mailbox acked ring into the receipt index
-// without discarding the opaque pending batch or original receipt evidence.
+// before the recovered batch is retired. The caller validates complete recovery
+// first and clears the old fields only after all effects are durable.
 func migrateLegacyDelivery(cur *config.State, mb *config.Mailbox) error {
 	if len(cur.LegacyAcked) > 0 {
 		if err := mb.AddReceived(cur.LegacyAcked); err != nil {
 			return err
 		}
 	}
-	// Retain the original legacy recovery evidence, including opaque pending.
-	// Reclassification after follow cutover is not permission to discard it.
 	return nil
 }
 
@@ -303,24 +300,30 @@ func migrateLegacyDelivery(cur *config.State, mb *config.Mailbox) error {
 // meanwhile is left alone (its batch is in the mailbox too).
 func (s *session) persist(ctx context.Context, b batch, since, next string, deadline time.Time) (config.State, error) {
 	a := s.app
+	// Checkpointing is a separate durable phase, before delivery callbacks. A
+	// later delivery failure does not roll migration back or advance its cursor.
+	if _, err := s.ensureThreadPolicy(ctx, deadline); err != nil {
+		return config.State{}, err
+	}
 	return s.lockedDeliver(ctx, deadline, len(b.close) > 0, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
-		if err := migrateLegacyDelivery(cur, mb); err != nil {
-			return nil, err
-		}
 		if a.beforeAppend != nil {
 			if err := a.beforeAppend(); err != nil {
 				return nil, err
 			}
 		}
-		// Reuse the shared classifier under the append lock: a foreground mute
-		// can reject a collected event, but cannot erase already-durable mail.
+		// Recheck EVERY event under the append lock, including direct/mention/all:
+		// stale selector matches must not close an until-kind subscription.
 		entries := make([]config.MailEntry, 0, len(b.entries))
 		var currentSubs *SubList
 		closed := map[string]bool{}
 		var closeSubs []string
-		owner := ownerFiles(s.paths, s.name).pin().Owner
 		for _, e := range b.entries {
-			if e.Kind == config.MailEvent && (e.Rel == string(relThread) || e.Rel == string(relSub)) {
+			if e.Kind == config.MailEvent {
+				// A receipt committed since collection wins over replay and
+				// must not cause a second subscription-disposition effect.
+				if mb.Received(e.ID) || contains(cur.LegacyAcked, e.ID) {
+					continue
+				}
 				var ev matrix.Event
 				if err := json.Unmarshal(e.Event, &ev); err != nil {
 					return nil, err
@@ -338,7 +341,10 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 						active = append(active, sub)
 					}
 				}
-				rel, _, matched := classify(ev, e.Room, s.creds.UserID, s.name, *cur, active, owner)
+				rel, _, matched := classify(ev, e.Room, s.creds.UserID, s.name, *cur, active)
+				if rel == "" && b.all[e.Room] && ev.Type == "m.room.message" && ev.Sender != s.creds.UserID {
+					rel = relAll
+				}
 				if rel == "" {
 					continue
 				}
@@ -352,15 +358,16 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 						closeSubs = append(closeSubs, id)
 					}
 				}
-			} else if e.Kind == config.MailEvent {
-				for _, id := range b.closeFor[e.ID] {
-					if !closed[id] {
-						closeSubs = append(closeSubs, id)
-						closed[id] = true
-					}
-				}
 			}
 			entries = append(entries, e)
+		}
+		// Do not consume a legacy recovery cursor unless every exact pending
+		// obligation is already durable/receipted or is in this accepted batch.
+		if err := validateLegacyRecovery(*cur, mb, entries); err != nil {
+			return nil, err
+		}
+		if err := migrateLegacyDelivery(cur, mb); err != nil {
+			return nil, err
 		}
 		if _, err := mb.Append(entries); err != nil {
 			return nil, err
@@ -370,6 +377,9 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 				return nil, err
 			}
 		}
+		// Both mailbox appends and legacy receipts are durable before retiring
+		// their recovery fields. Failure before here leaves a retryable batch.
+		cur.LegacyPending, cur.LegacyAcked = nil, nil
 		if cur.NextBatch == since {
 			cur.NextBatch = next
 		}
@@ -396,6 +406,9 @@ func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since st
 // takePosition is the very first run: it takes a sync position without
 // replaying history; pending invites go into the mailbox first.
 func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.State, error) {
+	if _, err := s.ensureThreadPolicy(ctx, deadline); err != nil {
+		return config.State{}, err
+	}
 	resp, err := s.client.Sync(ctx, "", 0, initialFilter)
 	if err != nil {
 		return config.State{}, err
@@ -440,6 +453,9 @@ func (s *session) ensureThreadPolicy(ctx context.Context, deadline time.Time) (c
 	}
 	st, err := config.LoadState(s.paths, s.name)
 	if err != nil {
+		return st, err
+	}
+	if _, err := config.LegacyPendingIDs(st.LegacyPending); err != nil {
 		return st, err
 	}
 	if st.ThreadPolicyVersion != 0 {
@@ -760,4 +776,23 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 			return stopped(err)
 		}
 	}
+}
+
+// validateLegacyRecovery is read-only so an unrecoverable/malformed batch cannot
+// write receipts, add partial recovery mail or advance the shared sync cursor.
+func validateLegacyRecovery(st config.State, mb *config.Mailbox, entries []config.MailEntry) error {
+	ids, err := config.LegacyPendingIDs(st.LegacyPending)
+	if err != nil {
+		return err
+	}
+	accepted := map[string]bool{}
+	for _, e := range entries {
+		accepted[e.ID] = true
+	}
+	for _, id := range ids {
+		if !mb.Has(id) && !contains(st.LegacyAcked, id) && !accepted[id] {
+			return fmt.Errorf("legacy pending recovery incomplete: an unresolved event was not recovered; state and cursor retained")
+		}
+	}
+	return nil
 }

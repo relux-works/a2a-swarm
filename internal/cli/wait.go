@@ -41,7 +41,7 @@ const (
 // for source compatibility and is always empty. matched
 // lists the subscriptions that deliver the event, whatever its relevance, so
 // that the caller can close --until-kind subscriptions.
-func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub, owner ...string) (rel relevance, learnedRoot string, matched []string) {
+func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub) (rel relevance, learnedRoot string, matched []string) {
 	if ev.Type != "m.room.message" {
 		return "", "", nil
 	}
@@ -64,10 +64,6 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		}
 		return "", "", nil
 	}
-	if len(owner) > 0 && owner[0] != "" && ev.Sender == owner[0] {
-		// Use the established addressed route understood by every doorbell.
-		return relTo, "", matched
-	}
 	if hasHeader {
 		for _, t := range h.To {
 			if t == myName || t == me {
@@ -89,6 +85,11 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		return relSub, "", matched
 	}
 	if root != "" && st.FollowsThread(roomID, root) && !st.IsMuted(root) {
+		return relThread, "", nil
+	}
+	// An exact pre-mailbox pending ID is an existing obligation, independent
+	// of future thread intent. Reuse the established thread doorbell category.
+	if st.HasLegacyPendingEvent(ev.EventID) {
 		return relThread, "", nil
 	}
 	return "", "", nil

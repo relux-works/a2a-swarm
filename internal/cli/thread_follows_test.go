@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -119,9 +119,9 @@ func TestExplicitThreadFollowDelivery(t *testing.T) {
 	}
 }
 
-// Proves direct-to, structured/body mentions, and an exact host-pinned ordinary
-// owner sender deliver without following and through mute. A projection does
-// not acquire owner authority.
+// Proves direct-to and structured/body mentions deliver without following and
+// through mute. Ordinary owner delivery is covered through the active DM scope
+// separately; a pin alone grants no delivery authority.
 func TestExplicitThreadPriorityControls(t *testing.T) {
 	for _, follow := range []bool{false, true} {
 		for _, muted := range []bool{false, true} {
@@ -134,13 +134,6 @@ func TestExplicitThreadPriorityControls(t *testing.T) {
 			if muted {
 				e.as("alice", "mute", "proj", "--topic", root).ok(t)
 			}
-			f := ownerFiles(e.paths(), "alice")
-			if err := os.MkdirAll(filepath.Dir(f.path("pin")), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(f.path("pin"), []byte(`{"mode":"host","owner":"@owner:test.local"}`), 0600); err != nil {
-				t.Fatal(err)
-			}
 			for _, tc := range []struct {
 				name, sender, want string
 				extra              map[string]any
@@ -148,7 +141,6 @@ func TestExplicitThreadPriorityControls(t *testing.T) {
 				{"direct", "@bob:test.local", "to", map[string]any{ContentKey: Header{To: []string{"alice"}}}},
 				{"structured-mention", "@bob:test.local", "mention", map[string]any{"m.mentions": map[string]any{"user_ids": []string{"@alice:test.local"}}}},
 				{"body-mention", "@bob:test.local", "mention", map[string]any{"body": "cc @alice:test.local"}},
-				{"ordinary-owner", "@owner:test.local", "to", nil},
 			} {
 				content := threadContent(root, tc.name)
 				for k, v := range tc.extra {
@@ -160,7 +152,7 @@ func TestExplicitThreadPriorityControls(t *testing.T) {
 					t.Fatalf("priority %s follow=%v muted=%v output=%q", tc.name, follow, muted, r.stdout)
 				}
 			}
-			// Projection suppression stays ahead of owner routing.
+			// Projections retain their independent suppression policy.
 			projection := threadContent(root, "projection")
 			projection[ContentKey] = Header{Type: "projection"}
 			id := e.hs.inject(room, "@owner:test.local", projection)
@@ -270,7 +262,7 @@ func TestExplicitThreadLegacyPendingRecovery(t *testing.T) {
 	raw, _ := json.Marshal(ev)
 	_, err := config.UpdateState(e.paths(), "alice", func(s *config.State) error {
 		s.Threads, s.ThreadPolicyVersion, s.ThreadMigration = []string{root}, 0, nil
-		s.LegacyPending = json.RawMessage(`{"events":["$opaque-old-obligation"]}`)
+		s.LegacyPending = json.RawMessage(fmt.Sprintf(`{"events":[%q]}`, old))
 		s.LegacyAcked = []string{"$already-receipted"}
 		mb, err := config.OpenMailbox(e.paths(), "alice")
 		if err != nil {
