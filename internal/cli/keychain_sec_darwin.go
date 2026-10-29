@@ -43,6 +43,11 @@ static OSStatus a2a_add(const char *path, const char *svc, UInt32 svcLen, const 
 	return st;
 }
 
+// An update reads the item's data first. An item this binary may not read
+// (another application's, or one whose ACL does not trust it) refuses at that
+// read, with interaction disallowed, and never reaches the modify path, which
+// needs the item's change authorization and may raise SecurityAgent despite
+// the interaction setting. The old value is cleared before it is released.
 static OSStatus a2a_update(const char *path, const char *svc, UInt32 svcLen, const char *acct, UInt32 acctLen, const void *data, UInt32 len) {
 	SecKeychainRef kc = NULL;
 	OSStatus st = a2a_open(path, &kc);
@@ -50,10 +55,17 @@ static OSStatus a2a_update(const char *path, const char *svc, UInt32 svcLen, con
 		return st;
 	}
 	SecKeychainItemRef item = NULL;
-	st = SecKeychainFindGenericPassword(kc, svcLen, svc, acctLen, acct, NULL, NULL, &item);
+	void *old = NULL;
+	UInt32 oldLen = 0;
+	st = SecKeychainFindGenericPassword(kc, svcLen, svc, acctLen, acct, &oldLen, &old, &item);
 	if (st == errSecItemNotFound) {
 		st = SecKeychainAddGenericPassword(kc, svcLen, svc, acctLen, acct, len, data, NULL);
 	} else if (st == errSecSuccess) {
+		volatile unsigned char *b = old;
+		for (UInt32 i = 0; i < oldLen; i++) {
+			b[i] = 0;
+		}
+		SecKeychainItemFreeContent(NULL, old);
 		st = SecKeychainItemModifyAttributesAndData(item, NULL, len, data);
 		CFRelease(item);
 	}

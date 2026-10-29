@@ -225,8 +225,10 @@ Phase 2 (#138): the a2a binary reads and writes its items itself, through the
 Security framework (cgo), with user interaction disallowed. It never runs
 `/usr/bin/security` or any other helper for item access. A new item gets the
 Keychain default ACL, which trusts only the creating binary's designated
-requirement; existing items are updated in place and keep their ACL. Writers
-serialize per identity, with one duplicate-create recovery and matching readback
+requirement; existing items are updated in place and keep their ACL. An update
+first reads the item's data, so an item the binary may not read is refused
+before the modify path. Writers serialize per identity, with one
+duplicate-create recovery and matching readback
 after every write. Every add and update first records a durable write fence. A
 mutation that the deadline abandons stays fenced until its native call returns, so it
 cannot overwrite a newer write. A dead writer's fence never expires: `a2a creds

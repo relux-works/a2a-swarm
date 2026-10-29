@@ -31,15 +31,16 @@ import (
 // no entry lets any application do so; a separately built untrusted reader
 // (testdata/untrusted-reader), with UI disallowed, is refused on that same
 // item while the creator reads it; a duplicate add and a missing item keep
-// their own errors; a lookup of an item another application created (the
-// security tool, default ACL) and a lookup in a locked keychain both return
-// errKeychainInteraction within the deadline; and no new SecurityAgent window
+// their own errors; a lookup and an update of an item another application
+// created (the security tool, default ACL) and a lookup in a locked keychain
+// all return errKeychainInteraction within the deadline, the update refusing at
+// its data read before the modify path; and no new SecurityAgent window
 // appears while the backend runs.
 //
 // Limits: the test binary is ad-hoc signed, so this proves creator binding, not
 // the signed a2a designated requirement, which P3 checks on the installed pair.
 // The observer sees on-screen SecurityAgent windows only at its poll interval.
-// An update of the foreign item is recorded, not asserted. The user search list
+// The foreign item's value is not read back after the refused update. The user search list
 // and default keychain are compared before and after, with no restoration
 // writes; the security tool is used only for fixture setup and cleanup.
 func TestKeychainPhase2PlatformSentinel(t *testing.T) {
@@ -232,10 +233,11 @@ func TestKeychainPhase2PlatformSentinel(t *testing.T) {
 	if _, err := find(foreign); !errors.Is(err, errKeychainInteraction) {
 		t.Error("foreign item lookup was not refused without interaction", err)
 	}
-	foreignUpdate := call("foreign update", func(ctx context.Context) error {
+	if err := call("foreign update", func(ctx context.Context) error {
 		return b.update(ctx, fixture, service, foreign, []byte(random()))
-	})
-	t.Logf("observation foreign_update_result=%v", foreignUpdate)
+	}); !errors.Is(err, errKeychainInteraction) {
+		t.Error("foreign item update was not refused without interaction", err)
+	}
 	if _, code := tool("", "lock-keychain", fixture); code != 0 {
 		t.Fatal("fixture lock failed; NO RETRY")
 	}
