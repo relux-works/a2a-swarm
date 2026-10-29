@@ -21,6 +21,9 @@ type connectionSecretStore interface {
 }
 
 func (a *App) readConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference) (string, error) {
+	if a.human {
+		return "", errHumanKeychain
+	}
 	if a.connectionSecretStore != nil {
 		return a.connectionSecretStore.Read(ctx, p, r)
 	}
@@ -31,6 +34,9 @@ func (a *App) readConnectionSecret(ctx context.Context, p config.Paths, r config
 	return result, err
 }
 func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if a.human {
+		return errHumanKeychain
+	}
 	if a.connectionSecretStore != nil {
 		return a.connectionSecretStore.Create(ctx, p, r, v)
 	}

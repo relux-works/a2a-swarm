@@ -537,8 +537,24 @@ func TestNamedHookPinGrammar(t *testing.T) {
 	}
 }
 
-// Proves a human name cannot be reinterpreted through a parallel agents file;
-// the explicitly interactive human control still uses its own class namespace.
+// Owner decision 74: creating a named Keychain secret refuses for a human
+// identity before the store is touched; the same call for an agent creates it.
+func TestNamedHumanSecretCreateRefused(t *testing.T) {
+	f := newNamedFixture(t, true)
+	ref := config.SecretReference{Service: "test.alpha.token", Account: "@carol:alpha.invalid"}
+	a := f.app()
+	a.human = true
+	if e := a.createConnectionSecret(context.Background(), f.paths("alpha", true), ref, "isolated-new"); !errors.Is(e, errHumanKeychain) || f.effects() != 0 {
+		t.Fatalf("human create admitted: %v effects=%d", e, f.effects())
+	}
+	if e := f.app().createConnectionSecret(context.Background(), f.paths("alpha", false), ref, "isolated-new"); e != nil || f.effects() != 1 {
+		t.Fatalf("agent control failed: %v effects=%d", e, f.effects())
+	}
+}
+
+// Proves a human name cannot be reinterpreted through a parallel agents file,
+// and that the explicitly interactive human path never reads a named profile's
+// Keychain secret (owner decision 74) while keeping its own class namespace.
 func TestNamedHumanClassBoundary(t *testing.T) {
 	f := newNamedFixture(t, true)
 	f.publish("alpha", true)
@@ -547,8 +563,11 @@ func TestNamedHumanClassBoundary(t *testing.T) {
 	}
 	a := f.app()
 	a.stdinTTY = func() bool { return true }
-	if a.Run(context.Background(), []string{"--human", "--as", "alice", "whoami"}) != 0 {
-		t.Fatal(f.err.String())
+	if a.Run(context.Background(), []string{"--human", "--as", "alice", "whoami"}) == 0 || f.effects() != 0 {
+		t.Fatal("human path read a named Keychain secret")
+	}
+	if !strings.Contains(f.err.String(), "owner decision 74") {
+		t.Fatal("human refusal not stated", f.err.String())
 	}
 	if f.paths("alpha", true).Base == f.paths("alpha", false).Base {
 		t.Fatal("human state shared with agent")

@@ -80,6 +80,9 @@ func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) 
 		return config.Credentials{}, err
 	}
 	if store == "keychain" {
+		if a.human {
+			return config.Credentials{}, errHumanKeychain
+		}
 		c.AccessToken = "" // A file token is never a fallback, even on lookup failure.
 		c.Password = ""
 		c.AccessToken, err = a.keychainStore(p).read(ctx, c.UserID)
@@ -113,6 +116,9 @@ func (a *App) migrateCredentials(ctx context.Context, args []string) error {
 	}
 	if store != "keychain" {
 		return fmt.Errorf("creds migrate requires A2A_SECRET_STORE=keychain")
+	}
+	if a.human {
+		return errHumanKeychain
 	}
 	p, err := a.paths()
 	if err != nil {

@@ -215,25 +215,36 @@ tokens require a keeper rotation, including for hooks.
 `A2A_SECRET_STORE=keychain a2a --as <own-name> creds migrate` writes and verifies
 only the selected identity, then atomically scrubs `access_token` and legacy
 `password`. It preserves `user_id`, `device_id` and `homeserver`. A scrubbed retry
-requires an existing item. Humans use the existing interactive `--human --as`
-boundary. Scrubbing does not erase backups. Live migration and installation are
+requires an existing item. Human identities are refused: an item bound to the a2a
+binary is readable by every agent that runs a2a, so a human token is never kept in
+one (owner decision 74). Scrubbing does not erase backups. Live migration and installation are
 held for a separate owner window. Until landing, keeper rotations update both
 file and matching Keychain item.
 
-The CLI pins `/usr/bin/security`: reads capture stdout in a pipe, writes carry
-commands on stdin. New items use `-T /usr/bin/security` without `-U`; existing
-items use `-U` without `-T`. Writers serialize per identity, with one duplicate
-create recovery and matching readback after every write. External same-UID
-deletion may cause `-U` recreation with creator trust; preservation of the deleted
-item or its ACL is not promised. a2a never unlocks or changes ACL/partition lists.
+Phase 2 (#138): the a2a binary reads and writes its items itself, through the
+Security framework (cgo), with user interaction disallowed. It never runs
+`/usr/bin/security` or any other helper for item access. A new item gets the
+Keychain default ACL, which trusts only the creating binary's designated
+requirement; existing items are updated in place and keep their ACL. Writers
+serialize per identity, with one duplicate-create recovery and matching readback
+after every write. An item the binary is not trusted for, or a locked keychain,
+returns an error instead of a prompt. That error records the cooldown below.
+a2a never unlocks or changes ACL/partition lists.
 
-Before **every** security invocation, a separate repo-built Swift companion
-checks `SecKeychainGetStatus` without accessing items. Both probe and security
-address the current OS user's `~/Library/Keychains/login.keychain-db` explicitly,
-so a changed search list cannot select an unprobed target. Custom/default
-Keychains and home-directory environment overrides are unsupported in this mode.
-The companion is `a2a-keychain-status` beside the symlink-resolved a2a executable;
-there is no PATH/environment helper selection. Build locally on Darwin:
+Because the item ACL binds the creating binary, Keychain mode needs a binary
+signed with a stable identity. An ad-hoc build is trusted only by its own code
+hash, so a rebuilt binary cannot read items its predecessor created: it fails
+closed without a prompt. Signing and the per-identity migration (P3) are held for
+the owner's rollout. Builds without cgo, and non-macOS builds, refuse Keychain mode.
+
+Before **every** item operation, a separate repo-built Swift companion checks
+`SecKeychainGetStatus` without accessing items. Both the probe and the item
+operation address the current OS user's `~/Library/Keychains/login.keychain-db`
+explicitly, so a changed search list cannot select an unprobed target.
+Custom/default Keychains and home-directory environment overrides are unsupported
+in this mode. The companion is `a2a-keychain-status` beside the symlink-resolved
+a2a executable; there is no PATH/environment helper selection. Build locally on
+Darwin:
 
 ```bash
 go build -o bin/a2a ./cmd/a2a
@@ -241,37 +252,40 @@ swiftc -O -o bin/a2a-keychain-status cmd/a2a-keychain-status/main.swift
 codesign --force --sign - bin/a2a-keychain-status
 ```
 
-These are build instructions; deployment remains held. Linux Go tests use fake
-probes; hosted CI does not require Swift. The legacy Security status APIs are
-available in the current macOS SDK but deprecated since 10.10. The companion
-prints only `unlocked`/exit 0, `locked`/exit 3 or `error`/exit 2. Missing,
-nonexecutable, failed, timed-out or malformed probes fail closed before security.
-Every child has a 5-second process-group deadline. Timeout/interaction failure
-sets a secret-free per-identity 5-minute cooldown. A locked/failed probe also
-sets a host-wide cooldown (kernel host UUID plus target path), suppressing both
-probe and security across identities/processes sharing this config directory.
+These are build instructions; deployment remains held. Linux and portable Go tests
+use a fake backend and fake probes; hosted CI does not require Swift. The legacy
+Security APIs are available in the current macOS SDK but deprecated since 10.10.
+The companion prints only `unlocked`/exit 0, `locked`/exit 3 or `error`/exit 2.
+Missing, nonexecutable, failed, timed-out or malformed probes fail closed before
+any item operation. The probe has a 5-second process-group deadline. Each item
+operation has a 5-second hard deadline. An in-process call cannot be killed, so a
+late result is discarded and counted as a timeout. Timeout/interaction failure
+sets a secret-free per-identity 5-minute cooldown. A locked/failed probe also sets
+a host-wide cooldown (kernel host UUID plus target path), suppressing probes and
+item operations across identities/processes sharing this config directory.
 Markers are atomic, 0600 under 0700 `<config>/keychain-state/`; invalid/unreadable
 state refuses, expiry permits a bounded fresh attempt. Do not delete markers to
 force retries. Separate config directories do not share cooldown state.
 
-No-dialog operation still requires an unlocked login Keychain and an item ACL
-trusting `/usr/bin/security`. Accepted residuals are an untrusted item ACL and
-locking between status check and access. A first real locked-fixture sentinel
-showed a dialog surviving the killed security child; A-lite adds the status gate
-in response. Fake-process tests prove CLI logic, not macOS UI behavior. Reopen
-the full helper design if the status probe prompts or becomes unavailable, host
-lock policy changes, or a no-dialog execution domain is needed. Phase 1 protects
-against file leaks; same-UID impersonation remains possible. Phase 2 identity
-binding, token-invisible workers, broker/isolation and revocation are deferred.
+Backend errors never reach output: the store reports a fixed message per class
+(missing, duplicate, interaction/timeout, other). Fake-backend tests prove CLI
+logic, not macOS UI behavior. Phase 2 binds item access to the signed binary.
+That binding is only as strong as the signing key: a same-user process that can
+sign its own code with that identity, without the owner present, satisfies the
+requirement and reads the token. How the key is protected is an owner decision
+for the signing sitting. Any process able to run the genuine binary as the same
+user can still use it to act as the identity, so token-invisible workers,
+broker/isolation and revocation remain deferred.
 
-The platform sentinel is a separately authorized test harness, never an ordinary
-test or deployment step. Its observer waits for readiness with a hard 10-second
-cap before any Keychain/list/probe/fixture setup. A native parent directive must
-attest the current `TASK_BOARD_RUN_ID`, keeper evidence verification and a fresh
-BEFORE event; an environment opt-in alone cannot authorize setup. A recovery
-successor cannot reuse that release. An exclusive attempt directory consumes the
-allowance even on setup failure. Observer-only readiness checks perform no
-Keychain operations and do not establish the platform status gate's behavior.
+The phase-2 platform sentinel (`TestKeychainPhase2PlatformSentinel`) is a
+separately granted test harness, never an ordinary test or deployment step.
+`A2A_P2_SENTINEL_ALLOWANCE` names the a2a event that granted it.
+`A2A_P2_SENTINEL_OBSERVER` is an accessibility-trusted build of
+`internal/cli/testdata/keychain-observer.swift`. An exclusive attempt directory
+consumes the allowance even on setup failure. It runs the real backend against one
+throwaway keychain file only, with the user search list and default keychain
+compared before and after. The phase-1 sentinels were retired with the security
+tool path; their record stays in git history.
 
 ## History
 Started 2026-09-29 by `local-models-e9` and the skill-project-management primary orchestrator, in a thread on board element BUG-260928-2hgfo9.
