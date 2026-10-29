@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -354,13 +355,28 @@ func (r *leaseReuse) note() string {
 	return fmt.Sprintf("pid holder %s was reused (recorded start %d, observed start %d)", r.Holder, r.Recorded, r.Observed)
 }
 
-// pidBirth returns a process start time as Unix seconds. ps runs with
-// TZ=UTC and LC_ALL=C, so every reader on the host gets the same value.
+// errPIDBirthUnsupported marks platforms where the reported start time is not
+// a stable process identity.
+var errPIDBirthUnsupported = errors.New("process start time is not a stable identity on this platform")
+
+// pidBirth returns a process start time as Unix seconds. Only on Darwin is
+// that value recorded at fork and left alone by later clock steps; ps runs with
+// TZ=UTC and LC_ALL=C so readers with different environments agree. On Linux
+// ps derives lstart from the boot time when it is read, so a clock step would
+// make a live holder look reused: there the start time is reported unknown and
+// pid holders keep the legacy behaviour.
 func (a *App) pidBirth(ctx context.Context, pid int) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, pidBirthTimeout)
 	defer cancel()
 	if a.leaseBirth != nil {
 		return a.leaseBirth(ctx, pid)
+	}
+	goos := a.leaseGOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos != "darwin" {
+		return 0, errPIDBirthUnsupported
 	}
 	if pid <= 0 {
 		return 0, errors.New("invalid process")

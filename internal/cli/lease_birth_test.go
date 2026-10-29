@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -124,9 +125,13 @@ func TestLeaseReleaseReusedPIDHolder(t *testing.T) {
 	}
 }
 
-// Proves the real start-time reader is independent of the caller's TZ, so two
-// readers of the same process can never disagree and fake a reuse. Requires ps.
+// Proves the Darwin start-time reader is independent of the caller's TZ, so
+// two readers with different environments agree on one process. Darwin only:
+// elsewhere the reader reports the start time unknown (TestPIDBirthUnsupportedPlatform).
 func TestPIDBirthIndependentOfTZ(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("start-time reader is Darwin-only")
+	}
 	if _, err := exec.LookPath("ps"); err != nil {
 		t.Skip("ps unavailable")
 	}
@@ -323,5 +328,34 @@ func TestLeaseSessionlessInboxRecordsBirth(t *testing.T) {
 	want := "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel() + "#4242"
 	if l := e.lease("alice"); l == nil || l.Holder != want {
 		t.Fatalf("lease = %+v, want holder %q", l, want)
+	}
+}
+
+// Proves the non-Darwin path (Meta review of fc11c932): where ps derives the
+// start time from the boot time at read time, the real reader reports it
+// unknown, so a holder keeps the legacy form, a live birth-carrying holder is
+// never judged reused (a clock step cannot clear a live lease) and its release
+// is refused with the lease unchanged, while an exited PID is still released.
+// Runs the real gated reader on any host by overriding the platform.
+func TestPIDBirthUnsupportedPlatform(t *testing.T) {
+	a := &App{Getenv: func(string) string { return "" }, Now: time.Now, leaseGOOS: "linux"}
+	if _, err := a.pidBirth(context.Background(), os.Getpid()); !errors.Is(err, errPIDBirthUnsupported) {
+		t.Fatalf("pidBirth error = %v, want errPIDBirthUnsupported", err)
+	}
+	base := "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel()
+	if got := a.leaseHolder(config.Paths{}, "", time.Time{}); got != base {
+		t.Fatalf("holder = %q, want legacy %q", got, base)
+	}
+	live := base + "#100"
+	if a.leaseDead(config.Paths{})(live) || a.leaseReuse != nil {
+		t.Fatalf("live holder judged reused on an unsupported platform: %+v", a.leaseReuse)
+	}
+	st := config.State{Lease: &config.Lease{Holder: live, Host: machineLabel(), PID: os.Getpid(), Expires: time.Now().Add(time.Minute)}}
+	before := *st.Lease
+	if ok, err := st.Release("alice", "sess-other", false, time.Now(), a.leaseDead(config.Paths{})); ok || err == nil || *st.Lease != before {
+		t.Fatalf("live holder released on an unsupported platform: ok=%v err=%v", ok, err)
+	}
+	if !a.leaseDead(config.Paths{})("pid:" + strconv.Itoa(exitedPID(t)) + "@" + machineLabel() + "#100") {
+		t.Fatal("exited pid holder not released on an unsupported platform")
 	}
 }
