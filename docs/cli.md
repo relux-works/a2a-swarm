@@ -931,6 +931,16 @@ a2a unbind
 If `bind status` shows `unbound` in your tmux session before another hook runs, use the explicit bind above once from that session.
 
 `TMUX` and `TMUX_PANE` select this invocation's own absolute socket and exact `%N` pane. Explicit `--socket` / `--pane` must match those values.
+A Codex tool shell normally has neither variable: Codex's shell environment policy does not pass the pane's tmux variables to tool commands,
+even with a login shell, so bind refuses there instead of inferring a pane. The SessionStart hook is unaffected because it runs with the pane's
+own environment. Use this order:
+1. The SessionStart hook auto-bind. Check `a2a bind status` first: a session started with the hook installed normally shows its binding.
+2. Otherwise bind once from the session with the pane's **real** selectors exported, for example `TMUX=SOCKET TMUX_PANE=%N a2a bind ...`:
+   the absolute socket of the tmux server that owns the pane, and the exact pane whose `#{pane_pid}` is an ancestor of the runtime PID given
+   as `--owner-pid` (`tmux -S SOCKET list-panes -a -F '#{pane_pid} #{pane_id}'`). Never guess or copy another pane's selectors. The owner
+   ancestry, socket inode and birth checks below still apply, and a pane that is not this runtime's own refuses.
+3. Otherwise the launcher may admit `TMUX` and `TMUX_PANE` to tool shells through Codex `shell_environment_policy`. That configuration belongs
+   to the profile/launcher custodian; a2a does not edit it.
 The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
 birth are pinned. A replacement socket or confirmed dead/recycled PID stops the consumer; unavailable observations retain mail and back off. Duplicate binding refuses; unbind
 retires the generation before signalling only its recorded PID after a birth check, waits for exit, and preserves the mailbox. Restarting a provider
