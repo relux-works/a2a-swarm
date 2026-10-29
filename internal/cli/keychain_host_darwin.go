@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/binary"
 	"errors"
 	"syscall"
 )
@@ -10,17 +9,15 @@ import (
 // Only its hash is persisted; a shared config directory must not conflate hosts.
 func keychainHostBinding() (string, error) { return syscall.Sysctl("kern.uuid") }
 
-// keychainBootSession identifies the current boot by its kern.boottime
-// seconds. A different value than a fence recorded means the host, and with
+// keychainBootSession returns the kernel's boot-session UUID
+// (kern.bootsessionuuid). It is created once per boot and never changes
+// within it, unlike the calendar boot time, which a clock correction can
+// move. A different session than a fence recorded means the host, and with
 // it securityd, has restarted since that fence's write was submitted.
-func keychainBootSession() (int64, error) {
-	raw, err := syscall.Sysctl("kern.boottime")
-	if err != nil || len(raw) < 8 {
-		return 0, errors.New("boot session unavailable")
+func keychainBootSession() (string, error) {
+	id, err := syscall.Sysctl("kern.bootsessionuuid")
+	if err != nil || !validBootSession(id) {
+		return "", errors.New("boot session unavailable")
 	}
-	sec := int64(binary.LittleEndian.Uint64([]byte(raw[:8])))
-	if sec <= 0 {
-		return 0, errors.New("boot session unavailable")
-	}
-	return sec, nil
+	return id, nil
 }

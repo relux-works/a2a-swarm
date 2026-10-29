@@ -41,7 +41,7 @@ type keychainStore struct {
 	now               func() time.Time
 	birth             func(context.Context, int) (string, error)
 	liveness          func(context.Context, int, string) ownerState
-	boot              func() (int64, error)
+	boot              func() (string, error)
 	reconciling       bool // set only by reconcile, for its own lookup
 }
 

@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -169,11 +170,16 @@ func processIdentity(ctx context.Context, pid int) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/ps", "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "uid=")
-	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C"}
+	// TZ is pinned too: lstart is printed in local time, and a timezone
+	// change must not alter a live process's identity.
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "TZ=UTC"}
 	out, err := cmd.Output()
 	f := strings.Fields(string(out))
-	if err != nil || len(f) != 6 {
-		return "", errors.New("process identity unavailable")
+	if err != nil {
+		return "", fmt.Errorf("process identity unavailable: %w", err)
+	}
+	if len(f) != 6 {
+		return "", errors.New("process identity unavailable: unexpected ps output")
 	}
 	return strings.Join(f, " "), nil
 }

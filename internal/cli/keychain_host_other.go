@@ -11,4 +11,4 @@ import (
 func keychainHostBinding() (string, error) { return os.Hostname() }
 
 // Without a boot session, reconcile never treats a restart as quiescence.
-func keychainBootSession() (int64, error) { return 0, errors.New("boot session unavailable") }
+func keychainBootSession() (string, error) { return "", errors.New("boot session unavailable") }

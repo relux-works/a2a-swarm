@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -64,7 +65,8 @@ func TestKeychainAbandonedWriteStaysFenced(t *testing.T) {
 	now := time.Now()
 	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	b := &blockingBackend{fakeBackend: fakeBackend{dir}, started: make(chan struct{}), release: make(chan struct{})}
-	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b, timeout: 300 * time.Millisecond, now: clock})
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b, timeout: 300 * time.Millisecond, now: clock,
+		boot: func() (string, error) { return sessionA, nil }})
 	ctx := context.Background()
 
 	if err := k.write(ctx, uid, "token-a"); err == nil || !strings.Contains(err.Error(), "timed out") {
@@ -75,7 +77,7 @@ func TestKeychainAbandonedWriteStaysFenced(t *testing.T) {
 	if err != nil || fence == nil {
 		t.Fatal("abandoned add left no fence", err)
 	}
-	if fence.PID != os.Getpid() || fence.Op != "add" || fence.Digest != tokenDigest([]byte("token-a")) || fence.Boot <= 0 {
+	if fence.PID != os.Getpid() || fence.Op != "add" || fence.Digest != tokenDigest([]byte("token-a")) || fence.Boot != sessionA {
 		t.Fatalf("fence does not record the writer, op, intended digest and boot session: %+v", fence)
 	}
 	mu.Lock()
@@ -136,9 +138,15 @@ func plantFence(t *testing.T, k *keychainStore, uid string, fence keychainFence,
 	}
 }
 
-// deadFence is the fence of an abandoned write by pid 4242 in boot session 7.
+// Boot-session UUIDs (kern.bootsessionuuid): A before a restart, B after.
+const (
+	sessionA = "11111111-2222-3333-4444-555555555555"
+	sessionB = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+)
+
+// deadFence is the fence of an abandoned write by pid 4242 in boot session A.
 func deadFence(intended string) keychainFence {
-	return keychainFence{PID: 4242, Birth: "planted-birth", Op: "update", At: 1, Boot: 7, Digest: tokenDigest([]byte(intended))}
+	return keychainFence{PID: 4242, Birth: "planted-birth", Op: "update", At: 1, Boot: sessionA, Digest: tokenDigest([]byte(intended))}
 }
 
 type fenceWorld struct {
@@ -146,7 +154,8 @@ type fenceWorld struct {
 	uid, dir string
 	k        *keychainStore
 	state    *ownerState
-	boot     *int64
+	boot     *string
+	clock    *time.Time
 }
 
 // newFenceWorld plants deadFence(intended) for alice, whose item holds
@@ -166,8 +175,9 @@ func newFenceWorld(t *testing.T, mode, current, intended string, state ownerStat
 		items[uid] = current
 	}
 	dir := fakeKeychain(e, items, mode)
-	w := fenceWorld{e: e, uid: uid, dir: dir, state: &state, boot: new(int64)}
-	*w.boot = 7
+	w := fenceWorld{e: e, uid: uid, dir: dir, state: &state, boot: new(string), clock: new(time.Time)}
+	*w.boot = sessionA
+	*w.clock = time.Now()
 	prior := e.configure
 	e.configure = func(a *App) {
 		prior(a)
@@ -175,7 +185,13 @@ func newFenceWorld(t *testing.T, mode, current, intended string, state ownerStat
 		a.keychain = func(p config.Paths) *keychainStore {
 			k := inner(p)
 			k.liveness = func(context.Context, int, string) ownerState { return *w.state }
-			k.boot = func() (int64, error) { return *w.boot, nil }
+			k.now = func() time.Time { return *w.clock }
+			k.boot = func() (string, error) {
+				if *w.boot == "" {
+					return "", errors.New("boot session unavailable")
+				}
+				return *w.boot, nil
+			}
 			return k
 		}
 	}
@@ -239,10 +255,31 @@ func TestKeychainFenceReconcile(t *testing.T) {
 	})
 	t.Run("gone-restarted", func(t *testing.T) {
 		w := newFenceWorld(t, "", "token-0", "token-a", ownerGone)
-		*w.boot = 8
+		*w.boot = sessionB
 		r := w.e.as("alice", "creds", "reconcile").ok(t)
 		if !strings.Contains(r.stdout, "host restarted") || w.fenced() || len(records(t, w.dir)) != 0 {
 			t.Fatal("restart quiescence not reconciled without a lookup", r.stdout)
+		}
+	})
+	// The boot session is the only restart evidence: unavailable evidence, or a
+	// fence recorded without it, never counts as a restart (#138 review r3).
+	t.Run("gone-boot-unavailable", func(t *testing.T) {
+		w := newFenceWorld(t, "", "token-0", "token-a", ownerGone)
+		*w.boot = ""
+		w.e.as("alice", "creds", "reconcile").failsWith(t, ExitError, "may still land")
+		if !w.fenced() {
+			t.Fatal("fence cleared without boot evidence")
+		}
+	})
+	t.Run("gone-fence-without-boot", func(t *testing.T) {
+		w := newFenceWorld(t, "", "token-0", "token-a", ownerGone)
+		f := deadFence("token-a")
+		f.Boot = ""
+		plantFence(t, w.k, w.uid, f, 0o600)
+		*w.boot = sessionB
+		w.e.as("alice", "creds", "reconcile").failsWith(t, ExitError, "may still land")
+		if !w.fenced() {
+			t.Fatal("fence without boot evidence cleared by a session change")
 		}
 	})
 	t.Run("gone-silent", func(t *testing.T) {
@@ -283,15 +320,18 @@ func TestKeychainFenceReconcile(t *testing.T) {
 // lookup answers first with the old value, so the fence stays and writer B is
 // not admitted. The queued request then lands A's value; only now does
 // reconcile observe completion and clear the fence, and B's newer write is
-// the one that remains.
+// the one that remains. The boot session stays the same throughout while the
+// store's clock moves past the cooldown: elapsed time or a clock change is
+// never restart evidence (#138 review r3).
 func TestKeychainDeadWriterQueuedRequest(t *testing.T) {
 	w := newFenceWorld(t, "", "token-0", "token-a", ownerGone)
+	*w.clock = time.Now().Add(10 * 365 * 24 * time.Hour) // a large clock correction, same boot session
 	w.e.as("alice", "creds", "reconcile").failsWith(t, ExitError, "may still land")
 	k := w.k
 	k.backend = fakeBackend{w.dir}
 	k.probeCommand = unlockedProbe
 	k.liveness = func(context.Context, int, string) ownerState { return ownerGone }
-	k.boot = func() (int64, error) { return 7, nil }
+	k.boot = func() (string, error) { return sessionA, nil }
 	if err := k.write(context.Background(), w.uid, "token-b"); !errors.Is(err, errKeychainFenced) {
 		t.Fatal("writer B admitted while the dead writer's request is queued", err)
 	}
@@ -427,9 +467,28 @@ func TestKeychainLivenessClassification(t *testing.T) {
 	// under its own identity and gone under any other.
 	id, err := processIdentity(context.Background(), os.Getpid())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("real process identity:", err)
 	}
 	if processLiveness(context.Background(), os.Getpid(), id) != ownerAlive || processLiveness(context.Background(), os.Getpid(), "other") != ownerGone {
 		t.Fatal("real liveness misclassified this process")
+	}
+}
+
+// On macOS the real boot session is a valid UUID, which a fence records.
+func TestKeychainBootSessionReadable(t *testing.T) {
+	id, err := keychainBootSession()
+	if runtime.GOOS != "darwin" {
+		if err == nil {
+			t.Fatal("boot session claimed off macOS")
+		}
+		return
+	}
+	if err != nil || !validBootSession(id) {
+		t.Fatalf("boot session %q: %v", id, err)
+	}
+	for _, bad := range []string{"", "7", "1761700000", "11111111-2222-3333-4444-55555555555", "zzzzzzzz-2222-3333-4444-555555555555"} {
+		if validBootSession(bad) {
+			t.Fatalf("invalid boot session accepted: %q", bad)
+		}
 	}
 }

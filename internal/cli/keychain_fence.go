@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // A mutation the hard deadline abandoned may still complete later: the
@@ -25,17 +26,24 @@ import (
 // A fence whose recording process is gone never expires on its own.
 // `a2a creds reconcile` clears it only when the recorder is confirmed gone AND
 // the abandoned write can no longer land: either its intended value is
-// observed in the item (the write completed), or the host has restarted since
-// the fence was recorded (securityd and its queue are gone). An unknown
-// liveness, a different or missing value, or an unanswered lookup keeps it.
+// observed in the item (the write completed), or the kernel's boot-session
+// UUID differs from the one recorded (the host, securityd and its queue
+// restarted). An unknown liveness, unavailable boot evidence, a different or
+// missing value, or an unanswered lookup keeps it. Observation relies on
+// this config root's writers being the only ones writing that value: an
+// out-of-band writer (another config root, another process) is not excluded.
 type keychainFence struct {
 	PID    int    `json:"pid"`
 	Birth  string `json:"birth"`
 	Op     string `json:"op"`
 	At     int64  `json:"at"`
-	Boot   int64  `json:"boot"`
+	Boot   string `json:"boot"` // kern.bootsessionuuid, or "" when unavailable
 	Digest string `json:"digest"`
 }
+
+var bootSessionRE = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+
+func validBootSession(id string) bool { return bootSessionRE.MatchString(id) }
 
 type ownerState int
 
@@ -68,7 +76,7 @@ func (k *keychainStore) ownerLiveness(ctx context.Context, fence *keychainFence)
 	return processLiveness(ctx, fence.PID, fence.Birth)
 }
 
-func (k *keychainStore) bootSession() (int64, error) {
+func (k *keychainStore) bootSession() (string, error) {
 	if k.boot != nil {
 		return k.boot()
 	}
@@ -89,7 +97,7 @@ func (k *keychainStore) readFence(uid string) (*keychainFence, error) {
 	data, err := io.ReadAll(io.LimitReader(f, 1025))
 	var fence keychainFence
 	if err != nil || len(data) > 1024 || json.Unmarshal(data, &fence) != nil || fence.PID <= 0 || fence.Birth == "" ||
-		(fence.Op != "add" && fence.Op != "update") || len(fence.Digest) != 64 {
+		(fence.Op != "add" && fence.Op != "update") || len(fence.Digest) != 64 || (fence.Boot != "" && !validBootSession(fence.Boot)) {
 		return nil, fmt.Errorf("keychain write fence invalid for %s", uid)
 	}
 	return &fence, nil
@@ -117,8 +125,8 @@ func (k *keychainStore) writeFence(ctx context.Context, uid, op string, intended
 		return nil, err
 	}
 	boot, err := k.bootSession()
-	if err != nil {
-		boot = 0 // without a boot session, a restart never counts as quiescence
+	if err != nil || !validBootSession(boot) {
+		boot = "" // without a boot session, a restart never counts as quiescence
 	}
 	fence := &keychainFence{PID: os.Getpid(), Birth: birth, Op: op, At: k.clock().UnixNano(), Boot: boot, Digest: tokenDigest(intended)}
 	data, err := json.Marshal(fence)
@@ -201,7 +209,7 @@ func (k *keychainStore) reconcile(ctx context.Context, uid string) (string, erro
 		case ownerUnknown:
 			return fmt.Errorf("%w for %s: the state of pid %d is unknown; fence kept", errKeychainFenced, uid, fence.PID)
 		}
-		if boot, err := k.bootSession(); err == nil && fence.Boot != 0 && boot != fence.Boot {
+		if boot, err := k.bootSession(); err == nil && validBootSession(boot) && fence.Boot != "" && boot != fence.Boot {
 			outcome = "host restarted since the abandoned write; fence cleared"
 			return k.removeFence(uid)
 		}

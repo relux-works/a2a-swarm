@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -395,10 +396,14 @@ func TestSentinelToolBoundProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Absence is proven by ESRCH, or a reaped-pending zombie by ps; a ps
+	// failure alone proves nothing (#138 review r3).
 	waitUntil(t, time.Second, func() bool {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return true
+		}
 		out, err := exec.Command("/bin/ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-		state := strings.TrimSpace(string(out))
-		return err != nil && state == "" || strings.HasPrefix(state, "Z")
+		return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 	})
 }
 
