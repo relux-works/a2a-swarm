@@ -145,7 +145,7 @@ func commands() []command {
 		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until a new mailbox entry is addressed to me or subscribed (acknowledges nothing)", cmdWait},
 		{"watch", "watch [--room R ...] [--all] [--json]   stream new mailbox entries until interrupted (acknowledges nothing)", cmdWatch},
 		{"inbox", "inbox [--limit N] [--json]           print unreceived mailbox entries inside an untrusted-data frame, then receipt exactly them (N <= 50)", cmdInbox},
-		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude) and Codex (R=codex) hooks: a doorbell (counts only) in the session", cmdHook},
+		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude), Codex (R=codex) and Muse (R=muse) hooks: a doorbell (counts only) in the session", cmdHook},
 		{"ack", "ack <id...>|all-shown               receipt mailbox entries (all-shown: every entry wait/watch printed)", cmdAck},
 		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},

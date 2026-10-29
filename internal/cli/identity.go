@@ -87,7 +87,7 @@ func cmdHost(ctx context.Context, a *App, args []string) error {
 	return usagef("%s", hostUsage)
 }
 
-const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper] [--product X --preset P] [--resource ROOM] | a2a identity release [--force]"
+const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|muse|none] [--keeper] [--product X --preset P] [--resource ROOM] | a2a identity release [--force]"
 
 // cmdIdentity: a2a identity ensure|release
 func cmdIdentity(ctx context.Context, a *App, args []string) error {
