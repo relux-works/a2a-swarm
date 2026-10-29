@@ -356,10 +356,20 @@ func (c *Client) Wake(ctx context.Context, thread, output string) (string, error
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
-	err := c.rpc(ctx, "turn/start", map[string]any{
+	params := map[string]any{
 		"threadId": thread, "input": []any{},
 		"toolOutput": map[string]string{"name": ToolName, "namespace": ToolNamespace, "output": output},
-	}, &response)
+	}
+	// This branch is testable before native admission. Dial still refuses both
+	// current builds until exact-session qualification authorizes that change.
+	if c.Version == "0.163.0" || c.Version == "0.165.0" {
+		var err error
+		params, err = (currentProtocol{version: c.Version}).wakeParams(thread, output)
+		if err != nil {
+			return "", err
+		}
+	}
+	err := c.rpc(ctx, "turn/start", params, &response)
 	if err != nil {
 		return "", err
 	}
@@ -390,19 +400,21 @@ func matchesOutput(item Item, output string) bool {
 	if json.Unmarshal(item.Output, &text) == nil {
 		return text == output
 	}
-	var content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+	// Matching is version-unscoped: accept homogeneous current input_text or
+	// legacy inputText arrays. Both paths reject ambiguous or unknown fields.
+	if currentOutputMatches(item, output) {
+		return true
 	}
+	var content []currentTextPart
 	if json.Unmarshal(item.Output, &content) != nil || len(content) == 0 {
 		return false
 	}
 	var body strings.Builder
 	for _, part := range content {
-		if part.Type != "inputText" {
+		if part.kind != "inputText" {
 			return false
 		}
-		body.WriteString(part.Text)
+		body.WriteString(part.text)
 		if body.Len() > len(output) {
 			return false
 		}
