@@ -67,7 +67,7 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		{"liveness-probe-error-gone", "keychain_unix.go", "case killErr != nil && !errors.Is(killErr, syscall.EPERM):\n\t\treturn ownerUnknown", "case killErr != nil && !errors.Is(killErr, syscall.EPERM):\n\t\treturn ownerGone", "TestKeychainLivenessClassification/probe-error"},
 		{"reconcile-unknown-proceeds", "keychain_fence.go", "\t\tcase ownerUnknown:\n\t\t\treturn fmt.Errorf(\"%w for %s: the state of pid %d is unknown; fence kept\", errKeychainFenced, uid, fence.PID)\n", "", "TestKeychainUnknownOwnerKeepsFence"},
 		{"check-unknown-admits", "keychain_fence.go", "return fmt.Errorf(\"%w for %s: the state of pid %d is unknown; refusing\", errKeychainFenced, uid, fence.PID)", "return nil", "TestKeychainUnknownOwnerKeepsFence"},
-		{"reconcile-any-answer-clears", "keychain_fence.go", "case err == nil && tokenDigest([]byte(token)) == fence.Digest:", "case err == nil:", "TestKeychainDeadWriterQueuedRequest"},
+		{"reconcile-any-answer-clears", "keychain_fence.go", "case err == nil && tokenDigest([]byte(token)) == fence.Digest:", "case err == nil && (tokenDigest([]byte(token)) == fence.Digest || true):", "TestKeychainDeadWriterQueuedRequest"},
 		{"reconcile-boot-always-quiescent", "keychain_fence.go", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && fence.Boot != \"\" && boot != fence.Boot {", "if boot, err := k.bootSession(); err == nil || boot != fence.Boot {", "TestKeychainDeadWriterQueuedRequest"},
 		{"boot-unavailable-counts-as-restart", "keychain_fence.go", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && fence.Boot != \"\" && boot != fence.Boot {", "if boot, err := k.bootSession(); err != nil || fence.Boot != \"\" && boot != fence.Boot {", "TestKeychainFenceReconcile/gone-boot-unavailable"},
 		{"recorded-boot-unvalidated", "keychain_fence.go", " || (fence.Boot != \"\" && !validBootSession(fence.Boot))", "", "TestKeychainFenceReconcile/gone-malformed-recorded-boot"},
@@ -98,7 +98,12 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		}`, ``, "TestKeychainAuthorizationBoundaries"},
 		{"human-migrate-admitted", "credentials.go", `if a.human {
 		return errHumanKeychain
-	}`, ``, "TestKeychainAuthorizationBoundaries"},
+	}
+	p, err := a.paths()`, `p, err := a.paths()`, "TestKeychainAuthorizationBoundaries"},
+		{"human-reconcile-admitted", "credentials.go", `if a.human {
+		return errHumanKeychain
+	}
+	name, err := a.identity()`, `name, err := a.identity()`, "TestKeychainAuthorizationBoundaries"},
 		{"human-named-read-admitted", "connection_registration.go", `if a.human {
 		return "", errHumanKeychain
 	}`, ``, "TestNamedHumanClassBoundary"},
