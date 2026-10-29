@@ -27,7 +27,7 @@ const DefaultCodexHooks = ".codex/hooks.json"
 // ourHookRE recognizes a command written by `a2a hook install`, whatever the
 // binary path: <path> --as <name> hook <event> --runtime <rt>. The form
 // without --runtime was written by earlier versions for Claude Code only.
-var ourHookRE = regexp.MustCompile(`^(?:env (?:'(?:[^']|'\\'')*'|[^\s']+) )?(?:'(?:[^']|'\\'')*'|[^\s']+)(?: --profile [a-z0-9][a-z0-9_-]{0,63} --connection-fingerprint [a-f0-9]{64})? --as ([a-z0-9][a-z0-9._=-]{0,63}) hook (stop|session-start|prompt)(?: --runtime (claude|codex))?$`)
+var ourHookRE = regexp.MustCompile(`^(?:env (?:'(?:[^']|'\\'')*'|[^\s']+) )?(?:'(?:[^']|'\\'')*'|[^\s']+)(?: --profile [a-z0-9][a-z0-9_-]{0,63} --connection-fingerprint [a-f0-9]{64})? --as ([a-z0-9][a-z0-9._=-]{0,63}) hook (stop|session-start|prompt)(?: --runtime (claude|codex|muse))?$`)
 
 var shellSafeRE = regexp.MustCompile(`^[A-Za-z0-9_./+:@%=,-]+$`)
 
@@ -248,16 +248,16 @@ func mergeHooks(root *jsonObject, rt hookRuntime, cmd func(arg string) string) (
 	return removed, nil
 }
 
-// cmdHookInstall: a2a hook install --agent NAME --runtime claude|codex [--settings PATH] /
-// a2a hook uninstall --runtime claude|codex [--settings PATH]
+// cmdHookInstall: a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] /
+// a2a hook uninstall --runtime claude|codex|muse [--settings PATH]
 func cmdHookInstall(a *App, args []string, install bool) error {
 	name := "hook uninstall"
-	usage := "usage: a2a hook uninstall --runtime claude|codex [--settings PATH]"
+	usage := "usage: a2a hook uninstall --runtime claude|codex|muse [--settings PATH]"
 	if install {
-		name, usage = "hook install", "usage: a2a hook install --agent NAME --runtime claude|codex [--settings PATH]"
+		name, usage = "hook install", "usage: a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH]"
 	}
 	fs := newFlagSet(name)
-	settings := fs.String("settings", "", "file to change (claude: "+DefaultHookSettings+", codex: "+DefaultCodexHooks+")")
+	settings := fs.String("settings", "", "file to change (claude: "+DefaultHookSettings+", codex: "+DefaultCodexHooks+", muse: "+DefaultMuseHooks+")")
 	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (required)")
 	var agent *string
 	if install {
@@ -286,6 +286,13 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 		if err := config.ValidateName(*agent); err != nil {
 			return usageError{err.Error()}
 		}
+	}
+	if rt.name == "muse" {
+		name := ""
+		if install {
+			name = *agent
+		}
+		return a.museHookSettings(*settings, name, install)
 	}
 	path := *settings
 	orig, mode, err := readSettings(path)

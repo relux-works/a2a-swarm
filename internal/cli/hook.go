@@ -154,9 +154,10 @@ var hookRuntimes = []hookRuntime{
 			return codexContextOutput{HookSpecificOutput: codexHookSpecific{HookEventName: ev.name, AdditionalContext: reason}}
 		},
 	},
+	{name: "muse", title: "Muse", settings: DefaultMuseHooks, render: renderMuseHook},
 }
 
-const runtimeNames = "claude|codex"
+const runtimeNames = "claude|codex|muse"
 
 // lookupRuntime resolves --runtime; there is no default (owner rule: no implicit defaults).
 func lookupRuntime(name string) (hookRuntime, error) {
@@ -171,8 +172,8 @@ func lookupRuntime(name string) (hookRuntime, error) {
 	return hookRuntime{}, fmt.Errorf("unknown --runtime %q (%s)", sanitizeLine(name), runtimeNames)
 }
 
-const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex  (reads the hook JSON on stdin) | " +
-	"a2a hook install --agent NAME --runtime claude|codex [--settings PATH] | a2a hook uninstall --runtime claude|codex [--settings PATH] | " +
+const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex|muse  (reads the hook JSON on stdin) | " +
+	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
 	"a2a hook pause|resume --agent NAME"
 
 // cmdHook: a2a hook stop|session-start|prompt|install|uninstall
@@ -209,7 +210,7 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fmt.Fprintln(a.Stderr, "a2a hook "+ev.arg+": "+a.secrets.Scrub(sanitizeLine(err.Error()))+"; nothing new was acknowledged")
 	}
 	fs := newFlagSet("hook " + ev.arg)
-	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (optional for events: the output is identical)")
+	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (required for Muse; legacy events may omit it)")
 	pos, err := parseInterspersed(fs, args)
 	if err == nil && len(pos) != 0 {
 		err = errors.New("unexpected arguments")
@@ -227,6 +228,10 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 			fail(fmt.Errorf("%v; re-run a2a hook install --agent NAME --runtime %s", err, runtimeNames))
 			return
 		}
+	}
+	if rt.name == "muse" {
+		a.runMuseHook(ctx, rt, ev)
+		return
 	}
 	in, err := readHookInput(a.Stdin)
 	blocked := false
@@ -363,7 +368,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	if err := a.acquireLease(s, in.SessionID, deadline); err != nil {
 		return err
 	}
-	stop := ev.arg == "stop"
+	stop := ev.arg == "stop" && rt.name != "muse"
 	key := hookSessionKey(in.SessionID)
 	if stop && in.StopHookActive && st.HookBlocks(key) >= hookGuardMax {
 		// Loop guard: let this stop happen; the events wait for the next hook or turn.
@@ -478,7 +483,12 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 				return nil, config.ErrNotificationStale
 			}
 			h := cur.HookSession(key)
-			h.Rung = keys
+			// Muse Stop is UI-only. Preserve prior context eligibility so the
+			// same pending batch can reach Prompt/Start after shared cooldown.
+			// Notification completion below still records/spaces the UI notice.
+			if rt.name != "muse" || ev.arg != "stop" {
+				h.Rung = keys
+			}
 			if stop {
 				n := 0
 				if in.StopHookActive {

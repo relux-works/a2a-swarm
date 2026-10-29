@@ -270,6 +270,12 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 // Advice is conditional: installing hooks does not establish a live binding.
 // Do not inspect or change runtime state just to print onboarding instructions.
 func (a *App) printWakeGuidance(runtime string) {
+	if runtime == "muse" {
+		a.printf("Read messages with `a2a inbox`; only inbox receipts them.\n")
+		a.printf("Muse project hooks require native human trust. Start/Prompt context receipt and same-session shell/hook/inbox identity remain unqualified; Stop is a terminal systemMessage only.\n")
+		a.printf("Installing Muse hooks does not arm idle wake. Native Monitor/launcher supervision and idle/busy delivery require separate acceptance; do not start a competing consumer.\n")
+		return
+	}
 	a.printf("Read messages with `a2a inbox`. Inspect your own binding with `a2a bind status`.\n")
 	a.printf("With a live binding, use its supervised consumer; do not start a parallel wait/watch or Monitor.\n")
 	if runtime == "claude" {
