@@ -109,6 +109,26 @@ func TestKeychainAbandonedWriteStaysFenced(t *testing.T) {
 	}
 }
 
+// Invalid boot evidence at write time is recorded as none: a fence never
+// carries a value that a later session could differ from by accident.
+func TestKeychainFenceRecordsNoInvalidBoot(t *testing.T) {
+	e := newEnv(t)
+	uid := e.agent("alice")
+	dir := fakeKeychain(e, map[string]string{}, "")
+	b := &blockingBackend{fakeBackend: fakeBackend{dir}, started: make(chan struct{}), release: make(chan struct{})}
+	defer close(b.release)
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b, timeout: 300 * time.Millisecond,
+		boot: func() (string, error) { return "garbage-without-error", nil }})
+	if err := k.write(context.Background(), uid, "token-a"); err == nil {
+		t.Fatal("write did not time out")
+	}
+	<-b.started
+	fence, err := k.readFence(uid)
+	if err != nil || fence == nil || fence.Boot != "" {
+		t.Fatalf("invalid boot evidence recorded: %+v %v", fence, err)
+	}
+}
+
 // A completed mutation leaves no fence (positive control for the test above).
 func TestKeychainCompletedWriteLeavesNoFence(t *testing.T) {
 	e := newEnv(t)
@@ -287,6 +307,29 @@ func TestKeychainFenceReconcile(t *testing.T) {
 		w.e.as("alice", "creds", "reconcile").failsWith(t, ExitError, "fence kept")
 		if !w.fenced() {
 			t.Fatal("fence cleared without an answering keychain")
+		}
+	})
+	// Malformed boot evidence is never restart evidence (#138 review r4):
+	// a recorded value that is not a UUID makes the fence invalid, and an
+	// invalid current value returned without an error does not count.
+	t.Run("gone-malformed-recorded-boot", func(t *testing.T) {
+		w := newFenceWorld(t, "", "token-0", "token-a", ownerGone)
+		f := deadFence("token-a")
+		f.Boot = "not-a-uuid"
+		plantFence(t, w.k, w.uid, f, 0o600)
+		*w.boot = sessionB
+		w.e.as("alice", "whoami").failsWith(t, ExitError, "fence invalid")
+		w.e.as("alice", "creds", "reconcile").failsWith(t, ExitError, "fence invalid")
+		if !w.fenced() {
+			t.Fatal("malformed fence removed")
+		}
+	})
+	t.Run("gone-invalid-current-boot", func(t *testing.T) {
+		w := newFenceWorld(t, "", "token-0", "token-a", ownerGone)
+		*w.boot = "garbage-without-error"
+		w.e.as("alice", "creds", "reconcile").failsWith(t, ExitError, "may still land")
+		if !w.fenced() {
+			t.Fatal("invalid current boot evidence counted as a restart")
 		}
 	})
 	t.Run("public-fence", func(t *testing.T) {
