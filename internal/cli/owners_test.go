@@ -651,3 +651,35 @@ func TestInvalidOwnersRefusePresetSyncBeforeSession(t *testing.T) {
 		t.Fatalf("valid registry: preset sync did not run through the Keychain: %d lookups, %d probes", len(records(t, dir)), probes.Load())
 	}
 }
+
+// Re-running identity ensure for an existing Keychain-backed identity with an
+// invalid owners.json refuses before the credentials are opened: no Keychain
+// probe or lookup, no homeserver request, the config tree and the hooks file
+// unchanged. A valid registry re-run onboards through the Keychain and adds
+// the owner row (positive control).
+func TestInvalidOwnersRefuseExistingIdentityEnsure(t *testing.T) {
+	e := newEnv(t)
+	e.swarm()
+	e.ensure("--role", "orch", "--project", "proj").ok(t)
+	name := "mini_proj_orch"
+	hooks := filepath.Join(e.projDir, ".claude", "settings.local.json")
+	settings := readFile(t, hooks)
+	dir, probes := keychainBacked(e, name)
+	writeOwners(t, e, invalidOwners)
+	before := configTree(t, e.dir)
+	calls := len(e.hs.Calls())
+	e.ensure("--role", "orch", "--project", "proj").failsWith(t, ExitError, "schema_version 1")
+	assertUntouched(t, e, dir, probes, before)
+	if n := len(e.hs.Calls()) - calls; n != 0 {
+		t.Fatalf("%d homeserver requests before the registry refused", n)
+	}
+	if readFile(t, hooks) != settings {
+		t.Fatal("hooks file changed before the registry refused")
+	}
+
+	writeOwners(t, e, `{"schema_version":1,"owners":["`+ownerHome+`"]}`)
+	e.ensure("--role", "orch", "--project", "proj").ok(t)
+	if len(records(t, dir)) == 0 || probes.Load() == 0 || ownerRows(e, name, ownerHome) != 1 {
+		t.Fatalf("valid registry: ensure did not onboard through the Keychain: %d lookups, %d probes", len(records(t, dir)), probes.Load())
+	}
+}
