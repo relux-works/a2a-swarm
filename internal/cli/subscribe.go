@@ -680,26 +680,48 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	var removed []string
+	// Removing the last row that delivers a configured owner is allowed but
+	// never silent (#136): each owner that loses coverage is named.
+	owners, _, ownersErr := effectiveOwners(s.paths, nil)
+	var removed, lost []string
 	_, _, err = s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
+		now := a.Now()
+		before := map[string]bool{}
+		for _, o := range owners {
+			before[o] = ownerCovered(*list, o, now)
+		}
+		changed := false
 		if *all {
 			for _, sub := range list.Subs {
 				removed = append(removed, sub.ID)
 			}
 			list.Subs = []Sub{}
-			return len(removed) > 0, nil
+			changed = len(removed) > 0
+		} else {
+			if list.find(pos[0]) < 0 {
+				return false, fmt.Errorf("no subscription %q (see: a2a subs)", sanitizeLine(pos[0]))
+			}
+			removed = append(removed, pos[0])
+			changed = list.remove(pos[0])
 		}
-		if list.find(pos[0]) < 0 {
-			return false, fmt.Errorf("no subscription %q (see: a2a subs)", sanitizeLine(pos[0]))
+		for _, o := range owners {
+			if before[o] && !ownerCovered(*list, o, now) {
+				lost = append(lost, o)
+			}
 		}
-		removed = append(removed, pos[0])
-		return list.remove(pos[0]), nil
+		return changed, nil
 	})
 	if err != nil {
 		return err
 	}
 	for _, id := range removed {
 		a.printf("%s\tremoved\n", sanitizeLine(id))
+	}
+	if ownersErr != nil {
+		a.printf("warning: owners.json unreadable; removed rows were not checked against configured owners\n")
+	}
+	for _, o := range lost {
+		a.printf("warning: owner %s is no longer subscribed; owner messages are not delivered until a2a subs sync restores the row (a2a subs check reports it missing)\n", sanitizeLine(o))
 	}
 	if len(removed) == 0 {
 		a.printf("no subscriptions\n")

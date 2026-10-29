@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -56,7 +57,7 @@ func TestOwnerReachability(t *testing.T) {
 	tuitestestContains(t, still.stdout, "owner "+ownerHome+"\tmissing")
 
 	sync := e.as("alice", "subs", "sync").ok(t).stdout
-	tuitestestContains(t, sync, "owner subscriptions:")
+	tuitestestContains(t, sync, "owner subscriptions (from owners.json; routing only, they grant no authority):")
 	if strings.Count(sync, "\nsubscribed sub-") != 2 {
 		t.Fatalf("sync did not add one row per owner:\n%s", sync)
 	}
@@ -91,7 +92,7 @@ func TestOwnerRowsFromPresets(t *testing.T) {
 	e.as("alice", "product", "new", "alpha").ok(t)
 	e.run("subs", "owners", "add", ownerHome).ok(t)
 	out := e.ensure("--role", "orch", "--project", "proj", "--product", "alpha", "--preset", "orch").ok(t).stdout
-	tuitestestContains(t, out, "owner subscriptions:")
+	tuitestestContains(t, out, "owner subscriptions (from owners.json; routing only, they grant no authority):")
 	name := "mini_proj_orch"
 	if ownerRows(e, name, ownerHome) != 1 {
 		t.Fatalf("preset onboarding owner rows: %+v", e.serverSubs(name).Subs)
@@ -193,7 +194,7 @@ func TestOwnerRowsFromPlainOnboarding(t *testing.T) {
 	e.swarm()
 	e.run("subs", "owners", "add", ownerHome).ok(t)
 	out := e.ensure("--role", "orch", "--project", "proj").ok(t).stdout
-	tuitestestContains(t, out, "owner subscriptions:")
+	tuitestestContains(t, out, "owner subscriptions (from owners.json; routing only, they grant no authority):")
 	if ownerRows(e, "mini_proj_orch", ownerHome) != 1 {
 		t.Fatalf("plain onboarding owner rows: %+v", e.serverSubs("mini_proj_orch").Subs)
 	}
@@ -242,7 +243,7 @@ func TestOwnerRepairUsesTimeAfterRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	read = false
-	if err := s.ensureOwnerSubs(context.Background(), a); err != nil {
+	if err := s.ensureOwnerSubs(context.Background(), a, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := ownerRows(e, "alice", ownerHome); n != 1 {
@@ -265,5 +266,107 @@ func TestServicePresetGetsNoOwnerRows(t *testing.T) {
 	e.as(name, "subs", "sync", "--preset", "service", "--product", "alpha").ok(t)
 	if n := ownerRows(e, name, ownerHome); n != 0 {
 		t.Fatalf("service preset got %d owner rows", n)
+	}
+}
+
+// --owner replaces the configured owner list for one invocation only (#136
+// custodian disposition): sync subscribes exactly the given owners and check
+// reports exactly them, while owners.json stays byte-identical and still
+// applies to the next plain run. A localpart and a duplicate --owner refuse.
+func TestOwnerOverrideReplacesForOneInvocation(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "subs", "owners", "add", ownerHome).ok(t)
+	before, err := os.ReadFile(e.paths().OwnersFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.as("alice", "subs", "sync", "--owner", "alexis").failsWith(t, ExitUsage, "full Matrix user ID")
+	e.as("alice", "subs", "sync", "--owner", ownerFed, "--owner", ownerFed).failsWith(t, ExitUsage, "duplicate --owner")
+	out := e.as("alice", "subs", "sync", "--owner", ownerFed).ok(t).stdout
+	tuitestestContains(t, out, "owner subscriptions (from --owner; routing only, they grant no authority):")
+	tuitestestContains(t, out, ownerFed)
+	if ownerRows(e, "alice", ownerFed) != 1 || ownerRows(e, "alice", ownerHome) != 0 {
+		t.Fatalf("--owner merged instead of replacing: %+v", e.serverSubs("alice").Subs)
+	}
+	check := e.as("alice", "subs", "check", "--owner", ownerFed).ok(t).stdout
+	tuitestestContains(t, check, "owner "+ownerFed+"\tcovered")
+	tuitestestContains(t, check, "owners\tfrom --owner; routing only")
+	if strings.Contains(check, ownerHome) {
+		t.Fatal("check with --owner still reported the configured owner")
+	}
+	plain := e.as("alice", "subs", "check").failsWith(t, ExitError, "missing kinds or owners")
+	tuitestestContains(t, plain.stdout, "owner "+ownerHome+"\tmissing")
+	after, err := os.ReadFile(e.paths().OwnersFile())
+	if err != nil || string(after) != string(before) {
+		t.Fatal("--owner changed owners.json", err)
+	}
+}
+
+// A recorded room trim neither removes nor narrows an owner row: after the
+// trim and another sync the owner keeps exactly one covering row.
+func TestOwnerRowsSurviveTrim(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "subs", "owners", "add", ownerHome).ok(t)
+	e.as("alice", "subs", "sync").ok(t)
+	e.as("alice", "subs", "trim", "--room", "proj", "--drop", "decision", "--reason", "owner row control").ok(t)
+	e.as("alice", "subs", "sync").ok(t)
+	if n := ownerRows(e, "alice", ownerHome); n != 1 {
+		t.Fatalf("trim changed owner rows: %d", n)
+	}
+	tuitestestContains(t, e.as("alice", "subs", "check").ok(t).stdout, "owner "+ownerHome+"\tcovered")
+}
+
+// Unsubscribing the last row that delivers a configured owner is allowed but
+// never silent: a warning names the owner, and check reports it missing.
+// Removing a row that delivers no owner prints no such warning.
+func TestUnsubscribeOwnerRowWarns(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "subs", "owners", "add", ownerHome).ok(t)
+	e.as("alice", "subs", "sync").ok(t)
+	var ownerID, otherID string
+	for _, sub := range e.serverSubs("alice").Subs {
+		switch {
+		case sub.From == ownerHome && sub.Room == "" && len(sub.Kinds) == 0:
+			ownerID = sub.ID
+		case sub.From == "" && otherID == "":
+			otherID = sub.ID
+		}
+	}
+	if ownerID == "" || otherID == "" {
+		t.Fatalf("fixture rows missing: %+v", e.serverSubs("alice").Subs)
+	}
+	if out := e.as("alice", "unsubscribe", otherID).ok(t).stdout; strings.Contains(out, "warning: owner") {
+		t.Fatalf("non-owner removal warned: %s", out)
+	}
+	out := e.as("alice", "unsubscribe", ownerID).ok(t).stdout
+	tuitestestContains(t, out, "warning: owner "+ownerHome+" is no longer subscribed")
+	tuitestestContains(t, e.as("alice", "subs", "check").failsWith(t, ExitError, "missing kinds or owners").stdout, "owner "+ownerHome+"\tmissing")
+}
+
+// A full owner MXID on a server this config root has no profile for (here
+// gr.relux.works, with only test.local configured) is accepted, synced and
+// covered, and is shown as a federated principal; an owner on the configured
+// server is shown as configured locally (custodian disposition B). Malformed
+// principals (URL, scheme, path, no server) refuse, and a same-localpart
+// sender on a different server never covers the owner.
+func TestFederatedOwnerAcceptedAndCovered(t *testing.T) {
+	e, _ := world(t)
+	local := "@alexis:" + testServer
+	for _, bad := range []string{"@alexis:https://gr.relux.works", "https://gr.relux.works/@alexis", "@alexis", "@alexis:", "alexis:gr.relux.works", "@alexis:gr.relux.works/path"} {
+		e.as("alice", "subs", "owners", "add", bad).failsWith(t, ExitUsage, "full Matrix user ID")
+	}
+	tuitestestContains(t, e.as("alice", "subs", "owners", "add", ownerFed).ok(t).stdout, "added "+ownerFed+"\tfederated principal; no local profile")
+	tuitestestContains(t, e.as("alice", "subs", "owners", "add", local).ok(t).stdout, "added "+local+"\tconfigured locally")
+
+	e.as("alice", "subscribe", "--from", "@alexis:relux.works").ok(t)
+	missing := e.as("alice", "subs", "check").failsWith(t, ExitError, "missing kinds or owners").stdout
+	tuitestestContains(t, missing, "owner "+ownerFed+"\tmissing\tfederated principal; no local profile")
+
+	e.as("alice", "subs", "sync").ok(t)
+	check := e.as("alice", "subs", "check").ok(t).stdout
+	tuitestestContains(t, check, "owner "+ownerFed+"\tcovered\tfederated principal; no local profile")
+	tuitestestContains(t, check, "owner "+local+"\tcovered\tconfigured locally")
+	if ownerRows(e, "alice", ownerFed) != 1 || ownerRows(e, "alice", local) != 1 {
+		t.Fatalf("sync rows: %+v", e.serverSubs("alice").Subs)
 	}
 }

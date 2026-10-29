@@ -123,8 +123,15 @@ func cmdSubsSync(ctx context.Context, a *App, args []string) error {
 			return cmdSubsPresetSync(ctx, a, args)
 		}
 	}
-	if len(args) != 0 {
-		return usagef("usage: a2a subs sync")
+	fs := newFlagSet("subs sync")
+	var owners ownerListFlag
+	fs.Var(&owners, "owner", "owner account for this sync only (repeatable; replaces owners.json for this invocation)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usagef("usage: a2a subs sync [--owner @owner:server]...")
 	}
 	s, err := a.session()
 	if err != nil {
@@ -140,5 +147,5 @@ func cmdSubsSync(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
-	return s.ensureOwnerSubs(ctx, a)
+	return s.ensureOwnerSubs(ctx, a, owners)
 }

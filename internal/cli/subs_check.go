@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -58,6 +57,8 @@ func missingRoomKinds(room string, list SubList, now time.Time) []string {
 func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("subs check")
 	asJSON := fs.Bool("json", false, "print coverage as one JSON object")
+	var ownerOverride ownerListFlag
+	fs.Var(&ownerOverride, "owner", "owner account to check instead of owners.json (repeatable; this invocation only)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -107,6 +108,7 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		OK               bool            `json:"ok"`
 		Rooms            []roomCoverage  `json:"rooms"`
 		OwnersConfigured bool            `json:"owners_configured"`
+		OwnersSource     string          `json:"owners_source,omitempty"`
 		Owners           []ownerCoverage `json:"owners"`
 	}{OK: true, Rooms: []roomCoverage{}, Owners: []ownerCoverage{}}
 	now := a.Now()
@@ -135,19 +137,19 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		}
 		result.Rooms = append(result.Rooms, row)
 	}
-	owners, err := config.LoadOwners(s.paths)
+	owners, source, err := effectiveOwners(s.paths, ownerOverride)
 	if err != nil {
 		return err
 	}
-	if owners != nil {
-		for _, o := range owners.Owners {
-			row := ownerCoverage{Owner: sanitizeLine(o), Status: "covered"}
-			if !ownerCovered(list, o, now) {
-				row.Status = "missing"
-				result.OK = false
-			}
-			result.Owners = append(result.Owners, row)
+	result.OwnersSource = source
+	local := localServerNames(a, s.paths)
+	for _, o := range owners {
+		row := ownerCoverage{Owner: sanitizeLine(o), Status: "covered", Profile: ownerProfile(local, o)}
+		if !ownerCovered(list, o, now) {
+			row.Status = "missing"
+			result.OK = false
 		}
+		result.Owners = append(result.Owners, row)
 	}
 	result.OwnersConfigured = len(result.Owners) > 0
 	if *asJSON {
@@ -169,9 +171,11 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		}
 		if !result.OwnersConfigured {
 			a.printf("owners\tunconfigured (a2a subs owners add @owner:server)\n")
+		} else {
+			a.printf("owners\tfrom %s; routing only, they grant no authority\n", result.OwnersSource)
 		}
 		for _, row := range result.Owners {
-			a.printf("owner %s\t%s\n", row.Owner, row.Status)
+			a.printf("owner %s\t%s\t%s\n", row.Owner, row.Status, row.Profile)
 		}
 		if result.OK {
 			a.printf("coverage: ok\n")

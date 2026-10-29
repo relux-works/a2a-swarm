@@ -219,7 +219,7 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		subs = append(subs, line)
 	}
 	if o.rt.name != "none" {
-		if err := s.ensureOwnerSubs(ctx, a); err != nil {
+		if err := s.ensureOwnerSubs(ctx, a, nil); err != nil {
 			return err
 		}
 	}

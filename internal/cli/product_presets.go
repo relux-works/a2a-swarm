@@ -116,7 +116,7 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 		}
 	}
 	if rt.name != "none" && (len(presets) != 1 || presets[0] != "service") {
-		if err := s.ensureOwnerSubs(ctx, a); err != nil {
+		if err := s.ensureOwnerSubs(ctx, a, nil); err != nil {
 			return err
 		}
 	}
@@ -420,5 +420,5 @@ func cmdSubsPresetSync(ctx context.Context, a *App, args []string) error {
 	if len(presets) == 1 && presets[0] == "service" {
 		return nil
 	}
-	return s.ensureOwnerSubs(ctx, a)
+	return s.ensureOwnerSubs(ctx, a, nil)
 }
