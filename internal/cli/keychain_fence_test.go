@@ -43,6 +43,17 @@ func (b *blockingBackend) update(ctx context.Context, keychain, service, account
 	return b.fakeBackend.update(ctx, keychain, service, account, secret)
 }
 
+// waitStarted fails promptly when the blocked mutation never reached the
+// backend (for example a preparation error before it), instead of hanging.
+func waitStarted(t *testing.T, b *blockingBackend) {
+	t.Helper()
+	select {
+	case <-b.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the mutation never reached the backend")
+	}
+}
+
 func waitUntil(t *testing.T, limit time.Duration, cond func() bool) {
 	t.Helper()
 	for end := time.Now().Add(limit); !cond(); time.Sleep(10 * time.Millisecond) {
@@ -72,7 +83,7 @@ func TestKeychainAbandonedWriteStaysFenced(t *testing.T) {
 	if err := k.write(ctx, uid, "token-a"); err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatal("writer A did not time out", err)
 	}
-	<-b.started
+	waitStarted(t, b)
 	fence, err := k.readFence(uid)
 	if err != nil || fence == nil {
 		t.Fatal("abandoned add left no fence", err)
@@ -118,11 +129,12 @@ func TestKeychainFenceRecordsNoInvalidBoot(t *testing.T) {
 	b := &blockingBackend{fakeBackend: fakeBackend{dir}, started: make(chan struct{}), release: make(chan struct{})}
 	defer close(b.release)
 	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b, timeout: 300 * time.Millisecond,
-		boot: func() (string, error) { return "garbage-without-error", nil }})
-	if err := k.write(context.Background(), uid, "token-a"); err == nil {
-		t.Fatal("write did not time out")
+		boot:  func() (string, error) { return "garbage-without-error", nil },
+		birth: func(context.Context, int) (string, error) { return "synthetic-identity", nil }})
+	if err := k.write(context.Background(), uid, "token-a"); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatal("write did not time out", err)
 	}
-	<-b.started
+	waitStarted(t, b)
 	fence, err := k.readFence(uid)
 	if err != nil || fence == nil || fence.Boot != "" {
 		t.Fatalf("invalid boot evidence recorded: %+v %v", fence, err)
@@ -415,7 +427,7 @@ func TestKeychainUnknownOwnerKeepsFence(t *testing.T) {
 	if err := k.write(ctx, uid, "token-a"); err == nil {
 		t.Fatal("writer A did not time out")
 	}
-	<-b.started
+	waitStarted(t, b)
 	mu.Lock()
 	now = now.Add(2 * securityCooldown)
 	mu.Unlock()
