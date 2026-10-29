@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -242,8 +243,12 @@ func TestOwnerRepairUsesTimeAfterRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	plan, err := resolveOwnerPlan(s.paths, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	read = false
-	if err := s.ensureOwnerSubs(context.Background(), a, nil); err != nil {
+	if err := s.ensureOwnerSubs(context.Background(), a, plan); err != nil {
 		t.Fatal(err)
 	}
 	if n := ownerRows(e, "alice", ownerHome); n != 1 {
@@ -368,5 +373,151 @@ func TestFederatedOwnerAcceptedAndCovered(t *testing.T) {
 	tuitestestContains(t, check, "owner "+local+"\tcovered\tconfigured locally")
 	if ownerRows(e, "alice", ownerFed) != 1 || ownerRows(e, "alice", local) != 1 {
 		t.Fatalf("sync rows: %+v", e.serverSubs("alice").Subs)
+	}
+}
+
+// fileOrEmpty returns path's bytes, or "" when it does not exist.
+func fileOrEmpty(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+const invalidOwners = `{"schema_version":2,"owners":[]}`
+
+func writeOwners(t *testing.T, e *env, body string) {
+	t.Helper()
+	if err := os.WriteFile(e.paths().OwnersFile(), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An invalid owners.json refuses plain `subs sync` before the first
+// subscription write (#136 r4 finding): with a joined room still lacking its
+// baseline row, the run exits nonzero with zero account-data PUTs and the
+// stored subscriptions and local state unchanged. Positive controls: the same
+// invalid registry with --owner is bypassed and the sync writes, and the
+// registry stays byte-identical.
+func TestInvalidOwnersRefuseSyncBeforeAnyWrite(t *testing.T) {
+	e, _ := world(t)
+	writeOwners(t, e, invalidOwners)
+	puts := len(e.hs.CallsFor(putADRoute))
+	subs := string(e.hs.accountDataOf("@alice:"+testServer, SubsType))
+	state := fileOrEmpty(t, e.paths().StateFile("alice"))
+	e.as("alice", "subs", "sync").failsWith(t, ExitError, "schema_version 1")
+	if n := len(e.hs.CallsFor(putADRoute)) - puts; n != 0 {
+		t.Fatalf("%d account-data PUTs before the registry refused", n)
+	}
+	if got := string(e.hs.accountDataOf("@alice:"+testServer, SubsType)); got != subs {
+		t.Fatalf("subscriptions changed before the registry refused: %s", got)
+	}
+	if got := fileOrEmpty(t, e.paths().StateFile("alice")); got != state {
+		t.Fatal("local state changed before the registry refused")
+	}
+
+	out := e.as("alice", "subs", "sync", "--owner", ownerFed).ok(t).stdout
+	tuitestestContains(t, out, "owner subscriptions (from --owner;")
+	if len(e.hs.CallsFor(putADRoute)) == puts || ownerRows(e, "alice", ownerFed) != 1 || len(e.serverSubs("alice").Subs) < 3 {
+		t.Fatalf("--owner did not bypass the invalid registry: %+v", e.serverSubs("alice").Subs)
+	}
+	if got := fileOrEmpty(t, e.paths().OwnersFile()); got != invalidOwners {
+		t.Fatalf("--owner changed owners.json: %s", got)
+	}
+}
+
+// An invalid owners.json refuses `subs sync --preset` before the preset
+// reconciliation writes: a missing preset row stays missing and no
+// account-data PUT is sent. The sole service preset never reads the
+// registry and still succeeds; after the registry is repaired the same
+// preset sync restores the row (positive controls).
+func TestInvalidOwnersRefusePresetSyncBeforeAnyWrite(t *testing.T) {
+	e := newEnv(t)
+	alice := e.agent("alice")
+	e.swarm()
+	e.as("alice", "broadcast-room", "init").ok(t)
+	e.hs.makePublic(e.hs.addRoom("alpha-proj", alice))
+	e.as("alice", "product", "new", "alpha").ok(t)
+	e.run("subs", "owners", "add", ownerHome).ok(t)
+	e.ensure("--role", "orch", "--project", "proj", "--product", "alpha", "--preset", "orch").ok(t)
+	e.run("identity", "ensure", "--role", "service", "--project", "proj", "--runtime", "none", "--product", "alpha", "--preset", "service").ok(t)
+	name := "mini_proj_orch"
+	list := e.serverSubs(name)
+	i := slices.IndexFunc(list.Subs, func(sub Sub) bool { return sub.Preset != "" })
+	if i < 0 {
+		t.Fatalf("no preset row to remove: %+v", list.Subs)
+	}
+	dropped := list.Subs[i].SubSelector
+	list.Subs = slices.Delete(list.Subs, i, i+1)
+	e.hs.setAccountData("@"+name+":"+testServer, SubsType, list)
+	writeOwners(t, e, invalidOwners)
+	puts := len(e.hs.CallsFor(putADRoute))
+	subs := string(e.hs.accountDataOf("@"+name+":"+testServer, SubsType))
+
+	e.as(name, "subs", "sync", "--preset", "orch", "--product", "alpha").failsWith(t, ExitError, "schema_version 1")
+	if n := len(e.hs.CallsFor(putADRoute)) - puts; n != 0 {
+		t.Fatalf("%d account-data PUTs before the registry refused", n)
+	}
+	if got := string(e.hs.accountDataOf("@"+name+":"+testServer, SubsType)); got != subs {
+		t.Fatalf("preset rows changed before the registry refused: %s", got)
+	}
+	e.as("mini_proj_service", "subs", "sync", "--preset", "service", "--product", "alpha").ok(t)
+
+	e.run("subs", "owners", "add", ownerHome).failsWith(t, ExitError, "schema_version 1")
+	writeOwners(t, e, `{"schema_version":1,"owners":["`+ownerHome+`"]}`)
+	e.as(name, "subs", "sync", "--preset", "orch", "--product", "alpha").ok(t)
+	if !slices.ContainsFunc(e.serverSubs(name).Subs, func(sub Sub) bool { return sub.SubSelector.equal(dropped) }) {
+		t.Fatal("repaired registry: preset sync did not restore the missing row")
+	}
+}
+
+// An invalid owners.json refuses session onboarding (plain and preset)
+// before the account is registered, a room joined or created, a subscription
+// written or a hooks file created. --runtime none never reads the registry
+// and onboards a service account all the same (positive control).
+func TestInvalidOwnersRefuseOnboardingBeforeAnyChange(t *testing.T) {
+	e := newEnv(t)
+	alice := e.agent("alice")
+	e.swarm()
+	e.as("alice", "broadcast-room", "init").ok(t)
+	e.hs.makePublic(e.hs.addRoom("alpha-proj", alice))
+	e.as("alice", "product", "new", "alpha").ok(t)
+	writeOwners(t, e, invalidOwners)
+	changing := func() int {
+		return len(e.hs.CallsFor(registerRoute)) + len(e.hs.CallsFor(joinRoute)) + len(e.hs.CallsFor(createRoute)) + len(e.hs.CallsFor(putADRoute))
+	}
+	before := changing()
+	e.ensure("--role", "orch", "--project", "proj").failsWith(t, ExitError, "schema_version 1")
+	e.ensure("--role", "orch", "--project", "proj", "--product", "alpha", "--preset", "orch").failsWith(t, ExitError, "schema_version 1")
+	if n := changing() - before; n != 0 {
+		t.Fatalf("%d changing requests before the registry refused", n)
+	}
+	if _, err := os.Stat(e.paths().AgentFile("mini_proj_orch")); !os.IsNotExist(err) {
+		t.Fatalf("credentials written before the registry refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(e.projDir, ".claude")); !os.IsNotExist(err) {
+		t.Fatalf("hooks written before the registry refused: %v", err)
+	}
+	e.ensure("--role", "orch", "--project", "svc", "--runtime", "none").ok(t)
+	if ownerRows(e, "mini_svc_orch", ownerHome) != 0 {
+		t.Fatal("--runtime none onboarding added an owner row")
+	}
+}
+
+// --owner refuses a localpart and a duplicate on subs check as on subs sync,
+// and preset sync has no --owner at all; each refusal is a usage error that
+// writes nothing. TestOwnerOverrideReplacesForOneInvocation is the positive
+// control for a valid override.
+func TestOwnerFlagRefusals(t *testing.T) {
+	e, _ := world(t)
+	e.as("alice", "subs", "sync").ok(t)
+	puts := len(e.hs.CallsFor(putADRoute))
+	e.as("alice", "subs", "check", "--owner", "alexis").failsWith(t, ExitUsage, "full Matrix user ID")
+	e.as("alice", "subs", "check", "--owner", ownerFed, "--owner", ownerFed).failsWith(t, ExitUsage, "duplicate --owner")
+	e.as("alice", "subs", "sync", "--preset", "orch", "--product", "alpha", "--owner", ownerFed).failsWith(t, ExitUsage, "owner")
+	if n := len(e.hs.CallsFor(putADRoute)) - puts; n != 0 {
+		t.Fatalf("%d account-data PUTs from refused --owner invocations", n)
 	}
 }

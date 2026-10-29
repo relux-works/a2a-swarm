@@ -42,6 +42,7 @@ type onboarding struct {
 	rt                  hookRuntime
 	rtSource            string // "--runtime" or "detected: CLAUDECODE=1"
 	keeper              bool
+	owners              ownerPlan // resolved before registration (ownersApply)
 }
 
 // ensureRuntime resolves the hook runtime: --runtime wins; without it only an
@@ -218,8 +219,8 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		a.printf("%s %s\n", state, line)
 		subs = append(subs, line)
 	}
-	if o.rt.name != "none" {
-		if err := s.ensureOwnerSubs(ctx, a, nil); err != nil {
+	if o.owners.applies {
+		if err := s.ensureOwnerSubs(ctx, a, o.owners); err != nil {
 			return err
 		}
 	}

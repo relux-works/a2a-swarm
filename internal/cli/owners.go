@@ -123,6 +123,30 @@ func effectiveOwners(p config.Paths, override []string) ([]string, string, error
 	return r.Owners, "owners.json", nil
 }
 
+// ownerPlan is the owner list one invocation applies, with its source. Each
+// entry path resolves it before its first change (an account registration,
+// a join, a room creation or a subscription write) and hands it to
+// ensureOwnerSubs, which never reads the registry again. An invalid registry
+// therefore refuses with nothing changed. The zero plan does not apply: the
+// invocation subscribes no owners and does not mention them.
+type ownerPlan struct {
+	applies bool
+	owners  []string
+	source  string
+}
+
+func resolveOwnerPlan(p config.Paths, override []string) (ownerPlan, error) {
+	owners, source, err := effectiveOwners(p, override)
+	return ownerPlan{applies: true, owners: owners, source: source}, err
+}
+
+// ownersApply reports whether an onboarding gets owner subscriptions: a
+// session does, a --runtime none service account and the sole service preset
+// do not, and neither reads the registry.
+func ownersApply(rt hookRuntime, presets []string) bool {
+	return rt.name != "none" && (len(presets) != 1 || presets[0] != "service")
+}
+
 // localServerNames lists the Matrix server names this config root has a local
 // profile for: matrix.env and every connections.json profile. An owner on any
 // other server is a federated principal and is accepted all the same. This is
@@ -152,17 +176,14 @@ func ownerProfile(local map[string]bool, owner string) string {
 // delivers every ordinary message from one owner account.
 func ownerSelector(owner string) SubSelector { return SubSelector{From: owner} }
 
-// ensureOwnerSubs adds the owner subscriptions for every configured owner,
+// ensureOwnerSubs adds the owner subscriptions for every owner of plan,
 // idempotently, and prints each one. An existing row is reused only when it
 // already covers the owner (ownerRowLive); a product-, room- or kind-filtered,
 // time-limited or not-yet-active row is left in place and a covering row is
 // added beside it. Recorded room trims do not apply: they narrow room kinds,
 // not senders.
-func (s *session) ensureOwnerSubs(ctx context.Context, a *App, override []string) error {
-	owners, source, err := effectiveOwners(s.paths, override)
-	if err != nil {
-		return err
-	}
+func (s *session) ensureOwnerSubs(ctx context.Context, a *App, plan ownerPlan) error {
+	owners, source := plan.owners, plan.source
 	if len(owners) == 0 {
 		a.printf("owner subscriptions: none: no owners configured (a2a subs owners add @owner:server)\n")
 		return nil

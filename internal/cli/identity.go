@@ -166,6 +166,15 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The owner list is resolved before the account is registered, a room
+	// joined or a subscription written, so an invalid registry refuses with
+	// nothing changed.
+	var owners ownerPlan
+	if ownersApply(rt, presets) {
+		if owners, err = resolveOwnerPlan(p, nil); err != nil {
+			return err
+		}
+	}
 	projDir := *dir
 	if projDir == "" {
 		projDir = "."
@@ -226,9 +235,9 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 	}
 	a.printf("export %s=%s\n", config.EnvAgent, name)
 	if len(presets) > 0 {
-		return a.onboardPreset(ctx, s, presets, *product, proj, *resource, projDir, rt, rtSource)
+		return a.onboardPreset(ctx, s, presets, *product, proj, *resource, projDir, rt, rtSource, owners)
 	}
-	return a.onboard(ctx, s, onboarding{host: host, project: proj, role: *role, dir: projDir, rt: rt, rtSource: rtSource, keeper: *keeper})
+	return a.onboard(ctx, s, onboarding{host: host, project: proj, role: *role, dir: projDir, rt: rt, rtSource: rtSource, keeper: *keeper, owners: owners})
 }
 
 // detectProject returns the project part from the git remote "origin" of dir.

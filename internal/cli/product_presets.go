@@ -65,7 +65,7 @@ func presetTag(preset, product, resource string) string {
 	return preset
 }
 
-func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, product, project, resource, dir string, rt hookRuntime, rtSource string) error {
+func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, product, project, resource, dir string, rt hookRuntime, rtSource string, owners ownerPlan) error {
 	var rooms []presetRoom
 	plans := map[string][]presetSub{}
 	for _, preset := range presets {
@@ -115,8 +115,8 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 			return err
 		}
 	}
-	if rt.name != "none" && (len(presets) != 1 || presets[0] != "service") {
-		if err := s.ensureOwnerSubs(ctx, a, nil); err != nil {
+	if owners.applies {
+		if err := s.ensureOwnerSubs(ctx, a, owners); err != nil {
 			return err
 		}
 	}
@@ -403,6 +403,13 @@ func cmdSubsPresetSync(ctx context.Context, a *App, args []string) error {
 	if contains(presets, "orch") && project == "" {
 		return fmt.Errorf("cannot determine project from identity %s", s.name)
 	}
+	sole := len(presets) == 1 && presets[0] == "service"
+	var owners ownerPlan
+	if !sole {
+		if owners, err = resolveOwnerPlan(s.paths, nil); err != nil {
+			return err
+		}
+	}
 	for _, p := range presets {
 		if p == "service" {
 			continue
@@ -417,8 +424,8 @@ func cmdSubsPresetSync(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
-	if len(presets) == 1 && presets[0] == "service" {
+	if sole {
 		return nil
 	}
-	return s.ensureOwnerSubs(ctx, a, nil)
+	return s.ensureOwnerSubs(ctx, a, owners)
 }

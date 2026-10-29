@@ -137,6 +137,10 @@ func cmdSubsSync(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	plan, err := resolveOwnerPlan(s.paths, owners)
+	if err != nil {
+		return err
+	}
 	rooms, err := s.client.JoinedRooms(ctx)
 	if err != nil {
 		return err
@@ -147,5 +151,5 @@ func cmdSubsSync(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
-	return s.ensureOwnerSubs(ctx, a, owners)
+	return s.ensureOwnerSubs(ctx, a, plan)
 }
