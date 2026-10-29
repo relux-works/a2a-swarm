@@ -291,7 +291,8 @@ hostname when none is set: here it is only a label).
   `identity release` prints `released <name>: pid holder <holder> was reused (recorded start R, observed start O)`, and a
   command that takes over such a lease writes one stderr line (hook stdout is unchanged). Unchanged compatibility: on this
   host, any session or process may still replace a live `pid:` lease when it acquires, whatever its start time. During a
-  mixed-version rollout an older build reads a new-format holder as foreign and keeps it until its TTL.
+  mixed-version rollout an older build cannot recognise a new-format holder as a local dead or reused PID; ordinary TTL
+  expiry and the same-host acquisition compatibility above still apply to it.
 - The Claude Code `SessionStart` hook appends `export A2A_SESSION_ID=<session_id>` to `CLAUDE_ENV_FILE` (which Claude Code sets for that hook;
   an id that is not a plain `[A-Za-z0-9._-]` token is skipped), so the session's own `a2a inbox` and `wait` hold the same lease as its hooks.
   Codex commands use the native `CODEX_THREAD_ID` automatically; no per-command `A2A_SESSION_ID` export is needed. An explicit export retains priority.
