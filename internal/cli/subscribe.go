@@ -718,6 +718,9 @@ func cmdSubs(ctx context.Context, a *App, args []string) error {
 	if len(args) > 0 && args[0] == "sync" {
 		return cmdSubsSync(ctx, a, args[1:])
 	}
+	if len(args) > 0 && args[0] == "owners" {
+		return cmdSubsOwners(ctx, a, args[1:])
+	}
 	fs := newFlagSet("subs")
 	asJSON := fs.Bool("json", false, "print the subscription list as one JSON object")
 	pos, err := parseInterspersed(fs, args)

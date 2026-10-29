@@ -140,5 +140,5 @@ func cmdSubsSync(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
-	return nil
+	return s.ensureOwnerSubs(ctx, a)
 }

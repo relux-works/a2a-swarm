@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -103,9 +104,11 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 	}
 	slices.Sort(rooms)
 	result := struct {
-		OK    bool           `json:"ok"`
-		Rooms []roomCoverage `json:"rooms"`
-	}{OK: true, Rooms: []roomCoverage{}}
+		OK               bool            `json:"ok"`
+		Rooms            []roomCoverage  `json:"rooms"`
+		OwnersConfigured bool            `json:"owners_configured"`
+		Owners           []ownerCoverage `json:"owners"`
+	}{OK: true, Rooms: []roomCoverage{}, Owners: []ownerCoverage{}}
 	now := a.Now()
 	for _, id := range rooms {
 		var create struct {
@@ -132,6 +135,21 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		}
 		result.Rooms = append(result.Rooms, row)
 	}
+	owners, err := config.LoadOwners(s.paths)
+	if err != nil {
+		return err
+	}
+	if owners != nil {
+		for _, o := range owners.Owners {
+			row := ownerCoverage{Owner: sanitizeLine(o), Status: "covered"}
+			if !ownerCovered(list, o, now) {
+				row.Status = "missing"
+				result.OK = false
+			}
+			result.Owners = append(result.Owners, row)
+		}
+	}
+	result.OwnersConfigured = len(result.Owners) > 0
 	if *asJSON {
 		if err := a.printJSON(result); err != nil {
 			return err
@@ -149,12 +167,18 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 				a.printf("%s\tcovered\n", row.Label)
 			}
 		}
+		if !result.OwnersConfigured {
+			a.printf("owners\tunconfigured (a2a subs owners add @owner:server)\n")
+		}
+		for _, row := range result.Owners {
+			a.printf("owner %s\t%s\n", row.Owner, row.Status)
+		}
 		if result.OK {
 			a.printf("coverage: ok\n")
 		}
 	}
 	if !result.OK {
-		return fmt.Errorf("subscription coverage gaps; review missing kinds, then run a2a subs sync to backfill")
+		return fmt.Errorf("subscription coverage gaps; review missing kinds or owners, then run a2a subs sync to backfill")
 	}
 	return nil
 }

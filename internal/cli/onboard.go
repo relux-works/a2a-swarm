@@ -218,6 +218,11 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		a.printf("%s %s\n", state, line)
 		subs = append(subs, line)
 	}
+	if o.rt.name != "none" {
+		if err := s.ensureOwnerSubs(ctx, a); err != nil {
+			return err
+		}
+	}
 
 	hooksFile := "none (service account: no session to notify)"
 	if o.rt.name == "none" {

@@ -1114,6 +1114,19 @@ delivers matching events until the first one of kind K, delivers that one, and r
 
 `a2a subs check [--json]` reads joined rooms, server subscriptions and the identity's local trim policy without migrating legacy state or writing subscriptions. It reports each room as `covered`, `trimmed` (explicitly recorded), `missing`, or `skipped` (space, global #system projection or #broadcast). Any missing standard kind exits 1; read/metadata failures also exit 1 without a success report. Coverage unions active unrestricted selectors, including room-wide all-events and global kind selectors; sender/thread/subject/product/subtype filters and one-shot rows cannot stand in for the baseline. This is a current coverage snapshot, not proof of historical delivery, consumer health, wake or reply.
 
+It also reports each owner account listed in the operator's `owners.json` (below) as `owner MXID covered` or `missing`; a missing owner exits 1 like a missing kind. Only a live, unrestricted, permanent, all-rooms sender row for that exact full MXID covers an owner: kind coverage, room-scoped, product-, kind- or subtype-restricted, one-shot and `--until` rows, and a same-localpart sender on another server do not. A row is live under the consumer's own gate: its `--since` event when set, otherwise its creation time. With no owners listed it prints `owners unconfigured` and does not fail. `--json` adds `owners_configured` and `owners`.
+
+#### Owner reachability: `a2a subs owners`
+
+An ordinary owner message is untyped, so the kind baseline never delivers it. `a2a subs owners add|remove @owner:server` maintains the operator-level list in `<config-root>/owners.json` (strict JSON, private mode, one full Matrix user ID per server the owner uses, at most 16); `a2a subs owners [list] [--json]` shows it. A localpart or display name is refused. Onboarding of a session (`identity ensure` with a session runtime, plain or preset) adds one unrestricted all-rooms sender subscription per listed owner; onboarding with `--runtime none` or the `service` preset adds none. `subs sync` (plain, or with a non-service preset) adds them for the identity it runs as, so do not run it as a service account. Each is idempotent: an existing row is reused only if it already covers the owner, and a non-covering owner row (for example product-filtered) is kept while a covering row is added beside it. Recorded room trims do not apply to these rows. Removing an owner stops future sync and checks but does not unsubscribe. The list only selects subscriptions: it grants no authority, and owner verification keeps the existing full-principal sender rules. It lives outside `connections.json`, whose strict decoding would make older clients refuse the whole routing registry.
+
+```bash
+a2a subs owners add @alexis:relux.works
+a2a subs owners add @alexis:gr.relux.works
+a2a subs sync
+a2a subs check
+```
+
 Ordinary rooms include product #X-system/#X-broadcast and private direct rooms, including an F1 owner-DM room on a later sync. F1 binding itself keeps its existing all-events selector. A room-type or exemption-alias read can fail after membership was established; retry join/sync after resolving that read to backfill coverage. A genuinely absent alias is allowed; an unreadable exemption alias is not evidence of an ordinary room. Joining and subscribing are not one atomic server transaction.
 
 After deliberately narrowing your own subscriptions, record the exception:
@@ -1225,7 +1238,7 @@ never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name
 
 ### `a2a subs sync [--preset P[,P...] [--product X] [--resource ROOM]]`
 
-Without a preset, ensures the room subscription (kinds system, owner-needed, decision) for every joined ordinary message room, idempotently, and prints it; spaces are skipped and recorded trims are preserved;
+Without a preset, ensures the room subscription (kinds system, owner-needed, decision) for every joined ordinary message room, idempotently, and prints it, then the owner subscriptions for `subs owners`; spaces are skipped and recorded trims are preserved;
 `#system` and `#broadcast` are skipped with the reason. `a2a join` creates the same subscription for the joined room and `a2a leave` removes
 the room's subscriptions.
 

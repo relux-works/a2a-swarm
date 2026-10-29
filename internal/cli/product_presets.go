@@ -115,6 +115,11 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 			return err
 		}
 	}
+	if rt.name != "none" && (len(presets) != 1 || presets[0] != "service") {
+		if err := s.ensureOwnerSubs(ctx, a); err != nil {
+			return err
+		}
+	}
 	if rt.name == "none" {
 		a.printf("hooks: none (--runtime none: a service account, no session to notify)\n")
 		return nil
@@ -412,5 +417,8 @@ func cmdSubsPresetSync(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
-	return nil
+	if len(presets) == 1 && presets[0] == "service" {
+		return nil
+	}
+	return s.ensureOwnerSubs(ctx, a)
 }
