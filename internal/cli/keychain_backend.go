@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"math"
 )
 
 // errKeychainInteraction means the Keychain refused an operation because it
@@ -30,6 +31,17 @@ type keychainBackend interface {
 	// item when it no longer exists.
 	update(ctx context.Context, keychain, service, account string, secret []byte) error
 }
+
+// errKeychainLength refuses a length the native API cannot carry exactly.
+var errKeychainLength = errors.New("keychain length out of range")
+
+// nativeInputLen reports whether n fits the UInt32 length the Security API
+// takes, so a conversion never truncates a service, account or secret.
+func nativeInputLen(n int) bool { return n >= 0 && uint64(n) <= math.MaxUint32 }
+
+// nativeOutputLen reports whether a returned UInt32 length fits the C int that
+// C.GoBytes takes; a larger value would become negative and panic.
+func nativeOutputLen(n uint64) bool { return n <= math.MaxInt32 }
 
 func (k *keychainStore) keychainBackend() keychainBackend {
 	if k.backend != nil {

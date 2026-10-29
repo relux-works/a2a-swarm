@@ -39,6 +39,8 @@ type keychainStore struct {
 	fixture           string
 	timeout, cooldown time.Duration
 	now               func() time.Time
+	birth             func(context.Context, int) (string, error)
+	reconciling       bool // set only by reconcile, for its own lookup
 }
 
 func (k *keychainStore) selectedService() string {
@@ -169,12 +171,19 @@ func (b *limitedSecretBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// run applies the identity cooldown, host lock, host cooldown and status
-// preflight to EVERY Keychain operation, including write lookup, relookup and
-// readback, then runs op in this process under the hard deadline. A timeout or
-// an interaction refusal records the identity cooldown. Backend error text
-// never escapes into CLI errors.
-func (k *keychainStore) run(ctx context.Context, uid string, op func(context.Context, keychainBackend, string) ([]byte, error)) ([]byte, error) {
+// run applies the write fence, identity cooldown, host lock, host cooldown and
+// status preflight to EVERY Keychain operation, including write lookup,
+// relookup and readback, then runs op in this process under the hard deadline.
+// A timeout or an interaction refusal records the identity cooldown. A
+// mutation ("add" or "update") is fenced until its native call returns, even
+// when the deadline abandons it (keychain_fence.go). Backend error text never
+// escapes into CLI errors.
+func (k *keychainStore) run(ctx context.Context, uid, mutation string, op func(context.Context, keychainBackend, string) ([]byte, error)) ([]byte, error) {
+	if !k.reconciling {
+		if err := k.checkFence(ctx, uid); err != nil {
+			return nil, err
+		}
+	}
 	if err := k.checkCooldown(uid); err != nil {
 		return nil, err
 	}
@@ -212,19 +221,30 @@ func (k *keychainStore) run(ctx context.Context, uid string, op func(context.Con
 		data []byte
 		err  error
 	}
+	var fence *keychainFence
+	if mutation != "" {
+		if fence, err = k.writeFence(ctx, uid, mutation); err != nil {
+			return nil, fmt.Errorf("keychain write fence unavailable for %s", uid)
+		}
+	}
 	done := make(chan result, 1)
 	backend := k.keychainBackend()
 	go func() {
 		data, err := op(ctx, backend, target)
+		if fence != nil {
+			// Cleared only here, after the native call returned. If clearing
+			// fails the fence stays and later operations refuse.
+			_ = k.clearFence(uid, fence)
+		}
 		done <- result{data, err}
 	}()
 	var r result
 	select {
 	case r = <-done:
 	case <-ctx.Done():
-		// An in-process Security.framework call cannot be killed. It runs with
-		// UI disallowed, so a late result is discarded and the attempt counts
-		// as a timeout.
+		// An in-process Security.framework call cannot be killed. Its late
+		// result is discarded and the attempt counts as a timeout; a late
+		// mutation stays fenced until the call returns.
 		r.err = ctx.Err()
 	}
 	if ctx.Err() != nil || errors.Is(r.err, errKeychainInteraction) {
@@ -245,7 +265,7 @@ func (k *keychainStore) run(ctx context.Context, uid string, op func(context.Con
 }
 
 func (k *keychainStore) lookup(ctx context.Context, uid string) (string, error) {
-	data, err := k.run(ctx, uid, func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
+	data, err := k.run(ctx, uid, "", func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
 		return b.find(ctx, target, k.selectedService(), uid)
 	})
 	if err != nil {
@@ -298,7 +318,11 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 			return err
 		}
 		put := func(update bool) error {
-			_, err := k.run(ctx, uid, func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
+			op := "add"
+			if update {
+				op = "update"
+			}
+			_, err := k.run(ctx, uid, op, func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
 				if update {
 					return nil, b.update(ctx, target, k.selectedService(), uid, []byte(token))
 				}

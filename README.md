@@ -227,7 +227,11 @@ Security framework (cgo), with user interaction disallowed. It never runs
 Keychain default ACL, which trusts only the creating binary's designated
 requirement; existing items are updated in place and keep their ACL. Writers
 serialize per identity, with one duplicate-create recovery and matching readback
-after every write. An item the binary is not trusted for, or a locked keychain,
+after every write. Every add and update first records a durable write fence. A
+mutation that the deadline abandons stays fenced until its native call returns, so it
+cannot overwrite a newer write. A dead writer's fence never expires: `a2a creds
+reconcile` clears it once the owner is gone and the keychain answers. Native lengths
+are checked before conversion. An item the binary is not trusted for, or a locked keychain,
 returns an error instead of a prompt. That error records the cooldown below.
 a2a never unlocks or changes ACL/partition lists.
 

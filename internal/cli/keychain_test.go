@@ -301,6 +301,7 @@ func TestKeychainAuthorizationBoundaries(t *testing.T) {
 	}
 	e.run("--human", "--as", "alice", "whoami").failsWith(t, ExitError, "owner decision 74")
 	e.run("--human", "--as", "alice", "creds", "migrate").failsWith(t, ExitError, "owner decision 74")
+	e.run("--human", "--as", "alice", "creds", "reconcile").failsWith(t, ExitError, "owner decision 74")
 	if after, err := os.ReadFile(e.paths().HumanFile("alice")); err != nil || string(after) != string(before) {
 		t.Fatal("refused human migration changed the human file", err)
 	}

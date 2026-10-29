@@ -157,7 +157,7 @@ func commands() []command {
 		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},
 		{"project", "project --system R --source R [--source R...] [--kind k1,k2] [--once]   project allowed sources to one explicit target", cmdProject},
 		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
-		{"creds", "creds migrate | move-human <name>   migrate selected credentials to Keychain, or move HUMAN metadata into humans/", cmdCreds},
+		{"creds", "creds migrate | reconcile | move-human <name>   migrate selected credentials to Keychain, clear a dead writer's Keychain fence, or move HUMAN metadata into humans/", cmdCreds},
 		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},

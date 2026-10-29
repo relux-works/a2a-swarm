@@ -97,6 +97,61 @@ func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) 
 	return c, nil
 }
 
+// reconcileCredentials clears the selected identity's Keychain write fence
+// after its writer died, once the keychain answers (keychain_fence.go). It
+// works for legacy and named profiles and prints no secret.
+func (a *App) reconcileCredentials(ctx context.Context, args []string) error {
+	if len(args) != 0 {
+		return usagef("usage: a2a --as <identity> creds reconcile")
+	}
+	if a.human {
+		return errHumanKeychain
+	}
+	name, err := a.identity()
+	if err != nil {
+		return err
+	}
+	p, err := a.paths()
+	if err != nil {
+		return err
+	}
+	k := a.keychainStore(p)
+	var uid string
+	if c, e := a.selectedConnection(); e != nil {
+		return e
+	} else if c != nil {
+		creds, e := a.namedMetadata(p, name)
+		if e != nil {
+			return e
+		}
+		k.service = c.Store.AccessTokenService
+		uid = creds.UserID
+	} else {
+		store, err := a.selectedStore()
+		if err != nil {
+			return err
+		}
+		if store != "keychain" {
+			return fmt.Errorf("creds reconcile requires A2A_SECRET_STORE=keychain")
+		}
+		c, err := config.LoadCredentialMetadata(p, name, false)
+		if err != nil {
+			return err
+		}
+		a.secrets.Add(c.AccessToken, c.Password)
+		if err := validateCredentialIdentity(c, name); err != nil {
+			return err
+		}
+		uid = c.UserID
+	}
+	outcome, err := k.reconcile(ctx, uid)
+	if err != nil {
+		return err
+	}
+	a.printf("reconciled %s: %s\n", name, outcome)
+	return nil
+}
+
 func (a *App) migrateCredentials(ctx context.Context, args []string) error {
 	if c, e := a.selectedConnection(); e != nil {
 		return e

@@ -54,6 +54,30 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		{"duplicate-second-retry", "keychain.go", `err = put(true)`, `err = put(true); if errors.Is(err,errKeychainDuplicate) { err=put(true) }`, "TestKeychainDuplicateRetryBound"},
 		{"production-names-security-tool", "keychain_backend.go", `var errKeychainInteraction = errors.New("keychain interaction not allowed")`, `var errKeychainInteraction = errors.New("keychain interaction not allowed"); var plantedHelper = "/usr/bin/security"`, "TestKeychainProductionNeverNamesSecurityTool"},
 
+		// Abandoned-write fence and reconcile (#138 review, finding 1).
+		{"fence-check-skipped", "keychain.go", `if !k.reconciling {`, `if false {`, "TestKeychainAbandonedWriteStaysFenced"},
+		{"fence-not-written", "keychain.go", `if mutation != "" {`, `if mutation == "never" {`, "TestKeychainAbandonedWriteStaysFenced"},
+		{"fence-cleared-on-timeout", "keychain.go", `r.err = ctx.Err()`, `r.err = ctx.Err(); if fence != nil { _ = k.clearFence(uid, fence) }`, "TestKeychainAbandonedWriteStaysFenced"},
+		{"dead-owner-fence-expires", "keychain_fence.go", "return fmt.Errorf(\"%w for %s: pid %d ended before its write completed; run `a2a creds reconcile`\", errKeychainFenced, uid, fence.PID)", `return nil`, "TestKeychainFenceReconcile/dead-owner-answered"},
+		{"reconcile-live-owner", "keychain_fence.go", `if k.ownerAlive(ctx, fence) {
+			return fmt.Errorf("%w for %s in pid %d; not reconciled", errKeychainFenced, uid, fence.PID)
+		}`, ``, "TestKeychainFenceReconcile/live-owner"},
+		{"reconcile-unanswered", "keychain_fence.go", `		default:
+			return fmt.Errorf("keychain did not answer for %s; fence kept: %w", uid, err)`, `		default:
+			outcome = "unanswered"`, "TestKeychainFenceReconcile/keychain-silent"},
+
+		// Native lengths (finding 4), sentinel tool bounding (finding 2), ACL rules (finding 3).
+		{"input-length-unbounded", "keychain_backend.go", `return n >= 0 && uint64(n) <= math.MaxUint32`, `return n >= 0 && uint64(n) <= math.MaxUint64`, "TestKeychainNativeLengthBounds"},
+		{"output-length-uint32", "keychain_backend.go", `return n <= math.MaxInt32`, `return n <= math.MaxUint32`, "TestKeychainNativeLengthBounds"},
+		{"sentinel-tool-unbounded", "keychain_p2_sentinel_darwin_test.go", `	if err := boundSecurityProcess(cmd); err != nil {
+		return "", -1
+	}
+	if err := runBoundSecurityProcess(cmd); err != nil {`, `	if err := runBoundSecurityProcess(cmd); err != nil {`, "TestSentinelToolBoundProcess"},
+		{"acl-decrypt-only", "keychain_acl_test.go", `case "decrypt", "export_clear", "export_wrapped", "any":`, `case "decrypt":`, "TestKeychainACLCreatorOnly/allow-all-export.txt"},
+		{"acl-any-app-admitted", "keychain_acl_test.go", `if e.anyApp {`, `if false && e.anyApp {`, "TestKeychainACLCreatorOnly/allow-all-export.txt"},
+		{"acl-unknown-line-skipped", "keychain_acl_test.go", `		default:
+			return nil, fmt.Errorf("unknown ACL line: %q", line)`, `		default:`, "TestKeychainACLCreatorOnly/unknown-line.txt"},
+
 		// Owner decision 74: no human token in a2a Keychain items.
 		{"human-legacy-read-admitted", "credentials.go", `if a.human {
 			return config.Credentials{}, errHumanKeychain

@@ -108,6 +108,9 @@ func (c cstrings) free() {
 }
 
 func (secBackend) find(_ context.Context, keychain, service, account string) ([]byte, error) {
+	if !nativeInputLen(len(service)) || !nativeInputLen(len(account)) {
+		return nil, errKeychainLength
+	}
 	c := newCStrings(keychain, service, account)
 	defer c.free()
 	var data unsafe.Pointer
@@ -117,6 +120,9 @@ func (secBackend) find(_ context.Context, keychain, service, account string) ([]
 		return nil, err
 	}
 	defer C.a2a_free(data)
+	if !nativeOutputLen(uint64(n)) {
+		return nil, errKeychainLength
+	}
 	return C.GoBytes(data, C.int(n)), nil
 }
 
@@ -131,6 +137,9 @@ func (secBackend) update(_ context.Context, keychain, service, account string, s
 func secWrite(keychain, service, account string, secret []byte, update bool) error {
 	if len(secret) == 0 {
 		return fmt.Errorf("refusing empty secret")
+	}
+	if !nativeInputLen(len(service)) || !nativeInputLen(len(account)) || !nativeInputLen(len(secret)) {
+		return errKeychainLength
 	}
 	c := newCStrings(keychain, service, account)
 	defer c.free()
