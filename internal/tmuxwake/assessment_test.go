@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Existing recognized layouts get closed observations; adjacent drafts,
@@ -127,6 +128,13 @@ func TestTargetAssessmentCaptureFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Every tmux call now runs through a shell wrapper; under host load the
+	// target checks in Inspect could reach the production bound and report
+	// target_unavailable before the planted capture failure (#117). The wider
+	// budget applies only to this wrapper path and is restored afterwards.
+	saved := tmuxCommandTimeout
+	tmuxCommandTimeout = 30 * time.Second
+	t.Cleanup(func() { tmuxCommandTimeout = saved })
 	got := f.target.AssessInput(context.Background())
 	if got != (InputAssessment{InputUnavailable, InputReasonCaptureUnavailable}) {
 		t.Fatalf("capture failure: %+v", got)
@@ -134,5 +142,13 @@ func TestTargetAssessmentCaptureFailure(t *testing.T) {
 	raw, err := json.Marshal(got)
 	if err != nil || string(raw) != `{"state":"unavailable","reason":"capture_unavailable"}` {
 		t.Fatalf("unsafe projection: %s %v", raw, err)
+	}
+}
+
+// Proves the production bound on tmux operations stays 3 seconds; only the
+// capture-failure test raises it, for its wrapper path (#117).
+func TestTmuxCommandTimeoutDefault(t *testing.T) {
+	if tmuxCommandTimeout != 3*time.Second {
+		t.Fatalf("tmux command timeout = %v, want 3s", tmuxCommandTimeout)
 	}
 }

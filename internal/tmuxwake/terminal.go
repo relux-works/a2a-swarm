@@ -51,11 +51,15 @@ func SocketID(path string) (string, error) {
 	return socketID(st)
 }
 
+// tmuxCommandTimeout bounds every tmux operation on a pinned target. Only a
+// test that routes tmux through a slower wrapper may raise it.
+var tmuxCommandTimeout = 3 * time.Second
+
 func (t Target) command(ctx context.Context, args ...string) (string, error) {
 	if !paneRE.MatchString(t.Pane) {
 		return "", errors.New("exact tmux pane id required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, tmuxCommandTimeout)
 	defer cancel()
 	b, err := exec.CommandContext(ctx, "tmux", append([]string{"-S", t.Socket}, args...)...).Output()
 	if err != nil {
