@@ -13,8 +13,19 @@ import (
 	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
 )
 
+// leaseApp injects a start-time reader that honours its context like the
+// real ps read: an expired or cancelled context yields an error, never a value.
 func leaseApp(birth func(int) (int64, error)) *App {
-	return &App{Getenv: func(string) string { return "" }, Now: time.Now, leaseBirth: func(_ context.Context, pid int) (int64, error) { return birth(pid) }}
+	return &App{Getenv: func(string) string { return "" }, Now: time.Now, leaseBirth: ctxAware(birth)}
+}
+
+func ctxAware(birth func(int) (int64, error)) func(context.Context, int) (int64, error) {
+	return func(ctx context.Context, pid int) (int64, error) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		return birth(pid)
+	}
 }
 
 // exitedPID returns the PID of a child that has already been reaped.
@@ -69,10 +80,10 @@ func TestLeaseDeadPIDHolderBirth(t *testing.T) {
 // back to the legacy holder form when the start time cannot be read.
 func TestLeaseHolderCarriesBirth(t *testing.T) {
 	base := "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel()
-	if got := leaseApp(func(int) (int64, error) { return 42, nil }).leaseHolder(config.Paths{}, ""); got != base+"#42" {
+	if got := leaseApp(func(int) (int64, error) { return 42, nil }).leaseHolder(config.Paths{}, "", time.Time{}); got != base+"#42" {
 		t.Fatalf("holder = %q, want %q", got, base+"#42")
 	}
-	if got := leaseApp(func(int) (int64, error) { return 0, errors.New("no ps") }).leaseHolder(config.Paths{}, ""); got != base {
+	if got := leaseApp(func(int) (int64, error) { return 0, errors.New("no ps") }).leaseHolder(config.Paths{}, "", time.Time{}); got != base {
 		t.Fatalf("holder = %q, want legacy %q", got, base)
 	}
 }
@@ -228,7 +239,7 @@ func TestLeaseReuseReported(t *testing.T) {
 	}
 	birth := int64(100)
 	e.configure = func(a *App) {
-		a.leaseBirth = func(context.Context, int) (int64, error) { return birth, nil }
+		a.leaseBirth = ctxAware(func(int) (int64, error) { return birth, nil })
 	}
 	e.extra[EnvSessionID] = "s2"
 
@@ -250,5 +261,67 @@ func TestLeaseReuseReported(t *testing.T) {
 	tuitestkit.NotContainsStr(t, r.stdout, "reused")
 	if l := e.lease("alice"); l == nil || l.Holder != "s2" {
 		t.Fatalf("lease after takeover = %+v", l)
+	}
+}
+
+// Regression witness for the zero-deadline convention (re-review R2-1): inbox,
+// wait and watch pass time.Time{} meaning "no deadline". With a reader that
+// honours its context, a zero or future deadline still observes the start time
+// and detects reuse; only a deadline that has already passed yields "unknown".
+func TestLeaseDeadDeadlineConventions(t *testing.T) {
+	holder := "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel() + "#100"
+	for name, tc := range map[string]struct {
+		deadline time.Time
+		dead     bool
+	}{
+		"zero means no deadline": {time.Time{}, true},
+		"future deadline":        {time.Now().Add(time.Second), true},
+		"expired deadline":       {time.Now().Add(-time.Second), false},
+	} {
+		a := leaseApp(func(int) (int64, error) { return 200, nil })
+		if got := a.leaseDeadBy(config.Paths{}, tc.deadline)(holder); got != tc.dead || (a.leaseReuse != nil) != tc.dead {
+			t.Fatalf("%s: dead=%v reuse=%+v, want dead=%v", name, got, a.leaseReuse, tc.dead)
+		}
+	}
+}
+
+// Proves holder creation honours the caller's remaining budget (re-review
+// R2-2): with time left, or no deadline, the holder carries its start time; with
+// the deadline already passed, or a reader that would block past it, it falls
+// back promptly to the legacy form.
+func TestLeaseHolderHonoursDeadline(t *testing.T) {
+	base := "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel()
+	fast := leaseApp(func(int) (int64, error) { return 42, nil })
+	if got := fast.leaseHolder(config.Paths{}, "", time.Now().Add(time.Second)); got != base+"#42" {
+		t.Fatalf("holder with time left = %q", got)
+	}
+	if got := fast.leaseHolder(config.Paths{}, "", time.Now().Add(-time.Second)); got != base {
+		t.Fatalf("holder past deadline = %q, want legacy %q", got, base)
+	}
+	slow := &App{Getenv: func(string) string { return "" }, Now: time.Now, leaseBirth: func(ctx context.Context, _ int) (int64, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}}
+	start := time.Now()
+	if got := slow.leaseHolder(config.Paths{}, "", time.Now().Add(50*time.Millisecond)); got != base {
+		t.Fatalf("slow holder = %q, want legacy %q", got, base)
+	}
+	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
+		t.Fatalf("holder creation overran the deadline: %v", elapsed)
+	}
+}
+
+// Proves the full acquisition path of a session-less command (no hook id,
+// A2A_SESSION_ID or CODEX_THREAD_ID; inbox passes no deadline) records a
+// pid holder carrying its start time.
+func TestLeaseSessionlessInboxRecordsBirth(t *testing.T) {
+	e, _ := world(t)
+	e.configure = func(a *App) {
+		a.leaseBirth = ctxAware(func(int) (int64, error) { return 4242, nil })
+	}
+	e.as("alice", "inbox").ok(t)
+	want := "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel() + "#4242"
+	if l := e.lease("alice"); l == nil || l.Holder != want {
+		t.Fatalf("lease = %+v, want holder %q", l, want)
 	}
 }
