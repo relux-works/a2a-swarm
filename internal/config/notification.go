@@ -47,7 +47,7 @@ func (n *Notification) Prepare(now, legacy time.Time) error {
 		return errors.New("invalid notification ledger")
 	}
 	if r := n.Reservation; r != nil {
-		if len(r.Token) != 32 || (r.Path != "hook" && r.Path != "native" && r.Path != "terminal") || r.Session == "" || r.At.IsZero() || r.Previous.IsZero() || len(r.Session) > 200 || len(r.Generation) > 128 {
+		if len(r.Token) != 32 || (r.Path != "hook" && r.Path != "native" && r.Path != "terminal" && r.Path != "doorbell") || r.Session == "" || r.At.IsZero() || r.Previous.IsZero() || len(r.Session) > 200 || len(r.Generation) > 128 {
 			return errors.New("invalid notification reservation")
 		}
 		if _, err := hex.DecodeString(r.Token); err != nil {
@@ -66,7 +66,7 @@ func (n Notification) Ready(now time.Time) bool {
 // Reserve must be saved before output. bypass is only the hook-only Stop
 // exception; its existing Stop60s and loop limits are enforced by the caller.
 func (n *Notification) Reserve(path, session, generation string, now time.Time, bypass bool) (string, error) {
-	if (path != "hook" && path != "native" && path != "terminal") || session == "" || len(session) > 200 || len(generation) > 128 || now.IsZero() {
+	if (path != "hook" && path != "native" && path != "terminal" && path != "doorbell") || session == "" || len(session) > 200 || len(generation) > 128 || now.IsZero() {
 		return "", errors.New("invalid notification scope")
 	}
 	if err := n.Prepare(now, time.Time{}); err != nil {
