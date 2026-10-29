@@ -2,42 +2,77 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-
-	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
 // A mutation the hard deadline abandoned may still complete later: the
 // in-process Security call cannot be cancelled, and its request may already be
 // queued in securityd, even after this process exits. The identity and host
 // locks are released when run returns, so they cannot exclude it. Before every
-// add or update the store therefore records a durable fence for the identity.
-// Only the goroutine that ran the native call removes it, after that call has
-// actually returned. While the fence exists every operation for the identity
-// refuses, whatever the cooldown says. A fence whose recording process is gone
-// never expires: `a2a creds reconcile` clears it once the owner is dead and the
-// keychain answers a lookup.
+// add or update the store therefore records a durable fence for the identity:
+// the recording process, the boot session and a SHA-256 digest of the value
+// being written. Only the goroutine that ran the native call removes it, after
+// that call has actually returned. While the fence exists every operation for
+// the identity refuses, whatever the cooldown says.
+//
+// A fence whose recording process is gone never expires on its own.
+// `a2a creds reconcile` clears it only when the recorder is confirmed gone AND
+// the abandoned write can no longer land: either its intended value is
+// observed in the item (the write completed), or the host has restarted since
+// the fence was recorded (securityd and its queue are gone). An unknown
+// liveness, a different or missing value, or an unanswered lookup keeps it.
 type keychainFence struct {
-	PID   int    `json:"pid"`
-	Birth string `json:"birth"`
-	Op    string `json:"op"`
-	At    int64  `json:"at"`
+	PID    int    `json:"pid"`
+	Birth  string `json:"birth"`
+	Op     string `json:"op"`
+	At     int64  `json:"at"`
+	Boot   int64  `json:"boot"`
+	Digest string `json:"digest"`
 }
+
+type ownerState int
+
+const (
+	ownerUnknown ownerState = iota
+	ownerAlive
+	ownerGone
+)
 
 var errKeychainFenced = errors.New("keychain write outstanding")
 
 func (k *keychainStore) fencePath(uid string) string { return k.identityPath(uid) + ".pending" }
 
+func tokenDigest(secret []byte) string {
+	sum := sha256.Sum256(secret)
+	return hex.EncodeToString(sum[:])
+}
+
 func (k *keychainStore) processBirth(ctx context.Context, pid int) (string, error) {
 	if k.birth != nil {
 		return k.birth(ctx, pid)
 	}
-	return tmuxwake.Birth(ctx, pid)
+	return processIdentity(ctx, pid)
+}
+
+func (k *keychainStore) ownerLiveness(ctx context.Context, fence *keychainFence) ownerState {
+	if k.liveness != nil {
+		return k.liveness(ctx, fence.PID, fence.Birth)
+	}
+	return processLiveness(ctx, fence.PID, fence.Birth)
+}
+
+func (k *keychainStore) bootSession() (int64, error) {
+	if k.boot != nil {
+		return k.boot()
+	}
+	return keychainBootSession()
 }
 
 // readFence returns nil when no fence exists. A fence that cannot be read or
@@ -53,17 +88,11 @@ func (k *keychainStore) readFence(uid string) (*keychainFence, error) {
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, 1025))
 	var fence keychainFence
-	if err != nil || len(data) > 1024 || json.Unmarshal(data, &fence) != nil || fence.PID <= 0 || fence.Birth == "" || (fence.Op != "add" && fence.Op != "update") {
+	if err != nil || len(data) > 1024 || json.Unmarshal(data, &fence) != nil || fence.PID <= 0 || fence.Birth == "" ||
+		(fence.Op != "add" && fence.Op != "update") || len(fence.Digest) != 64 {
 		return nil, fmt.Errorf("keychain write fence invalid for %s", uid)
 	}
 	return &fence, nil
-}
-
-// ownerAlive reports whether the fence's recording process still runs: the
-// same pid with the same start time.
-func (k *keychainStore) ownerAlive(ctx context.Context, fence *keychainFence) bool {
-	birth, err := k.processBirth(ctx, fence.PID)
-	return err == nil && birth == fence.Birth
 }
 
 // checkFence refuses every operation while a write for the identity is
@@ -73,18 +102,25 @@ func (k *keychainStore) checkFence(ctx context.Context, uid string) error {
 	if err != nil || fence == nil {
 		return err
 	}
-	if k.ownerAlive(ctx, fence) {
+	switch k.ownerLiveness(ctx, fence) {
+	case ownerAlive:
 		return fmt.Errorf("%w for %s in pid %d; refusing until it completes", errKeychainFenced, uid, fence.PID)
+	case ownerGone:
+		return fmt.Errorf("%w for %s: pid %d ended before its write completed; run `a2a creds reconcile`", errKeychainFenced, uid, fence.PID)
 	}
-	return fmt.Errorf("%w for %s: pid %d ended before its write completed; run `a2a creds reconcile`", errKeychainFenced, uid, fence.PID)
+	return fmt.Errorf("%w for %s: the state of pid %d is unknown; refusing", errKeychainFenced, uid, fence.PID)
 }
 
-func (k *keychainStore) writeFence(ctx context.Context, uid, op string) (*keychainFence, error) {
+func (k *keychainStore) writeFence(ctx context.Context, uid, op string, intended []byte) (*keychainFence, error) {
 	birth, err := k.processBirth(ctx, os.Getpid())
 	if err != nil {
 		return nil, err
 	}
-	fence := &keychainFence{PID: os.Getpid(), Birth: birth, Op: op, At: k.clock().UnixNano()}
+	boot, err := k.bootSession()
+	if err != nil {
+		boot = 0 // without a boot session, a restart never counts as quiescence
+	}
+	fence := &keychainFence{PID: os.Getpid(), Birth: birth, Op: op, At: k.clock().UnixNano(), Boot: boot, Digest: tokenDigest(intended)}
 	data, err := json.Marshal(fence)
 	if err != nil {
 		return nil, err
@@ -126,6 +162,10 @@ func (k *keychainStore) clearFence(uid string, fence *keychainFence) error {
 	if current == nil || *current != *fence {
 		return nil
 	}
+	return k.removeFence(uid)
+}
+
+func (k *keychainStore) removeFence(uid string) error {
 	if err := os.Remove(k.fencePath(uid)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -141,12 +181,9 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// reconcile clears the fence of a write whose recording process is gone, once
-// the keychain answers a lookup for the identity. It never clears the fence of
-// a live owner, and it keeps the fence when the lookup fails or times out.
-// Limit: a request of the dead writer that securityd still holds and processes
-// after this lookup is not excluded; the lookup only shows that the keychain
-// answers again.
+// reconcile clears the fence of an abandoned write only when its recorder is
+// confirmed gone and the write can no longer land (see keychainFence). It
+// prints no secret and compares only digests.
 func (k *keychainStore) reconcile(ctx context.Context, uid string) (string, error) {
 	var outcome string
 	err := k.locked(uid, func() error {
@@ -158,24 +195,28 @@ func (k *keychainStore) reconcile(ctx context.Context, uid string) (string, erro
 			outcome = "no unresolved keychain write"
 			return nil
 		}
-		if k.ownerAlive(ctx, fence) {
+		switch k.ownerLiveness(ctx, fence) {
+		case ownerAlive:
 			return fmt.Errorf("%w for %s in pid %d; not reconciled", errKeychainFenced, uid, fence.PID)
+		case ownerUnknown:
+			return fmt.Errorf("%w for %s: the state of pid %d is unknown; fence kept", errKeychainFenced, uid, fence.PID)
+		}
+		if boot, err := k.bootSession(); err == nil && fence.Boot != 0 && boot != fence.Boot {
+			outcome = "host restarted since the abandoned write; fence cleared"
+			return k.removeFence(uid)
 		}
 		k.reconciling = true
 		defer func() { k.reconciling = false }()
-		_, err = k.lookup(ctx, uid)
+		token, err := k.lookup(ctx, uid)
 		switch {
-		case err == nil:
-			outcome = "keychain answered; item present"
-		case errors.Is(err, errKeychainMissing):
-			outcome = "keychain answered; item missing"
+		case err == nil && tokenDigest([]byte(token)) == fence.Digest:
+			outcome = "abandoned write observed completed; fence cleared"
+			return k.removeFence(uid)
+		case err == nil || errors.Is(err, errKeychainMissing):
+			return fmt.Errorf("%w for %s: the abandoned write is not observed and the host has not restarted since; fence kept, because the request may still land", errKeychainFenced, uid)
 		default:
 			return fmt.Errorf("keychain did not answer for %s; fence kept: %w", uid, err)
 		}
-		if err := os.Remove(k.fencePath(uid)); err != nil {
-			return fmt.Errorf("keychain write fence not removed for %s", uid)
-		}
-		return syncDir(filepath.Dir(k.fencePath(uid)))
 	})
 	return outcome, err
 }

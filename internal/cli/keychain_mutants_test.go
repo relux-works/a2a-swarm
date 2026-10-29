@@ -58,13 +58,22 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		{"fence-check-skipped", "keychain.go", `if !k.reconciling {`, `if false {`, "TestKeychainAbandonedWriteStaysFenced"},
 		{"fence-not-written", "keychain.go", `if mutation != "" {`, `if mutation == "never" {`, "TestKeychainAbandonedWriteStaysFenced"},
 		{"fence-cleared-on-timeout", "keychain.go", `r.err = ctx.Err()`, `r.err = ctx.Err(); if fence != nil { _ = k.clearFence(uid, fence) }`, "TestKeychainAbandonedWriteStaysFenced"},
-		{"dead-owner-fence-expires", "keychain_fence.go", "return fmt.Errorf(\"%w for %s: pid %d ended before its write completed; run `a2a creds reconcile`\", errKeychainFenced, uid, fence.PID)", `return nil`, "TestKeychainFenceReconcile/dead-owner-answered"},
-		{"reconcile-live-owner", "keychain_fence.go", `if k.ownerAlive(ctx, fence) {
-			return fmt.Errorf("%w for %s in pid %d; not reconciled", errKeychainFenced, uid, fence.PID)
-		}`, ``, "TestKeychainFenceReconcile/live-owner"},
-		{"reconcile-unanswered", "keychain_fence.go", `		default:
-			return fmt.Errorf("keychain did not answer for %s; fence kept: %w", uid, err)`, `		default:
-			outcome = "unanswered"`, "TestKeychainFenceReconcile/keychain-silent"},
+		{"dead-owner-fence-expires", "keychain_fence.go", "return fmt.Errorf(\"%w for %s: pid %d ended before its write completed; run `a2a creds reconcile`\", errKeychainFenced, uid, fence.PID)", `return nil`, "TestKeychainFenceReconcile/gone-observed"},
+		{"reconcile-live-owner", "keychain_fence.go", "case ownerAlive:\n\t\t\treturn fmt.Errorf(\"%w for %s in pid %d; not reconciled\", errKeychainFenced, uid, fence.PID)", "case ownerAlive:", "TestKeychainFenceReconcile/live-owner"},
+		{"reconcile-unanswered", "keychain_fence.go", "\t\tdefault:\n\t\t\treturn fmt.Errorf(\"keychain did not answer for %s; fence kept: %w\", uid, err)", "\t\tdefault:\n\t\t\toutcome = \"unanswered\"\n\t\t\treturn k.removeFence(uid)", "TestKeychainFenceReconcile/gone-silent"},
+
+		// Round 3: liveness, completion evidence, value skip, recorded fence, ACL requirements.
+		{"liveness-inspection-error-gone", "keychain_unix.go", "case idErr != nil || current == \"\":\n\t\treturn ownerUnknown", "case idErr != nil || current == \"\":\n\t\treturn ownerGone", "TestKeychainLivenessClassification/ps-unavailable"},
+		{"liveness-probe-error-gone", "keychain_unix.go", "case killErr != nil && !errors.Is(killErr, syscall.EPERM):\n\t\treturn ownerUnknown", "case killErr != nil && !errors.Is(killErr, syscall.EPERM):\n\t\treturn ownerGone", "TestKeychainLivenessClassification/probe-error"},
+		{"reconcile-unknown-proceeds", "keychain_fence.go", "\t\tcase ownerUnknown:\n\t\t\treturn fmt.Errorf(\"%w for %s: the state of pid %d is unknown; fence kept\", errKeychainFenced, uid, fence.PID)\n", "", "TestKeychainUnknownOwnerKeepsFence"},
+		{"check-unknown-admits", "keychain_fence.go", "return fmt.Errorf(\"%w for %s: the state of pid %d is unknown; refusing\", errKeychainFenced, uid, fence.PID)", "return nil", "TestKeychainUnknownOwnerKeepsFence"},
+		{"reconcile-any-answer-clears", "keychain_fence.go", "case err == nil && tokenDigest([]byte(token)) == fence.Digest:", "case err == nil:", "TestKeychainDeadWriterQueuedRequest"},
+		{"reconcile-boot-always-quiescent", "keychain_fence.go", "if boot, err := k.bootSession(); err == nil && fence.Boot != 0 && boot != fence.Boot {", "if boot, err := k.bootSession(); err == nil || boot != fence.Boot {", "TestKeychainDeadWriterQueuedRequest"},
+		{"write-rewrites-present-value", "keychain.go", "\t\tif existing && prior == token {\n\t\t\treturn nil\n\t\t}\n", "\t\t_ = prior\n", "TestKeychainWriteSkipsPresentValue/existing-equal"},
+		{"fence-digest-not-recorded", "keychain_fence.go", "Digest: tokenDigest(intended)}", "Digest: tokenDigest(nil)}", "TestKeychainAbandonedWriteStaysFenced"},
+		{"acl-requirement-ignored", "keychain_acl_test.go", "if app.requirement != requirement {", "if false && app.requirement != requirement {", "TestKeychainACLCreatorOnly/broadened-requirement.txt"},
+		{"acl-status-ignored", "keychain_acl_test.go", "if app.status != \"OK\" {", "if false {", "TestKeychainACLCreatorOnly/status-not-ok.txt"},
+		{"acl-unknown-auth-admitted", "keychain_acl_test.go", "if !aclAuthorizations[a] {", "if false && !aclAuthorizations[a] {", "TestKeychainACLCreatorOnly/unknown-auth.txt"},
 
 		// Native lengths (finding 4), sentinel tool bounding (finding 2), ACL rules (finding 3).
 		{"input-length-unbounded", "keychain_backend.go", `return n >= 0 && uint64(n) <= math.MaxUint32`, `return n >= 0 && uint64(n) <= math.MaxUint64`, "TestKeychainNativeLengthBounds"},

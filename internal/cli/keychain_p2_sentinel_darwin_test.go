@@ -53,9 +53,18 @@ func TestKeychainPhase2PlatformSentinel(t *testing.T) {
 	if !filepath.IsAbs(observer) {
 		t.Fatal("observer must be an absolute path to an accessibility-trusted build; ZERO setup operations")
 	}
-	// Build the untrusted reader before the allowance is claimed, so a build
-	// failure spends nothing.
+	// Build the untrusted reader and read this binary's own designated
+	// requirement before the allowance is claimed, so a failure spends nothing.
 	reader := buildUntrustedReader(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement := creatorRequirement(t, resolved)
 	parent, err := filepath.Abs("../../.temp/BUG-138-p2-sentinel")
 	if err != nil {
 		t.Fatal(err)
@@ -195,17 +204,9 @@ func TestKeychainPhase2PlatformSentinel(t *testing.T) {
 		t.Fatal("ACL dump failed; no further backend calls")
 	}
 	_ = os.WriteFile(filepath.Join(root, "acl-dump.txt"), []byte(dump), 0o600)
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := filepath.EvalSymlinks(exe)
-	if err != nil {
-		t.Fatal(err)
-	}
 	entries, err := itemACL(dump, service, own)
 	if err == nil {
-		err = creatorOnly(entries, exe, resolved)
+		err = creatorOnly(entries, requirement, exe, resolved)
 	}
 	t.Logf("structural creator_only=%t detail=%v", err == nil, err)
 	if err != nil {
@@ -305,6 +306,38 @@ func runSentinelTool(path string, deadline time.Duration, input string, args ...
 		return out.String(), -1
 	}
 	return out.String(), 0
+}
+
+// creatorRequirement returns this binary's designated requirement as codesign
+// prints it, the exact text an ACL entry trusting it must carry.
+func creatorRequirement(t *testing.T, exe string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/codesign", "-d", "-r-", exe)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C"}
+	out, err := cmd.CombinedOutput()
+	for _, line := range strings.Split(string(out), "\n") {
+		// An ad-hoc signature's implicit requirement is printed as a comment.
+		line = strings.TrimPrefix(line, "# ")
+		if r, ok := strings.CutPrefix(line, "designated => "); ok && err == nil && r != "" {
+			return r
+		}
+	}
+	t.Fatalf("creator requirement unavailable: %v", err)
+	return ""
+}
+
+// The creator requirement of this test binary is readable, so the sentinel's
+// structural check has its expected value before any allowance is spent.
+func TestCreatorRequirementReadable(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := creatorRequirement(t, exe); !strings.Contains(r, "cdhash") && !strings.Contains(r, "identifier") {
+		t.Fatalf("unexpected requirement %q", r)
+	}
 }
 
 // buildUntrustedReader builds testdata/untrusted-reader into a fresh directory.

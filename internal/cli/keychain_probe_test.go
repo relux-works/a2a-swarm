@@ -119,7 +119,7 @@ func TestKeychainProbeEveryWriteStage(t *testing.T) {
 			uid := e.agent("alice")
 			items := map[string]string{}
 			if mode == "update" {
-				items[uid] = e.tokens["alice"]
+				items[uid] = "stale-" + e.tokens["alice"] // an older token, so the update path runs
 			}
 			dir := fakeKeychain(e, items, "")
 			calls := 0

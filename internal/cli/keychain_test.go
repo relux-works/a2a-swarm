@@ -468,7 +468,8 @@ func TestKeychainBackendTextNeverEscapes(t *testing.T) {
 			e := newEnv(t)
 			uid := e.agent("alice")
 			token := e.tokens["alice"]
-			fakeKeychain(e, map[string]string{uid: token}, mode)
+			// An older token, so the write path runs and its error text is planted too.
+			fakeKeychain(e, map[string]string{uid: "stale-" + token}, mode)
 			r := e.as("alice", "creds", "migrate").failsWith(t, ExitError, "keychain operation failed")
 			if strings.Contains(r.stdout+r.stderr, "planted backend text") {
 				t.Fatal("backend error text escaped")
@@ -637,7 +638,7 @@ func TestKeychainMigrationInterruptedAndAtomicFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "")
+			dir := fakeKeychain(e, map[string]string{uid: "stale-" + e.tokens["alice"]}, "")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			old := e.configure
@@ -735,7 +736,7 @@ func TestKeychainWriteTimeoutsSuppressEveryCall(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			e := newEnv(t)
 			uid := e.agent("alice")
-			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, mode)
+			dir := fakeKeychain(e, map[string]string{uid: "stale-" + e.tokens["alice"]}, mode)
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
 					return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, backend: fakeBackend{dir}, timeout: 300 * time.Millisecond})

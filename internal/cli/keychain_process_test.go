@@ -227,7 +227,7 @@ func TestKeychainPipeCompletionMigrationStages(t *testing.T) {
 				uid := e.agent("alice")
 				items := map[string]string{}
 				if stage.existing {
-					items[uid] = e.tokens["alice"]
+					items[uid] = "stale-" + e.tokens["alice"] // an older token, so the update path runs
 				}
 				dir := fakeKeychain(e, items, stage.mode)
 				original, err := os.ReadFile(e.paths().AgentFile("alice"))
@@ -390,7 +390,7 @@ func TestKeychainBackendFailureMigrationStages(t *testing.T) {
 				uid := e.agent("alice")
 				items := map[string]string{}
 				if stage.existing {
-					items[uid] = e.tokens["alice"]
+					items[uid] = "stale-" + e.tokens["alice"] // an older token, so the update path runs
 				}
 				dir := fakeKeychain(e, items, stage.mode)
 				original, err := os.ReadFile(e.paths().AgentFile("alice"))

@@ -230,7 +230,8 @@ serialize per identity, with one duplicate-create recovery and matching readback
 after every write. Every add and update first records a durable write fence. A
 mutation that the deadline abandons stays fenced until its native call returns, so it
 cannot overwrite a newer write. A dead writer's fence never expires: `a2a creds
-reconcile` clears it once the owner is gone and the keychain answers. Native lengths
+reconcile` clears it only when the writer is confirmed gone and its intended value is
+observed in the item or the host has restarted since. Native lengths
 are checked before conversion. An item the binary is not trusted for, or a locked keychain,
 returns an error instead of a prompt. That error records the cooldown below.
 a2a never unlocks or changes ACL/partition lists.

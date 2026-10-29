@@ -40,6 +40,8 @@ type keychainStore struct {
 	timeout, cooldown time.Duration
 	now               func() time.Time
 	birth             func(context.Context, int) (string, error)
+	liveness          func(context.Context, int, string) ownerState
+	boot              func() (int64, error)
 	reconciling       bool // set only by reconcile, for its own lookup
 }
 
@@ -178,7 +180,7 @@ func (b *limitedSecretBuffer) Write(p []byte) (int, error) {
 // mutation ("add" or "update") is fenced until its native call returns, even
 // when the deadline abandons it (keychain_fence.go). Backend error text never
 // escapes into CLI errors.
-func (k *keychainStore) run(ctx context.Context, uid, mutation string, op func(context.Context, keychainBackend, string) ([]byte, error)) ([]byte, error) {
+func (k *keychainStore) run(ctx context.Context, uid, mutation string, intended []byte, op func(context.Context, keychainBackend, string) ([]byte, error)) ([]byte, error) {
 	if !k.reconciling {
 		if err := k.checkFence(ctx, uid); err != nil {
 			return nil, err
@@ -223,7 +225,7 @@ func (k *keychainStore) run(ctx context.Context, uid, mutation string, op func(c
 	}
 	var fence *keychainFence
 	if mutation != "" {
-		if fence, err = k.writeFence(ctx, uid, mutation); err != nil {
+		if fence, err = k.writeFence(ctx, uid, mutation, intended); err != nil {
 			return nil, fmt.Errorf("keychain write fence unavailable for %s", uid)
 		}
 	}
@@ -265,7 +267,7 @@ func (k *keychainStore) run(ctx context.Context, uid, mutation string, op func(c
 }
 
 func (k *keychainStore) lookup(ctx context.Context, uid string) (string, error) {
-	data, err := k.run(ctx, uid, "", func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
+	data, err := k.run(ctx, uid, "", nil, func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
 		return b.find(ctx, target, k.selectedService(), uid)
 	})
 	if err != nil {
@@ -309,7 +311,7 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 		return fmt.Errorf("invalid keychain token for %s", uid)
 	}
 	return k.locked(uid, func() error {
-		_, err := k.lookup(ctx, uid)
+		prior, err := k.lookup(ctx, uid)
 		existing := err == nil
 		if existing && k.createOnly {
 			return errKeychainDuplicate
@@ -317,12 +319,19 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 		if err != nil && !errors.Is(err, errKeychainMissing) {
 			return err
 		}
+		// A value already present is never written again, so an abandoned
+		// write's intended value can only appear through that write and
+		// observing it is decisive for reconcile (keychain_fence.go). The
+		// lookup itself is the exact readback.
+		if existing && prior == token {
+			return nil
+		}
 		put := func(update bool) error {
 			op := "add"
 			if update {
 				op = "update"
 			}
-			_, err := k.run(ctx, uid, op, func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
+			_, err := k.run(ctx, uid, op, []byte(token), func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
 				if update {
 					return nil, b.update(ctx, target, k.selectedService(), uid, []byte(token))
 				}
@@ -333,8 +342,12 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 		err = put(existing)
 		if !existing && errors.Is(err, errKeychainDuplicate) && !k.createOnly {
 			// One bounded recovery, no retry loop. A denied lookup is not absence.
-			if _, err = k.lookup(ctx, uid); err != nil {
-				return err
+			current, lerr := k.lookup(ctx, uid)
+			if lerr != nil {
+				return lerr
+			}
+			if current == token {
+				return nil
 			}
 			err = put(true)
 		}

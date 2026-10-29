@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,11 +14,28 @@ import (
 
 // aclEntry is one access entry of an item in `security dump-keychain -a`
 // output: its authorizations, and either any application (<null>) or the
-// listed application paths.
+// listed trusted applications.
 type aclEntry struct {
 	auths  []string
 	anyApp bool
-	apps   []string
+	apps   []aclApp
+}
+
+// aclApp is one trusted application: its path, the status in parentheses and
+// its complete code requirement.
+type aclApp struct {
+	path, status, requirement string
+}
+
+// aclAuthorizations is the closed set of authorization tags security prints.
+// An unknown tag refuses: format drift must not turn a reading entry into an
+// ignored one.
+var aclAuthorizations = map[string]bool{
+	"any": true, "login": true, "genkey": true, "delete": true, "export_wrapped": true, "export_clear": true,
+	"import_wrapped": true, "import_clear": true, "sign": true, "encrypt": true, "decrypt": true, "mac": true,
+	"derive": true, "keychain_create": true, "keychain_delete": true, "keychain_read": true, "keychain_write": true,
+	"db_insert": true, "db_delete": true, "db_read": true, "db_modify": true, "change_acl": true, "change_owner": true,
+	"integrity": true, "partition_id": true,
 }
 
 var (
@@ -26,7 +44,8 @@ var (
 	aclAuthRE    = regexp.MustCompile(`^        authorizations \((\d+)\): (.+)$`)
 	aclAppsRE    = regexp.MustCompile(`^        applications \((\d+)\):$`)
 	aclAppRE     = regexp.MustCompile(`^            (\d+): (.+) \(([^()]+)\)$`)
-	aclOtherRE   = regexp.MustCompile(`^(        (don't-require-password|require-password|description: .*)|                requirement: .*)$`)
+	aclReqRE     = regexp.MustCompile(`^                requirement: (.+)$`)
+	aclOtherRE   = regexp.MustCompile(`^        (don't-require-password|require-password|description: .*)$`)
 	aclAccountRE = regexp.MustCompile(`^    "acct"<blob>="(.*)"$`)
 	aclServiceRE = regexp.MustCompile(`^    "svce"<blob>="(.*)"$`)
 )
@@ -92,6 +111,11 @@ func itemACL(dump, service, account string) ([]aclEntry, error) {
 			if n, _ := strconv.Atoi(m[1]); n != len(auths) {
 				return nil, errors.New("authorization count mismatch")
 			}
+			for _, a := range auths {
+				if !aclAuthorizations[a] {
+					return nil, fmt.Errorf("unknown authorization %q", a)
+				}
+			}
 			entries[len(entries)-1].auths = auths
 		case line == "        applications: <null>":
 			entries[len(entries)-1].anyApp = true
@@ -102,7 +126,14 @@ func itemACL(dump, service, account string) ([]aclEntry, error) {
 				return nil, errors.New("unannounced application")
 			}
 			appsLeft--
-			entries[len(entries)-1].apps = append(entries[len(entries)-1].apps, aclAppRE.FindStringSubmatch(line)[2])
+			m := aclAppRE.FindStringSubmatch(line)
+			entries[len(entries)-1].apps = append(entries[len(entries)-1].apps, aclApp{path: m[2], status: m[3]})
+		case aclReqRE.MatchString(line):
+			apps := entries[len(entries)-1].apps
+			if len(apps) == 0 || apps[len(apps)-1].requirement != "" {
+				return nil, errors.New("requirement without its application")
+			}
+			apps[len(apps)-1].requirement = aclReqRE.FindStringSubmatch(line)[1]
 		case aclOtherRE.MatchString(line):
 		default:
 			return nil, fmt.Errorf("unknown ACL line: %q", line)
@@ -115,9 +146,11 @@ func itemACL(dump, service, account string) ([]aclEntry, error) {
 }
 
 // creatorOnly accepts an ACL in which every entry that can release the
-// plaintext (decrypt, export_clear, export_wrapped or any) names exactly one
-// application, the creator, and no entry lets any application do so.
-func creatorOnly(entries []aclEntry, creator ...string) error {
+// plaintext (decrypt, export_clear, export_wrapped or any) trusts exactly one
+// application: the creator's path, status OK, and exactly the creator's own
+// code requirement. No entry may let any application do so; a missing,
+// broadened or different requirement refuses.
+func creatorOnly(entries []aclEntry, requirement string, creator ...string) error {
 	readers := map[string]bool{}
 	for _, e := range entries {
 		plaintext := false
@@ -134,7 +167,16 @@ func creatorOnly(entries []aclEntry, creator ...string) error {
 			return errors.New("any application may release the plaintext")
 		}
 		for _, app := range e.apps {
-			readers[app] = true
+			readers[app.path] = true
+			if !slices.Contains(creator, app.path) {
+				continue
+			}
+			if app.status != "OK" {
+				return fmt.Errorf("creator application status %q", app.status)
+			}
+			if app.requirement != requirement {
+				return fmt.Errorf("creator requirement differs: %q", app.requirement)
+			}
 		}
 	}
 	if len(readers) != 1 {
@@ -158,8 +200,13 @@ func creatorOnly(entries []aclEntry, creator ...string) error {
 func TestKeychainACLCreatorOnly(t *testing.T) {
 	const service, account = "works.relux.a2a.sentinel", "@sentinel:sentinel.invalid"
 	creator := "/private/tmp/go-build123/b001/cli.test"
+	requirement := `cdhash H"0123456789abcdef0123456789abcdef01234567"`
 	for _, c := range []struct{ file, want string }{
 		{"creator-only.txt", ""},
+		{"broadened-requirement.txt", "creator requirement differs"},
+		{"status-not-ok.txt", "creator application status"},
+		{"missing-requirement.txt", "creator requirement differs"},
+		{"unknown-auth.txt", "unknown authorization"},
 		{"extra-app.txt", "plaintext readers: 2"},
 		{"security-tool.txt", "not the creator"},
 		{"allow-all-export.txt", "any application"},
@@ -175,7 +222,7 @@ func TestKeychainACLCreatorOnly(t *testing.T) {
 			}
 			entries, err := itemACL(string(data), service, account)
 			if err == nil {
-				err = creatorOnly(entries, creator)
+				err = creatorOnly(entries, requirement, creator)
 			}
 			if c.want == "" && err != nil {
 				t.Fatal("creator-only ACL refused:", err)
@@ -192,7 +239,7 @@ func TestKeychainACLCreatorOnly(t *testing.T) {
 	if _, err := itemACL(string(data), "works.relux.other", account); err == nil {
 		t.Fatal("item of another service accepted")
 	}
-	if entries, err := itemACL(string(data), service, "@foreign:sentinel.invalid"); err != nil || creatorOnly(entries, creator) == nil {
+	if entries, err := itemACL(string(data), service, "@foreign:sentinel.invalid"); err != nil || creatorOnly(entries, requirement, creator) == nil {
 		t.Fatal("foreign item's security-tool ACL not told apart", err)
 	}
 }
