@@ -391,24 +391,34 @@ func cmdSubsPresetSync(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	s, err := a.session()
+	name, err := a.identity()
 	if err != nil {
 		return err
 	}
 	project := ""
-	parts := strings.Split(s.name, "_")
+	parts := strings.Split(name, "_")
 	if len(parts) >= 3 {
 		project = strings.Join(parts[1:len(parts)-1], "_")
 	}
 	if contains(presets, "orch") && project == "" {
-		return fmt.Errorf("cannot determine project from identity %s", s.name)
+		return fmt.Errorf("cannot determine project from identity %s", name)
 	}
+	// The owner list is resolved before the session opens: opening it reads
+	// the credentials, which can take Keychain locks and record cooldowns.
 	sole := len(presets) == 1 && presets[0] == "service"
 	var owners ownerPlan
 	if !sole {
-		if owners, err = resolveOwnerPlan(s.paths, nil); err != nil {
+		p, err := a.pathsFor(name)
+		if err != nil {
 			return err
 		}
+		if owners, err = resolveOwnerPlan(p, nil); err != nil {
+			return err
+		}
+	}
+	s, err := a.sessionAs(name)
+	if err != nil {
+		return err
 	}
 	for _, p := range presets {
 		if p == "service" {

@@ -133,11 +133,21 @@ func cmdSubsSync(ctx context.Context, a *App, args []string) error {
 	if len(pos) != 0 {
 		return usagef("usage: a2a subs sync [--owner @owner:server]...")
 	}
-	s, err := a.session()
+	name, err := a.identity()
 	if err != nil {
 		return err
 	}
-	plan, err := resolveOwnerPlan(s.paths, owners)
+	// The owner list is resolved before the session opens: opening it reads
+	// the credentials, which can take Keychain locks and record cooldowns.
+	p, err := a.pathsFor(name)
+	if err != nil {
+		return err
+	}
+	plan, err := resolveOwnerPlan(p, owners)
+	if err != nil {
+		return err
+	}
+	s, err := a.sessionAs(name)
 	if err != nil {
 		return err
 	}

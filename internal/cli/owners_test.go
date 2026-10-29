@@ -3,11 +3,15 @@ package cli
 import (
 	"context"
 	"io"
+	"io/fs"
+	"maps"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -519,5 +523,131 @@ func TestOwnerFlagRefusals(t *testing.T) {
 	e.as("alice", "subs", "sync", "--preset", "orch", "--product", "alpha", "--owner", ownerFed).failsWith(t, ExitUsage, "owner")
 	if n := len(e.hs.CallsFor(putADRoute)) - puts; n != 0 {
 		t.Fatalf("%d account-data PUTs from refused --owner invocations", n)
+	}
+}
+
+// configTree maps every entry under root to its mode and, for a file, its
+// bytes, so a refused run can be shown to have changed nothing, lock and
+// cooldown files included.
+func configTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	tree := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		entry := info.Mode().String()
+		if info.Mode().IsRegular() {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			entry += " " + string(b)
+		}
+		tree[rel] = entry
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tree
+}
+
+// keychainBacked switches name's credentials to a synthetic Keychain and
+// counts its status probes; records(t, dir) lists its lookups.
+func keychainBacked(e *env, name string) (string, *atomic.Int32) {
+	e.t.Helper()
+	creds, err := config.LoadCredentialMetadata(e.paths(), name, false)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	dir := fakeKeychain(e, map[string]string{creds.UserID: creds.AccessToken}, "")
+	probes := new(atomic.Int32)
+	e.configure = func(a *App) {
+		a.keychain = func(p config.Paths) *keychainStore {
+			return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), timeout: time.Second,
+				probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+					probes.Add(1)
+					return unlockedProbe(ctx, args...)
+				}})
+		}
+	}
+	return dir, probes
+}
+
+// assertUntouched fails unless the refused run neither probed nor read the
+// Keychain and left the whole config tree as it was.
+func assertUntouched(t *testing.T, e *env, dir string, probes *atomic.Int32, before map[string]string) {
+	t.Helper()
+	if n := len(records(t, dir)); n != 0 || probes.Load() != 0 {
+		t.Fatalf("credentials opened before the registry refused: %d lookups, %d probes", n, probes.Load())
+	}
+	if after := configTree(t, e.dir); !maps.Equal(after, before) {
+		for k := range after {
+			if _, ok := before[k]; !ok {
+				t.Errorf("created before the registry refused: %s", k)
+			}
+		}
+		t.Fatal("config tree changed before the registry refused")
+	}
+}
+
+// With Keychain-backed credentials, an invalid owners.json refuses plain
+// `subs sync` before the session opens (#136 review r5): no status probe,
+// no lookup, and the complete config tree, lock and cooldown files included,
+// unchanged. Positive controls: --owner with the same invalid file, and then a
+// valid registry, both open the Keychain and sync; the first also proves the
+// tree snapshot sees the keychain-state files a session creates.
+func TestInvalidOwnersRefuseSyncBeforeSession(t *testing.T) {
+	e, _ := world(t)
+	dir, probes := keychainBacked(e, "alice")
+	writeOwners(t, e, invalidOwners)
+	before := configTree(t, e.dir)
+	e.as("alice", "subs", "sync").failsWith(t, ExitError, "schema_version 1")
+	assertUntouched(t, e, dir, probes, before)
+
+	e.as("alice", "subs", "sync", "--owner", ownerFed).ok(t)
+	after := configTree(t, e.dir)
+	if len(records(t, dir)) == 0 || probes.Load() == 0 || ownerRows(e, "alice", ownerFed) != 1 {
+		t.Fatalf("--owner did not sync through the Keychain: %d lookups, %d probes", len(records(t, dir)), probes.Load())
+	}
+	if !slices.ContainsFunc(slices.Collect(maps.Keys(after)), func(k string) bool { return strings.HasPrefix(k, "keychain-state") }) {
+		t.Fatal("snapshot control: a Keychain session left no keychain-state entry")
+	}
+	writeOwners(t, e, `{"schema_version":1,"owners":["`+ownerHome+`"]}`)
+	e.as("alice", "subs", "sync").ok(t)
+	if ownerRows(e, "alice", ownerHome) != 1 {
+		t.Fatal("valid registry: sync did not add the owner row")
+	}
+}
+
+// The same for a non-service `subs sync --preset`: an invalid owners.json
+// refuses before the Keychain is probed or read and before any local file
+// changes. The sole service preset never reads the registry; a repaired
+// registry syncs (positive controls).
+func TestInvalidOwnersRefusePresetSyncBeforeSession(t *testing.T) {
+	e := newEnv(t)
+	alice := e.agent("alice")
+	e.swarm()
+	e.as("alice", "broadcast-room", "init").ok(t)
+	e.hs.makePublic(e.hs.addRoom("alpha-proj", alice))
+	e.as("alice", "product", "new", "alpha").ok(t)
+	e.ensure("--role", "orch", "--project", "proj", "--product", "alpha", "--preset", "orch").ok(t)
+	name := "mini_proj_orch"
+	dir, probes := keychainBacked(e, name)
+	writeOwners(t, e, invalidOwners)
+	before := configTree(t, e.dir)
+	e.as(name, "subs", "sync", "--preset", "orch", "--product", "alpha").failsWith(t, ExitError, "schema_version 1")
+	assertUntouched(t, e, dir, probes, before)
+
+	writeOwners(t, e, `{"schema_version":1,"owners":["`+ownerHome+`"]}`)
+	e.as(name, "subs", "sync", "--preset", "orch", "--product", "alpha").ok(t)
+	if len(records(t, dir)) == 0 || probes.Load() == 0 || ownerRows(e, name, ownerHome) != 1 {
+		t.Fatalf("valid registry: preset sync did not run through the Keychain: %d lookups, %d probes", len(records(t, dir)), probes.Load())
 	}
 }
