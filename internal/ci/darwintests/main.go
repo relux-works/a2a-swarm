@@ -58,7 +58,7 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	plan, err := selectTests(".", platform{"darwin", runtime.GOARCH}, platform{"linux", *linuxArch}, patterns...)
+	plan, compileOnly, err := selectTests(".", platform{"darwin", runtime.GOARCH}, platform{"linux", *linuxArch}, patterns...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "darwintests:", err)
 		os.Exit(2)
@@ -67,7 +67,7 @@ func main() {
 	if !*run {
 		return
 	}
-	if failed := runTests(".", plan, os.Stdout, os.Stderr); len(failed) > 0 {
+	if failed := runTests(".", plan, compileOnly, os.Stdout, os.Stderr); len(failed) > 0 {
 		fmt.Fprintf(os.Stderr, "darwintests: failed packages: %s\n", strings.Join(failed, " "))
 		os.Exit(1)
 	}
@@ -93,10 +93,30 @@ func printPlan(w io.Writer, plan []pkgTests) {
 	}
 }
 
-// runTests runs every package of the plan, even after a failure, and returns
-// the import paths whose go test exited non-zero.
-func runTests(dir string, plan []pkgTests, stdout, stderr io.Writer) []string {
+// runTests first compiles, without running, the test binary of every package in
+// compileOnly: packages with runner-only test files but no test to select,
+// whose loader or compile errors go test would otherwise never report here.
+// Then it runs every package of the plan. It continues after a failure and
+// returns the import paths that failed to compile or whose go test exited
+// non-zero.
+func runTests(dir string, plan []pkgTests, compileOnly []string, stdout, stderr io.Writer) []string {
 	var failed []string
+	if len(compileOnly) > 0 {
+		out, err := os.MkdirTemp("", "darwintests-")
+		if err != nil {
+			fmt.Fprintln(stderr, "darwintests:", err)
+			return compileOnly
+		}
+		defer os.RemoveAll(out)
+		for i, path := range compileOnly {
+			cmd := exec.Command("go", "test", "-c", "-o", filepath.Join(out, fmt.Sprintf("%d.test", i)), path)
+			cmd.Dir = dir
+			cmd.Stdout, cmd.Stderr = stdout, stderr
+			if err := cmd.Run(); err != nil {
+				failed = append(failed, path)
+			}
+		}
+	}
 	for _, p := range plan {
 		cmd := exec.Command("go", "test", "-race", "-count=1", "-run", p.runPattern(), p.ImportPath)
 		cmd.Dir = dir
@@ -113,14 +133,14 @@ func runTests(dir string, plan []pkgTests, stdout, stderr io.Writer) []string {
 // runner's listing. A selected name that also appears in a test file compiled
 // into the same runner test binary is refused: -run selects by name, so it
 // would run that test too.
-func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgTests, error) {
+func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgTests, []string, error) {
 	onRunner, err := listTestFiles(dir, runner, patterns)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	onLinux, err := listTestFiles(dir, linux, patterns)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var plan []pkgTests
 	var withOnly []string
@@ -148,7 +168,7 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 		for _, name := range only {
 			names, err := testFuncs(filepath.Join(pkg.dir, name))
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			tests = append(tests, names...)
 		}
@@ -162,11 +182,11 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 		for _, name := range shared {
 			names, err := testFuncs(filepath.Join(pkg.dir, name))
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, test := range names {
 				if selected[test] {
-					return nil, fmt.Errorf("%s: %s is defined in a Darwin-only file and in %s, which the Linux job also runs; rename one", path, test, name)
+					return nil, nil, fmt.Errorf("%s: %s is defined in a Darwin-only file and in %s, which the Linux job also runs; rename one", path, test, name)
 				}
 			}
 		}
@@ -175,12 +195,22 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 		plan = append(plan, pkgTests{ImportPath: path, Files: only, Tests: tests})
 	}
 	if err := validateTestLoad(dir, runner, withOnly); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(plan) == 0 {
-		return nil, errors.New("no Darwin-only tests found")
+		return nil, nil, errors.New("no Darwin-only tests found")
 	}
-	return plan, nil
+	inPlan := map[string]bool{}
+	for _, p := range plan {
+		inPlan[p.ImportPath] = true
+	}
+	var compileOnly []string
+	for _, path := range withOnly {
+		if !inPlan[path] {
+			compileOnly = append(compileOnly, path)
+		}
+	}
+	return plan, compileOnly, nil
 }
 
 // validateTestLoad runs the go tool's test loader (go list -test) for target
@@ -192,7 +222,9 @@ func validateTestLoad(dir string, target platform, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	args := append([]string{"list", "-e", "-test", "-json=ImportPath,Error,DepsErrors,Incomplete"}, paths...)
+	// Requesting the embed fields turns off go list's embed suppression, so a
+	// missing embedded file is reported as the loader of go test reports it.
+	args := append([]string{"list", "-e", "-test", "-json=ImportPath,Error,DepsErrors,Incomplete,EmbedFiles,TestEmbedFiles,XTestEmbedFiles"}, paths...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS="+target.goos, "GOARCH="+target.goarch, "CGO_ENABLED=1")

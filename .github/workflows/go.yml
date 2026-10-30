@@ -60,7 +60,8 @@ jobs:
     # from the go tool itself. It refuses an empty selection, an invalid test
     # declaration, a test-loader error and a name shared with a portable test. It
     # also refuses to run while any A2A_* variable is set, because those gate the
-    # opt-in real-host tests (Keychain sentinels, the observer dry run).
+    # opt-in real-host tests (Keychain sentinels, the observer dry run). Packages
+    # whose Darwin-only test files hold no test are compiled, not run.
     runs-on: [self-hosted, macOS, relux-a2a]
     timeout-minutes: 15
     steps:
