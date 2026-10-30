@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -345,6 +346,75 @@ func TestSelectTestsRefusesLoadError(t *testing.T) {
 	plan, _, err := selectTests(dir, macRunner, linuxJob, "./...")
 	if err == nil || !strings.Contains(err.Error(), "example.com/fixture/p") {
 		t.Fatalf("selectTests = %+v, %v; want a load error naming the package", plan, err)
+	}
+}
+
+// Proves that readTestEvents reports the top-level tests that started and
+// echoes the output of a valid go test -json stream, and that a line which is
+// not an event fails the read even when every selected test did start: plain
+// text, a field of the wrong type, null, an object without an Action, and a
+// line over the scanner limit. The valid stream is the control.
+func TestReadTestEvents(t *testing.T) {
+	valid := `{"Action":"start","Package":"p"}
+{"Action":"run","Package":"p","Test":"TestA"}
+{"Action":"output","Package":"p","Test":"TestA","Output":"=== RUN   TestA\n"}
+{"Action":"run","Package":"p","Test":"TestA/sub"}
+{"Action":"pass","Package":"p","Test":"TestA","Elapsed":0.01}
+{"Action":"output","Package":"p","Output":"ok  \tp\t0.1s\n"}
+`
+	var out strings.Builder
+	ran, err := readTestEvents(strings.NewReader(valid), &out)
+	if err != nil || !reflect.DeepEqual(ran, map[string]bool{"TestA": true}) {
+		t.Fatalf("valid stream: ran %v, err %v; want TestA only and no error", ran, err)
+	}
+	if out.String() != "=== RUN   TestA\nok  \tp\t0.1s\n" {
+		t.Fatalf("valid stream echoed %q", out.String())
+	}
+	for name, line := range map[string]string{
+		"plain text":   "panic: not json",
+		"wrong type":   `{"Action":"run","Test":5}`,
+		"null":         "null",
+		"no Action":    `{"Test":"TestA"}`,
+		"empty object": "{}",
+		"over limit":   strings.Repeat("x", 16*1024*1024+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out strings.Builder
+			ran, err := readTestEvents(strings.NewReader(valid+line+"\n"), &out)
+			if err == nil {
+				t.Fatalf("ran %v with no error for a stream containing %s", ran, name)
+			}
+			if !ran["TestA"] {
+				t.Fatalf("events before the bad line were lost: %v", ran)
+			}
+		})
+	}
+}
+
+// Proves that runPackage fails a package whose go test exits 0 and starts every
+// selected test but writes a line that is not a test event, so a broken stream
+// cannot pass. A fake go on PATH supplies the stream; the same stream without
+// the bad line is the control.
+func TestRunPackageFailsOnUnreadableStream(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stream string
+		want   bool
+	}{
+		"valid stream":     {`{"Action":"run","Test":"TestQ"}` + "\n" + `{"Action":"pass","Test":"TestQ"}`, true},
+		"stray line added": {`{"Action":"run","Test":"TestQ"}` + "\n" + `{"Action":"pass","Test":"TestQ"}` + "\nnot an event", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bin := t.TempDir()
+			script := "#!/bin/sh\ncat <<'STREAM'\n" + tc.stream + "\nSTREAM\nexit 0\n"
+			if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			p := pkgTests{ImportPath: "example.com/fixture/q", Tests: []string{"TestQ"}}
+			if got := runPackage(t.TempDir(), os.Environ(), p, io.Discard, io.Discard); got != tc.want {
+				t.Fatalf("runPackage = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

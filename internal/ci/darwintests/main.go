@@ -152,28 +152,13 @@ func runPackage(dir string, env []string, p pkgTests, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "darwintests:", err)
 		return false
 	}
-	ran := map[string]bool{}
-	lines := bufio.NewScanner(pipe)
-	lines.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for lines.Scan() {
-		var ev struct{ Action, Test, Output string }
-		if json.Unmarshal(lines.Bytes(), &ev) != nil {
-			fmt.Fprintln(stdout, lines.Text())
-			continue
-		}
-		io.WriteString(stdout, ev.Output)
-		if ev.Action == "run" && ev.Test != "" && !strings.Contains(ev.Test, "/") {
-			ran[ev.Test] = true
-		}
-	}
-	scanErr := lines.Err()
-	if scanErr != nil {
+	ran, readErr := readTestEvents(pipe, stdout)
+	if readErr != nil {
+		// Drain whatever the scanner left so go test can exit and Wait returns.
 		io.Copy(io.Discard, pipe)
+		fmt.Fprintf(stderr, "darwintests: %s: reading go test output: %v\n", p.ImportPath, readErr)
 	}
-	ok := cmd.Wait() == nil && scanErr == nil
-	if scanErr != nil {
-		fmt.Fprintf(stderr, "darwintests: %s: reading go test output: %v\n", p.ImportPath, scanErr)
-	}
+	ok := cmd.Wait() == nil && readErr == nil
 	for _, name := range p.Tests {
 		if !ran[name] {
 			fmt.Fprintf(stderr, "darwintests: %s: selected test %s did not run\n", p.ImportPath, name)
@@ -181,6 +166,43 @@ func runPackage(dir string, env []string, p pkgTests, stdout, stderr io.Writer) 
 		}
 	}
 	return ok
+}
+
+// readTestEvents reads a go test -json stream from r, writes each event's
+// output to stdout and returns the top-level tests that started. Every line of
+// that stream is a JSON event with an Action, so a line that does not decode as
+// one, has no Action, or has a field of the wrong type, is an error: the stream can no longer prove which tests
+// ran. Such a line is still echoed, and reading continues to the end so that
+// the output stays complete; the first such error is returned. A line longer
+// than the scanner's limit stops reading and is returned as the error; the
+// caller drains the rest.
+func readTestEvents(r io.Reader, stdout io.Writer) (map[string]bool, error) {
+	ran := map[string]bool{}
+	var first error
+	lines := bufio.NewScanner(r)
+	lines.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for n := 1; lines.Scan(); n++ {
+		var ev struct{ Action, Test, Output string }
+		err := json.Unmarshal(lines.Bytes(), &ev)
+		if err == nil && ev.Action == "" {
+			err = errors.New("no Action")
+		}
+		if err != nil {
+			fmt.Fprintln(stdout, lines.Text())
+			if first == nil {
+				first = fmt.Errorf("line %d is not a go test -json event: %v", n, err)
+			}
+			continue
+		}
+		io.WriteString(stdout, ev.Output)
+		if ev.Action == "run" && ev.Test != "" && !strings.Contains(ev.Test, "/") {
+			ran[ev.Test] = true
+		}
+	}
+	if err := lines.Err(); err != nil {
+		return ran, err
+	}
+	return ran, first
 }
 
 // selectTests lists the packages matched by patterns for the runner and for
