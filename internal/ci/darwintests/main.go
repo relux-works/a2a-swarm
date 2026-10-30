@@ -170,8 +170,8 @@ func runPackage(dir string, env []string, p pkgTests, stdout, stderr io.Writer) 
 
 // readTestEvents reads a go test -json stream from r, writes each event's
 // output to stdout and returns the top-level tests that started. Every line of
-// that stream is a JSON event with an Action, so a line that does not decode as
-// one, has no Action, or has a field of the wrong type, is an error: the stream can no longer prove which tests
+// that stream is a JSON event with an Action, so a line that is not one (see
+// decodeTestEvent) is an error: the stream can no longer prove which tests
 // ran. Such a line is still echoed, and reading continues to the end so that
 // the output stays complete; the first such error is returned. A line longer
 // than the scanner's limit stops reading and is returned as the error; the
@@ -182,11 +182,7 @@ func readTestEvents(r io.Reader, stdout io.Writer) (map[string]bool, error) {
 	lines := bufio.NewScanner(r)
 	lines.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for n := 1; lines.Scan(); n++ {
-		var ev struct{ Action, Test, Output string }
-		err := json.Unmarshal(lines.Bytes(), &ev)
-		if err == nil && ev.Action == "" {
-			err = errors.New("no Action")
-		}
+		action, test, output, err := decodeTestEvent(lines.Bytes())
 		if err != nil {
 			fmt.Fprintln(stdout, lines.Text())
 			if first == nil {
@@ -194,15 +190,53 @@ func readTestEvents(r io.Reader, stdout io.Writer) (map[string]bool, error) {
 			}
 			continue
 		}
-		io.WriteString(stdout, ev.Output)
-		if ev.Action == "run" && ev.Test != "" && !strings.Contains(ev.Test, "/") {
-			ran[ev.Test] = true
+		io.WriteString(stdout, output)
+		if action == "run" && test != "" && !strings.Contains(test, "/") {
+			ran[test] = true
 		}
 	}
 	if err := lines.Err(); err != nil {
 		return ran, err
 	}
 	return ran, first
+}
+
+// testEventStrings are the string fields of a go test -json event, from
+// cmd/internal/test2json's event and go's BuildEvent; Elapsed is its one number.
+var testEventStrings = []string{"Time", "Action", "Package", "Test", "Output", "FailedBuild", "Key", "Value", "ImportPath"}
+
+// decodeTestEvent decodes one line of go test -json output. The line must be a
+// JSON object with a non-empty Action (null decodes as an object without one), and every known field it has must have
+// that field's JSON type: null or another type is an error, also for a field
+// this lane does not use. Unknown fields are ignored, so a newer go may add
+// some.
+func decodeTestEvent(line []byte) (action, test, output string, err error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(line, &fields); err != nil {
+		return "", "", "", err
+	}
+	values := map[string]string{}
+	for _, name := range testEventStrings {
+		raw, ok := fields[name]
+		if !ok {
+			continue
+		}
+		var v *string
+		if err := json.Unmarshal(raw, &v); err != nil || v == nil {
+			return "", "", "", fmt.Errorf("field %s is not a string", name)
+		}
+		values[name] = *v
+	}
+	if raw, ok := fields["Elapsed"]; ok {
+		var v *float64
+		if err := json.Unmarshal(raw, &v); err != nil || v == nil {
+			return "", "", "", errors.New("field Elapsed is not a number")
+		}
+	}
+	if values["Action"] == "" {
+		return "", "", "", errors.New("no Action")
+	}
+	return values["Action"], values["Test"], values["Output"], nil
 }
 
 // selectTests lists the packages matched by patterns for the runner and for

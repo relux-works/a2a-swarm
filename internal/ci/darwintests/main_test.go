@@ -350,33 +350,49 @@ func TestSelectTestsRefusesLoadError(t *testing.T) {
 }
 
 // Proves that readTestEvents reports the top-level tests that started and
-// echoes the output of a valid go test -json stream, and that a line which is
-// not an event fails the read even when every selected test did start: plain
-// text, a field of the wrong type, null, an object without an Action, and a
-// line over the scanner limit. The valid stream is the control.
+// echoes the output of a valid go test -json stream, including every field go
+// 1.25 emits (times, elapsed seconds, build output, failed-build and attribute
+// events) and a field it does not know. A line that is not an event fails the
+// read even when every selected test did start: plain text, JSON that is not
+// an object, an object without an Action, any known field that is null or of
+// the wrong type (also one the lane does not use), and a line over the scanner
+// limit. The valid stream is the control.
 func TestReadTestEvents(t *testing.T) {
-	valid := `{"Action":"start","Package":"p"}
-{"Action":"run","Package":"p","Test":"TestA"}
-{"Action":"output","Package":"p","Test":"TestA","Output":"=== RUN   TestA\n"}
-{"Action":"run","Package":"p","Test":"TestA/sub"}
-{"Action":"pass","Package":"p","Test":"TestA","Elapsed":0.01}
-{"Action":"output","Package":"p","Output":"ok  \tp\t0.1s\n"}
+	valid := `{"ImportPath":"p.test","Action":"build-output","Output":"# p\n"}
+{"Time":"2026-10-30T20:00:00.1Z","Action":"start","Package":"p"}
+{"Time":"2026-10-30T20:00:00.2Z","Action":"run","Package":"p","Test":"TestA"}
+{"Time":"2026-10-30T20:00:00.3Z","Action":"output","Package":"p","Test":"TestA","Output":"=== RUN   TestA\n"}
+{"Time":"2026-10-30T20:00:00.4Z","Action":"attr","Package":"p","Test":"TestA","Key":"k","Value":"v"}
+{"Time":"2026-10-30T20:00:00.5Z","Action":"run","Package":"p","Test":"TestA/sub"}
+{"Time":"2026-10-30T20:00:00.6Z","Action":"pass","Package":"p","Test":"TestA","Elapsed":0.01}
+{"Time":"2026-10-30T20:00:00.7Z","Action":"output","Package":"p","Output":"ok  \tp\t0.1s\n","FutureField":{"x":1}}
+{"Time":"2026-10-30T20:00:00.8Z","Action":"pass","Package":"p","Elapsed":0.1,"FailedBuild":""}
 `
 	var out strings.Builder
 	ran, err := readTestEvents(strings.NewReader(valid), &out)
 	if err != nil || !reflect.DeepEqual(ran, map[string]bool{"TestA": true}) {
 		t.Fatalf("valid stream: ran %v, err %v; want TestA only and no error", ran, err)
 	}
-	if out.String() != "=== RUN   TestA\nok  \tp\t0.1s\n" {
+	if out.String() != "# p\n=== RUN   TestA\nok  \tp\t0.1s\n" {
 		t.Fatalf("valid stream echoed %q", out.String())
 	}
 	for name, line := range map[string]string{
-		"plain text":   "panic: not json",
-		"wrong type":   `{"Action":"run","Test":5}`,
-		"null":         "null",
-		"no Action":    `{"Test":"TestA"}`,
-		"empty object": "{}",
-		"over limit":   strings.Repeat("x", 16*1024*1024+1),
+		"plain text":               "panic: not json",
+		"empty line":               "",
+		"null":                     "null",
+		"array":                    `[{"Action":"run","Test":"TestA"}]`,
+		"string":                   `"run"`,
+		"no Action":                `{"Test":"TestA"}`,
+		"empty object":             "{}",
+		"null Action":              `{"Action":null}`,
+		"Test of wrong type":       `{"Action":"run","Test":5}`,
+		"null Output":              `{"Action":"output","Output":null}`,
+		"Package of wrong type":    `{"Action":"run","Test":"TestQ","Package":5}`,
+		"null Time":                `{"Time":null,"Action":"pass"}`,
+		"Elapsed of wrong type":    `{"Action":"pass","Elapsed":"1s"}`,
+		"null Elapsed":             `{"Action":"pass","Elapsed":null}`,
+		"ImportPath of wrong type": `{"ImportPath":1,"Action":"build-output","Output":"x"}`,
+		"over limit":               strings.Repeat("x", 16*1024*1024+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			var out strings.Builder
