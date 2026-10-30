@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The macOS runner and the Linux test job, as the CI workflow has them.
@@ -355,8 +356,9 @@ func TestSelectTestsRefusesLoadError(t *testing.T) {
 // events) and a field it does not know. A line that is not an event fails the
 // read even when every selected test did start: plain text, JSON that is not
 // an object, an object without an Action, any known field that is null or of
-// the wrong type (also one the lane does not use), and a line over the scanner
-// limit. The valid stream is the control.
+// the wrong type (also one the lane does not use), a key given twice, data
+// after the object, an unterminated object, and a line over the scanner limit.
+// The valid stream is the control.
 func TestReadTestEvents(t *testing.T) {
 	valid := `{"ImportPath":"p.test","Action":"build-output","Output":"# p\n"}
 {"Time":"2026-10-30T20:00:00.1Z","Action":"start","Package":"p"}
@@ -392,6 +394,11 @@ func TestReadTestEvents(t *testing.T) {
 		"Elapsed of wrong type":    `{"Action":"pass","Elapsed":"1s"}`,
 		"null Elapsed":             `{"Action":"pass","Elapsed":null}`,
 		"ImportPath of wrong type": `{"ImportPath":1,"Action":"build-output","Output":"x"}`,
+		"bad then good Package":    `{"Action":"run","Test":"TestQ","Package":5,"Package":"p"}`,
+		"Action twice":             `{"Action":"run","Test":"TestQ","Action":"run"}`,
+		"unknown field twice":      `{"Action":"pass","Future":1,"Future":2}`,
+		"data after the object":    `{"Action":"pass"} {"Action":"pass"}`,
+		"unterminated object":      `{"Action":"pass"`,
 		"over limit":               strings.Repeat("x", 16*1024*1024+1),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -431,6 +438,34 @@ func TestRunPackageFailsOnUnreadableStream(t *testing.T) {
 				t.Fatalf("runPackage = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// Proves that runPackage returns, failed, when go test writes a line over the
+// scanner limit and then keeps writing far past the pipe buffer: the rest of
+// the stream is drained, so go test can exit and the lane cannot hang. A fake
+// go on PATH writes the stream.
+func TestRunPackageDrainsAfterOverlongLine(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo '{\"Action\":\"run\",\"Test\":\"TestQ\"}'\n" +
+		"head -c 17000000 /dev/zero | tr '\\000' x\necho\n" +
+		"head -c 4000000 /dev/zero | tr '\\000' y\necho\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	p := pkgTests{ImportPath: "example.com/fixture/q", Tests: []string{"TestQ"}}
+	done := make(chan bool, 1)
+	go func() { done <- runPackage(t.TempDir(), os.Environ(), p, io.Discard, io.Discard) }()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("runPackage passed a stream with a line over the scanner limit")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("runPackage did not return: the stream after the overlong line was not drained")
 	}
 }
 

@@ -203,35 +203,57 @@ func readTestEvents(r io.Reader, stdout io.Writer) (map[string]bool, error) {
 
 // testEventStrings are the string fields of a go test -json event, from
 // cmd/internal/test2json's event and go's BuildEvent; Elapsed is its one number.
-var testEventStrings = []string{"Time", "Action", "Package", "Test", "Output", "FailedBuild", "Key", "Value", "ImportPath"}
+var testEventStrings = map[string]bool{"Time": true, "Action": true, "Package": true, "Test": true, "Output": true, "FailedBuild": true, "Key": true, "Value": true, "ImportPath": true}
 
-// decodeTestEvent decodes one line of go test -json output. The line must be a
-// JSON object with a non-empty Action (null decodes as an object without one), and every known field it has must have
-// that field's JSON type: null or another type is an error, also for a field
-// this lane does not use. Unknown fields are ignored, so a newer go may add
-// some.
+// decodeTestEvent decodes one line of go test -json output token by token. The
+// line must be exactly one JSON object, with no data after it. Each key may
+// appear once. Every known field must have its JSON type, a string or for
+// Elapsed a number, so null or another type is an error, also for a field this
+// lane does not use. Unknown fields are skipped whole, so a newer go may add
+// some. A non-empty Action is required.
 func decodeTestEvent(line []byte) (action, test, output string, err error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(line, &fields); err != nil {
-		return "", "", "", err
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.UseNumber()
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", "", "", errors.New("not a JSON object")
 	}
+	seen := map[string]bool{}
 	values := map[string]string{}
-	for _, name := range testEventStrings {
-		raw, ok := fields[name]
-		if !ok {
-			continue
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", "", "", err
 		}
-		var v *string
-		if err := json.Unmarshal(raw, &v); err != nil || v == nil {
-			return "", "", "", fmt.Errorf("field %s is not a string", name)
+		name, _ := tok.(string)
+		if seen[name] {
+			return "", "", "", fmt.Errorf("field %s appears twice", name)
 		}
-		values[name] = *v
+		seen[name] = true
+		switch {
+		case testEventStrings[name]:
+			tok, err := dec.Token()
+			v, ok := tok.(string)
+			if err != nil || !ok {
+				return "", "", "", fmt.Errorf("field %s is not a string", name)
+			}
+			values[name] = v
+		case name == "Elapsed":
+			tok, err := dec.Token()
+			if _, ok := tok.(json.Number); err != nil || !ok {
+				return "", "", "", errors.New("field Elapsed is not a number")
+			}
+		default:
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return "", "", "", err
+			}
+		}
 	}
-	if raw, ok := fields["Elapsed"]; ok {
-		var v *float64
-		if err := json.Unmarshal(raw, &v); err != nil || v == nil {
-			return "", "", "", errors.New("field Elapsed is not a number")
-		}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return "", "", "", errors.New("unterminated JSON object")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", "", "", errors.New("data after the JSON object")
 	}
 	if values["Action"] == "" {
 		return "", "", "", errors.New("no Action")
