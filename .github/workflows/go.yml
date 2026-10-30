@@ -25,14 +25,26 @@ jobs:
           # The runner is persistent: ~/go/pkg/mod and the build cache stay on
           # disk, so archiving them into an Actions cache is pure overhead.
           cache: false
-      # Record the toolchain facts the suite depends on: -race needs cgo and a C
-      # compiler, and the tmux-backed fixtures need tmux on the runner.
-      - name: toolchain facts
+      # Fail early when the runner lacks what the suite depends on. -race needs cgo
+      # and a working C compiler. The terminal fixtures need tmux, python3 and PTYs;
+      # they skip when one is missing, so without this check a green run could leave
+      # them out. A2A_VOICE_IT opts into the macOS-only real-voice test and must stay
+      # unset here. `shell: bash` runs with -e and pipefail.
+      - name: runner prerequisites
+        shell: bash
         run: |
           go version
           go env GOOS GOARCH CGO_ENABLED CC
-          "$(go env CC)" --version | head -1
+          test "$(go env CGO_ENABLED)" = 1
+          read -ra cc <<<"$(go env CC)"
+          test "${#cc[@]}" -gt 0
+          cc_version=$("${cc[@]}" --version)
+          echo "${cc_version%%$'\n'*}"
           tmux -V
+          python3 --version
+          test -c /dev/ptmx
+          test -d /dev/pts
+          test -z "${A2A_VOICE_IT:-}"
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
