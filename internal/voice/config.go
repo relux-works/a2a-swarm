@@ -31,7 +31,7 @@ func (c Config) Validate() error {
 	}
 	// Old explicit enablement remains valid, but cannot render until pinned.
 	if c.Worker != "" || c.WorkerSHA256 != "" || c.ManifestSHA256 != "" {
-		if !filepath.IsAbs(c.Worker) || filepath.Base(c.Worker) != WorkerName || !validSHA(c.WorkerSHA256) || !validSHA(c.ManifestSHA256) {
+		if !filepath.IsAbs(c.Worker) || filepath.Clean(c.Worker) != c.Worker || filepath.Base(c.Worker) != WorkerName || !validSHA(c.WorkerSHA256) || !validSHA(c.ManifestSHA256) {
 			return errors.New("voice helper requires an absolute a2a-voice-worker path and lowercase SHA256 pins for worker and manifest")
 		}
 	}

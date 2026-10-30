@@ -17,7 +17,11 @@ import (
 
 func copyRelease(t *testing.T, source string) voice.Config {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "relocated")
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "relocated")
 	if err := os.MkdirAll(filepath.Join(root, "lib"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +39,6 @@ func copyRelease(t *testing.T, source string) voice.Config {
 		}
 	}
 	c := voice.Config{Enabled: true, MaxSeconds: 180, Worker: filepath.Join(root, voice.WorkerName)}
-	var err error
 	c.WorkerSHA256, err = voice.HashReleaseFile(context.Background(), c.Worker)
 	if err != nil {
 		t.Fatal(err)
@@ -107,49 +110,51 @@ func TestNativeReleaseRelocationAndTampering(t *testing.T) {
 		}
 		t.Logf("relocated release; GOMODCACHE empty; duration_ms=%d bytes=%d ffprobe=%s", a.DurationMS, len(a.OGG), bytes.TrimSpace(b))
 	})
-	for _, variant := range []string{"missing", "one-byte-changed"} {
-		t.Run(variant, func(t *testing.T) {
-			c := copyRelease(t, source)
-			lib := filepath.Join(filepath.Dir(c.Worker), "lib", "libsherpa-onnx-c-api.dylib")
-			if variant == "missing" {
-				if err := os.Remove(lib); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				f, err := macho.Open(lib)
-				if err != nil {
-					t.Fatal(err)
-				}
-				section := f.Section("__text")
-				if section == nil {
+	for _, name := range voice.ReleaseFiles()[1:] {
+		for _, variant := range []string{"missing", "one-byte-changed"} {
+			t.Run(filepath.Base(name)+"/"+variant, func(t *testing.T) {
+				c := copyRelease(t, source)
+				lib := filepath.Join(filepath.Dir(c.Worker), name)
+				if variant == "missing" {
+					if err := os.Remove(lib); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					f, err := macho.Open(lib)
+					if err != nil {
+						t.Fatal(err)
+					}
+					section := f.Section("__text")
+					if section == nil {
+						f.Close()
+						t.Fatal("native code section missing")
+					}
+					offset := int(section.Offset)
 					f.Close()
-					t.Fatal("native code section missing")
+					b, err := os.ReadFile(lib)
+					if err != nil {
+						t.Fatal(err)
+					}
+					b[offset] ^= 1
+					if err := os.WriteFile(lib, b, 0600); err != nil {
+						t.Fatal(err)
+					}
 				}
-				offset := int(section.Offset)
-				f.Close()
-				b, err := os.ReadFile(lib)
-				if err != nil {
-					t.Fatal(err)
+				if _, err := voice.VerifyWorker(ctx, c); err == nil {
+					t.Fatal("parent admitted damaged library")
 				}
-				b[offset] ^= 1
-				if err := os.WriteFile(lib, b, 0600); err != nil {
-					t.Fatal(err)
+				if _, err := (voice.LocalRenderer{}).Render(ctx, base, c, "Проверка"); err == nil {
+					t.Fatal("parent rendered damaged release")
 				}
-			}
-			if _, err := voice.VerifyWorker(ctx, c); err == nil {
-				t.Fatal("parent admitted damaged library")
-			}
-			if _, err := (voice.LocalRenderer{}).Render(ctx, base, c, "Проверка"); err == nil {
-				t.Fatal("parent rendered damaged release")
-			}
-			childCtx, stop := context.WithTimeout(ctx, 30*time.Second)
-			defer stop()
-			cmd := exec.CommandContext(childCtx, c.Worker, base, filepath.Join(t.TempDir(), "native.wav"))
-			cmd.Stdin = strings.NewReader("Проверка")
-			// Native diagnostics are discarded, including on loader failure.
-			if err := cmd.Run(); err == nil || childCtx.Err() != nil {
-				t.Fatalf("native damaged release verdict: %v deadline=%v", err, childCtx.Err())
-			}
-		})
+				childCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+				defer stop()
+				cmd := exec.CommandContext(childCtx, c.Worker, base, filepath.Join(t.TempDir(), "native.wav"))
+				cmd.Stdin = strings.NewReader("Проверка")
+				// Native diagnostics are discarded, including on loader failure.
+				if err := cmd.Run(); err == nil || childCtx.Err() != nil {
+					t.Fatalf("native damaged release verdict: %v deadline=%v", err, childCtx.Err())
+				}
+			})
+		}
 	}
 }

@@ -44,8 +44,8 @@ type encoderFailureRunner struct {
 }
 
 func (*encoderFailureRunner) ValidateModel(context.Context, string) error { return nil }
-func (*encoderFailureRunner) VerifyWorker(context.Context, voice.Config) (string, error) {
-	return "fixture-worker", nil
+func (*encoderFailureRunner) PrepareWorker(context.Context, voice.Config) (voice.PreparedWorker, error) {
+	return voice.PreparedWorker{Path: "fixture-worker"}, nil
 }
 func (r *encoderFailureRunner) Run(_ context.Context, name string, args []string, _ io.Reader) error {
 	r.calls++
@@ -90,7 +90,10 @@ func TestPostVoiceEncoderUnavailable(t *testing.T) {
 
 func cliVoiceRelease(t *testing.T) voice.Config {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(root, "lib"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -126,34 +129,28 @@ func cliVoiceRelease(t *testing.T) voice.Config {
 func TestPostVoiceSharedBinaryNativeFree(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, tags := range []string{"", "sherpa"} {
-		cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-json", "-tags", tags, "../../cmd/a2a")
-		b, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("dependency evidence: %v", err)
-		}
-		dec := json.NewDecoder(bytes.NewReader(b))
-		for {
-			var pkg struct {
-				ImportPath string
-				CgoFiles   []string
-			}
-			err := dec.Decode(&pkg)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(pkg.CgoFiles) != 0 || strings.Contains(pkg.ImportPath, "sherpa") || pkg.ImportPath == "runtime/cgo" {
-				t.Fatalf("native dependency under tags=%q: %+v", tags, pkg)
+	for _, target := range []string{"darwin", "linux"} {
+		for _, cgo := range []string{"0", "1"} {
+			for _, tags := range []string{"", "sherpa"} {
+				cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-json", "-tags", tags, "../../cmd/a2a")
+				cmd.Env = append(os.Environ(), "GOOS="+target, "CGO_ENABLED="+cgo)
+				b, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("dependency evidence GOOS=%s CGO=%s tags=%s: %v", target, cgo, tags, err)
+				}
+				if err := checkVoiceDependencies(b, cgo == "0"); err != nil {
+					t.Fatalf("GOOS=%s CGO=%s tags=%s: %v", target, cgo, tags, err)
+				}
 			}
 		}
 	}
 	exe := filepath.Join(t.TempDir(), "a2a")
-	if b, err := exec.CommandContext(ctx, "go", "build", "-o", exe, "../../cmd/a2a").CombinedOutput(); err != nil {
-		t.Fatalf("shared build: %v %s", err, b)
+	build := exec.CommandContext(ctx, "go", "build", "-o", exe, "../../cmd/a2a")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if b, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("CGO-disabled shared build: %v %s", err, b)
 	}
+
 	for _, variant := range []string{"no-flag", "disabled", "helper-missing", "helper-changed", "library-missing", "library-changed", "model-missing"} {
 		t.Run(variant, func(t *testing.T) {
 			e, _, _ := voiceWorld(t)
@@ -214,5 +211,45 @@ func TestPostVoiceSharedBinaryNativeFree(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// CGO-disabled builds must have no CGO at all. CGO-enabled dependency inspection
+// permits standard-library libc support while always excluding native voice.
+func checkVoiceDependencies(b []byte, noCGO bool) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	for {
+		var pkg struct {
+			ImportPath string
+			CgoFiles   []string
+		}
+		err := dec.Decode(&pkg)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if strings.Contains(pkg.ImportPath, "sherpa") || strings.Contains(pkg.ImportPath, "onnxruntime") || pkg.ImportPath == "github.com/relux-works/a2a-swarm/internal/voiceworker" || noCGO && (len(pkg.CgoFiles) != 0 || pkg.ImportPath == "runtime/cgo") {
+			return fmt.Errorf("native dependency: %+v", pkg)
+		}
+	}
+}
+
+// Linux libc net/user support is legitimate; native voice imports remain
+// forbidden in both dependency modes, including an accidentally tagged import.
+func TestVoiceDependencyCompatibility(t *testing.T) {
+	for _, pkg := range []string{"net", "os/user", "runtime/cgo", "github.com/k2-fsa/sherpa-onnx-go-macos", "example/onnxruntime", "github.com/relux-works/a2a-swarm/internal/voiceworker"} {
+		b, err := json.Marshal(map[string]any{"ImportPath": pkg, "CgoFiles": []string{"native.cgo.go"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native := strings.Contains(pkg, "sherpa") || strings.Contains(pkg, "onnxruntime") || strings.HasSuffix(pkg, "/voiceworker")
+		if err := checkVoiceDependencies(b, false); (err != nil) != native {
+			t.Fatalf("CGO-enabled %s: %v", pkg, err)
+		}
+		if err := checkVoiceDependencies(b, true); err == nil {
+			t.Fatalf("CGO-disabled accepted %s", pkg)
+		}
 	}
 }

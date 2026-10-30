@@ -14,7 +14,10 @@ import (
 
 func releaseFixture(t *testing.T) Config {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(root, "lib"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +55,9 @@ func TestVerifyWorkerCompatibilityAndTampering(t *testing.T) {
 			defer cancel()
 			switch variant {
 			case "relocated":
-				moved := filepath.Join(t.TempDir(), "moved")
+				parent, err := filepath.EvalSymlinks(t.TempDir())
+				must(err)
+				moved := filepath.Join(parent, "moved")
 				must(os.Rename(root, moved))
 				c.Worker = filepath.Join(moved, WorkerName)
 			case "worker-missing":
@@ -108,8 +113,8 @@ func TestVerifyWorkerCompatibilityAndTampering(t *testing.T) {
 
 type verifyingRunner struct{ calls int }
 
-func (r *verifyingRunner) VerifyWorker(ctx context.Context, c Config) (string, error) {
-	return VerifyWorker(ctx, c)
+func (r *verifyingRunner) PrepareWorker(ctx context.Context, c Config) (PreparedWorker, error) {
+	return PrepareWorker(ctx, c)
 }
 func (r *verifyingRunner) ValidateModel(context.Context, string) error { return nil }
 func (r *verifyingRunner) Run(context.Context, string, []string, io.Reader) error {

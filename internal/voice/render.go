@@ -24,12 +24,12 @@ const MaxAudioBytes = 4 << 20
 type Runner interface {
 	Run(context.Context, string, []string, io.Reader) error
 	ValidateModel(context.Context, string) error
-	VerifyWorker(context.Context, Config) (string, error)
+	PrepareWorker(context.Context, Config) (PreparedWorker, error)
 }
 type LocalRunner struct{}
 
-func (LocalRunner) VerifyWorker(ctx context.Context, c Config) (string, error) {
-	return VerifyWorker(ctx, c)
+func (LocalRunner) PrepareWorker(ctx context.Context, c Config) (PreparedWorker, error) {
+	return PrepareWorker(ctx, c)
 }
 
 func (LocalRunner) ValidateModel(ctx context.Context, base string) error {
@@ -39,6 +39,11 @@ func (LocalRunner) ValidateModel(ctx context.Context, base string) error {
 func (LocalRunner) Run(ctx context.Context, name string, args []string, input io.Reader) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = input, io.Discard, io.Discard
+	if filepath.Base(name) == WorkerName {
+		// No inherited loader overrides may redirect the private native payload.
+		// The worker receives all model/output paths as explicit arguments.
+		cmd.Env = []string{}
+	}
 	cmd.WaitDelay = time.Second
 	// Run waits/reaps the exact process, including cancellation; no shell or child pipeline.
 	if err := cmd.Run(); err != nil {
@@ -75,14 +80,15 @@ func (r LocalRenderer) synth(ctx context.Context, base string, c Config, text, o
 	if runner == nil {
 		runner = LocalRunner{}
 	}
-	exe, err := runner.VerifyWorker(ctx, c)
+	worker, err := runner.PrepareWorker(ctx, c)
 	if err != nil {
 		return err
 	}
+	defer worker.Close()
 	if err := runner.ValidateModel(ctx, base); err != nil {
 		return err
 	}
-	return r.run(ctx, 120*time.Second, exe, []string{base, out}, strings.NewReader(text))
+	return r.run(ctx, 120*time.Second, worker.Path, []string{base, out}, strings.NewReader(text))
 }
 
 func readBounded(path string, limit int) ([]byte, error) {
@@ -180,7 +186,7 @@ func (r LocalRenderer) Render(ctx context.Context, base string, c Config, text s
 			return result, err
 		}
 		if err := r.synth(ctx, base, c, TruncationNotice, noticeFile); err != nil {
-			return result, errors.New("voice truncation notice synthesis failed")
+			return result, errors.New("voice synthesis failed or timed out; check the local engine and installed model")
 		}
 		notice, err := r.pcm(ctx, noticeFile, filepath.Join(dir, "notice.pcm"))
 		if err != nil {

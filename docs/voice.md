@@ -10,7 +10,7 @@ post for a local spoken copy replying to that text in the same topic. There
 is no sticky mode or implicit enablement.
 
 ```sh
-go build -o bin/a2a ./cmd/a2a
+CGO_ENABLED=0 go build -o bin/a2a ./cmd/a2a
 go run ./cmd/a2a-voice-release -out .temp/voice/release
 # Read the worker digest from release/MANIFEST.sha256 and the manifest digest
 # printed by the recipe. After copying the directory to its installation path:
@@ -23,7 +23,7 @@ bin/a2a post ROOM --topic TOPIC --voice 'Complete original text'
 
 Config/install require no Matrix account. `<config>` means `A2A_CONFIG_DIR`,
 otherwise `~/.config/a2a-swarm`. Config is `<config>/voice/config.json`, with
-`enabled: true`, `max_seconds: 180`, an absolute `worker` path ending in
+`enabled: true`, `max_seconds: 180`, an absolute, clean, physically canonical `worker` path ending in
 `a2a-voice-worker`, and lowercase 64-hex `worker_sha256` and `manifest_sha256`.
 All three helper fields must be supplied together. Old configs containing only
 enablement and the cap remain readable; voice skips until a helper is pinned.
@@ -34,8 +34,10 @@ require a separate maintenance window; this recipe never installs globally.
 
 ## Helper release and installation
 
-The shared `a2a` has no Sherpa or CGO dependency, even if accidentally built
-with `-tags sherpa`. Native inference exists only in `cmd/a2a-voice-worker`.
+The shared release `a2a` is built with `CGO_ENABLED=0` and has no CGO or
+Sherpa dependency, including with `-tags sherpa`. CGO-enabled contributor
+builds may use standard-library libc support for net/user on Linux; their
+dependency graph must still exclude Sherpa, onnxruntime and `voiceworker`. Native inference exists only in `cmd/a2a-voice-worker`.
 A missing or damaged helper cannot prevent the shared CLI from starting.
 The release recipe requires darwin/arm64, Go as pinned by `go.mod`, CGO,
 Xcode command-line tools (`install_name_tool`, `codesign`) and the pinned
@@ -57,7 +59,19 @@ config pin. The worker has exactly one `LC_RPATH`, `@executable_path/lib`.
 Libraries have no rpaths. `otool -l` and `otool -L` must show only that relative
 rpath, the two bundled library references, and macOS system libraries/frameworks.
 No module cache, GOPATH or build-machine path is needed at runtime. The system
-libraries remain supplied by macOS. The unused C++ Sherpa API is not bundled.
+libraries remain supplied by macOS. The exhaustive load-command audit admits
+only ordinary `LC_LOAD_DYLIB` dependencies. Weak, re-export, upward and lazy
+loads, unknown loader directives, foreign dylib identities and extra rpaths
+refuse. The explicit system dependency set is:
+
+- `/usr/lib/libSystem.B.dylib`, `/usr/lib/libc++.1.dylib`,
+  `/usr/lib/libiconv.2.dylib`, `/usr/lib/libresolv.9.dylib`, `/usr/lib/libobjc.A.dylib`;
+- `/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML`,
+  `/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation`,
+  `/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation`,
+  `/System/Library/Frameworks/Security.framework/Versions/A/Security`.
+
+The helper may name only `/usr/lib/dyld` as its dynamic linker. The unused C++ Sherpa API is not bundled.
 
 The recipe uses trimpath, no VCS/build ID, deterministic ad-hoc signatures and
 no signing timestamp. Repeating it with identical source, toolchain, module
@@ -80,11 +94,29 @@ config bytes and intact previous directory; the shared CLI does not change.
 The model and ffmpeg are separate dependencies, not redistributed in this payload.
 
 Before **every** worker invocation, including the truncation notice, `a2a`
-hashes the manifest, worker and both dylibs. Missing/changed files, links,
-unlisted entries, malformed manifests and mismatched pins refuse before exec.
-These checks detect corruption against locally trusted config pins; they do
-not defend against a same-UID attacker rewriting config or changing files
-between verification and use. The installer must keep release directories stable.
+requires the configured worker spelling to be absolute, already clean and
+physically canonical, with no symlink in any path component. Use a physical
+installation path (for example `/private/tmp` rather than macOS's `/tmp` alias).
+The manifest, worker and both dylibs are opened without following leaf links
+or blocking on FIFOs. Opened regular-file device/inode, size and mode must match
+the pathname before and after hashing.
+
+Each invocation copies the authenticated worker and both libraries into a
+fresh 0700 private execution directory, then verifies the copied bytes. The
+worker is 0500 and libraries 0400. The exact canonical snapshot path is executed;
+its sibling libraries stay present until the subprocess exits. The worker inherits
+no environment variables, so loader overrides cannot redirect its dependencies.
+Source renames
+between verification and exec cannot replace the worker or its loaded bytes.
+Missing/changed files, links, unlisted entries, malformed manifests and
+mismatched pins refuse before exec. The truncation notice prepares a fresh
+snapshot and rechecks the source release.
+
+Residual window: a same-UID process that discovers and changes the private
+snapshot after its final verification and before exec or dyld loading can still
+interfere. Directory permissions protect against other UIDs, not the same UID.
+Config pins remain locally trusted; rewriting them is outside this guarantee.
+Installers must still publish intact versioned directories.
 
 ## Dependencies and pins
 

@@ -25,8 +25,8 @@ type renderRunner struct {
 }
 
 func (r *renderRunner) ValidateModel(context.Context, string) error { return nil }
-func (r *renderRunner) VerifyWorker(context.Context, Config) (string, error) {
-	return "fixture-worker", nil
+func (r *renderRunner) PrepareWorker(context.Context, Config) (PreparedWorker, error) {
+	return PreparedWorker{Path: "fixture-worker"}, nil
 }
 
 func (r *renderRunner) Run(ctx context.Context, name string, args []string, input io.Reader) error {
