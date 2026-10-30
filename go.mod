@@ -1,6 +1,6 @@
 module github.com/relux-works/a2a-swarm
 
-go 1.25.5
+go 1.25.12
 
 require (
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8
