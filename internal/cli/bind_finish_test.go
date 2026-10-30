@@ -38,7 +38,17 @@ func TestBindingProcessConflict(t *testing.T) {
 
 // The actual OS scanner catches a separately loaded old image; a different
 // identity or config root is a positive control. Only synthetic argv/env used.
+// On Linux this exercises the /proc backend; the darwin lane runs the same
+// witness against the kern.procargs2 and lsof backend
+// (TestBindingProcessDarwinImageWitness).
 func TestBindingProcessImageWitness(t *testing.T) {
+	bindingImageWitness(t)
+}
+
+// bindingImageWitness starts a copied test binary as a synthetic same-identity
+// a2a process and checks the guard against it with this platform's backend.
+func bindingImageWitness(t *testing.T) {
+	t.Helper()
 	dir := t.TempDir()
 	self, err := os.Executable()
 	if err != nil {
