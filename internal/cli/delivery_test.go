@@ -229,7 +229,17 @@ func TestWatch(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	e.syncCalls(t, e.hs.CallCount("GET /_matrix/client/v3/sync")+1) // the batch of b was committed
+	// Watch marks a printed event shown only after persisting its batch, so b
+	// shown means the batch of b was committed. Waiting for a further sync
+	// request instead raced: the request after b may already be counted when
+	// the count is read, and the one after it comes only after the long poll.
+	deadline = time.Now().Add(testDeadline)
+	for en, ok := e.pendingEntry("alice", b); !ok || !en.Shown; en, ok = e.pendingEntry("alice", b) {
+		if time.Now().After(deadline) {
+			t.Fatalf("watch never committed %s: %+v %v", b, en, ok)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	select {
 	case r := <-done:
 		t.Fatalf("watch exited on its own: %+v", r)
