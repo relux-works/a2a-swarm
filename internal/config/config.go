@@ -311,6 +311,10 @@ func WriteCredentials(f *os.File, c Credentials) error {
 // State is the per-agent delivery state. The events themselves live in the
 // durable mailbox (MailboxFile), which is written before NextBatch moves.
 type State struct {
+	// opaque retains unknown top-level values as data, never as authority.
+	// It is immutable after loading; saving a State copy must not mutate it.
+	opaque map[string]json.RawMessage
+
 	// Notification spaces fixed doorbells; it never receipts or owns channel safety.
 	Notification Notification `json:"notification,omitempty"`
 	// NextBatch is the sync cursor: every relevant event before it is in the
@@ -510,7 +514,7 @@ func LoadState(p Paths, name string) (State, error) {
 		return State{}, err
 	}
 	var s State
-	if err := json.Unmarshal(data, &s); err != nil {
+	if err := unmarshalState(data, &s); err != nil {
 		return State{}, fmt.Errorf("%s is not valid state JSON: %w", path, err)
 	}
 	return s, nil
@@ -522,7 +526,7 @@ func SaveState(p Paths, name string, s State) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	data, err := marshalState(s)
 	if err != nil {
 		return err
 	}
