@@ -149,6 +149,56 @@ func TestSelectTestsRefusesInvalidSignature(t *testing.T) {
 	}
 }
 
+// Proves that the go test loader runs over every package with runner-only test
+// files, so two TestMain hooks in one runner test binary fail the selection
+// even when that package has no test to select and another package is valid.
+// Covers hooks in the internal and external Darwin-only files, and a hook in a
+// shared file plus one in a Darwin-only file. A single hook is the control.
+func TestSelectTestsRefusesTestMainTwice(t *testing.T) {
+	hook := "func TestMain(m *testing.M) { m.Run() }\n"
+	valid := map[string]string{
+		"q/q.go":             "package q\n",
+		"q/q_darwin_test.go": testFile("", "q", "func TestQ(t *testing.T) {}\n"),
+		"p/p.go":             "package p\n",
+	}
+	for name, files := range map[string]map[string]string{
+		"internal and external": {
+			"p/in_darwin_test.go":  testFile("", "p", hook),
+			"p/ext_darwin_test.go": testFile("", "p_test", hook),
+		},
+		"shared and darwin-only": {
+			"p/main_test.go":       testFile("", "p", hook),
+			"p/ext_darwin_test.go": testFile("", "p_test", hook),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			all := map[string]string{}
+			for k, v := range valid {
+				all[k] = v
+			}
+			for k, v := range files {
+				all[k] = v
+			}
+			dir := writeModule(t, all)
+			plan, err := selectTests(dir, macRunner, linuxJob, "./...")
+			if err == nil || !strings.Contains(err.Error(), "multiple definitions of TestMain") {
+				t.Fatalf("selectTests = %+v, %v; want the loader's TestMain refusal", plan, err)
+			}
+		})
+	}
+	t.Run("single hook control", func(t *testing.T) {
+		all := map[string]string{"p/in_darwin_test.go": testFile("", "p", hook)}
+		for k, v := range valid {
+			all[k] = v
+		}
+		dir := writeModule(t, all)
+		plan, err := selectTests(dir, macRunner, linuxJob, "./...")
+		if err != nil || len(plan) != 1 || plan[0].ImportPath != "example.com/fixture/q" {
+			t.Fatalf("selectTests = %+v, %v; want only package q selected", plan, err)
+		}
+	})
+}
+
 // Proves that a selected name also defined in a test file the Linux job runs
 // is refused, because -run would run that portable test in the macOS lane too.
 // The collision is checked across the internal and the external test package.

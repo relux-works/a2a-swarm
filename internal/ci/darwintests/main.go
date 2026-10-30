@@ -123,6 +123,7 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 		return nil, err
 	}
 	var plan []pkgTests
+	var withOnly []string
 	for _, path := range sortedKeys(onRunner) {
 		pkg := onRunner[path]
 		var both map[string]bool
@@ -140,6 +141,7 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 		if len(only) == 0 {
 			continue
 		}
+		withOnly = append(withOnly, path)
 		sort.Strings(only)
 		sort.Strings(shared)
 		var tests []string
@@ -172,10 +174,48 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 		tests = dedupe(tests)
 		plan = append(plan, pkgTests{ImportPath: path, Files: only, Tests: tests})
 	}
+	if err := validateTestLoad(dir, runner, withOnly); err != nil {
+		return nil, err
+	}
 	if len(plan) == 0 {
 		return nil, errors.New("no Darwin-only tests found")
 	}
 	return plan, nil
+}
+
+// validateTestLoad runs the go tool's test loader (go list -test) for target
+// over every package with runner-only test files, including packages with no
+// test to select, so that a loader error such as two TestMain hooks in one
+// test binary fails the selection instead of going unnoticed.
+func validateTestLoad(dir string, target platform, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"list", "-e", "-test", "-json=ImportPath,Error"}, paths...)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOOS="+target.goos, "GOARCH="+target.goarch, "CGO_ENABLED=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("go list -test for %s/%s: %v: %s", target.goos, target.goarch, err, strings.TrimSpace(stderr.String()))
+	}
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var p struct {
+			ImportPath string
+			Error      *struct{ Err string }
+		}
+		if err := dec.Decode(&p); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("go list -test for %s/%s: %v", target.goos, target.goarch, err)
+		}
+		if p.Error != nil {
+			return fmt.Errorf("go test loader for %s/%s: %s: %s", target.goos, target.goarch, p.ImportPath, p.Error.Err)
+		}
+	}
 }
 
 type listedPkg struct {
