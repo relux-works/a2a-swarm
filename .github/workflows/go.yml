@@ -42,5 +42,7 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go vet -tags sherpa ./...
-      - run: go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
-      - run: go test -tags sherpa -race ./internal/voice ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict|TestModelCache|TestLocalRunner' -count=1
+      - run: go run ./cmd/a2a-voice-release -out .temp/voice/release-1
+      - run: go run ./cmd/a2a-voice-release -out .temp/voice/release-2
+      - run: diff .temp/voice/release-1/MANIFEST.sha256 .temp/voice/release-2/MANIFEST.sha256
+      - run: go test -tags sherpa -race ./internal/voice ./internal/voiceworker ./internal/voicerelease ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict|TestModelCache|TestLocalRunner|TestVerifyWorker|TestWorker|TestAllowedLibrary|TestBuildPreserves' -count=1

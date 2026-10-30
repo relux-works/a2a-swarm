@@ -15,8 +15,11 @@ const MaxSeconds = 180
 const TruncationNotice = "Аудио сокращено. Полный текст сохранён в сообщении."
 
 type Config struct {
-	Enabled    bool `json:"enabled"`
-	MaxSeconds int  `json:"max_seconds"`
+	Enabled        bool   `json:"enabled"`
+	MaxSeconds     int    `json:"max_seconds"`
+	Worker         string `json:"worker,omitempty"`
+	WorkerSHA256   string `json:"worker_sha256,omitempty"`
+	ManifestSHA256 string `json:"manifest_sha256,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -25,6 +28,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxSeconds != MaxSeconds {
 		return fmt.Errorf("voice max_seconds must be %d", MaxSeconds)
+	}
+	// Old explicit enablement remains valid, but cannot render until pinned.
+	if c.Worker != "" || c.WorkerSHA256 != "" || c.ManifestSHA256 != "" {
+		if !filepath.IsAbs(c.Worker) || filepath.Base(c.Worker) != WorkerName || !validSHA(c.WorkerSHA256) || !validSHA(c.ManifestSHA256) {
+			return errors.New("voice helper requires an absolute a2a-voice-worker path and lowercase SHA256 pins for worker and manifest")
+		}
 	}
 	return nil
 }

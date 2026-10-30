@@ -136,7 +136,7 @@ func TestExtractSafetyAndManifest(t *testing.T) {
 // malformed, extra-field, oversized and trailing JSON cannot silently default.
 func TestConfigStrict(t *testing.T) {
 	base := t.TempDir()
-	good := Config{true, 180}
+	good := Config{Enabled: true, MaxSeconds: 180}
 	if err := Save(base, good); err != nil {
 		t.Fatal(err)
 	}

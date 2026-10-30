@@ -1,6 +1,6 @@
 //go:build !darwin || !cgo || !sherpa
 
-package voice
+package voiceworker
 
 import "io"
 
