@@ -313,7 +313,7 @@ func TestKeychainHostCooldownAcrossProcesses(t *testing.T) {
 }
 
 func TestKeychainHostMarkerFailClosed(t *testing.T) {
-	for _, mode := range []string{"corrupt", "symlink", "public"} {
+	for _, mode := range []string{"corrupt", "symlink", "public", "private"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newEnv(t)
 			uid := e.agent("alice")
@@ -330,6 +330,12 @@ func TestKeychainHostMarkerFailClosed(t *testing.T) {
 				err = os.WriteFile(path, []byte("not-a-time"), 0o600)
 			case "public":
 				err = os.WriteFile(path, []byte("0"), 0o644)
+				// Creation honors umask; force the intended unsafe fixture mode.
+				if err == nil {
+					err = os.Chmod(path, 0o644)
+				}
+			case "private":
+				err = os.WriteFile(path, []byte("0"), 0o600)
 			case "symlink":
 				target := filepath.Join(dir, "unsafe")
 				err = os.WriteFile(target, []byte("0"), 0o600)
@@ -340,15 +346,39 @@ func TestKeychainHostMarkerFailClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if mode == "public" || mode == "private" {
+				want := os.FileMode(0o600)
+				if mode == "public" {
+					want = 0o644
+				}
+				st, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !st.Mode().IsRegular() || st.Mode().Perm() != want {
+					t.Fatalf("%s fixture must be regular mode %04o; got %v", mode, want, st.Mode())
+				}
+				t.Logf("%s fixture: regular=%t mode=%04o", mode, st.Mode().IsRegular(), st.Mode().Perm())
+			}
 			calls := 0
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
 					return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd { calls++; return unlockedProbe(ctx, args...) }})
 				}
 			}
-			if r := e.as("alice", "whoami"); r.code == 0 {
-				t.Fatal("unsafe marker admitted")
+			// The private expired marker must permit both probe and fake backend.
+			if mode == "private" {
+				e.as("alice", "whoami").ok(t)
+				if calls != 1 || len(records(t, dir)) != 2 {
+					t.Fatal("private marker did not permit probe and backend")
+				}
+				return
 			}
+			wantError := "cooldown state unreadable"
+			if mode == "corrupt" {
+				wantError = "cooldown state invalid"
+			}
+			e.as("alice", "whoami").failsWith(t, ExitError, wantError)
 			if calls != 0 || len(records(t, dir)) != 1 {
 				t.Fatal("unsafe host marker launched process")
 			}
