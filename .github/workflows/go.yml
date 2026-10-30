@@ -7,9 +7,13 @@ on:
 
 jobs:
   test:
-    # Self-hosted on the owner's MacBook (repo-level runner m1max-a2a-swarm, agreed in
-    # #gha-runner-m1max): hosted runners cannot start (billing, ruling ac-R8).
-    runs-on: [self-hosted, macOS, relux-a2a]
+    # The platform-independent suite runs on the organisation's self-hosted Linux
+    # runners (group swarma-private). Hosted runners cannot start (billing, ruling
+    # ac-R8), and this job must not depend on one MacBook being online. All of the
+    # group, the labels and the repository's group admission must match.
+    runs-on:
+      group: swarma-private
+      labels: [self-hosted, Linux, X64, swarma-ci]
     # A hung step must not hold a PR for the 6 h default (2026-10-06: a cache
     # tar sat 70 min in uninterruptible I/O after the tests had passed).
     timeout-minutes: 30
@@ -21,6 +25,14 @@ jobs:
           # The runner is persistent: ~/go/pkg/mod and the build cache stay on
           # disk, so archiving them into an Actions cache is pure overhead.
           cache: false
+      # Record the toolchain facts the suite depends on: -race needs cgo and a C
+      # compiler, and the tmux-backed fixtures need tmux on the runner.
+      - name: toolchain facts
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED CC
+          "$(go env CC)" --version | head -1
+          tmux -V
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
@@ -32,7 +44,9 @@ jobs:
   voice-native:
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
-    # unrelated launcher/credential fixtures a second time.
+    # unrelated launcher/credential fixtures a second time. The native voice
+    # binding is Darwin-only (sherpa_darwin.go), so this job stays on the
+    # repository's macOS runner on the owner's MacBook.
     runs-on: [self-hosted, macOS, relux-a2a]
     timeout-minutes: 15
     steps:
