@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestRunTestsRedForFailingDarwinTest(t *testing.T) {
 		"b/pass_darwin_test.go": "package b\nimport (\n\t\"os\"\n\t\"testing\"\n)\n" +
 			"func TestMarker(t *testing.T) {\n\tif err := os.WriteFile(os.Getenv(\"DARWINTESTS_MARKER\"), nil, 0o644); err != nil {\n\t\tt.Fatal(err)\n\t}\n}\n",
 	})
-	plan, err := selectTests(dir, "./...")
+	plan, err := selectTests(dir, platform{"darwin", runtime.GOARCH}, linuxJob, "./...")
 	if err != nil {
 		t.Fatal(err)
 	}
