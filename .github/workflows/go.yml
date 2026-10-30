@@ -53,6 +53,30 @@ jobs:
       # Keep a bounded suite watchdog inside this job's existing 30m budget.
       - run: go test -race -timeout 20m ./...
 
+  darwin:
+    # The Linux test job never compiles Darwin-only test files (a _darwin suffix or
+    # a darwin build constraint), so this short job runs exactly their tests on the
+    # repository's macOS runner. The selector takes the file list from the go tool
+    # itself and refuses an empty selection.
+    runs-on: [self-hosted, macOS, relux-a2a]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      # Some of those tests are opt-in real-host checks (Keychain sentinels, the
+      # observer dry run) gated by A2A_* variables; none may reach CI.
+      - name: no A2A variables
+        shell: bash
+        run: |
+          if names=$(env | grep -o '^A2A_[A-Za-z0-9_]*='); then
+            echo "A2A_* variables must be unset in CI:" $names
+            exit 1
+          fi
+      - run: go run ./internal/ci/darwintests -run
+
   voice-native:
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
