@@ -27,6 +27,13 @@ static OSStatus a2a_find(const char *path, const char *svc, UInt32 svcLen, const
 	}
 	st = SecKeychainFindGenericPassword(kc, svcLen, svc, acctLen, acct, len, data, NULL);
 	CFRelease(kc);
+	// A failed find may still return a buffer. Release it here, so the caller
+	// receives data only on success.
+	if (st != errSecSuccess && *data != NULL) {
+		SecKeychainItemFreeContent(NULL, *data);
+		*data = NULL;
+		*len = 0;
+	}
 	return st;
 }
 
@@ -58,18 +65,24 @@ static OSStatus a2a_update(const char *path, const char *svc, UInt32 svcLen, con
 	void *old = NULL;
 	UInt32 oldLen = 0;
 	st = SecKeychainFindGenericPassword(kc, svcLen, svc, acctLen, acct, &oldLen, &old, &item);
+	// Release whatever the find returned, whatever its status. An empty stored
+	// value may come back as NULL data. The length is meaningful only after a
+	// successful find, so only then is the old value cleared first.
+	if (old != NULL) {
+		if (st == errSecSuccess) {
+			volatile unsigned char *b = old;
+			for (UInt32 i = 0; i < oldLen; i++) {
+				b[i] = 0;
+			}
+		}
+		SecKeychainItemFreeContent(NULL, old);
+	}
 	if (st == errSecItemNotFound) {
 		st = SecKeychainAddGenericPassword(kc, svcLen, svc, acctLen, acct, len, data, NULL);
 	} else if (st == errSecSuccess) {
-		volatile unsigned char *b = old;
-		for (UInt32 i = 0; i < oldLen; i++) {
-			b[i] = 0;
-		}
-		// An empty stored value may come back as NULL data; only free a buffer.
-		if (old != NULL) {
-			SecKeychainItemFreeContent(NULL, old);
-		}
 		st = SecKeychainItemModifyAttributesAndData(item, NULL, len, data);
+	}
+	if (item != NULL) {
 		CFRelease(item);
 	}
 	CFRelease(kc);
@@ -133,10 +146,10 @@ func (secBackend) find(_ context.Context, keychain, service, account string) ([]
 	var data unsafe.Pointer
 	var n C.UInt32
 	st := C.a2a_find(c.path, c.svc, C.UInt32(len(service)), c.acct, C.UInt32(len(account)), &data, &n)
+	defer C.a2a_free(data)
 	if err := secStatus(st); err != nil {
 		return nil, err
 	}
-	defer C.a2a_free(data)
 	if !nativeOutputLen(uint64(n)) {
 		return nil, errKeychainLength
 	}
