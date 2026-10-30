@@ -28,9 +28,10 @@ jobs:
       # Fail early when the runner lacks what the suite depends on. -race needs cgo
       # and a working C compiler. The terminal fixtures need tmux, python3 and PTYs.
       # They skip when tmux or python3 is missing, so without this check a green run
-      # could leave them out; a missing PTY fails them. A2A_* variables opt into real-host tests (real voice, a real Matrix
-      # write, mutant runs) and must all be unset here, even when empty; only their
-      # names are printed. `shell: bash` runs with -e and pipefail.
+      # could leave them out; a missing PTY fails them. A2A_* variables opt into
+      # real-host tests (real voice, a real Matrix write, mutant runs) and must all
+      # be unset here, even when empty; only their names are printed. `shell: bash`
+      # runs with -e and pipefail.
       - name: runner prerequisites
         shell: bash
         run: |

@@ -209,8 +209,8 @@ var testEventStrings = map[string]bool{"Time": true, "Action": true, "Package": 
 // line must be exactly one JSON object, with no data after it. Each key may
 // appear once. Every known field must have its JSON type, a string or for
 // Elapsed a number, so null or another type is an error, also for a field this
-// lane does not use. Unknown fields are skipped whole, so a newer go may add
-// some. A non-empty Action is required.
+// lane does not use; Elapsed must also fit a float64. Unknown fields are
+// skipped whole, so a newer go may add some. A non-empty Action is required.
 func decodeTestEvent(line []byte) (action, test, output string, err error) {
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.UseNumber()
@@ -239,7 +239,11 @@ func decodeTestEvent(line []byte) (action, test, output string, err error) {
 			values[name] = v
 		case name == "Elapsed":
 			tok, err := dec.Token()
-			if _, ok := tok.(json.Number); err != nil || !ok {
+			n, ok := tok.(json.Number)
+			if err == nil && ok {
+				_, err = n.Float64()
+			}
+			if err != nil || !ok {
 				return "", "", "", errors.New("field Elapsed is not a number")
 			}
 		default:

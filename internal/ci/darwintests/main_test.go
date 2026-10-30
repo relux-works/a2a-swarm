@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -355,9 +356,10 @@ func TestSelectTestsRefusesLoadError(t *testing.T) {
 // 1.25 emits (times, elapsed seconds, build output, failed-build and attribute
 // events) and a field it does not know. A line that is not an event fails the
 // read even when every selected test did start: plain text, JSON that is not
-// an object, an object without an Action, any known field that is null or of
-// the wrong type (also one the lane does not use), a key given twice, data
-// after the object, an unterminated object, and a line over the scanner limit.
+// an object, an object without an Action, representative known fields that
+// are null or of the wrong type (TestDecodeTestEventChecksEveryField covers
+// every field), a key given twice, data after the object, an unterminated
+// object, and a line over the scanner limit.
 // The valid stream is the control.
 func TestReadTestEvents(t *testing.T) {
 	valid := `{"ImportPath":"p.test","Action":"build-output","Output":"# p\n"}
@@ -411,6 +413,47 @@ func TestReadTestEvents(t *testing.T) {
 				t.Fatalf("events before the bad line were lost: %v", ran)
 			}
 		})
+	}
+}
+
+// goTestEventFields are the fields of a go 1.25 go test -json event, written
+// out here from cmd/internal/test2json and go's BuildEvent rather than taken
+// from the decoder, so that a field dropped from the decoder fails this test.
+var goTestEventFields = map[string]string{
+	"Time": "string", "Action": "string", "Package": "string", "Test": "string", "Output": "string",
+	"FailedBuild": "string", "Key": "string", "Value": "string", "ImportPath": "string", "Elapsed": "number",
+}
+
+// Proves that every field of a go 1.25 event is type-checked: each one given as
+// null, and each one given with the other JSON type, makes the line
+// unreadable, and an Elapsed beyond float64 range does too. Each bad line is a
+// complete run event otherwise; the same event with valid values is the
+// control.
+func TestDecodeTestEventChecksEveryField(t *testing.T) {
+	valid := map[string]string{"string": `"x"`, "number": `1.5`}
+	wrong := map[string]string{"string": `1`, "number": `"1"`}
+	// line is a run event of TestQ with the field name set to value.
+	line := func(name, value string) string {
+		fields := map[string]string{"Action": `"run"`, "Test": `"TestQ"`, name: value}
+		var parts []string
+		for k, v := range fields {
+			parts = append(parts, `"`+k+`":`+v)
+		}
+		sort.Strings(parts)
+		return "{" + strings.Join(parts, ",") + "}"
+	}
+	for name, kind := range goTestEventFields {
+		if _, _, _, err := decodeTestEvent([]byte(line(name, valid[kind]))); err != nil {
+			t.Errorf("%s: control %s refused: %v", name, line(name, valid[kind]), err)
+		}
+		for _, bad := range []string{"null", wrong[kind]} {
+			if _, _, _, err := decodeTestEvent([]byte(line(name, bad))); err == nil {
+				t.Errorf("%s: %s accepted", name, line(name, bad))
+			}
+		}
+	}
+	if _, _, _, err := decodeTestEvent([]byte(`{"Action":"pass","Elapsed":1e999}`)); err == nil {
+		t.Error("Elapsed beyond float64 range accepted")
 	}
 }
 
