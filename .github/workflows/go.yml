@@ -28,8 +28,9 @@ jobs:
       # Fail early when the runner lacks what the suite depends on. -race needs cgo
       # and a working C compiler. The terminal fixtures need tmux, python3 and PTYs;
       # they skip when one is missing, so without this check a green run could leave
-      # them out. A2A_VOICE_IT opts into the macOS-only real-voice test and must stay
-      # unset here. `shell: bash` runs with -e and pipefail.
+      # them out. A2A_* variables opt into real-host tests (real voice, a real Matrix
+      # write, mutant runs) and must all be unset here, even when empty; only their
+      # names are printed. `shell: bash` runs with -e and pipefail.
       - name: runner prerequisites
         shell: bash
         run: |
@@ -44,7 +45,8 @@ jobs:
           python3 --version
           test -c /dev/ptmx
           test -d /dev/pts
-          test -z "${A2A_VOICE_IT:-}"
+          opt_in=$(compgen -e | grep '^A2A_' || true)
+          if [ -n "$opt_in" ]; then echo "A2A_* variables must be unset:" $opt_in >&2; exit 1; fi
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
@@ -61,7 +63,12 @@ jobs:
     # declaration, a test-loader error and a name shared with a portable test. It
     # also refuses to run while any A2A_* variable is set, because those gate the
     # opt-in real-host tests (Keychain sentinels, the observer dry run). Packages
-    # whose Darwin-only test files hold no test are compiled, not run.
+    # whose Darwin-only test files hold no test are compiled, not run. A fuzz
+    # target or an example with output in a Darwin-only file is refused, and a
+    # selected test that never starts fails. Only Darwin-only test files run here:
+    # a Darwin implementation reached through portable tests needs its own
+    # Darwin-only witness test (as bind_process_darwin_test.go has), or no job
+    # executes it.
     runs-on: [self-hosted, macOS, relux-a2a]
     timeout-minutes: 15
     steps:
