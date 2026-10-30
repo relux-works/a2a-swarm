@@ -106,6 +106,25 @@ func TestSelectTestsRefusesEmpty(t *testing.T) {
 	}
 }
 
+// Proves that the selection uses the race build configuration that both CI jobs
+// run with: a Darwin-only file constrained to race is selected, and one
+// constrained to !race, which go test -race never compiles, is not.
+func TestSelectTestsRaceConfiguration(t *testing.T) {
+	dir := writeModule(t, map[string]string{
+		"p/p.go":                  "package p\n",
+		"p/race_darwin_test.go":   testFile("//go:build race\n\n", "p", "func TestRaceOnly(t *testing.T) {}\n"),
+		"p/norace_darwin_test.go": testFile("//go:build !race\n\n", "p", "func TestNoRace(t *testing.T) {}\n"),
+	})
+	plan, _, err := selectTests(dir, macRunner, linuxJob, "./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []pkgTests{{ImportPath: "example.com/fixture/p", Files: []string{"race_darwin_test.go"}, Tests: []string{"TestRaceOnly"}}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("plan = %+v, want %+v", plan, want)
+	}
+}
+
 // Proves that TestMain taking *testing.T is selected as an ordinary test, as
 // the go tool runs it, while the *testing.M hook is not.
 func TestSelectTestsTestMainAsTest(t *testing.T) {

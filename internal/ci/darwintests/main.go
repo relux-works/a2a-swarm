@@ -109,7 +109,7 @@ func runTests(dir string, plan []pkgTests, compileOnly []string, stdout, stderr 
 		}
 		defer os.RemoveAll(out)
 		for i, path := range compileOnly {
-			cmd := exec.Command("go", "test", "-c", "-o", filepath.Join(out, fmt.Sprintf("%d.test", i)), path)
+			cmd := exec.Command("go", "test", "-race", "-c", "-o", filepath.Join(out, fmt.Sprintf("%d.test", i)), path)
 			cmd.Dir = dir
 			cmd.Stdout, cmd.Stderr = stdout, stderr
 			if err := cmd.Run(); err != nil {
@@ -224,7 +224,7 @@ func validateTestLoad(dir string, target platform, paths []string) error {
 	}
 	// Requesting the embed fields turns off go list's embed suppression, so a
 	// missing embedded file is reported as the loader of go test reports it.
-	args := append([]string{"list", "-e", "-test", "-json=ImportPath,Error,DepsErrors,Incomplete,EmbedFiles,TestEmbedFiles,XTestEmbedFiles"}, paths...)
+	args := append([]string{"list", "-race", "-e", "-test", "-json=ImportPath,Error,DepsErrors,Incomplete,EmbedFiles,TestEmbedFiles,XTestEmbedFiles"}, paths...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS="+target.goos, "GOARCH="+target.goarch, "CGO_ENABLED=1")
@@ -264,10 +264,11 @@ type listedPkg struct {
 	files map[string]bool
 }
 
-// listTestFiles runs go list for target with cgo enabled on both sides, so
-// that a cgo constraint never makes a file look Darwin-only.
+// listTestFiles runs go list for target with cgo enabled and the race build tag
+// on both sides, as both CI jobs run go test -race, so that neither a cgo nor a
+// race constraint makes a file look Darwin-only or hides it.
 func listTestFiles(dir string, target platform, patterns []string) (map[string]listedPkg, error) {
-	args := append([]string{"list", "-e", "-json=ImportPath,Dir,TestGoFiles,XTestGoFiles,Error"}, patterns...)
+	args := append([]string{"list", "-race", "-e", "-json=ImportPath,Dir,TestGoFiles,XTestGoFiles,Error"}, patterns...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS="+target.goos, "GOARCH="+target.goarch, "CGO_ENABLED=1")
