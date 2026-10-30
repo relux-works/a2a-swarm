@@ -186,12 +186,13 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 // validateTestLoad runs the go tool's test loader (go list -test) for target
 // over every package with runner-only test files, including packages with no
 // test to select, so that a loader error such as two TestMain hooks in one
-// test binary fails the selection instead of going unnoticed.
+// test binary, or an error in a package a test file imports, fails the
+// selection instead of going unnoticed.
 func validateTestLoad(dir string, target platform, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	args := append([]string{"list", "-e", "-test", "-json=ImportPath,Error"}, paths...)
+	args := append([]string{"list", "-e", "-test", "-json=ImportPath,Error,DepsErrors,Incomplete"}, paths...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS="+target.goos, "GOARCH="+target.goarch, "CGO_ENABLED=1")
@@ -206,6 +207,8 @@ func validateTestLoad(dir string, target platform, paths []string) error {
 		var p struct {
 			ImportPath string
 			Error      *struct{ Err string }
+			DepsErrors []struct{ Err string }
+			Incomplete bool
 		}
 		if err := dec.Decode(&p); err == io.EOF {
 			return nil
@@ -214,6 +217,12 @@ func validateTestLoad(dir string, target platform, paths []string) error {
 		}
 		if p.Error != nil {
 			return fmt.Errorf("go test loader for %s/%s: %s: %s", target.goos, target.goarch, p.ImportPath, p.Error.Err)
+		}
+		if len(p.DepsErrors) > 0 {
+			return fmt.Errorf("go test loader for %s/%s: %s: dependency: %s", target.goos, target.goarch, p.ImportPath, p.DepsErrors[0].Err)
+		}
+		if p.Incomplete {
+			return fmt.Errorf("go test loader for %s/%s: %s: incomplete package", target.goos, target.goarch, p.ImportPath)
 		}
 	}
 }

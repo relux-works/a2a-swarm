@@ -199,6 +199,48 @@ func TestSelectTestsRefusesTestMainTwice(t *testing.T) {
 	})
 }
 
+// Proves that a loader error in a package that only a Darwin-only test file
+// imports fails the selection, even though that test package has no test to
+// select and another package is valid. A valid imported package is the
+// control.
+func TestSelectTestsRefusesBrokenTestDependency(t *testing.T) {
+	for name, tc := range map[string]struct {
+		dep     map[string]string
+		wantErr bool
+	}{
+		"broken dependency": {map[string]string{
+			"p/testdata/dep/a.go": "package dep\n",
+			"p/testdata/dep/b.go": "package other\n",
+		}, true},
+		"valid dependency control": {map[string]string{
+			"p/testdata/dep/a.go": "package dep\n",
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{
+				"p/p.go":                  "package p\n",
+				"p/helper_darwin_test.go": "package p\n\nimport _ \"example.com/fixture/p/testdata/dep\"\n",
+				"q/q.go":                  "package q\n",
+				"q/q_darwin_test.go":      testFile("", "q", "func TestQ(t *testing.T) {}\n"),
+			}
+			for k, v := range tc.dep {
+				files[k] = v
+			}
+			dir := writeModule(t, files)
+			plan, err := selectTests(dir, macRunner, linuxJob, "./...")
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "example.com/fixture/p") {
+					t.Fatalf("selectTests = %+v, %v; want a loader refusal naming package p", plan, err)
+				}
+				return
+			}
+			if err != nil || len(plan) != 1 || plan[0].ImportPath != "example.com/fixture/q" {
+				t.Fatalf("selectTests = %+v, %v; want only package q selected", plan, err)
+			}
+		})
+	}
+}
+
 // Proves that a selected name also defined in a test file the Linux job runs
 // is refused, because -run would run that portable test in the macOS lane too.
 // The collision is checked across the internal and the external test package.
