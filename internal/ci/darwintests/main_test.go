@@ -282,6 +282,40 @@ func TestSelectTestsRefusesPortableCollision(t *testing.T) {
 	}
 }
 
+// Proves that a Darwin-only file declaring a fuzz target, or an example with
+// an output comment (ordered, unordered or empty), fails the selection: go
+// test runs those, but the lane's -run pattern of Test names would not. An
+// example without output, which go test only compiles, is the control, and a
+// fuzz target in a portable file never refuses.
+func TestSelectTestsRefusesFuzzAndRunnableExample(t *testing.T) {
+	for name, tc := range map[string]struct{ decl, refused string }{
+		"fuzz target":            {"func FuzzX(f *testing.F) {}\n", "FuzzX"},
+		"example with output":    {"func ExampleX() {\n\t// Output: x\n}\n", "ExampleX"},
+		"example, empty output":  {"func Example_y() {\n\t// Output:\n}\n", "Example_y"},
+		"example, unordered":     {"func ExampleZ() {\n\t// Unordered output: z\n}\n", "ExampleZ"},
+		"example without output": {"func ExampleW() {}\n", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeModule(t, map[string]string{
+				"p/p.go":             "package p\n",
+				"p/p_darwin_test.go": testFile("", "p", "func TestP(t *testing.T) {}\n"+tc.decl),
+				"p/fuzz_test.go":     testFile("", "p", "func FuzzPortable(f *testing.F) {}\n"),
+			})
+			plan, _, err := selectTests(dir, macRunner, linuxJob, "./...")
+			if tc.refused == "" {
+				want := []pkgTests{{ImportPath: "example.com/fixture/p", Files: []string{"p_darwin_test.go"}, Tests: []string{"TestP"}}}
+				if err != nil || !reflect.DeepEqual(plan, want) {
+					t.Fatalf("selectTests = %+v, %v; want %+v", plan, err, want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "p_darwin_test.go declares "+tc.refused+",") {
+				t.Fatalf("selectTests = %+v, %v; want a refusal naming %s", plan, err, tc.refused)
+			}
+		})
+	}
+}
+
 // Proves that one name defined in two Darwin-only origins, the internal and
 // the external test package, is selected once, and -run then runs both.
 func TestSelectTestsTwoDarwinOrigins(t *testing.T) {

@@ -3,18 +3,22 @@
 // macOS runner but not for the Linux test job (linux/amd64), whether by a
 // _darwin or architecture suffix or by a build constraint. The macOS CI lane
 // runs them through this command. It refuses an empty selection, an invalid
-// test declaration and a selected name that a portable test file shares, so a
-// broken selector cannot report a green lane that ran nothing or ran the wrong
-// tests.
+// test declaration, a selected name that a portable test file shares, and a
+// fuzz target or an example with output in a Darwin-only file, which go test
+// would run but a -run of Test names would not. A selected test that never
+// starts fails its package. So a broken selector cannot report a green lane
+// that ran nothing or ran the wrong tests.
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/doc"
 	"go/parser"
 	"go/token"
 	"io"
@@ -58,7 +62,8 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	plan, compileOnly, err := selectTests(".", platform{"darwin", runtime.GOARCH}, platform{"linux", *linuxArch}, patterns...)
+	runner := platform{"darwin", runtime.GOARCH}
+	plan, compileOnly, err := selectTests(".", runner, platform{"linux", *linuxArch}, patterns...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "darwintests:", err)
 		os.Exit(2)
@@ -67,7 +72,7 @@ func main() {
 	if !*run {
 		return
 	}
-	if failed := runTests(".", plan, compileOnly, os.Stdout, os.Stderr); len(failed) > 0 {
+	if failed := runTests(".", runner, plan, compileOnly, os.Stdout, os.Stderr); len(failed) > 0 {
 		fmt.Fprintf(os.Stderr, "darwintests: failed packages: %s\n", strings.Join(failed, " "))
 		os.Exit(1)
 	}
@@ -96,10 +101,13 @@ func printPlan(w io.Writer, plan []pkgTests) {
 // runTests first compiles, without running, the test binary of every package in
 // compileOnly: packages with runner-only test files but no test to select,
 // whose loader or compile errors go test would otherwise never report here.
-// Then it runs every package of the plan. It continues after a failure and
-// returns the import paths that failed to compile or whose go test exited
-// non-zero.
-func runTests(dir string, plan []pkgTests, compileOnly []string, stdout, stderr io.Writer) []string {
+// Then it runs every package of the plan. Both use the selection's target, cgo
+// enabled, whatever the caller's environment says, so the files that were
+// selected are the files that are built. It continues after a failure and
+// returns the import paths that failed to compile, whose go test exited
+// non-zero, or in which a selected test never ran.
+func runTests(dir string, target platform, plan []pkgTests, compileOnly []string, stdout, stderr io.Writer) []string {
+	env := append(os.Environ(), "GOOS="+target.goos, "GOARCH="+target.goarch, "CGO_ENABLED=1")
 	var failed []string
 	if len(compileOnly) > 0 {
 		out, err := os.MkdirTemp("", "darwintests-")
@@ -111,6 +119,7 @@ func runTests(dir string, plan []pkgTests, compileOnly []string, stdout, stderr 
 		for i, path := range compileOnly {
 			cmd := exec.Command("go", "test", "-race", "-c", "-o", filepath.Join(out, fmt.Sprintf("%d.test", i)), path)
 			cmd.Dir = dir
+			cmd.Env = env
 			cmd.Stdout, cmd.Stderr = stdout, stderr
 			if err := cmd.Run(); err != nil {
 				failed = append(failed, path)
@@ -118,14 +127,60 @@ func runTests(dir string, plan []pkgTests, compileOnly []string, stdout, stderr 
 		}
 	}
 	for _, p := range plan {
-		cmd := exec.Command("go", "test", "-race", "-count=1", "-run", p.runPattern(), p.ImportPath)
-		cmd.Dir = dir
-		cmd.Stdout, cmd.Stderr = stdout, stderr
-		if err := cmd.Run(); err != nil {
+		if !runPackage(dir, env, p, stdout, stderr) {
 			failed = append(failed, p.ImportPath)
 		}
 	}
 	return failed
+}
+
+// runPackage runs the selected tests of p with go test -json, writes their
+// ordinary output to stdout and reports whether go test passed and every
+// selected test started. go test exits 0 with "no tests to run" when a
+// selected test was not built, so the exit status alone cannot tell.
+func runPackage(dir string, env []string, p pkgTests, stdout, stderr io.Writer) bool {
+	cmd := exec.Command("go", "test", "-race", "-count=1", "-json", "-run", p.runPattern(), p.ImportPath)
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stderr = stderr
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Fprintln(stderr, "darwintests:", err)
+		return false
+	}
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintln(stderr, "darwintests:", err)
+		return false
+	}
+	ran := map[string]bool{}
+	lines := bufio.NewScanner(pipe)
+	lines.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for lines.Scan() {
+		var ev struct{ Action, Test, Output string }
+		if json.Unmarshal(lines.Bytes(), &ev) != nil {
+			fmt.Fprintln(stdout, lines.Text())
+			continue
+		}
+		io.WriteString(stdout, ev.Output)
+		if ev.Action == "run" && ev.Test != "" && !strings.Contains(ev.Test, "/") {
+			ran[ev.Test] = true
+		}
+	}
+	scanErr := lines.Err()
+	if scanErr != nil {
+		io.Copy(io.Discard, pipe)
+	}
+	ok := cmd.Wait() == nil && scanErr == nil
+	if scanErr != nil {
+		fmt.Fprintf(stderr, "darwintests: %s: reading go test output: %v\n", p.ImportPath, scanErr)
+	}
+	for _, name := range p.Tests {
+		if !ran[name] {
+			fmt.Fprintf(stderr, "darwintests: %s: selected test %s did not run\n", p.ImportPath, name)
+			ok = false
+		}
+	}
+	return ok
 }
 
 // selectTests lists the packages matched by patterns for the runner and for
@@ -166,9 +221,12 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 		sort.Strings(shared)
 		var tests []string
 		for _, name := range only {
-			names, err := testFuncs(filepath.Join(pkg.dir, name))
+			names, others, err := testFuncs(filepath.Join(pkg.dir, name))
 			if err != nil {
 				return nil, nil, err
+			}
+			if len(others) > 0 {
+				return nil, nil, fmt.Errorf("%s: %s declares %s, which go test runs but this lane does not select; move it to a portable test file or make it a Test function", path, name, strings.Join(others, ", "))
 			}
 			tests = append(tests, names...)
 		}
@@ -180,7 +238,7 @@ func selectTests(dir string, runner, linux platform, patterns ...string) ([]pkgT
 			selected[name] = true
 		}
 		for _, name := range shared {
-			names, err := testFuncs(filepath.Join(pkg.dir, name))
+			names, _, err := testFuncs(filepath.Join(pkg.dir, name))
 			if err != nil {
 				return nil, nil, err
 			}
@@ -310,12 +368,13 @@ func listTestFiles(dir string, target platform, patterns []string) (map[string]l
 // with a lower-case letter, must take exactly one *testing.T and return
 // nothing, and is an error otherwise. TestMain taking *testing.M is the test
 // binary's hook and is not a test; TestMain taking *testing.T is a test.
-func testFuncs(file string) ([]string, error) {
-	f, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.SkipObjectResolution)
+// others holds what go test also runs under other names: fuzz targets, whose
+// seed corpus runs as a test, and examples with an output comment.
+func testFuncs(file string) (names, others []string, err error) {
+	f, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var names []string
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Recv != nil {
@@ -327,16 +386,23 @@ func testFuncs(file string) ([]string, error) {
 			if isTestFunc(fn, "T") {
 				names = append(names, name)
 			} else if !isTestFunc(fn, "M") {
-				return nil, fmt.Errorf("%s: wrong signature for TestMain, must be: func TestMain(m *testing.M)", file)
+				return nil, nil, fmt.Errorf("%s: wrong signature for TestMain, must be: func TestMain(m *testing.M)", file)
 			}
-		case isTestName(name):
+		case isTest(name, "Test"):
 			if !isTestFunc(fn, "T") {
-				return nil, fmt.Errorf("%s: wrong signature for %s, must be: func %s(t *testing.T)", file, name, name)
+				return nil, nil, fmt.Errorf("%s: wrong signature for %s, must be: func %s(t *testing.T)", file, name, name)
 			}
 			names = append(names, name)
+		case isTest(name, "Fuzz"):
+			others = append(others, name)
 		}
 	}
-	return names, nil
+	for _, ex := range doc.Examples(f) {
+		if ex.Output != "" || ex.EmptyOutput {
+			others = append(others, "Example"+ex.Name)
+		}
+	}
+	return names, others, nil
 }
 
 // isTestFunc reports whether fn has no type parameters, no results and exactly
@@ -359,8 +425,10 @@ func isTestFunc(fn *ast.FuncDecl, arg string) bool {
 	return false
 }
 
-func isTestName(name string) bool {
-	rest, ok := strings.CutPrefix(name, "Test")
+// isTest reports whether name is prefix followed by nothing or by a rune that
+// is not a lower-case letter, the go tool's rule for test function names.
+func isTest(name, prefix string) bool {
+	rest, ok := strings.CutPrefix(name, prefix)
 	if !ok {
 		return false
 	}
