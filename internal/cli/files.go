@@ -87,7 +87,8 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	fset := newFlagSet("attach")
 	topic := fset.String("topic", "", "topic slug or root event id")
 	kind := fset.String("kind", "notice", "message kind")
-	to := fset.String("to", "all", "comma-separated addressees")
+	var to stringList
+	fset.Var(&to, "to", "comma-separated addressees (repeatable)")
 	pin := fset.Bool("pin", false, "also pin the message")
 	pos, err := parseInterspersed(fset, args)
 	if err != nil {
@@ -147,7 +148,7 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	toNames, mentions, err := addressees(*to, s.server)
+	toNames, mentions, err := addressees(to.String(), s.server)
 	if err != nil {
 		return err
 	}

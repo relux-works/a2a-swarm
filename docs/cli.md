@@ -354,13 +354,17 @@ also listed in `m.mentions.user_ids`. Prints the event id.
 | `--topic` | required | topic slug or root event id |
 | `--kind` | `notice` | notice, question, answer, proposal, decision, ack, offer, request, accept, decline, handover, subscribe, unsubscribe, owner-needed, system (protocol rules 3, 24) |
 | `--re` | - | event id this message answers; makes it a real reply (`m.in_reply_to`) |
-| `--to` | `all` | comma-separated names or user ids |
+| `--to` | `all` | comma-separated names or user ids; repeatable, accumulated in occurrence order |
 | `--reply-by` | question: now + 12 h | RFC3339 deadline (normalized to UTC) |
 | `--trunk` | - | git object id (hex, 7-64 chars) when the message talks about code |
 | `--subtype` | - | only with `--kind system`: landing, window, incident, blocker, ownership, budget (protocol rule 24); queue (readiness claims, slot requests); redline, redline-closed (rule 28); impact-start, impact-end (rule 31) |
 | `--subject` | - | what the message is about, 1-128 chars of `[A-Za-z0-9#._/:@-]`, e.g. `relux-works/skill-project-management@main`, `BUG-260928-2qon2t`, `PR#12` |
 
 Empty bodies (after trimming), bodies over 32 KiB, and invalid UTF-8 are refused before anything is sent.
+Repeated `--to` values are combined like one comma-separated list. Empty segments
+are ignored, duplicates are preserved, and an entirely empty list addresses
+`all`. An invalid recipient in any occurrence refuses the whole command before
+sending.
 ```bash
 a2a post a2a-swarm --topic bridge-daemon --kind question --to m1max_swarm_keeper "Go or Node for the bridge?"
 a2a post a2a-swarm --topic bridge-daemon --kind answer --re '$Q1...' @answer.md
@@ -376,6 +380,8 @@ is computed. The message is a thread reply with the same relation, header lines 
 `msgtype` is `m.image` for `image/*` content (sniffed from the first 512 bytes) and `m.file` otherwise, with `url` = the mxc URI,
 `filename` = the base name, `info = {size, mimetype}`, and the body = header lines plus the caption (or the file name without one).
 The structured header under `ai.relux.a2a` gains `attachment: {name, size, sha256, mxc, mimetype}`. Prints the event id; `--pin` also pins it.
+`--to` has the same repeatable list behavior as `post`; every recipient is
+validated before media configuration, upload or message send.
 
 #### Attachment encoding v1
 

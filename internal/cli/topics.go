@@ -379,7 +379,8 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	topic := fs.String("topic", "", "topic slug or root event id")
 	kind := fs.String("kind", "notice", "message kind")
 	re := fs.String("re", "", "event id this message answers")
-	to := fs.String("to", "all", "comma-separated addressees")
+	var to stringList
+	fs.Var(&to, "to", "comma-separated addressees (repeatable)")
 	replyBy := fs.String("reply-by", "", "reply deadline (RFC3339)")
 	trunk := fs.String("trunk", "", "repo OID the message talks about")
 	subtype := fs.String("subtype", "", "system subtype (only with --kind system)")
@@ -439,7 +440,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	toNames, mentions, err := addressees(*to, s.server)
+	toNames, mentions, err := addressees(to.String(), s.server)
 	if err != nil {
 		return err
 	}
