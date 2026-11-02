@@ -21,8 +21,10 @@ attachment lease and remain unexpired. Existing active native or terminal
 bindings refuse enrollment. Enrollment neither acquires nor force-releases a
 lease. A repeated identical enrollment is idempotent; changing the attachment,
 consumer, generation or lease does not implicitly renew or replace custody,
-even after expiry. Explicit handover/retirement needs a separate reconciliation
-contract. A refusal preserves pending mail, receipts and reservations.
+even after expiry. Lease timestamps compare by instant; newly captured and
+decoded attachment timestamps use UTC. Location and monotonic-clock metadata
+do not change lease identity. Explicit handover/retirement needs a separate
+reconciliation contract. A refusal preserves pending mail, receipts and reservations.
 
 `WithHostEnrollment` holds the existing consumer lock throughout the adapter
 callback and serializes enrollment under control and state locks. It persists
@@ -44,6 +46,13 @@ own the appropriate serialization.
 
 Persisted enrollment selects Host custody. Hook entry points suppress session
 export, auto-binding, healing and legacy fallback before reading hook input.
+Wait/watch and terminal/native bind refuse persisted enrollment before lease
+acquisition or provider/process probes, including after expiry. Bind rechecks
+under the control lock before creating a consumer. A same-session member read
+such as inbox may borrow its exact, still-valid Host lease without changing
+its holder, host, PID or expiry. A foreign session, changed lease or expired
+lease refuses without taking over or extending custody. Ordinary non-Host
+lease refresh remains available.
 The shared notification reservation boundary refuses hook, native and terminal
 output while enrolled, even after attachment expiry. Expiry does not select a
 different backend. A malformed enrollment fails closed. Without enrollment,
@@ -66,7 +75,9 @@ go test ./internal/cli -run 'TestHostEnrollment|TestNotification|TestHookSession
 ```
 
 Tests cover valid/idempotent admission, mismatched scope, foreign/missing/expired
-lease, implicit successor refusal, strict bounds, compatible and lossy state
+lease, unchanged member-read custody, non-UTC timestamp round trips, alternate
+consumer refusal after expiry, implicit successor refusal, strict bounds,
+compatible and lossy state
 writes, unknown versions/fields/null, duplicate-consumer exclusion, legacy-output
 suppression and a neighboring valid legacy notification/session export. They use
 isolated fixture directories and do not qualify an installed native runtime.

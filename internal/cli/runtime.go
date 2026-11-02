@@ -202,6 +202,13 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 	if own := a.Getenv(EnvSessionID); own != "" && own != *thread {
 		return usagef("runtime bind refuses a different live session")
 	}
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	if err := refuseHostConsumer(s); err != nil {
+		return err
+	}
 	cwd := *dir
 	if cwd == "" {
 		cwd, err = os.Getwd()
@@ -234,15 +241,18 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 		return errors.New("runtime endpoint unavailable")
 	}
 	*endpoint = "unix://" + concrete
-	s, err := a.session()
-	if err != nil {
-		return err
-	}
 	bindAndRun := func() error {
 		var binding codexwake.Binding
 		var preserve *config.AgentStatus
 		preserveSource := "runtime"
 		err = config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+			state, err := config.LoadState(s.paths, s.name)
+			if err != nil {
+				return err
+			}
+			if state.HostEnrollment != nil {
+				return config.ErrHostEnrollment
+			}
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 			defer cancel()
 			birth, err := ownerBirth(probe, *pid)

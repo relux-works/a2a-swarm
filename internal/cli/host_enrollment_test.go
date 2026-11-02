@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,8 @@ func enrolledHostState(t *testing.T, e *env) config.State {
 	now := e.clock().now().UTC()
 	scope := config.HostScope{Agent: "alice", Member: "@alice:test.local", Connection: "test", Configuration: "own", Session: "host-session", NativeThread: "native-thread", Generation: "generation", Consumer: "consumer"}
 	lease := config.Lease{Holder: scope.Session, Host: "fixture", PID: 123, Expires: now.Add(time.Minute)}
-	st := config.State{Lease: &lease}
+	st := e.state("alice")
+	st.Lease = &lease
 	if err := st.EnrollHost(config.HostAttachment{Reference: "admitted", Scope: scope, Lease: lease}, scope, now); err != nil {
 		t.Fatal(err)
 	}
@@ -25,6 +27,82 @@ func enrolledHostState(t *testing.T, e *env) config.State {
 		t.Fatal(err)
 	}
 	return e.state("alice")
+}
+
+// Persisted Host custody, including expiry, refuses every new legacy consumer
+// before lease mutation or provider/process access. A bounded canceled context
+// keeps the old wait/watch regression from hanging in the fake homeserver.
+func TestHostEnrollmentConsumerAdmission(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		for _, args := range [][]string{
+			{"wait", "--timeout", "1ms"}, {"watch"},
+			{"bind", "--runtime", "codex", "--owner-pid", "123", "--session-id", "host-session", "--interval", "1s", "--retry-max", "2s", "--max-wakes-per-hour", "2"},
+			{"runtime", "bind", "--codex-thread", "host-session", "--endpoint", "unix:///nonexistent-host-enrollment.sock", "--owner-pid", "123", "--heartbeat", "1m", "--max-wakes-per-hour", "2", "--gate", "ready", "--hooks", "none"},
+		} {
+			t.Run(args[0]+"/"+map[bool]string{false: "valid", true: "expired"}[expired], func(t *testing.T) {
+				e, _ := world(t)
+				before := enrolledHostState(t, e)
+				e.extra[EnvSessionID] = "host-session"
+				if expired {
+					e.now = func() time.Time { return before.Lease.Expires.Add(time.Second) }
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+				r := e.runCtx(ctx, append([]string{"--as", "alice"}, args...)...)
+				if r.code != ExitError || !strings.Contains(r.stderr, config.ErrHostEnrollment.Error()) || r.stdout != "" {
+					t.Fatalf("consumer not refused: %+v", r)
+				}
+				if !reflect.DeepEqual(before, e.state("alice")) {
+					t.Fatal("refused consumer changed state")
+				}
+			})
+		}
+	}
+	e, _ := world(t)
+	_, s := notificationApp(t, e)
+	if err := refuseBoundWait(context.Background(), s); err != nil {
+		t.Fatalf("legacy wait guard: %v", err)
+	}
+	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+}
+
+// Doorbell-driven inbox can print mail without replacing its Host-owned lease.
+// Foreign and exactly expired holders refuse without extending that lease.
+func TestHostEnrollmentInboxLease(t *testing.T) {
+	for _, mode := range []string{"same", "foreign", "expired"} {
+		t.Run(mode, func(t *testing.T) {
+			e, room := world(t)
+			e.extra[EnvSessionID] = "host-session"
+			e.as("alice", "inbox").ok(t)
+			before := enrolledHostState(t, e)
+			if mode == "foreign" {
+				e.extra[EnvSessionID] = "foreign-session"
+			}
+			if mode == "expired" {
+				e.now = func() time.Time { return before.Lease.Expires }
+			}
+			e.hs.inject(room, "@bob:test.local", toMsg("bob", "request", "Host inbox witness"))
+			r := e.as("alice", "inbox")
+			got := e.state("alice")
+			if mode == "same" {
+				if r.code != ExitOK || !strings.Contains(r.stdout, "Host inbox witness") {
+					t.Fatalf("member cannot read: %+v", r)
+				}
+				attachment := before.HostEnrollment.Attachment
+				if err := got.CheckHostEnrollment(attachment, attachment.Scope, e.now()); err != nil {
+					t.Fatalf("inbox broke admission: %v", err)
+				}
+			} else if r.code != ExitError || !strings.Contains(r.stderr, config.ErrHostEnrollment.Error()) || r.stdout != "" {
+				t.Fatalf("foreign/expired inbox not refused: %+v", r)
+			}
+			if !reflect.DeepEqual(before.Lease, got.Lease) || !reflect.DeepEqual(before.HostEnrollment, got.HostEnrollment) {
+				t.Fatal("inbox refreshed Host lease or changed attachment")
+			}
+			if mode != "same" && !reflect.DeepEqual(before, got) {
+				t.Fatal("refused inbox changed state")
+			}
+		})
+	}
 }
 
 // Proves a selected Host attachment suppresses all native hook entry paths

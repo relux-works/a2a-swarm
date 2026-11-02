@@ -65,6 +65,19 @@ func (s HostScope) valid() bool {
 func (a HostAttachment) valid() bool {
 	return hostRef(a.Reference, 512) && a.Scope.valid() && a.Lease.Holder == a.Scope.Session && hostRef(a.Lease.Host, 128) && a.Lease.PID > 0 && !a.Lease.Expires.IsZero()
 }
+
+// Lease timestamps identify instants, not time.Location or monotonic metadata.
+func sameHostLease(a, b Lease) bool {
+	return a.Holder == b.Holder && a.Host == b.Host && a.PID == b.PID && a.Expires.Equal(b.Expires)
+}
+
+func (a HostAttachment) same(b HostAttachment) bool {
+	return a.Reference == b.Reference && a.Scope == b.Scope && sameHostLease(a.Lease, b.Lease)
+}
+
+func (e HostEnrollment) same(other HostEnrollment) bool {
+	return e.Version == other.Version && e.Attachment.same(other.Attachment)
+}
 func (e HostEnrollment) Validate() error {
 	if e.Version != 1 || !e.Attachment.valid() {
 		return ErrHostEnrollment
@@ -89,11 +102,12 @@ func (e *HostEnrollment) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*e = HostEnrollment(next)
+	e.Attachment.Lease.Expires = e.Attachment.Lease.Expires.UTC()
 	return nil
 }
 
 func (s *State) hostAdmission(a HostAttachment, actual HostScope, now time.Time) error {
-	if now.IsZero() || !a.valid() || !actual.valid() || a.Scope != actual || !a.Lease.Expires.After(now) || s.Lease == nil || *s.Lease != a.Lease {
+	if now.IsZero() || !a.valid() || !actual.valid() || a.Scope != actual || !a.Lease.Expires.After(now) || s.Lease == nil || !sameHostLease(*s.Lease, a.Lease) {
 		return ErrHostEnrollment
 	}
 	// Existing native/terminal consumers must be retired by their own lifecycle
@@ -113,11 +127,12 @@ func (s *State) EnrollHost(a HostAttachment, actual HostScope, now time.Time) er
 		return err
 	}
 	if s.HostEnrollment != nil {
-		if s.HostEnrollment.Validate() != nil || s.HostEnrollment.Attachment != a {
+		if s.HostEnrollment.Validate() != nil || !s.HostEnrollment.Attachment.same(a) {
 			return ErrHostEnrollment
 		}
 		return nil
 	}
+	a.Lease.Expires = a.Lease.Expires.UTC()
 	s.HostEnrollment = &HostEnrollment{Version: 1, Attachment: a}
 	return nil
 }
@@ -126,7 +141,7 @@ func (s *State) CheckHostEnrollment(a HostAttachment, actual HostScope, now time
 	if err := s.hostAdmission(a, actual, now); err != nil {
 		return err
 	}
-	if s.HostEnrollment == nil || s.HostEnrollment.Validate() != nil || s.HostEnrollment.Attachment != a {
+	if s.HostEnrollment == nil || s.HostEnrollment.Validate() != nil || !s.HostEnrollment.Attachment.same(a) {
 		return ErrHostEnrollment
 	}
 	return nil

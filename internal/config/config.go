@@ -535,7 +535,7 @@ func SaveState(p Paths, name string, s State) error {
 	if err != nil {
 		return err
 	}
-	if old.HostEnrollment != nil && (s.HostEnrollment == nil || *s.HostEnrollment != *old.HostEnrollment) {
+	if old.HostEnrollment != nil && (s.HostEnrollment == nil || !s.HostEnrollment.same(*old.HostEnrollment)) {
 		return ErrHostEnrollment
 	}
 	path := p.StateFile(name)

@@ -145,6 +145,15 @@ func (e *LeaseHeldError) Error() string {
 // different known sessions, or holders on different hosts, still conflict,
 // which is the case the lease exists for (one identity used twice at once).
 func (s *State) Acquire(name, holder, host string, pid int, now time.Time, ttl time.Duration, dead func(holder string) bool) error {
+	// Under Host custody ordinary member commands only borrow the admitted
+	// unexpired lease. They never replace its process identity or renew it.
+	if e := s.HostEnrollment; e != nil {
+		a := e.Attachment
+		if a.Scope.Agent != name || holder != a.Scope.Session || s.CheckHostEnrollment(a, a.Scope, now) != nil {
+			return ErrHostEnrollment
+		}
+		return nil
+	}
 	isPID := func(h string) bool { return strings.HasPrefix(h, "pid:") }
 	if l := s.Lease; l != nil && l.Holder != holder && now.Before(l.Expires) && (dead == nil || !dead(l.Holder)) {
 		sameHost := l.Host != "" && l.Host == host
@@ -157,7 +166,7 @@ func (s *State) Acquire(name, holder, host string, pid int, now time.Time, ttl t
 			return &LeaseHeldError{Name: name, Lease: *l}
 		}
 	}
-	s.Lease = &Lease{Holder: holder, Host: host, PID: pid, Expires: now.Add(ttl)}
+	s.Lease = &Lease{Holder: holder, Host: host, PID: pid, Expires: now.Add(ttl).UTC()}
 	return nil
 }
 

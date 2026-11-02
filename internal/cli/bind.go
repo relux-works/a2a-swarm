@@ -74,6 +74,13 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	if len(pos) != 0 {
 		return usagef("bind takes flags only")
 	}
+	s, err := a.session()
+	if err != nil {
+		return err
+	}
+	if err := refuseHostConsumer(s); err != nil {
+		return err
+	}
 	if *run != "" {
 		return runBoundChild(ctx, a, *run)
 	}
@@ -110,10 +117,6 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	}
 	target.OwnerPID = *owner
 	target.OwnerBirth = birth
-	s, err := a.session()
-	if err != nil {
-		return err
-	}
 	var ready *os.File
 	var child *exec.Cmd
 	existing := false
@@ -121,6 +124,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
+		}
+		if st.HostEnrollment != nil {
+			return config.ErrHostEnrollment
 		}
 		if st.HooksPaused || manualWakeGate(st) != "" {
 			return errors.New("binding refused: manual gate")

@@ -163,6 +163,9 @@ func refuseBoundWait(ctx context.Context, s *session) error {
 		if err != nil {
 			return err
 		}
+		if st.HostEnrollment != nil {
+			return config.ErrHostEnrollment
+		}
 		b := st.Terminal
 		if b == nil || b.Stopped || b.DaemonPID <= 1 {
 			return nil
@@ -173,6 +176,21 @@ func refuseBoundWait(ctx context.Context, s *session) error {
 		}
 		if !processGone(b.DaemonPID) {
 			return ErrBindingProcessUnknown
+		}
+		return nil
+	})
+}
+
+// Check before process/socket probes as well as under the final control lock.
+// Expiry never authorizes a second consumer or a legacy backend handback.
+func refuseHostConsumer(s *session) error {
+	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		st, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		if st.HostEnrollment != nil {
+			return config.ErrHostEnrollment
 		}
 		return nil
 	})
