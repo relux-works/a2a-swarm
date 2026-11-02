@@ -143,6 +143,7 @@ func commands() []command {
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
+		{"principal-dm", "principal-dm ensure|unset @user:server | status [@user:server] | say @user:server <text|@file|->   direct room with a host-pinned principal (default off)", cmdPrincipalDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"availability", "availability <localpart|@localpart:server> [--json]   read selected-server registration availability (no existence guarantee)", cmdAvailability},
 		{"host", "host init <slug> [--force] | host show | host principals set|show|clear   this machine's host slug, the first part of every identity", cmdHost},

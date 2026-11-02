@@ -15,6 +15,8 @@ var ownerClaudeDenials = []string{
 	"Bash(*owner-dm ensure)", "Bash(*owner-dm ensure *)",
 	"Bash(*owner-dm set)", "Bash(*owner-dm set *)",
 	"Bash(*owner-dm unset)", "Bash(*owner-dm unset *)",
+	"Bash(*principal-dm ensure)", "Bash(*principal-dm ensure *)",
+	"Bash(*principal-dm unset)", "Bash(*principal-dm unset *)",
 }
 var ownerLegacyClaudeDenials = []string{"Bash(*owner-dm*ensure*)", "Bash(*owner-dm*set*)", "Bash(*owner-dm*unset*)"}
 
@@ -79,6 +81,10 @@ func ownerCodexRules(path, exe, name string, install bool, aliases ...string) er
 	for _, action := range []string{"ensure", "set", "unset"} {
 		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"owner-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use owner-dm bind/unbind --event or status.\")\n", marshalNoEscape(binaries), action)
 		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"--as\", %q, \"owner-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use owner-dm bind/unbind --event or status.\")\n", marshalNoEscape(binaries), name, action)
+	}
+	for _, action := range []string{"ensure", "unset"} {
+		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"principal-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use principal-dm status or say.\")\n", marshalNoEscape(binaries), action)
+		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"--as\", %q, \"principal-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use principal-dm status or say.\")\n", marshalNoEscape(binaries), name, action)
 	}
 	if bytes.Equal(old, []byte(b.String())) {
 		return nil

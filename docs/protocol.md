@@ -86,7 +86,7 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     - `#system` is a projection room. When enabled, the projector mirrors selected kinds from explicit `--source` rooms to one configured `--system` target, with a link to the original. Product membership is metadata only; it does not select another destination (see `docs/cli.md`).
       The projector is OFF pending a separate source/live window. Coordinate visibility with the product keeper and meta-keeper through subscriptions to original rooms; do not rely on projection delivery.
     - New-room provisioning routes through the meta-keeper, with the product keeper coordinating product scope. The owner authorizes the identity; onboarding continues only when rooms and membership are ready.
-      The CLI can still create a missing project room during plain `identity ensure`; this is capability, not policy permission. New agents must not use it for provisioning. The sole agent room-creation exception is admitted F1 owner-DM binding: only after a verified owner event, create the unencrypted invite-only private room for the exact host-pinned owner (Owner DM S1 below).
+      The CLI can still create a missing project room during plain `identity ensure`; this is capability, not policy permission. New agents must not use it for provisioning. The sole agent room-creation exception is admitted F1 owner-DM binding: only after a verified owner event, create the unencrypted invite-only private room for the exact host-pinned owner (Owner DM S1 below). The host terminal may also create the same room shape for a host-pinned non-owner principal (Principal DM S1 below); agents never create those rooms themselves.
       There are no automatic keeper/projector invites or power grants; do not recreate or invite the retired meta-orchestrator account as an onboarding recipe.
     - Room subscriptions (owner requirement, 2026-09-29): joining a room (`a2a join`, accepting an invite with `a2a join`, `identity ensure`)
       subscribes the session identity to that ordinary message room's kinds system, owner-needed and decision in the same step, printed; `a2a leave` removes them.
@@ -408,3 +408,40 @@ observations, rendering presentation; protected authority is B4, not S1.
 See docs/cli.md for storage, commands, pinned payload provenance, discovery
 limits, orchestrator discovery evidence and runtime deny wiring. Deny-rule
 enforcement was not exercised; live activation remains separately gated.
+
+## Principal DM S1 (owner request, Ivan, 2026-11-03; issue #173; default off)
+
+The Owner DM S1 room shape for other human principals. A host-written
+per-identity pin `principal-dm/<name>.pin` lists principal MXIDs; it is never
+learned from Matrix, and the owner pinned for owner-dm cannot be listed (use
+owner-dm). There is no Matrix-triggered bind, no mirror and no trust change:
+a principal's messages keep that principal's host scope, and the room grants
+nothing.
+
+Only the host terminal creates or retires a room: `ensure` and `unset` require
+interactive stdin/stdout and the principal MXID typed back, and `ensure` also
+requires the principal in the pin. Ensure creates a fresh private_chat,
+is_direct, invite-only, unencrypted room with joined history, inviting only
+that principal; it excludes the room from archive and installs one all-events
+subscription. The room is pending until the principal joins and expires after
+24 hours. A live pending claim refuses a second one; an active room is kept;
+an inactive, unset or expired one is replaced by a fresh room. No existing room
+or invite is adopted. Unset removes the subscription and deactivates, leaving
+the room and its archive exclusion. The room is excluded from archive right
+after creation; if a later step fails (audience check, subscription, config
+write) ensure reports the created room as not recorded, removes a subscription
+it just added, and the room stays behind invited but unused, as with owner-dm.
+
+The TTY and type-back are friction, not authenticated consent: an agent can
+allocate a PTY. As for owner-dm, `hook install` therefore also denies
+`principal-dm ensure` and `principal-dm unset` to the agent runtime (Claude
+`permissions.deny`, Codex forbidden prefix rules); status and say stay allowed.
+An owner-dm pin that is present but invalid refuses every principal-dm
+mutation, so the owner cannot slip into this feature.
+
+Agents may run `status` (read-only) and `say`, which sends plain text only
+after the same audience check as owner-dm: exactly the joined identity and the
+principal (invited while pending), invite join rule, non-world-readable history,
+no encryption. A first passing say after the principal's join activates the
+room. The check/send race, homeserver compromise and same-UID edits are
+outside S1, as for owner-dm.
