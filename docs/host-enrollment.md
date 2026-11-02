@@ -27,7 +27,10 @@ contract. A refusal preserves pending mail, receipts and reservations.
 `WithHostEnrollment` holds the existing consumer lock throughout the adapter
 callback and serializes enrollment under control and state locks. It persists
 the record before the callback starts. The lock deadline is explicit and finite;
-a duplicate consumer cannot run the callback. The caller owns the actual
+a duplicate consumer cannot run the callback. Its supplied clock is sampled
+under the state lock and again after persistence, so elapsed lock or write time
+cannot reuse an earlier admission timestamp. Expiry after persistence retains
+the fence without starting the adapter. The caller owns the actual
 process identity observation and descriptor lifecycle. This entry point does
 not launch a process, install hooks or activate a notification backend.
 

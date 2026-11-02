@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -221,13 +222,13 @@ func TestHostEnrollmentConsumerLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	ran := false
-	err := WithHostEnrollment(p, "member", time.Now().Add(time.Second), a, scope, now, func() error {
+	err := WithHostEnrollment(p, "member", time.Now().Add(time.Second), a, scope, func() time.Time { return now }, func() error {
 		got, err := LoadState(p, "member")
 		if err != nil || got.HostEnrollment == nil {
 			t.Fatalf("not persisted before callback: %v", err)
 		}
 		secondRan := false
-		err = WithHostEnrollment(p, "member", time.Now().Add(20*time.Millisecond), a, scope, now, func() error { secondRan = true; return nil })
+		err = WithHostEnrollment(p, "member", time.Now().Add(20*time.Millisecond), a, scope, func() time.Time { return now }, func() error { secondRan = true; return nil })
 		if !errors.Is(err, ErrLockTimeout) || secondRan {
 			t.Fatalf("duplicate: %v, ran=%v", err, secondRan)
 		}
@@ -239,6 +240,42 @@ func TestHostEnrollmentConsumerLock(t *testing.T) {
 	}
 	if err := WithRuntimeLock(p, "member", "consumer", time.Now().Add(time.Second), func() error { return nil }); err != nil {
 		t.Fatalf("consumer lock leaked: %v", err)
+	}
+}
+
+// Proves fresh time is sampled inside locked admission and again after its
+// write: expiry refuses adapter entry, retaining an already persisted fence.
+// The clock sequences model those two boundaries without timing sleeps.
+func TestHostEnrollmentFreshClock(t *testing.T) {
+	for _, expiredAt := range []int{1, 2, 0} {
+		t.Run(fmt.Sprint(expiredAt), func(t *testing.T) {
+			scope, a, now := hostFixture()
+			p := testPaths(t)
+			if err := SaveState(p, "member", State{Lease: &a.Lease}); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			clock := func() time.Time {
+				calls++
+				if calls == expiredAt {
+					return a.Lease.Expires
+				}
+				return now
+			}
+			ran := false
+			err := WithHostEnrollment(p, "member", time.Now().Add(time.Second), a, scope, clock, func() error { ran = true; return nil })
+			if expiredAt == 0 {
+				if err != nil || !ran || calls != 2 {
+					t.Fatalf("valid: err=%v ran=%v clock=%d", err, ran, calls)
+				}
+			} else if !errors.Is(err, ErrHostEnrollment) || ran {
+				t.Fatalf("expired: err=%v ran=%v", err, ran)
+			}
+			st, loadErr := LoadState(p, "member")
+			if loadErr != nil || (st.HostEnrollment != nil) != (expiredAt != 1) {
+				t.Fatalf("persisted fence: %+v %v", st.HostEnrollment, loadErr)
+			}
+		})
 	}
 }
 

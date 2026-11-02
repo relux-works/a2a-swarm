@@ -136,17 +136,23 @@ func (s *State) CheckHostEnrollment(a HostAttachment, actual HostScope, now time
 // adapter lifetime, acquiring control then state only for enrollment. Caller
 // supplies a finite lock deadline and its admitted provider observation. This
 // API does not launch a process, acquire a lease or enable a delivery backend.
-func WithHostEnrollment(p Paths, name string, deadline time.Time, a HostAttachment, actual HostScope, now time.Time, run func() error) error {
-	if deadline.IsZero() || run == nil || !a.valid() || a.Scope != actual || actual.Agent != name {
+func WithHostEnrollment(p Paths, name string, deadline time.Time, a HostAttachment, actual HostScope, clock func() time.Time, run func() error) error {
+	if deadline.IsZero() || clock == nil || run == nil || !a.valid() || a.Scope != actual || actual.Agent != name {
 		return ErrHostEnrollment
 	}
 	return WithRuntimeLock(p, name, "consumer", deadline, func() error {
 		err := WithRuntimeLock(p, name, "control", deadline, func() error {
-			_, err := UpdateStateBy(p, name, deadline, func(s *State) error { return s.EnrollHost(a, actual, now) })
+			_, err := UpdateStateBy(p, name, deadline, func(s *State) error { return s.EnrollHost(a, actual, clock()) })
 			return err
 		})
 		if err != nil {
 			return err
+		}
+		// Persistence may itself cross expiry. Retain the fenced record, but
+		// never enter the adapter with expired admission.
+		now := clock()
+		if now.IsZero() || !a.Lease.Expires.After(now) {
+			return ErrHostEnrollment
 		}
 		return run()
 	})
