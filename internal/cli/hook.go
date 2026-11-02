@@ -229,6 +229,12 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 			return
 		}
 	}
+	if selected, err := a.hostBackendSelected(); err != nil {
+		fail(err)
+		return
+	} else if selected {
+		return // Host owns notification; no auto-bind, session export or hook fallback.
+	}
 	if rt.name == "muse" {
 		a.runMuseHook(ctx, rt, ev)
 		return
@@ -358,6 +364,9 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	st, err := config.LoadState(s.paths, s.name)
 	if err != nil {
 		return err
+	}
+	if st.HostEnrollment != nil {
+		return nil
 	}
 	if st.HooksPaused {
 		return nil // kill switch: no network, no output

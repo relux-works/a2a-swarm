@@ -39,10 +39,17 @@ older executable or direct same-user file edit from dropping the field. State
 updates use the existing state lock; direct `SaveState` callers must already
 own the appropriate serialization.
 
-No new CLI flag or live delivery route is exposed by this change. Existing
-SessionStart behavior is retained. Before Host effects can be enabled, durable
+Persisted enrollment selects Host custody. Hook entry points suppress session
+export, auto-binding, healing and legacy fallback before reading hook input.
+The shared notification reservation boundary refuses hook, native and terminal
+output while enrolled, even after attachment expiry. Expiry does not select a
+different backend. A malformed enrollment fails closed. Without enrollment,
+ordinary SessionStart export and pending-mail notifications remain available.
+
+No new CLI flag or live delivery route is exposed by this change. Before Host
+effects can be enabled, durable
 same-transaction reservation/attempt correlation, uncertain transport recovery,
-backend dispatch suppression and integrated counterpart validation are required.
+and integrated counterpart validation are required.
 The current file-sync/rename state writer alone does not claim directory-sync
 or power-loss durability.
 
@@ -52,10 +59,11 @@ Run the isolated configuration and neighboring notification checks with:
 go test ./internal/config -count=1
 go test -race ./internal/config -count=1
 go vet ./internal/config
-go test ./internal/cli -run 'TestNotification|TestHookSessionStart' -count=1 -timeout=3m
+go test ./internal/cli -run 'TestHostEnrollment|TestNotification|TestHookSessionStart|TestHookDoorbell' -count=1 -timeout=3m
 ```
 
 Tests cover valid/idempotent admission, mismatched scope, foreign/missing/expired
 lease, implicit successor refusal, strict bounds, compatible and lossy state
-writes, unknown versions/fields/null, and duplicate-consumer exclusion. They use
+writes, unknown versions/fields/null, duplicate-consumer exclusion, legacy-output
+suppression and a neighboring valid legacy notification/session export. They use
 isolated fixture directories and do not qualify an installed native runtime.

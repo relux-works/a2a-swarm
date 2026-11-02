@@ -92,6 +92,9 @@ func (a *App) reserveNotification(ctx context.Context, s *session, deadline time
 	var token string
 	var reservedAt time.Time
 	_, err := s.lockedDeliver(ctx, deadline, false, func(st *config.State, mb *config.Mailbox) ([]string, error) {
+		if st.HostEnrollment != nil {
+			return nil, config.ErrHostEnrollment
+		}
 		now := a.Now()
 		if err := st.Notification.Prepare(now, notificationLegacy(st)); err != nil {
 			return nil, err

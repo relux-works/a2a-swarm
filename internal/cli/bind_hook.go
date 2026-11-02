@@ -23,7 +23,7 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 	if err != nil {
 		return err
 	}
-	if st.HooksPaused {
+	if st.HostEnrollment != nil || st.HooksPaused {
 		return nil
 	}
 	if manualWakeGate(st) != "" || st.Runtime != nil && !st.Runtime.Retired {
@@ -68,7 +68,7 @@ func (a *App) healHookBinding(ctx context.Context, runtime string, in hookInput)
 	if err != nil {
 		return err
 	}
-	if st.HooksPaused || manualWakeGate(st) != "" || st.Runtime != nil && !st.Runtime.Retired {
+	if st.HostEnrollment != nil || st.HooksPaused || manualWakeGate(st) != "" || st.Runtime != nil && !st.Runtime.Retired {
 		return nil
 	}
 	if b := st.Terminal; b != nil {
