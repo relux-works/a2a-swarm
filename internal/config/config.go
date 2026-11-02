@@ -12,6 +12,7 @@ package config
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -311,6 +312,8 @@ func WriteCredentials(f *os.File, c Credentials) error {
 // State is the per-agent delivery state. The events themselves live in the
 // durable mailbox (MailboxFile), which is written before NextBatch moves.
 type State struct {
+	// HostEnrollment is opt-in, source-owned custody; it does not enable delivery.
+	HostEnrollment *HostEnrollment `json:"host_enrollment,omitempty"`
 	// Notification spaces fixed doorbells; it never receipts or owns channel safety.
 	Notification Notification `json:"notification,omitempty"`
 	// NextBatch is the sync cursor: every relevant event before it is in the
@@ -509,6 +512,12 @@ func LoadState(p Paths, name string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(data, &envelope) == nil {
+		if raw, present := envelope["host_enrollment"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return State{}, ErrHostEnrollment
+		}
+	}
 	var s State
 	if err := json.Unmarshal(data, &s); err != nil {
 		return State{}, fmt.Errorf("%s is not valid state JSON: %w", path, err)
@@ -518,6 +527,17 @@ func LoadState(p Paths, name string) (State, error) {
 
 // SaveState writes state/<name>.json atomically (temp file + rename) with mode 0600.
 func SaveState(p Paths, name string, s State) error {
+	if s.HostEnrollment != nil && s.HostEnrollment.Validate() != nil {
+		return ErrHostEnrollment
+	}
+	// Refuse lossy writes through this cooperative API once custody exists.
+	old, err := LoadState(p, name)
+	if err != nil {
+		return err
+	}
+	if old.HostEnrollment != nil && (s.HostEnrollment == nil || *s.HostEnrollment != *old.HostEnrollment) {
+		return ErrHostEnrollment
+	}
 	path := p.StateFile(name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

@@ -280,3 +280,8 @@ The owner (Alexis) then decided to build a swarm and move A2A into this separate
 ## Engineering baseline (owner decision, 2026-09-29)
 Services, CLIs, and scripts are written in **Go**. Tests use the **go-testing-tools** skill (tuitestkit, the closed-loop cycle, golden files where they fit),
 with negative tests for every contract. Existing shell/Node/Python pieces are probes only; production code is Go.
+
+The opt-in [Host enrollment boundary](docs/host-enrollment.md) provides strict
+source scope and existing-lease matching with cooperative state-writer guards.
+It exposes no live Host delivery route; durable attempt reconciliation and
+integrated backend validation remain required before activation.
