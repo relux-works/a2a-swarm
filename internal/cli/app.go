@@ -121,6 +121,7 @@ func commands() []command {
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
 		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
+		{"principal-dm", "principal-dm ensure|unset @user:server | status [@user:server] | say @user:server <text|@file|->   direct room with a host-pinned principal (default off)", cmdPrincipalDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
