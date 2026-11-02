@@ -172,8 +172,12 @@ func (s *State) Acquire(name, holder, host string, pid int, now time.Time, ttl t
 
 // Release clears the lease if holder holds it, if it is no longer live
 // (expired, or dead), or with force; otherwise it returns a LeaseHeldError. It reports
-// whether a lease was cleared.
+// whether a lease was cleared. Persisted Host enrollment always refuses;
+// ordinary release is not a Host retirement or handover operation.
 func (s *State) Release(name, holder string, force bool, now time.Time, dead func(holder string) bool) (bool, error) {
+	if s.HostEnrollment != nil {
+		return false, ErrHostEnrollment
+	}
 	l := s.Lease
 	if l == nil {
 		return false, nil

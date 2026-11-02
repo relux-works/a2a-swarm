@@ -7,6 +7,44 @@ import (
 	"time"
 )
 
+// Persisted Host enrollment forbids ordinary release regardless of holder,
+// force or expiry; refusal preserves the entire state and valid admission.
+// The adjacent never-enrolled control still releases an ordinary lease.
+func TestHostLeaseReleaseCustody(t *testing.T) {
+	for _, mode := range []string{"same", "foreign", "force", "expired"} {
+		t.Run(mode, func(t *testing.T) {
+			scope, a, now := hostFixture()
+			s := State{Lease: &a.Lease}
+			if err := s.EnrollHost(a, scope, now); err != nil {
+				t.Fatal(err)
+			}
+			holder := scope.Session
+			if mode == "foreign" || mode == "force" {
+				holder = "foreign"
+			}
+			if mode == "expired" {
+				now = a.Lease.Expires
+			}
+			before := s
+			cleared, err := s.Release("member", holder, mode == "force", now, func(string) bool { return true })
+			if cleared || !errors.Is(err, ErrHostEnrollment) {
+				t.Fatalf("Host release not refused: cleared=%t err=%v", cleared, err)
+			}
+			if !reflect.DeepEqual(before, s) {
+				t.Fatal("refused release changed Host state")
+			}
+			if mode != "expired" && s.CheckHostEnrollment(a, scope, now) != nil {
+				t.Fatal("release broke Host admission")
+			}
+		})
+	}
+	_, a, now := hostFixture()
+	s := State{Lease: &a.Lease}
+	if cleared, err := s.Release("member", a.Lease.Holder, false, now, nil); err != nil || !cleared || s.Lease != nil {
+		t.Fatalf("ordinary release suppressed: cleared=%t err=%v", cleared, err)
+	}
+}
+
 // An enrolled member may read under its exact unexpired Host lease without
 // refreshing it. Foreign, altered and expired leases never acquire custody.
 // The adjacent never-enrolled control retains ordinary lease refresh.

@@ -53,6 +53,9 @@ such as inbox may borrow its exact, still-valid Host lease without changing
 its holder, host, PID or expiry. A foreign session, changed lease or expired
 lease refuses without taking over or extending custody. Ordinary non-Host
 lease refresh remains available.
+Ordinary `identity release` also refuses persisted Host enrollment, including
+the attached session, a foreign session, `--force` and an expired lease.
+It preserves the lease and enrollment; release is not a Host retirement path.
 The shared notification reservation boundary refuses hook, native and terminal
 output while enrolled, even after attachment expiry. Expiry does not select a
 different backend. A malformed enrollment fails closed. Without enrollment,

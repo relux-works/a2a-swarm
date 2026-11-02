@@ -29,6 +29,46 @@ func enrolledHostState(t *testing.T, e *env) config.State {
 	return e.state("alice")
 }
 
+// Public identity release cannot delete enrolled custody, including force and
+// expiry. Each refusal preserves all persisted state and emits no success.
+// A never-enrolled identity retains the ordinary successful release path.
+func TestHostEnrollmentIdentityRelease(t *testing.T) {
+	for _, mode := range []string{"same", "foreign", "force", "expired"} {
+		t.Run(mode, func(t *testing.T) {
+			e, _ := world(t)
+			before := enrolledHostState(t, e)
+			e.extra[EnvSessionID] = "host-session"
+			if mode == "foreign" || mode == "force" {
+				e.extra[EnvSessionID] = "foreign-session"
+			}
+			if mode == "expired" {
+				e.now = func() time.Time { return before.Lease.Expires }
+			}
+			args := []string{"identity", "release"}
+			if mode == "force" {
+				args = append(args, "--force")
+			}
+			r := e.as("alice", args...)
+			if r.code != ExitError || !strings.Contains(r.stderr, config.ErrHostEnrollment.Error()) || r.stdout != "" {
+				t.Fatalf("Host release not refused: %+v", r)
+			}
+			if !reflect.DeepEqual(before, e.state("alice")) {
+				t.Fatal("refused release changed persisted Host state")
+			}
+		})
+	}
+	e, _ := world(t)
+	e.extra[EnvSessionID] = "ordinary-session"
+	e.as("alice", "inbox").ok(t)
+	if e.state("alice").Lease == nil {
+		t.Fatal("ordinary positive control has no lease")
+	}
+	r := e.as("alice", "identity", "release").ok(t)
+	if !strings.Contains(r.stdout, "released alice") || e.state("alice").Lease != nil {
+		t.Fatalf("ordinary release suppressed: %+v", r)
+	}
+}
+
 // Persisted Host custody, including expiry, refuses every new legacy consumer
 // before lease mutation or provider/process access. A bounded canceled context
 // keeps the old wait/watch regression from hanging in the fake homeserver.
