@@ -229,15 +229,15 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 			return
 		}
 	}
+	if rt.name == "muse" {
+		a.runMuseHook(ctx, rt, ev)
+		return
+	}
 	if selected, err := a.hostBackendSelected(); err != nil {
 		fail(err)
 		return
 	} else if selected {
 		return // Host owns notification; no auto-bind, session export or hook fallback.
-	}
-	if rt.name == "muse" {
-		a.runMuseHook(ctx, rt, ev)
-		return
 	}
 	in, err := readHookInput(a.Stdin)
 	blocked := false

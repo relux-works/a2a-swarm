@@ -175,7 +175,7 @@ func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
 		if err != nil {
 			return err
 		}
-		if st.HooksPaused {
+		if st.HostEnrollment != nil || st.HooksPaused {
 			return nil
 		}
 		in, err := readHookInput(a.Stdin)

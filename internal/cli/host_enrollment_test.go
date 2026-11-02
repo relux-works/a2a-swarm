@@ -31,22 +31,25 @@ func enrolledHostState(t *testing.T, e *env) config.State {
 // before SessionStart export/auto-bind/heal, including expired/held custody.
 // The neighboring legacy path still emits its ordinary pending-mail notice.
 func TestHostEnrollmentNoHookFallback(t *testing.T) {
+	t.Chdir(t.TempDir())
 	e, room := world(t)
 	e.hook("alice", "prompt", `{}`).ok(t)
 	e.hs.inject(room, "@bob:test.local", toMsg("bob", "request", "pending"))
 	before := enrolledHostState(t, e)
 	export := filepath.Join(t.TempDir(), "session-env")
 	e.extra[envClaudeEnvFile] = export
-	for _, event := range []string{"session-start", "prompt", "stop"} {
-		r := e.hookRT("codex", "alice", event, `{"session_id":"foreign-thread"}`).ok(t)
-		if r.stdout != "" || r.stderr != "" {
-			t.Fatalf("Host hook fallback %s: %+v", event, r)
-		}
-		if got := e.state("alice"); !reflect.DeepEqual(got, before) {
-			t.Fatalf("%s mutated source state", event)
-		}
-		if _, err := os.Stat(export); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("%s wrote legacy session export: %v", event, err)
+	for _, runtime := range []string{"codex", "claude", "muse"} {
+		for _, event := range []string{"session-start", "prompt", "stop"} {
+			r := e.hookRT(runtime, "alice", event, `{"session_id":"foreign-thread"}`).ok(t)
+			if r.stdout != "" || r.stderr != "" {
+				t.Fatalf("Host hook fallback %s: %+v", event, r)
+			}
+			if got := e.state("alice"); !reflect.DeepEqual(got, before) {
+				t.Fatalf("%s mutated source state", event)
+			}
+			if _, err := os.Stat(export); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s wrote legacy session export: %v", event, err)
+			}
 		}
 	}
 	// Expiry does not authorize routing to a different backend.
