@@ -167,3 +167,23 @@ compatible and lossy state
 writes, unknown versions/fields/null, duplicate-consumer exclusion, legacy-output
 suppression and a neighboring valid legacy notification/session export. They use
 isolated fixture directories and do not qualify an installed native runtime.
+
+The optional cross-module test consumes an explicitly supplied inert Host test
+executable and its expected SHA-256. Verify its exact
+source/test/artifact handoff before running; there is no discovery, product
+attachment or installed runtime behind these test-only inputs:
+
+```sh
+A2A_TEST_HOST_HELPER=/absolute/path/to/host-fixture.test \
+A2A_TEST_HOST_HELPER_SHA256=<expected-lowercase-sha256> \
+go test ./internal/hostnotification -run '^TestHostCounterpartDock$' -count=1 -v -timeout=1m
+```
+
+With neither input this check is skipped and docking remains unqualified. A
+partial input pair, invalid executable or mismatched digest fails the check.
+The test owns finite subprocess/socket cleanup and uses the actual Source
+enrollment and transaction with the counterpart's actual private engine. The
+initial cases cover accepted/same-endpoint lookup and original input-not-ready
+refusal. They do not qualify cross-module lost-reply recovery, reattachment,
+native scheduling, live activation or idle delivery. Parser/artifact guard tests
+run normally; their success alone does not establish counterpart conformance.
