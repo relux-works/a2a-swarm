@@ -116,10 +116,39 @@ connection loss closes the endpoint as unresolved; there is no retry, path
 dial, alternate backend or payload diagnostic. Accepted records prove only
 their stated Host custody/native stage. A refusal concerns only that call.
 
-The owning adapter must persist its original trigger request ID with UNKNOWN
-before `Call`, and must reconcile the exact retained key through the state
-API. The low-level stream client does not perform that orchestration, receipt
-mail or activate delivery. Integrated counterpart checks remain required.
+`NewAdapter` combines this client with the original Source enrollment. Construct
+and use it only inside the same `WithHostNotificationEnrollment` callback, with
+the manager-supplied endpoint/binding and actual scope. The outer callback owns
+the sole-consumer lock throughout; constructor checks do not authenticate an
+arbitrary caller, acquire custody or admit reattachment. A new constructor needs
+live admission. Each retained entry constrains the entire binding thereafter.
+
+`Notify` accepts the trusted fixed Source notice (1..65536 valid UTF-8 bytes),
+context, finite lock deadline and existing migration timestamp. It hashes the
+exact notice locally. Under control/state serialization it first durably saves
+the shared reservation and prepared correlation, then durably saves UNKNOWN
+with a distinct original trigger request ID. Only after both writes succeed
+and admission remains live does it make one trigger call. State callbacks never
+perform transport I/O. Only the original exact conclusive trigger refusal may
+cancel that reservation. Accepted observations durably complete its shared
+spacing at the evidenced Host/native stage, without receipting pending mail.
+
+`Reconcile` checks the exact retained own key before making only `lookup_attempt`
+with a fresh transport ID. It may resolve the original obligation after expiry;
+missing/refused/unresolved observations do not establish nonapplication, cancel
+UNKNOWN or resend. A later observation for an older accepted key cannot finish
+a different current reservation. `AbandonPrepared` explicitly cancels only a
+prepared pre-I/O record. UNKNOWN cannot be abandoned or expire automatically.
+No operation evicts terminal correlations or replaces the original enrollment.
+
+Public errors expose fixed categories, including persistence uncertainty, not
+filesystem paths or payload diagnostics. A returned key on error is correlation
+only; a returned Host response with a state error is not a persisted Source
+receipt. Preserve the obligation for explicit observation/recovery. Lost or
+malformed replies close the original stream; no automatic reattachment exists.
+The low-level client still does not perform this orchestration by itself. No
+CLI backend or live activation is provided; integrated counterpart checks and
+the admitted enrollment/handover lifecycle remain required.
 
 Run the isolated configuration and neighboring notification checks with:
 
