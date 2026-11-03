@@ -225,6 +225,8 @@ func (l *NotificationAttempts) UnmarshalJSON(data []byte) error {
 
 func literalAttemptFields(value any) bool {
 	switch v := value.(type) {
+	case nil:
+		return false
 	case map[string]any:
 		for key, child := range v {
 			for _, c := range key {

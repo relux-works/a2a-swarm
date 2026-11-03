@@ -61,10 +61,34 @@ output while enrolled, even after attachment expiry. Expiry does not select a
 different backend. A malformed enrollment fails closed. Without enrollment,
 ordinary SessionStart export and pending-mail notifications remain available.
 
-No new CLI flag or live delivery route is exposed by this change. Before Host
-effects can be enabled, durable
-same-transaction reservation/attempt correlation, uncertain transport recovery,
-and integrated counterpart validation are required.
+No new CLI flag or live delivery route is exposed. Version2 of the strict
+enrollment envelope adds an opaque Source receipt reference and a bounded
+notification-attempt ledger. `WithHostNotificationEnrollment` upgrades the
+identical existing custody under the original locks and passes the receipt to
+its callback only after persistence and a fresh expiry check. The manager's
+attachment reference remains distinct; neither reference supplies authority.
+An already shipped version1 reader refuses version2 rather than discarding it.
+
+`PrepareHostNotification` reserves the shared doorbell and records its exact
+token/session/generation/notice digest and complete admitted Host binding in
+the same State. `BeginHostNotification` records UNKNOWN and the original
+trigger request ID. Each resulting State must be saved successfully before
+the next step or transport I/O. Prepared/UNKNOWN blocks replacement even
+after cooldown; a stale writer, legacy cancellation or legacy reservation
+cannot discard that fence through the supported writer.
+
+Only an exact retained Host observation can accept the attempt and complete
+its shared reservation. Native stages advance monotonically for the same
+Host sequence and prove only that stage. Pre-I/O abandonment or a conclusive
+refusal of the original trigger can cancel; lookup absence, timeout, EOF and
+a different call's refusal cannot. Expiry closes new admission while exact
+retained observations may reconcile the old obligation. No implicit binding
+replacement, eviction or time-based expiry exists. At most32 records and65536
+compact encoded ledger bytes are retained; byte capacity may refuse earlier.
+Version2 State uses compact JSON so indentation cannot make a valid ledger
+unreadable. Transport recovery and integrated counterpart validation remain
+required before any Host effect can be enabled.
+
 Host-enrolled state writes use one opened configuration/state-directory pair,
 a private exclusive temporary, file sync, atomic directory-relative replacement
 and state-directory sync. The configuration directory is synced before the
