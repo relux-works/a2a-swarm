@@ -75,6 +75,14 @@ func (b HostNotificationBinding) valid() bool {
 		hostRef(b.ConsumerGeneration, 128) && hostRef(b.EnrollmentRef, 512) && hostScalar(b.WorkflowReference) && lowerHex(b.WorkflowSHA256, 64)
 }
 
+// Validate checks the closed wire shape only; it does not establish custody.
+func (b HostNotificationBinding) Validate() error {
+	if !b.valid() {
+		return ErrNotificationAttempt
+	}
+	return nil
+}
+
 // NotificationAttemptKey binds one source reservation to exact notice bytes and
 // actual Host custody. Session is the source session, not the native thread.
 type NotificationAttemptKey struct {

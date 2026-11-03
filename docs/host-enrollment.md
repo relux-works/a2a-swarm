@@ -107,12 +107,27 @@ honors successful file/directory sync and atomic replacement. Isolated process
 crash tests do not establish universal power-loss durability or protection from
 hostile same-UID namespace replacement.
 
+The low-level `internal/hostnotification` client implements the closed
+`curator-host-notification/1` exchange on one manager-supplied Unix STREAM
+endpoint. `New` checks the actual socket type, admitted binding shape and an
+explicit1..60000ms full-call deadline. This does not authenticate the manager
+or enroll a caller. Invalid framing, correlation, timeout, cancellation or
+connection loss closes the endpoint as unresolved; there is no retry, path
+dial, alternate backend or payload diagnostic. Accepted records prove only
+their stated Host custody/native stage. A refusal concerns only that call.
+
+The owning adapter must persist its original trigger request ID with UNKNOWN
+before `Call`, and must reconcile the exact retained key through the state
+API. The low-level stream client does not perform that orchestration, receipt
+mail or activate delivery. Integrated counterpart checks remain required.
+
 Run the isolated configuration and neighboring notification checks with:
 
 ```sh
 go test ./internal/config -count=1
 go test -race ./internal/config -count=1
 go vet ./internal/config
+go test -race ./internal/hostnotification -count=1
 go test ./internal/cli -run 'TestHostEnrollment|TestNotification|TestHookSessionStart|TestHookDoorbell' -count=1 -timeout=3m
 ```
 
