@@ -65,8 +65,23 @@ No new CLI flag or live delivery route is exposed by this change. Before Host
 effects can be enabled, durable
 same-transaction reservation/attempt correlation, uncertain transport recovery,
 and integrated counterpart validation are required.
-The current file-sync/rename state writer alone does not claim directory-sync
-or power-loss durability.
+Host-enrolled state writes use one opened configuration/state-directory pair,
+a private exclusive temporary, file sync, atomic directory-relative replacement
+and state-directory sync. The configuration directory is synced before the
+file write to retain its state-directory entry. The admitted configuration
+namespace must already exist. The state directory must be private (0700), and
+an existing state file must be regular and 0600; symlink entries refuse.
+The maximum encoded source State is 16 MiB, separate from the Host journal and
+wire limits. Legacy writes without enrollment keep their existing behavior.
+
+An error after replacement is explicitly uncertain: new bytes may exist, but
+the caller must not start transport or infer nonapplication. Returned failures
+remove only the writer's own uncommitted temporary. An abrupt process exit may
+leave that temporary; it is not a receipt or retry permission. These guarantees
+assume the admitted namespace and existing serialization, with a filesystem that
+honors successful file/directory sync and atomic replacement. Isolated process
+crash tests do not establish universal power-loss durability or protection from
+hostile same-UID namespace replacement.
 
 Run the isolated configuration and neighboring notification checks with:
 
