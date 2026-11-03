@@ -49,6 +49,23 @@ func TestHostStatePublicSave(t *testing.T) {
 	}
 }
 
+// Proves opt-in persistence does not create an unprovisioned config namespace;
+// the adjacent public-save control uses an already existing admitted base.
+func TestHostStatePublicMissingNamespace(t *testing.T) {
+	p := Paths{Base: filepath.Join(t.TempDir(), "unprovisioned")}
+	scope, attachment, now := hostFixture()
+	s := State{Lease: &attachment.Lease}
+	if err := s.EnrollHost(attachment, scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(p, "member", s); !errors.Is(err, ErrHostStateScope) {
+		t.Fatalf("unprovisioned namespace accepted: %v", err)
+	}
+	if _, err := os.Lstat(p.Base); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("namespace created: %v", err)
+	}
+}
+
 // Proves real sync operations occur in directory/file/directory order, and each
 // injected sync failure blocks success with the intended uncertainty category.
 func TestHostStateSyncBoundaries(t *testing.T) {

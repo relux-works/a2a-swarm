@@ -539,8 +539,10 @@ func SaveState(p Paths, name string, s State) error {
 		return ErrHostEnrollment
 	}
 	path := p.StateFile(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	if s.HostEnrollment == nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
