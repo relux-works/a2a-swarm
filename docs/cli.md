@@ -557,6 +557,56 @@ a2a read a2a-swarm --topic bridge-daemon --last 50
 a2a read a2a-swarm --event '$Q1...' --json
 ```
 
+For a strict single-event observation, use the opt-in mode:
+
+```bash
+a2a --as <own-identity> read '!explicit-room-id' --event '$explicit-event-id' --verification-input --json
+```
+
+This mode requires explicit room/event IDs and JSON; aliases, topic/last selection
+and repeated selection/mode flags refuse. The existing selected profile and own
+identity guard apply. It performs one authenticated room-scoped GET with redirects
+disabled, validates the original response method/URL, complete strict JSON and
+selected binding, and emits exactly one observation record. Other read/display,
+wait, inbox and sync formats are unchanged.
+
+The record has these required fields: `type` (`a2a.event-verification-input/1`),
+`observation_status` (`observed`), `requested_room_id`, `requested_event_id`,
+`returned_event_id`, `sender_mxid`, `receiver_mxid`, `receiver_identity_source`
+(`selected-stored-session`), `event_type` (`m.room.message`),
+`returned_room_id_present`, `room_context_source`, and `content_base64`.
+`returned_room_id` is included only when actually present and matching the
+requested room; its null, empty, wrong-type or mismatching value refuses.
+`room_context_source` is `returned-room-and-original-endpoint` when present and
+`authenticated-room-scoped-endpoint` when absent. Absence is a weaker compatibility
+case, not a claim of normal/spec-compliant server behavior. The event ID must match
+exactly; the actual full sender and selected stored receiver retain their spelling.
+The receiver is not freshly verified by an additional whoami request.
+
+`content_base64` is unpadded base64url of the exact returned content JSON value
+bytes, including internal whitespace/escapes. The HTTP entity cap is 1MiB and the
+content cap is 64KiB, both inclusive. Empty/redacted content, ambiguous keys,
+invalid Unicode, trailing documents, malformed responses and context failures
+refuse with nonzero exit and no success record or fallback fetch. A consumer must
+require successful exit and exactly one complete record; a broken stdout writer
+can leave incomplete bytes. Base64 is not redaction. This read mode exports only
+the selected content, not unsigned metadata, credentials or the full response.
+
+This is an account-event observation, not a portable attestation, E2EE/device-chain
+proof, grant/signature verdict or isolation from the same OS user. Content headers,
+mentions and thread fields remain sender declarations. The receiver owns strict
+application parsing, deterministic lossless extraction and authority/effect checks.
+
+Focused checks: `GOMAXPROCS=2 go test -p 1 ./internal/matrix ./internal/cli -run 'TestVerificationEvent|TestReadVerification'`.
+Run known violation controls with
+`A2A_RUN_VERIFICATION_CONTROLS=1 GOMAXPROCS=2 go test -p 1 ./internal/matrix -run '^TestVerificationEventInstrumentControls$' -v`.
+Controls use isolated source overlays and require intended behavioral failures,
+with passing original/restored positives. To export inert content fixtures emitted
+by real post commands in the fake homeserver, run
+`A2A_VERIFICATION_FIXTURE_DIR=.temp/verification-fixtures GOMAXPROCS=2 go test -p 1 ./internal/cli -run '^TestReadVerificationActualPostFixture$' -v`.
+Their intentionally invalid signature cannot authorize an effect; receiver-side
+signed positive and negative controls remain separate.
+
 ### `a2a archive <room|all> [--dir archive] [--json-index]`
 Exports the full history of a room as markdown, so the record stays diffable, signed and attributable in git outside Matrix.
 For every topic thread (`a2a topics`, plus any thread root found in the full room scan) it writes `<dir>/<room>/<slug>.md`, and the

@@ -584,12 +584,19 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 	last := fs.Int("last", 20, "number of messages")
 	event := fs.String("event", "", "print only this event id")
 	asJSON := fs.Bool("json", false, "one JSON object per event")
+	verification := fs.Bool("verification-input", false, "strict single-event observation with full IDs and exact encoded content (requires --event and --json)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
 		return usagef("usage: a2a read <room> [--topic X] [--last N] [--event ID] [--json]")
+	}
+	if *verification {
+		if err := verificationSelection(args, pos[0], *event, *asJSON); err != nil {
+			return err
+		}
+		return readVerificationInput(ctx, a, pos[0], *event)
 	}
 	if *last < 1 || *last > 1000 {
 		return usagef("--last must be between 1 and 1000")

@@ -141,7 +141,7 @@ func commands() []command {
 		{"files", "files <room> [--topic X] [--last N] [--json]   list shared files, oldest first", cmdFiles},
 		{"pin", "pin <room> <$event>                  pin an event (m.room.pinned_events)", cmdPin},
 		{"unpin", "unpin <room> <$event>                unpin an event", cmdUnpin},
-		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json]   print messages, oldest first", cmdRead},
+		{"read", "read <room> [--topic X] [--last N] [--event $ev] [--json] [--verification-input]   print messages or a strict single-event observation", cmdRead},
 		{"archive", "archive <room|all> [--dir archive] [--json-index]   deterministic markdown export of room history", cmdArchive},
 		{"wait", "wait [--room R ...] [--all] [--timeout 25m|0] [--json]   block until a new mailbox entry is addressed to me or subscribed (acknowledges nothing)", cmdWait},
 		{"watch", "watch [--room R ...] [--all] [--json]   stream new mailbox entries until interrupted (acknowledges nothing)", cmdWatch},
@@ -196,6 +196,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	if a.HTTP == nil {
 		a.HTTP = &http.Client{}
+	}
+	if err := verificationGlobalSelection(args); err != nil {
+		return a.fail(err)
 	}
 	rest, err := a.extractGlobal(args)
 	if err != nil {
