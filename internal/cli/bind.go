@@ -235,10 +235,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				b.AttemptAt = old.AttemptAt
 				b.Retried = old.Retried
 				b.Typed = old.Typed && ownTerminalTarget(old, target)
-				carryTerminalNoticeEpisode(old, b, automatic)
 			}
 		}
-		if _, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal = b; return nil }); err != nil {
+		if err = persistTerminalReplacement(s, b, automatic); err != nil {
 			return err
 		}
 		exe, err := os.Executable()
@@ -285,7 +284,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		b.DaemonPID = child.Process.Pid
 		b.DaemonBirth, err = bindingProcessBirth(ctx, b.DaemonPID)
 		if err == nil {
-			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal = b; return nil })
+			err = persistTerminalConsumer(s, b)
 		}
 		if err != nil {
 			child.Process.Signal(syscall.SIGTERM)

@@ -39,16 +39,18 @@ the safety contract and is not implemented.
 
 ## Issue #89: stale carry snapshot and route availability
 
-Independent review N1 retains an unreproduced, unwaived stale-snapshot/pin-loss
-concern between bind's initial state load and replacement of a dead consumer.
-A lost pin could mint a new transaction; finite server transaction retention
-also limits retries that retain the pin. R2 changes classification only and
-does not resolve this lifecycle uncertainty or prove duplicates impossible.
-Meta/source integration needs a separately admitted deterministic interleaving:
-pause after initial load, let the old fixture consumer persist its pin and an
-applied report, terminate only that owned fixture consumer, then release the
-replacement; compare with a reload-after-death control. No such experiment
-was run in R2. Lifecycle/process fixes remain separately scoped.
+The replacement now carries the current on-disk incident report inside the same
+locked update that installs the new binding; the later consumer-startup update
+changes only PID/birth metadata. This protects pin/ACK writes made after bind's
+initial state load. Executed owned-consumer replacement coverage remains absent.
+The required deterministic fixture pauses after that initial load, lets only its
+owned consumer persist the pin and a server-applied report, stops and reaps that
+consumer, then releases replacement. It must retain the exact pin and ACK with
+one applied event; restoring snapshot carry must fail those assertions.
+This fixture requires a separately admitted guard/PID/isolation/cleanup plan.
+Finite and unknown server transaction retention also limits retries that retain
+the pin; neither the source fix nor synthetic controls prove universal duplicate
+prevention or live provider behavior.
 
 Own-room configuration is opt-in. No CLI setter or live provisioning is delivered;
 unconfigured identities emit a local unavailable status and zero incident sends.

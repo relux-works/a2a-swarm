@@ -97,6 +97,8 @@ attempt remains pending. This now surfaces as SUSPECTED-DEAF, with one durable
 incident to its explicitly configured own project/lane room after ten minutes of suspicion age. Recovery
 remains manual. Reproduce transitions, stable named/Codex controls and incident
 retry/deduplication with `go test ./internal/tmuxwake ./internal/cli -run 'TestBoundTypingTransition|TestTerminalStranded' -count=1`.
+The replacement writer carries the current on-disk incident report under the same state lock
+that installs the binding; startup writes only consumer PID/birth metadata.
 The pinned incident destination, transaction, content and ACK/retry state survive
 actual automatic consumer replacement for the same continuing session/target/episode.
 Run that regression with `go test -race ./internal/cli -run TestHookStrandedReportConsumerRecovery -count=1`.

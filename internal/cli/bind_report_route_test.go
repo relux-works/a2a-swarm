@@ -390,3 +390,34 @@ func TestNoticeReportThresholdGrammar(t *testing.T) {
 		})
 	}
 }
+
+// An existing canonical-alias event with content {} is unavailable locally and
+// sends nothing. Restoring just its alias permits one fake-server-applied report.
+// This covers an empty event, independently of the missing-event error path.
+func TestNoticeOwnRoomEmptyAlias(t *testing.T) {
+	t.Run("empty-content", func(t *testing.T) {
+		e, a, s, room := reportFixture(t)
+		e.hs.mu.Lock()
+		e.hs.rooms[room].state["m.room.canonical_alias|"] = json.RawMessage(`{}`)
+		e.hs.mu.Unlock()
+		err := a.reportStrandedTerminalNotice(context.Background(), s, "gen")
+		b := e.state("alice").Terminal
+		if err == nil || err.Error() != "unavailable: incident route" || b.NoticeReport == nil || b.NoticeReport.Sent || terminalNoticeReportStatus(b) != "unavailable: incident route" || e.hs.CallCount(sendRoute) != 0 || len(e.projectionsFrom(room, s.creds.UserID)) != 0 {
+			t.Fatal("empty alias must refuse locally without remote sends")
+		}
+		pin := b.NoticeReport.Message.Txn
+		e.hs.mu.Lock()
+		e.hs.rooms[room].state["m.room.canonical_alias|"] = json.RawMessage(`{"alias":"#project-lane:test.local"}`)
+		e.hs.mu.Unlock()
+		// Advance through the ordinary retry cap rather than removing the fence.
+		now := b.NoticeReport.RetryAt
+		a.Now = func() time.Time { return now }
+		if err := a.reportStrandedTerminalNotice(context.Background(), s, "gen"); err != nil {
+			t.Fatal("restored alias remains unusable", err)
+		}
+		b = e.state("alice").Terminal
+		if !b.NoticeReport.Sent || b.NoticeReport.Message.Txn != pin || terminalNoticeReportStatus(b) != "published" || e.hs.CallCount(sendRoute) != 1 || len(e.projectionsFrom(room, s.creds.UserID)) != 1 {
+			t.Fatal("restored alias must publish once with the existing transaction")
+		}
+	})
+}

@@ -11,9 +11,9 @@ import (
 
 // This pure carry contract checks every pinned field, including a retry cooldown,
 // and forbids stale reports at session/target/manual/unbind/episode boundaries.
-// The separate hook regression proves this helper is used by real replacement.
+// This does not exercise a process, a terminal or the real replacement lifecycle.
 func TestTerminalNoticeEpisodeCarryBoundaries(t *testing.T) {
-	for _, mode := range []string{"same", "unknown", "drained", "different-session", "different-target", "different-owner", "manual", "unbound", "cleared", "new-episode"} {
+	for _, mode := range []string{"same", "unknown", "drained", "no-prior", "foreign-host", "invalid-observation", "different-session", "different-target", "different-owner", "manual", "unbound", "cleared", "new-episode"} {
 		t.Run(mode, func(t *testing.T) {
 			target := tmuxwake.Target{Socket: "/synthetic/socket", SocketID: "pin", Pane: "%1", Runtime: "codex", OwnerPID: 123, OwnerBirth: "birth"}
 			n := schemaNotice("true")
@@ -22,6 +22,12 @@ func TestTerminalNoticeEpisodeCarryBoundaries(t *testing.T) {
 			next := &config.TerminalBinding{Generation: "new", SessionID: old.SessionID, Target: target}
 			automatic := true
 			switch mode {
+			case "no-prior":
+				old = nil
+			case "foreign-host":
+				old.Host = "foreign-fixture-host"
+			case "invalid-observation":
+				old.OwnNotice.Reason = "invalid-fixture-reason"
 			case "unknown":
 				old.OwnNotice.PossiblyOrphaned = nil
 			case "drained":

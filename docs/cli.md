@@ -1096,6 +1096,7 @@ With no retained evidence, a legitimate draft reports clear/not applicable. Clas
 After ten minutes from the first suspicion, a fresh suspected observation schedules one `kind=system`, `subtype=incident` message,
 with structured `subject=identity:NAME`, to the identity's explicitly configured own project/lane room (protocol rule 24).
 The source has no existing authoritative own-room record; optional `own_room` in the identity's credential metadata supplies that record.
+Upgrade every binary that reads named metadata before setting any `own_room` field.
 It must be a room ID, explicitly provisioned by the operator in the selected connection's identity metadata, never inferred from identity
 names, product metadata, discovery or membership alone. This change does not configure any live identity.
 The operator must supply a known own project/lane room. Configuration is the authority for that designation; the runtime does not classify
