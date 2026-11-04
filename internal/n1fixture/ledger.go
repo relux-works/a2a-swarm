@@ -16,8 +16,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -270,16 +268,19 @@ func Enter(ctx context.Context) error {
 	})
 }
 
-var pending sync.WaitGroup
+var pending completionGroup
 
 // Start installs its Wait owner and cleanup obligation immediately after Start,
 // before identity sealing can fail. No caller is allowed to discard this Handle.
 type Child struct {
-	Cmd     *exec.Cmd
-	Row     Row
-	Done    chan struct{}
-	Err     error
-	sealErr error
+	Cmd         *exec.Cmd
+	Row         Row
+	Done        chan struct{}
+	Err         error
+	sealErr     error
+	Reaped      bool
+	Outcome     waitOutcome
+	EvidenceErr error
 }
 
 func Start(cmd *exec.Cmd, nonce, generation, role string) (*Child, error) {
@@ -291,10 +292,9 @@ func Start(cmd *exec.Cmd, nonce, generation, role string) (*Child, error) {
 	pending.Add(1)
 	go func() {
 		defer pending.Done()
-		c.Err = cmd.Wait()
+		actualErr := cmd.Wait()
 		<-sealed
-		recordWait(cmd.Process.Pid, c.Err)
-		close(c.Done)
+		completeChild(c, actualOutcome(actualErr), actualErr, &pending)
 	}()
 	// Registration and reaping are serialized: the child waits in Enter until sealed.
 	c.Row, c.sealErr = seal(cmd.Process.Pid, os.Getpid(), cmd.Path, nonce, generation, role)
@@ -305,47 +305,7 @@ func Start(cmd *exec.Cmd, nonce, generation, role string) (*Child, error) {
 	}
 	return c, nil
 }
-func recordWait(pid int, err error) {
-	exit := 0
-	signal := ""
-	if err != nil {
-		exit = -1
-		if ee, ok := err.(*exec.ExitError); ok {
-			exit = ee.ExitCode()
-			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-				signal = ws.Signal().String()
-			}
-		}
-	}
-	var sealed Row
-	ledgerErr := ledger(func(rows *[]Row) error {
-		for i := len(*rows) - 1; i >= 0; i-- {
-			if (*rows)[i].PID == pid {
-				(*rows)[i].Reaped = true
-				(*rows)[i].Exit = exit
-				(*rows)[i].Signal = signal
-				sealed = (*rows)[i]
-				return nil
-			}
-		}
-		return errors.New("unregistered Wait PID")
-	})
-	if ledgerErr != nil {
-		_ = Write(fmt.Sprintf("STOP-wait-%d.json", pid), map[string]any{"pid": pid, "reason": "actual Wait returned but ledger update failed; retain attempt"})
-		return
-	}
-	_ = Write(fmt.Sprintf("wait-%d.json", pid), map[string]any{"pid": pid, "parent": os.Getpid(), "birth": sealed.Birth, "nonce": sealed.Nonce, "generation": sealed.Generation, "exit": exit, "signal": signal, "kind": "exec.Cmd.Wait returned", "at": time.Now().UTC()})
-}
-func WaitAll(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() { pending.Wait(); close(done) }()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
+func WaitAll(ctx context.Context) error { return pending.Wait(ctx) }
 
 // Stop never derives authority from state or FindProcess. Its PID must already
 // have a sealed launch record. TERM and any bounded KILL each revalidate identity.
@@ -355,17 +315,14 @@ func Stop(ctx context.Context, pid int) error {
 		return e
 	}
 	if r.Reaped {
-		if waitMatches(r) {
-			return nil
-		}
-		return errors.New("owned reap receipt missing")
+		return VerifyWait(r)
 	}
 	if e = Require(pid); e != nil {
 		// Require may race a genuine parent Wait; accepting that receipt probes no
 		// reused PID. Every other identity failure remains STOP without a signal.
 		current, readErr := known(pid)
-		if readErr == nil && current.Reaped && current.Birth == r.Birth && current.Nonce == r.Nonce && waitMatches(r) {
-			return nil
+		if readErr == nil && current.Reaped && current.Birth == r.Birth && current.Nonce == r.Nonce {
+			return VerifyWait(r)
 		}
 		return e
 	}
@@ -395,7 +352,7 @@ func CloseChild(ctx context.Context, c *Child) error {
 	}
 	select {
 	case <-c.Done:
-		return c.sealErr
+		return childCompletionError(c)
 	default:
 	}
 	if c.sealErr != nil {
@@ -406,7 +363,7 @@ func CloseChild(ctx context.Context, c *Child) error {
 	}
 	select {
 	case <-c.Done:
-		return nil
+		return childCompletionError(c)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -462,18 +419,7 @@ func Client(ctx context.Context, cmd *exec.Cmd) error {
 	go func() {
 		defer pending.Done()
 		e := cmd.Wait()
-		exit := 0
-		signal := ""
-		if e != nil {
-			exit = -1
-			if ee, ok := e.(*exec.ExitError); ok {
-				exit = ee.ExitCode()
-				if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-					signal = ws.Signal().String()
-				}
-			}
-		}
-		_ = Write(fmt.Sprintf("client-wait-%d.json", pid), map[string]any{"pid": pid, "parent": os.Getpid(), "exit": exit, "signal": signal, "kind": "exec.Cmd.Wait returned", "birth_image": "not sealed; never enumerated or signalled"})
+		e = completeClient(newClientReceipt(pid, actualOutcome(e)), e, &pending)
 		done <- e
 	}()
 	select {
@@ -520,10 +466,4 @@ func WatchCancellation(ctx context.Context, cancel context.CancelFunc) {
 	}()
 }
 
-func waitMatches(r Row) bool {
-	var receipt map[string]any
-	if Read(fmt.Sprintf("wait-%d.json", r.PID), &receipt) != nil {
-		return false
-	}
-	return receipt["pid"] == float64(r.PID) && receipt["parent"] == float64(r.PPID) && receipt["nonce"] == r.Nonce && receipt["birth"] == r.Birth && receipt["generation"] == r.Generation && receipt["kind"] == "exec.Cmd.Wait returned"
-}
+func waitMatches(r Row) bool { return VerifyWait(r) == nil }

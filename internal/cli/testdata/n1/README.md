@@ -1,7 +1,7 @@
 # N1 private source fixture — PREPARATION ONLY
 
 The build tag `n1_fixture` alone does not instrument production. The reviewed
-`prepare.py` creates a Go source overlay that retains the production guard,
+`prepare.go` creates a Go source overlay that retains the production guard,
 image, selectors, conflict checks, locks and terminal consumer. It replaces only
 enumeration and adds fail-closed PID admission and deterministic observation
 latches. Never run the tagged process selectors without the later Source GO.

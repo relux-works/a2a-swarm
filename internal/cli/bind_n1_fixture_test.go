@@ -78,6 +78,7 @@ func TestN1Role(t *testing.T) {
 		n1Must(t, n1fixture.Write("pane-child.json", child.Row))
 		select {
 		case <-child.Done:
+			n1Must(t, n1fixture.CloseChild(ctx, child))
 			if child.Err != nil {
 				t.Fatal("runtime exited unsuccessfully")
 			}
@@ -133,7 +134,7 @@ func TestN1Role(t *testing.T) {
 	defer waitCancel()
 	if waitErr := n1fixture.WaitAll(waitCtx); waitErr != nil {
 		_ = n1fixture.Write(role+"-wait-STOP.json", map[string]any{"reason": "owned child Wait unresolved; no clean exit claim; retain entire attempt"})
-		t.Fatal("owned consumer Wait unresolved")
+		t.Fatalf("owned consumer Wait/custody unresolved: %v", waitErr)
 	}
 
 	if e != nil && !errors.Is(e, ErrBindingOldImage) {
@@ -168,7 +169,7 @@ func n1Runtime(t *testing.T, ctx context.Context) {
 		defer cancel()
 		for i := len(children) - 1; i >= 0; i-- {
 			if e := n1fixture.CloseChild(cleanup, children[i]); e != nil {
-				t.Error("owned invocation cleanup failed")
+				t.Errorf("owned invocation cleanup failed: %v", e)
 			}
 		}
 	}()
@@ -316,78 +317,83 @@ func n1Witness(t *testing.T, leaf string, conflict bool) {
 	panePID := 0
 	paneStarted := false
 	paneNonce := os.Getenv("N1_NONCE")
-	cleanupOK := true
+	var cleanupErr error
 	defer func() {
 		// Cancel blocked report/ACK/load/startup latches BEFORE stopping consumers.
 		// Cancellation is visible to their signal contexts; never release replacement
 		// into a fresh Start during cleanup. Signal consumers first; parent supervisors
 		// then exit after their real Wait. Driver holds no state/control lock here.
-		if n1fixture.Cancel() != nil {
-			cleanupOK = false
+		addFailure := func(stage string, e error) {
+			if e != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%s: %w", stage, e))
+			}
 		}
+		addFailure("cancel fixture latches", n1fixture.Cancel())
 		cancel()
 		cleanup, done := context.WithTimeout(context.Background(), 18*time.Second)
 		defer done()
 		rows, err := n1fixture.Rows()
-		if err != nil {
-			cleanupOK = false
-		}
+		addFailure("read cleanup ledger", err)
 		for _, role := range []string{"consumer", "initial", "replacement", "conflict", "valid-ledger", "runtime"} {
 			for _, r := range rows {
-				if r.Role == role && !r.Reaped {
-					if n1fixture.Stop(cleanup, r.PID) != nil {
-						cleanupOK = false
-					}
+				if r.Role == role {
+					// Reaped is an actual Wait fact, not permission to skip its evidence.
+					addFailure(fmt.Sprintf("stop/verify %s PID %d", role, r.PID), n1fixture.Stop(cleanup, r.PID))
 				}
 			}
 		}
 		paneExitVerified := !paneStarted
 		if paneStarted && panePID == 0 {
-			cleanupOK = false
+			addFailure("verify pane identity", errors.New("created pane was never sealed"))
 		}
 		if panePID > 0 {
 			var receipt map[string]any
-			if n1fixture.Until(cleanup, func() bool { return n1fixture.Read("pane-exit.json", &receipt) == nil }) != nil || receipt["nonce"] != paneNonce || receipt["runtime_wait_returned"] != true {
-				cleanupOK = false
+			err = n1fixture.Until(cleanup, func() bool { return n1fixture.Read("pane-exit.json", &receipt) == nil })
+			if err != nil {
+				addFailure("read pane exit receipt", err)
+			} else if receipt["nonce"] != paneNonce || receipt["runtime_wait_returned"] != true {
+				addFailure("verify pane exit receipt", errors.New("pane nonce/runtime Wait mismatch"))
 			} else {
-				if n1fixture.Until(cleanup, func() bool {
+				var clientErr error
+				err = n1fixture.Until(cleanup, func() bool {
 					s, e := n1CommandErr(cleanup, "display-message", "-p", "-t", "%0", "#{pane_id} #{pane_pid} #{pane_dead} #{pane_dead_status}")
+					clientErr = e
 					return e == nil && s == fmt.Sprintf("%%0 %d 1 0", panePID)
-				}) != nil {
-					cleanupOK = false
+				})
+				if err != nil {
+					addFailure("verify private pane exit", errors.Join(err, clientErr))
 				} else {
 					paneExitVerified = true
 				}
 			}
 		}
-		// If pane exit is uncertain, leave the foreground server and directory
-		// intact. A server PID Wait would not prove that an unverified pane ended.
+		// Keep the explicit pane alternative: no driver waitpid is invented.
 		if server != nil && paneExitVerified {
-			if n1fixture.CloseChild(cleanup, server) != nil {
-				cleanupOK = false
-			}
+			addFailure("close foreground server", n1fixture.CloseChild(cleanup, server))
 		} else if server != nil {
-			cleanupOK = false
+			addFailure("close foreground server", errors.New("pane exit unverified; retain server and attempt"))
 		}
-		if n1fixture.WaitAll(cleanup) != nil {
-			cleanupOK = false
-		}
+		addFailure("aggregate child/client custody", n1fixture.WaitAll(cleanup))
 		var input struct {
 			InputBytes int `json:"input_bytes"`
 		}
-		if panePID > 0 && (n1fixture.Read("runtime-input.json", &input) != nil || input.InputBytes != 0) {
-			cleanupOK = false
-		}
-		if cleanupOK && panePID > 0 {
-			if n1fixture.MarkPaneExited(panePID) != nil {
-				cleanupOK = false
+		if panePID > 0 {
+			err = n1fixture.Read("runtime-input.json", &input)
+			addFailure("read renderer input evidence", err)
+			if err == nil && input.InputBytes != 0 {
+				addFailure("verify renderer input", errors.New("unexpected input bytes"))
 			}
 		}
-		_ = n1fixture.Write("cleanup.json", map[string]any{"all_owned_waits_or_explicit_pane_exit_verified": cleanupOK, "directory_retained": !cleanupOK})
-		if !cleanupOK {
-			t.Errorf("cleanup unresolved; retained attempt %s", dir)
+		if cleanupErr == nil && panePID > 0 {
+			addFailure("persist explicit pane exit", n1fixture.MarkPaneExited(panePID))
+		}
+		// Validates completed rows again and propagates final receipt write errors
+		// through this existing test path, even if no STOP file can be written.
+		if err = n1fixture.FinishCleanup(cleanupErr); err != nil {
+			t.Errorf("cleanup custody unresolved; retained attempt %s: %v", dir, err)
 			return
 		}
+
 		// Receipts copied by the execution wrapper before explicit later removal.
 		// This driver deliberately retains every attempt; no secret-bearing export.
 	}()
