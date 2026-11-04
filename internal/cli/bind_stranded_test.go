@@ -43,7 +43,7 @@ func TestTerminalStrandedOtherInputNeverSubmitted(t *testing.T) {
 	for _, draft := range []string{"HUMAN_DRAFT", "a2a: 1 new peer events; run a2a inbox suffix"} {
 		t.Run(draft, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
-			f.e.hs.addRoom("system", "@alice:test.local")
+			f.e.ownReportRoom("alice")
 			f.mail()
 			f.control(map[string]any{"defer": true})
 			f.dispatch()
@@ -67,7 +67,7 @@ func TestTerminalStrandedOtherInputNeverSubmitted(t *testing.T) {
 // reuse the persisted transaction, so an ambiguous send cannot duplicate it.
 func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
 	f := newOrphanDispatchFixture(t)
-	system := f.e.hs.addRoom("system", "@alice:test.local")
+	system := f.e.ownReportRoom("alice")
 	id := f.mail()
 	f.control(map[string]any{"defer": true})
 	f.dispatch()
@@ -149,7 +149,7 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
 			system := ""
 			if mode != "missing-room" {
-				system = f.e.hs.addRoom("system", "@alice:test.local")
+				system = f.e.ownReportRoom("alice")
 			}
 			f.mail()
 			f.control(map[string]any{"defer": true})
@@ -195,7 +195,7 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || f.binding().NoticeReport == nil || f.binding().NoticeReport.Sent {
+			if err != nil || f.binding().NoticeReport == nil || f.binding().NoticeReport.Sent {
 				t.Fatal("failure claimed success", err)
 			}
 			txn := f.binding().NoticeReport.Message.Txn
@@ -210,7 +210,7 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 			delete(f.e.hs.failures, sendRoute)
 			f.e.hs.mu.Unlock()
 			if mode == "missing-room" {
-				system = f.e.hs.addRoom("system", "@alice:test.local")
+				system = f.e.ownReportRoom("alice")
 			}
 			f.now = f.now.Add(f.binding().RetryMax)
 			f.dispatch()
@@ -229,7 +229,7 @@ func TestTerminalStrandedTypingStatusFlipReports(t *testing.T) {
 	for _, version := range []string{"2.1.309", "2.1.310"} {
 		t.Run(version, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
-			system := f.e.hs.addRoom("system", "@alice:test.local")
+			system := f.e.ownReportRoom("alice")
 			id := f.mail()
 			path, record := dispatchRegistry(t, f, "idle")
 			record["version"] = version

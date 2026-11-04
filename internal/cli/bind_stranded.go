@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -36,8 +38,11 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		if noticeValid(n) != nil || n.PossiblyOrphaned == nil || !*n.PossiblyOrphaned {
 			return nil
 		}
-		since, err := time.Parse(time.RFC3339Nano, n.Since)
-		if err != nil || a.Now().Before(since.Add(strandedNoticeThreshold)) {
+		since, ok := parseNoticeTimestamp(n.Since)
+		due := since
+		due.second = due.second.Add(strandedNoticeThreshold)
+		now, _ := parseNoticeTimestamp(a.Now().UTC().Format(time.RFC3339Nano))
+		if !ok || now.before(due) {
 			return nil
 		}
 		if name, ok := doorbellName(s.creds.UserID, s.server); !ok || name != s.name {
@@ -51,24 +56,24 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		if r.Sent || a.Now().Before(r.RetryAt) {
 			return nil
 		}
+		room, routeErr := s.strandedOwnRoom(reportCtx, r.Message.Room)
+		if routeErr != nil {
+			r.Outcome = routeErr.Error()
+			r.RetryAt = a.Now().Add(b.RetryMax)
+			reportErr = routeErr
+			return nil
+		}
 		if r.Message.Room == "" {
-			room, _, err := s.resolveRoom(reportCtx, SystemRoom)
-			if err != nil {
-				r.Outcome = "unavailable: system incident report failed"
-				r.RetryAt = a.Now().Add(b.RetryMax)
-				reportErr = errors.New(r.Outcome)
-				return nil
-			}
 			r.Message.Room = room
 			r.Message.Content = map[string]any{
 				"msgtype":      "m.text",
-				"body":         "SUSPECTED-DEAF: " + s.name + " has a possibly stranded own terminal notice since=" + n.Since + ". Later wakes may be blocked. Keeper inspection and manual recovery required; mail remains unreceived.",
-				"ai.relux.a2a": Header{V: 1, Type: "message", From: s.name, At: since.Add(strandedNoticeThreshold).UTC().Format(time.RFC3339Nano), Kind: "system", Subtype: "incident"},
+				"body":         "SUSPECTED-DEAF: " + s.name + " has a possibly stranded own terminal notice since=" + n.Since + ". Later wakes may be blocked. Manual inspection and recovery required; mail remains unreceived.",
+				"ai.relux.a2a": Header{V: 1, Type: "message", From: s.name, At: a.Now().UTC().Format(time.RFC3339Nano), Kind: "system", Subtype: "incident", Subject: "identity:" + s.name},
 			}
 		}
 		r.Outcome = "pending"
-		copy := *r
-		pending = &copy
+		snapshot := *r
+		pending = &snapshot
 		return nil
 	})
 	if err != nil {
@@ -88,6 +93,12 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		r := b.NoticeReport
 		n := b.OwnNotice
 		if r.Sent || a.Now().Before(r.RetryAt) || r.Since != pending.Since || r.Message.Txn != pending.Message.Txn || n.Since != r.Since || noticeValid(n) != nil || n.PossiblyOrphaned == nil || !*n.PossiblyOrphaned {
+			return nil
+		}
+		if _, routeErr := s.strandedOwnRoom(reportCtx, r.Message.Room); routeErr != nil {
+			r.Outcome = routeErr.Error()
+			r.RetryAt = a.Now().Add(b.RetryMax)
+			reportErr = routeErr
 			return nil
 		}
 		// A failed/ambiguous send retries under the ordinary binding retry cap,
@@ -114,9 +125,86 @@ func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 		return "not due"
 	}
 	switch b.NoticeReport.Outcome {
-	case "pending", "published", "unavailable: system incident report failed":
+	case "pending", "published", "unavailable: system incident report failed",
+		"incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed":
 		return b.NoticeReport.Outcome
 	default:
 		return "unavailable: invalid report state"
 	}
+}
+
+// Report errors are local diagnostics, never consumer failures. This is the
+// dispatch completion path used by runTerminal after a healthy observation.
+func (a *App) completeTerminalObservation(ctx context.Context, s *session, generation string) error {
+	a.publishTerminalNotice(ctx, s, generation)
+	if err := a.reportStrandedTerminalNotice(ctx, s, generation); err != nil {
+		fmt.Fprintln(a.Stderr, "binding incident report unavailable; local status retained")
+	}
+	return nil
+}
+
+// Authority comes only from own identity metadata. Revalidate before every
+// send, including an ambiguous retry; a changed route never replaces the pin.
+func (s *session) strandedOwnRoom(ctx context.Context, pinned string) (string, error) {
+	unavailable := errors.New("unavailable: incident route")
+	metadata, err := config.LoadCredentialMetadata(s.paths, s.name, false)
+	if err != nil || metadata.UserID != s.creds.UserID || metadata.Homeserver != s.creds.Homeserver {
+		return "", unavailable
+	}
+	room := metadata.OwnRoom
+	if room == "" {
+		return "", errors.New("incident route not configured")
+	}
+	if !strings.HasPrefix(room, "!") || strings.ContainsAny(room, " \t\r\n") {
+		return "", unavailable
+	}
+	if pinned != "" && pinned != room {
+		return "", errors.New("unavailable: pinned incident route changed")
+	}
+	rooms, err := s.client.JoinedRooms(ctx)
+	if err != nil {
+		return "", unavailable
+	}
+	joined := false
+	for _, id := range rooms {
+		if id == room {
+			joined = true
+		}
+	}
+	if !joined {
+		return "", unavailable
+	}
+	var alias struct {
+		Alias string `json:"alias"`
+	}
+	if err := s.client.GetState(ctx, room, "m.room.canonical_alias", "", &alias); err != nil || alias.Alias == "" || strings.Split(alias.Alias, ":")[0] == SystemRoom {
+		return "", unavailable
+	}
+	var power struct {
+		Users         map[string]int `json:"users"`
+		UsersDefault  *int           `json:"users_default"`
+		Events        map[string]int `json:"events"`
+		EventsDefault *int           `json:"events_default"`
+	}
+	if err := s.client.GetState(ctx, room, "m.room.power_levels", "", &power); err != nil {
+		return "", unavailable
+	}
+	level, known := power.Users[s.creds.UserID]
+	if !known {
+		if power.UsersDefault == nil {
+			return "", unavailable
+		}
+		level = *power.UsersDefault
+	}
+	required, known := power.Events["m.room.message"]
+	if !known {
+		if power.EventsDefault == nil {
+			return "", unavailable
+		}
+		required = *power.EventsDefault
+	}
+	if level < required {
+		return "", unavailable
+	}
+	return room, nil
 }

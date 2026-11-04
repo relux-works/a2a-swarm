@@ -1089,17 +1089,30 @@ A keeper may inspect and recover the pane manually; this command does not perfor
 A known-unsubmitted typed journal with either its full attempt still pending or all announced events legitimately receipted/pruned,
 together with a nonempty rendered composer, reports `SUSPECTED-DEAF: own notice possibly orphaned`. Partial attempts remain uncertain.
 This is a factual suspicion, not proven deafness or proof of current editor contents.
-After ten minutes from the first suspicion, a fresh suspected observation schedules one `kind=system`, `subtype=incident` message to the
-selected connection's existing `#system` room. This works without an own liveness record or new mail. The consumer never creates or joins
-a room for this report. Missing room, membership or write access leaves an explicit unavailable result and retries after `--retry-max`.
+After ten minutes from the first suspicion, a fresh suspected observation schedules one `kind=system`, `subtype=incident` message,
+with structured `subject=identity:NAME`, to the identity's explicitly configured own project/lane room (protocol rule 24).
+The source has no existing authoritative own-room record; optional `own_room` in the identity's credential metadata supplies that record.
+It must be a room ID, explicitly provisioned by the operator in the selected connection's identity metadata, never inferred from identity
+names, product metadata, discovery or membership alone. This change does not configure any live identity.
+Before pinning and again before sending, the consumer reads joined membership, canonical alias and message power levels.
+Missing configuration reports `incident route not configured`; nonmembership, denied or unknown access remains locally unavailable with
+zero message sends. A missing canonical alias or unrecognized power-level availability also refuses. No room is created or joined.
+There is no global `#system` fallback; that room remains projection-only and the projector remains OFF.
+Existing project system subscriptions provide the protocol audience; a successful send does not establish any particular subscriber's receipt.
+This works without an own liveness record or new mail. Unavailable routes retry after `--retry-max`.
 The destination, transaction ID and fixed content are persisted before sending; retries after an ambiguous ACK or process restart reuse them.
+An own-room change or unavailable pinned route blocks the retry locally, without rerouting or replacing the pin. Restoring the original
+route permits the same transaction to retry. Server transaction retention is finite and unknown here; universal duplicate prevention is not claimed.
 A successful report is sent once per continuing suspicion episode. Automatic dead-consumer recovery for the same session and pinned
 target carries the report destination, transaction, immutable content, ACK and retry state into the replacement generation. Manual rebinding,
 a different session/target/owner, explicit unbind, and cleared/new episodes cannot inherit the report. Unknown, cleared or retired observations cannot send
 a pending report; a fresh suspicion after a clear starts a new episode. Status exposes `system-report` in text and `system_report` in JSON
-(`not due`, `pending`, `published`, or a fixed unavailable reason), independently of own-liveness publication. Reports contain the own identity
-and suspicion time, never composer contents, registry paths, targets, peer text or event IDs. This is escalation for manual recovery, not
-automatic submission of a saved notice.
+(`not due`, `pending`, `published`, or a fixed unavailable reason), independently of own-liveness publication. Report failures remain report-local,
+never degrading a healthy consumer's suspicion signal. A nonempty composer with a retained partial or untyped attempt is unknown even before
+its first suspicion or after session handover/rebinding; an empty rendered composer can still report clear.
+Reports contain the stable own identity and suspicion time, never composer contents, registry paths, targets, peer text or event IDs.
+Header `at` records content preparation time and stays immutable on retry. This is escalation for manual recovery, without automatic submission
+of a saved notice.
 
 New pending mail remains unreceipted; reporting never clears the mailbox or reservation ledger. After an actual rendered-empty observation,
 the typed journal reconciles and ordinary delivery can resume exactly once through the full qualified-idle admission. Empty rendering does

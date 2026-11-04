@@ -273,7 +273,7 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 				// reported stranded episode after stopping this fixture's daemon.
 				// The real prompt hook must recover its process without duplicating
 				// the incident for the unchanged session, target and suspicion.
-				systemRoom := e.hs.addRoom("system", "@alice:test.local")
+				systemRoom := e.ownReportRoom("alice")
 				if out, err := exec.Command("tmux", "-S", socket, "send-keys", "-t", "%0", "-l", tmuxwake.Notice(1)).CombinedOutput(); err != nil {
 					t.Fatalf("synthetic notice: %v %s", err, out)
 				}

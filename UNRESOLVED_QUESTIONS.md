@@ -11,7 +11,7 @@ behavior, remains unverified.
 
 Any future field investigation belongs to a separately authorized host-keeper
 window. This fix uses the issue's loud-surfacing alternative: pending typed
-attempts become SUSPECTED-DEAF and report once to the existing #system room after
+attempts become SUSPECTED-DEAF and report once to an explicitly configured own project/lane room after
 ten minutes. Recovery remains manual; existing nonempty-input fences are kept.
 
 ## Issue #89: literal exact-editor-content recovery

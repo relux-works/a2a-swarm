@@ -68,7 +68,7 @@ func TestTerminalNoticeManualReviewMatrix(t *testing.T) {
 		for _, variant := range []string{"exact", "partial", "suffix", "human", "busy", "unknown", "dim", "foreign-generation", "changed-target"} {
 			t.Run(layout+"/"+variant, func(t *testing.T) {
 				f := newOrphanDispatchFixture(t)
-				system := f.e.hs.addRoom("system", "@alice:test.local")
+				system := f.e.ownReportRoom("alice")
 				id := f.mail()
 				initial := map[string]any{"defer": true}
 				if layout != "codex" {
