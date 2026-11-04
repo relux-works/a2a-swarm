@@ -283,7 +283,11 @@ insufficient. A valid ACK plus absent, unavailable, malformed or mismatching
 readback is `UNKNOWN` with a nonzero exit, retaining `acknowledged: true` and
 `event_id`. A lost, malformed, redirected or otherwise uncertain ACK is also
 `UNKNOWN`, without an automatic retry or readback. A validated original
-permission/token rejection is `REFUSED`. A selected binding/context change
+permission/token rejection is `REFUSED`. Only the existing validated original
+`403 M_FORBIDDEN`, `401 M_UNKNOWN_TOKEN` or `401 M_MISSING_TOKEN` pairs add
+`http_status` and `errcode` to JSON and text SET output. These optional fields
+are absent for other results; raw server error text and arbitrary codes are
+never projected. A selected binding/context change
 after a possible write is `UNKNOWN`, not a claim of zero effects. Inspect an
 uncertain result through a separately authorized get; never blindly repeat set.
 

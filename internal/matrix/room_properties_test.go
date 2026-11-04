@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -143,13 +144,103 @@ func TestRoomPropertiesSet(t *testing.T) {
 			} else {
 				got, err = c.SetRoomParent(context.Background(), "!room", "!parent:foreign.invalid", []string{"foreign.invalid", "[::1]:8448"}, kind == "parent-true")
 			}
-			if err != nil || got.Outcome != "VERIFIED" || !got.Acknowledged || got.EventID != "$ack" || got.Readback != "match" {
+			if err != nil || got.Outcome != "VERIFIED" || !got.Acknowledged || got.EventID != "$ack" || got.Readback != "match" || got.HTTPStatus != 0 || got.ErrCode != "" {
 				t.Fatalf("result %+v, %v", got, err)
 			}
 			if !reflect.DeepEqual(calls, []string{"PUT " + path, "GET " + path}) {
 				t.Fatalf("extra/missing effects: %v", calls)
 			}
 		})
+	}
+}
+
+// Proves only the three existing strict original-request refusal pairs expose
+// bounded diagnostics, without raw server text, extra requests or an ACK.
+// Fixtures exercise both property writers, not live membership or state power.
+func TestRoomPropertiesRefusalDiagnostics(t *testing.T) {
+	const private = "private-server-error-and-token"
+	for _, tc := range []struct {
+		name, body, code string
+		status           int
+	}{
+		{"forbidden", `{"errcode":"M_FORBIDDEN","error":"` + private + `"}`, "M_FORBIDDEN", 403},
+		{"unknown-token", `{"errcode":"M_UNKNOWN_TOKEN","error":"` + private + `"}`, "M_UNKNOWN_TOKEN", 401},
+		{"missing-token", `{"errcode":"M_MISSING_TOKEN","error":"` + private + `"}`, "M_MISSING_TOKEN", 401},
+		{"wrong-forbidden-status", `{"errcode":"M_FORBIDDEN"}`, "", 401},
+		{"wrong-token-status", `{"errcode":"M_UNKNOWN_TOKEN"}`, "", 403},
+		{"unknown-code", `{"errcode":"` + private + `"}`, "", 403},
+		{"missing-code", `{"error":"` + private + `"}`, "", 403},
+		{"duplicate-code", `{"errcode":"M_FORBIDDEN","errcode":"M_FORBIDDEN"}`, "", 403},
+		{"malformed", `{"errcode":"M_FORBIDDEN"`, "", 403},
+		{"oversize", `{"errcode":"M_FORBIDDEN","error":"` + strings.Repeat("x", roomPropertyLimit) + `"}`, "", 403},
+		{"redirect", `{"errcode":"M_FORBIDDEN"}`, "", 307},
+		{"non-original", `{"errcode":"M_FORBIDDEN"}`, "", 403},
+		{"short", `{"errcode":"M_FORBIDDEN"}`, "", 403},
+		{"close-failed", `{"errcode":"M_FORBIDDEN"}`, "", 403},
+		{"transport", "", "", 0},
+	} {
+		for _, parent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/parent=%t", tc.name, parent), func(t *testing.T) {
+				c := New("https://fixture.invalid", "fixture-token")
+				calls := 0
+				c.HTTP.Transport = propertyTransport(func(r *http.Request) (*http.Response, error) {
+					calls++
+					path := "/_matrix/client/v3/rooms/!room/state/m.room.avatar/"
+					if parent {
+						path = "/_matrix/client/v3/rooms/!room/state/m.space.parent/!parent"
+					}
+					if calls != 1 || r.Method != http.MethodPut || r.URL.Path != path || r.Header.Get("Authorization") != "Bearer fixture-token" {
+						t.Fatal("refusal changed authority or caused an extra effect")
+					}
+					if tc.name == "transport" {
+						return nil, errors.New(private)
+					}
+					resp := propertyReply(r, tc.status, tc.body)
+					switch tc.name {
+					case "redirect":
+						resp.Header.Set("Location", "https://foreign.invalid/")
+					case "non-original":
+						other := *r
+						u := *r.URL
+						u.Path = "/other"
+						other.URL = &u
+						resp.Request = &other
+					case "short":
+						resp.ContentLength++
+					case "close-failed":
+						resp.Body = propertyCloseBody{strings.NewReader(tc.body), errors.New(private)}
+					}
+					return resp, nil
+				})
+				var got StateWriteResult
+				var err error
+				if parent {
+					got, err = c.SetRoomParent(context.Background(), "!room", "!parent", []string{"fixture.invalid"}, true)
+				} else {
+					got, err = c.SetRoomAvatar(context.Background(), "!room", "mxc://media.invalid/avatar")
+				}
+				wantOutcome, wantStatus := "UNKNOWN", 0
+				if tc.code != "" {
+					wantOutcome, wantStatus = "REFUSED", tc.status
+				}
+				if err == nil || got.Outcome != wantOutcome || got.HTTPStatus != wantStatus || got.ErrCode != tc.code || got.Acknowledged || got.EventID != "" || got.Readback != "not-attempted" || calls != 1 {
+					t.Fatalf("bounded refusal diagnostic mismatch: result=%+v error=%v calls=%d", got, err, calls)
+				}
+				raw, err := json.Marshal(got)
+				if err != nil || strings.Contains(string(raw), private) {
+					t.Fatalf("private response escaped: %s %v", raw, err)
+				}
+				var fields map[string]any
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					t.Fatal(err)
+				}
+				_, statusPresent := fields["http_status"]
+				_, codePresent := fields["errcode"]
+				if statusPresent != (tc.code != "") || codePresent != statusPresent {
+					t.Fatalf("unverified diagnostic was serialized: %s", raw)
+				}
+			})
+		}
 	}
 }
 

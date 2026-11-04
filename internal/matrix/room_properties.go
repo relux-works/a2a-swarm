@@ -33,6 +33,8 @@ type StateWriteResult struct {
 	Acknowledged bool   `json:"acknowledged"`
 	EventID      string `json:"event_id,omitempty"`
 	Readback     string `json:"readback"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	ErrCode      string `json:"errcode,omitempty"`
 }
 
 // RoomPropertyID follows the existing opaque room-ID contract, including IDs
@@ -196,8 +198,15 @@ func (c *Client) writeProperty(ctx context.Context, room, typ, key string, conte
 	defer cancel()
 	resp, err := c.WithoutRedirects().send(ackCtx, http.MethodPut, propertyPath(room, typ, key), nil, bytes.NewReader(raw), "application/json", int64(len(raw)))
 	if err != nil {
-		if originalCode(err, 403, "M_FORBIDDEN") || originalCode(err, 401, "M_UNKNOWN_TOKEN", "M_MISSING_TOKEN") {
-			out.Outcome = "REFUSED"
+		// Only the existing validated original-response pairs are projected;
+		// arbitrary server text or codes never become diagnostic output.
+		switch {
+		case originalCode(err, 403, "M_FORBIDDEN"):
+			out.Outcome, out.HTTPStatus, out.ErrCode = "REFUSED", 403, "M_FORBIDDEN"
+		case originalCode(err, 401, "M_UNKNOWN_TOKEN"):
+			out.Outcome, out.HTTPStatus, out.ErrCode = "REFUSED", 401, "M_UNKNOWN_TOKEN"
+		case originalCode(err, 401, "M_MISSING_TOKEN"):
+			out.Outcome, out.HTTPStatus, out.ErrCode = "REFUSED", 401, "M_MISSING_TOKEN"
 		}
 		return out, errors.New("matrix: property write " + out.Outcome)
 	}
