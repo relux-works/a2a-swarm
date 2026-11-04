@@ -189,7 +189,11 @@ func cmdRoomProperty(ctx context.Context, a *App, kind string, args []string) er
 		}
 	} else {
 		content, _ := json.Marshal(out.Content)
-		a.printf("%s v1 %s room=%s key=%s outcome=%s acknowledged=%t event_id=%s readback=%s content=%s\n", out.Type, op, strconv.QuoteToASCII(id), strconv.QuoteToASCII(out.StateKey), out.Outcome, out.Acknowledged, strconv.QuoteToASCII(out.EventID), out.Readback, content)
+		diagnostic := ""
+		if out.HTTPStatus != 0 {
+			diagnostic = fmt.Sprintf(" http_status=%d errcode=%s", out.HTTPStatus, strconv.QuoteToASCII(out.ErrCode))
+		}
+		a.printf("%s v1 %s room=%s key=%s outcome=%s acknowledged=%t event_id=%s readback=%s content=%s%s\n", out.Type, op, strconv.QuoteToASCII(id), strconv.QuoteToASCII(out.StateKey), out.Outcome, out.Acknowledged, strconv.QuoteToASCII(out.EventID), out.Readback, content, diagnostic)
 	}
 	if operationErr != nil {
 		return fmt.Errorf("room %s %s: %s (no automatic retry)", kind, op, out.Outcome)

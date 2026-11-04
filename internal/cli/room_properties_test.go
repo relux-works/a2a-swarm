@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -95,6 +96,9 @@ func TestRoomPropertyCLISet(t *testing.T) {
 			if got["version"] != float64(1) || got["room_id"] != "!target" || got["outcome"] != "VERIFIED" || got["acknowledged"] != true || got["event_id"] != "$ack" || got["readback"] != "match" || got["caller"] != "@alice:"+tc.label+".invalid" {
 				t.Fatalf("result %s", f.out.String())
 			}
+			if got["http_status"] != nil || got["errcode"] != nil {
+				t.Fatal("successful set emitted refusal diagnostics")
+			}
 			var sent map[string]any
 			json.Unmarshal([]byte(content), &sent)
 			if tc.parent == "" {
@@ -105,6 +109,62 @@ func TestRoomPropertyCLISet(t *testing.T) {
 				t.Fatalf("wrong parent %v", sent)
 			}
 		})
+	}
+}
+
+// Proves JSON and text retain the exact allowlisted refusal pair for either
+// SET, with a nonzero exit, no credential mutation, retry or private body text.
+func TestRoomPropertyCLIRefusalDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		code   string
+	}{{403, "M_FORBIDDEN"}, {401, "M_UNKNOWN_TOKEN"}, {401, "M_MISSING_TOKEN"}} {
+		for _, parent := range []bool{false, true} {
+			for _, asJSON := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/parent=%t/json=%t", tc.code, parent, asJSON), func(t *testing.T) {
+					f := newNamedFixture(t, true)
+					before := memberFiles(t, f.root)
+					a := f.app()
+					calls := 0
+					path := "/_matrix/client/v3/rooms/!target/state/m.room.avatar/"
+					args := []string{"room", "avatar", "set", "!target", "--expect-room-id", "!target", "--mxc", "mxc://media.invalid/avatar"}
+					if parent {
+						path = "/_matrix/client/v3/rooms/!target/state/m.space.parent/!space"
+						args = []string{"room", "parent", "set", "!target", "--parent", "!space", "--expect-child-id", "!target", "--expect-parent-id", "!space", "--via", "foreign.invalid", "--canonical", "true"}
+					}
+					if asJSON {
+						args = append(args, "--json")
+					}
+					a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+						calls++
+						if calls != 1 || r.Method != "PUT" || r.URL.Path != path || r.Header.Get("Authorization") != "Bearer isolated-alpha" {
+							t.Fatal("refusal retried or changed target/authority")
+						}
+						return propertyCLIReply(r, tc.status, `{"errcode":"`+tc.code+`","error":"private-server-secret"}`), nil
+					})}
+					if exit := a.Run(context.Background(), args); exit != ExitError {
+						t.Fatalf("refusal exit=%d", exit)
+					}
+					if calls != 1 || !reflect.DeepEqual(before, memberFiles(t, f.root)) || len(f.store.creates) != 0 {
+						t.Fatal("refusal changed credentials or caused extra effects")
+					}
+					if strings.Contains(f.out.String()+f.err.String(), "private-server-secret") || strings.Contains(f.out.String()+f.err.String(), "isolated-alpha") {
+						t.Fatal("private server or authentication text escaped")
+					}
+					if asJSON {
+						var got map[string]any
+						if err := json.Unmarshal(f.out.Bytes(), &got); err != nil {
+							t.Fatal(err)
+						}
+						if got["version"] != float64(1) || got["http_status"] != float64(tc.status) || got["errcode"] != tc.code || got["outcome"] != "REFUSED" || got["acknowledged"] != false || got["readback"] != "not-attempted" || got["content"] != nil || got["event_id"] != nil {
+							t.Fatalf("refusal projection mismatch: %s", f.out.String())
+						}
+					} else if !strings.Contains(f.out.String(), fmt.Sprintf("http_status=%d errcode=%s", tc.status, strconv.QuoteToASCII(tc.code))) || !strings.Contains(f.out.String(), "outcome=REFUSED acknowledged=false") {
+						t.Fatalf("text lost bounded refusal pair: %s", f.out.String())
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -210,6 +270,9 @@ func TestRoomPropertyCLIUnknown(t *testing.T) {
 			}
 			if code != ExitError || got["outcome"] != "UNKNOWN" || got["acknowledged"] != acked || puts != 1 || gets != wantGets {
 				t.Fatalf("code%d result%s PUT%d GET%d", code, f.out.String(), puts, gets)
+			}
+			if got["http_status"] != nil || got["errcode"] != nil {
+				t.Fatal("uncertain write emitted refusal diagnostics")
 			}
 			if acked && got["event_id"] != "$ack" {
 				t.Fatal("ACK was lost")
