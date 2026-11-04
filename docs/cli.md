@@ -230,6 +230,87 @@ a2a --profile work room members '#project:example.org' --json
 a2a --profile work room members '!room:example.org' --membership invite --json
 ```
 
+### Typed room properties
+
+```text
+a2a room avatar get ROOM [--json]
+a2a room avatar set ROOM --expect-room-id !ID --mxc MXC [--json]
+a2a room parent get CHILD --parent PARENT [--json]
+a2a room parent set CHILD --parent PARENT --expect-child-id !CHILD --expect-parent-id !PARENT --via SERVER [--via SERVER...] --canonical true|false [--json]
+```
+
+These use the selected own identity and named connection, including its pinned
+fingerprint and normal credential guards. Room arguments retain the existing
+forms: `alias`, `#alias`, `#alias:server`, or an opaque `!roomid`, including IDs
+without a server suffix. A bare alias uses the selected connection's server;
+a fully qualified foreign alias keeps its own server. Aliases resolve once,
+then all state requests use the resolved IDs. Set requires expected IDs even
+for an ID argument; a mismatch refuses before any state request. No same-name
+fallback or implicit join is attempted.
+
+Avatar set accepts an already uploaded `mxc://SERVER/MEDIA` using the existing
+MXC grammar. It sends exactly `{"url":MXC}` to the selected room's
+`m.room.avatar` with the empty state key. It does not upload, download or verify
+the existence of the media. A media-upload receipt alone is not a state ACK.
+
+Parent set sends exactly `{"via":[SERVERS],"canonical":BOOLEAN}` to the child
+room's `m.space.parent` with the resolved parent ID as state key. Both expected
+IDs must differ. `--via` is required, repeatable and retains order/case; DNS,
+IPv4 and bracketed IPv6 server names with optional ports use the existing
+Matrix server-name grammar. `--canonical` is required and accepts only the
+literal `true` or `false`. Scalar flags cannot be repeated. There is no default
+canonical value, inferred server list, child re-add, parent-room write or
+`product adopt` fallback. Neither command changes membership, power, accounts,
+subscriptions, descriptions, or other state keys.
+
+Get performs one exact-key GET rather than reading all room state. Only a
+validated original `404 M_NOT_FOUND` means `ABSENT`; an existing empty event is
+`EMPTY`. Avatar projects `url`; parent projects `via` and `canonical`, preserving
+an omitted canonical field rather than inventing a boolean. Extension fields
+are syntax-checked and discarded. This projection is not a backup of unknown
+fields and must not be used to claim exact restoration of arbitrary prior state.
+
+Responses must come from the original endpoint without following redirects.
+State and ACK entities require complete HTTP 200 JSON objects bounded to 64 KiB,
+valid UTF-8/scalars, no duplicate keys or trailing values, and exact known field
+types. A read, close, framing, permission or schema failure never becomes empty
+success. Unknown extension syntax remains validated.
+
+Set attempts at most one PUT. Only a strict ACK with an event ID permits one
+exact-key GET. `VERIFIED` requires the full returned content to equal the
+requested content, including no unexpected fields; comparing projections is
+insufficient. A valid ACK plus absent, unavailable, malformed or mismatching
+readback is `UNKNOWN` with a nonzero exit, retaining `acknowledged: true` and
+`event_id`. A lost, malformed, redirected or otherwise uncertain ACK is also
+`UNKNOWN`, without an automatic retry or readback. A validated original
+permission/token rejection is `REFUSED`. A selected binding/context change
+after a possible write is `UNKNOWN`, not a claim of zero effects. Inspect an
+uncertain result through a separately authorized get; never blindly repeat set.
+
+`--json` emits one version 1 record after a property operation:
+
+```json
+{"type":"room-avatar","version":1,"operation":"set","caller":"@operator:example.org","room_id":"!room:example.org","state_type":"m.room.avatar","state_key":"","outcome":"VERIFIED","acknowledged":true,"event_id":"$ack","readback":"match","content":{"url":"mxc://media.example.org/avatar"}}
+```
+
+Parent records use `type: "room-parent"`, `state_type: "m.space.parent"`, the
+parent ID as `state_key`, and projected `via`/optional `canonical` in `content`.
+Get outcomes are `PRESENT`, `EMPTY`, `ABSENT` or `UNKNOWN`; get has no write ACK.
+Set outcomes are `VERIFIED`, `REFUSED` or `UNKNOWN`. `readback` is `present`,
+`absent`, `match`, `mismatch`, `unavailable` or `not-attempted` as applicable.
+`event_id` is omitted without an ACK, and `content` is omitted for absent or
+unverified results. Input, identity/configuration and resolution refusals before
+the property operation print no result. Text output quotes identifiers and
+includes the same outcome/ACK/readback distinction. Verification is the server's
+observed current exact-key content; it does not prove server honesty, historical
+event/content correspondence, later state, current membership or client UI.
+
+Focused fixture checks (no live server or account is needed):
+
+```bash
+go test ./internal/matrix ./internal/cli -run '^TestRoomPropert' -count=1
+```
+
 ### `a2a room retire <alias>`
 
 Removes an EMPTY room created by mistake; Matrix cannot delete rooms. It unlinks the room from each parent space where the caller has the
