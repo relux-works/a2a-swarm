@@ -30,6 +30,8 @@ func requireNotice(t *testing.T, n config.OwnNoticeObservation, want string) {
 }
 
 // Real type/deferral, own inbox receipt and later mail precede detection.
+// Partial/untyped retained attempts stay unknown, including all IDs receipted
+// with Notice retained. Settled/no-journal drafts stay clear despite AttemptAt.
 // Unknown preserves the original evidence, not false or a new first-since.
 func TestTerminalNoticeDetection(t *testing.T) {
 	for _, neighbor := range []string{"suspected", "partial", "no-journal", "ordinary-draft", "unknown", "no-new", "untyped", "count"} {
@@ -84,10 +86,10 @@ func TestTerminalNoticeDetection(t *testing.T) {
 			f.control(mode)
 			f.step()
 			want := "suspected"
-			if neighbor == "partial" || neighbor == "no-journal" || neighbor == "ordinary-draft" || neighbor == "untyped" {
+			if neighbor == "no-journal" || neighbor == "ordinary-draft" {
 				want = "clear"
 			}
-			if neighbor == "unknown" || neighbor == "count" {
+			if neighbor == "unknown" || neighbor == "count" || neighbor == "partial" || neighbor == "untyped" {
 				want = "unknown"
 			}
 			requireNotice(t, f.binding().OwnNotice, want)

@@ -103,6 +103,9 @@ Run that regression with `go test -race ./internal/cli -run TestHookStrandedRepo
 Private tmux fixtures also retain exact-looking and styled trailing-space drafts
 unchanged: `go test -race ./internal/cli -run 'TestTerminalNoticeManualReviewMatrix|TestTerminalNoticeRenderedSpaceBoundary' -count=1`.
 These private synthetic fixtures do not identify the unrecorded live transition.
+The incident route is opt-in through existing identity metadata; without `own_room`, the consumer reports local unavailability and sends
+no incident. Completed attempts can retain time/count history without making a later human draft uncertain; retained pending IDs or
+notice text still keep partial/untyped observations unknown. See the CLI contract for authority and verification limits.
 
 Run these fixtures and mutation controls only on CI runners, never on this host.
 Run readiness fixtures with `go test -race ./internal/tmuxwake ./internal/cli ./internal/config -run 'TestRegistry|TestBound|TestReadiness|TestTerminalReadiness' -count=1`.

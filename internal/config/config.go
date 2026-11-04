@@ -149,7 +149,7 @@ func LoadMatrix(p Paths, getenv Getenv) (Matrix, error) {
 
 // Credentials is the per-agent credential file.
 type Credentials struct {
-	// OwnRoom explicitly pins this identity's own project/lane room, never a projection.
+	// OwnRoom pins the operator-declared own project/lane route; no room-type discovery.
 	OwnRoom           string             `json:"own_room,omitempty"`
 	ConnectionBinding *ConnectionBinding `json:"connection_binding,omitempty"`
 	UserID            string             `json:"user_id"`

@@ -1089,17 +1089,32 @@ A keeper may inspect and recover the pane manually; this command does not perfor
 A known-unsubmitted typed journal with either its full attempt still pending or all announced events legitimately receipted/pruned,
 together with a nonempty rendered composer, reports `SUSPECTED-DEAF: own notice possibly orphaned`. Partial attempts remain uncertain.
 This is a factual suspicion, not proven deafness or proof of current editor contents.
+A nonempty observation with a retained partial or untyped attempt is unknown. Retained evidence includes pending IDs or saved notice text,
+including saved text after all IDs were receipted; an earlier suspicion also remains evidence until a fresh clear. Historical attempt time
+and count alone do not mean an attempt is pending: completed sends and fresh refusals clear the pending IDs/text while keeping that history.
+With no retained evidence, a legitimate draft reports clear/not applicable. Classification grants no Enter or erase authority.
 After ten minutes from the first suspicion, a fresh suspected observation schedules one `kind=system`, `subtype=incident` message,
 with structured `subject=identity:NAME`, to the identity's explicitly configured own project/lane room (protocol rule 24).
 The source has no existing authoritative own-room record; optional `own_room` in the identity's credential metadata supplies that record.
 It must be a room ID, explicitly provisioned by the operator in the selected connection's identity metadata, never inferred from identity
 names, product metadata, discovery or membership alone. This change does not configure any live identity.
+The operator must supply a known own project/lane room. Configuration is the authority for that designation; the runtime does not classify
+arbitrary rooms as project, broadcast, status or projection rooms. It explicitly refuses the canonical global `#system` alias. This does not
+authorize configuring other projection or broadcast rooms as an own route, and adds no new room-type policy or discovery gate.
+No CLI setter ships in this change. Existing source provisioning helpers can update `Credentials.OwnRoom`: `config.RewriteCredentialMetadata`
+for already scrubbed metadata (both secret fields must remain empty), or `config.UpdateCredentials` for existing token-bearing file credentials
+(that helper clears the legacy password field). Both use the established identity file lock and 0600 replacement. Neither is a new CLI
+provisioning command or a reason to migrate/repair credentials. `creds migrate` is not an own-room setter. Until an operator provisions
+the opt-in field, the local unavailable status is the mitigation and no incident message is sent. No live provisioning is performed here.
 Before pinning and again before sending, the consumer reads joined membership, canonical alias and message power levels.
 Missing configuration reports `incident route not configured`; nonmembership, denied or unknown access remains locally unavailable with
 zero message sends. A missing canonical alias or unrecognized power-level availability also refuses. No room is created or joined.
 There is no global `#system` fallback; that room remains projection-only and the projector remains OFF.
 Existing project system subscriptions provide the protocol audience; a successful send does not establish any particular subscriber's receipt.
 This works without an own liveness record or new mail. Unavailable routes retry after `--retry-max`.
+While suspicion is due, an unavailable report emits one fixed stderr line per retry, about 120 lines/hour at the default 30s retry cap,
+into the binding log. Log rotation is not established by this change. Power checks can fail closed when needed defaults are omitted; room-version-12
+creator power without a `users` entry is not inferred, so valid rooms can be refused. Live server behavior remains unverified.
 The destination, transaction ID and fixed content are persisted before sending; retries after an ambiguous ACK or process restart reuse them.
 An own-room change or unavailable pinned route blocks the retry locally, without rerouting or replacing the pin. Restoring the original
 route permits the same transaction to retry. Server transaction retention is finite and unknown here; universal duplicate prevention is not claimed.

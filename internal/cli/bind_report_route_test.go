@@ -52,7 +52,7 @@ func reportFixture(t *testing.T) (*env, *App, *session, string) {
 // unknown routes send nothing and remain locally explicit. Global membership
 // alone grants nothing. All services and credentials here are fixture-local.
 func TestNoticeOwnRoomRoute(t *testing.T) {
-	for _, mode := range []string{"joined", "missing", "nonmember", "denied", "unknown", "global-only", "global-config", "foreign-metadata"} {
+	for _, mode := range []string{"joined", "missing", "nonmember", "denied", "unknown", "global-only", "global-config", "missing-alias", "foreign-metadata"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, room := reportFixture(t)
 			switch mode {
@@ -75,15 +75,49 @@ func TestNoticeOwnRoomRoute(t *testing.T) {
 				e.hs.mu.Lock()
 				delete(e.hs.rooms[room].state, "m.room.power_levels|")
 				e.hs.mu.Unlock()
+			case "missing-alias":
+				e.hs.mu.Lock()
+				delete(e.hs.rooms[room].state, "m.room.canonical_alias|")
+				e.hs.mu.Unlock()
 			case "foreign-metadata":
 				if _, err := config.UpdateCredentials(e.paths(), "alice", func(c *config.Credentials) error { c.UserID = "@other:test.local"; return nil }); err != nil {
 					t.Fatal(err)
 				}
 			case "global-config":
 				room = e.hs.addRoom("system", s.creds.UserID)
+				e.hs.mu.Lock()
+				e.hs.rooms[room].state["m.room.power_levels|"] = json.RawMessage(`{"users_default":0,"events_default":0}`)
+				e.hs.mu.Unlock()
 				if _, err := config.UpdateCredentials(e.paths(), "alice", func(c *config.Credentials) error { c.OwnRoom = room; return nil }); err != nil {
 					t.Fatal(err)
 				}
+			}
+			// These negatives differ from a usable route only in canonical alias.
+			// Restore that field to prove membership and power cannot mask refusal.
+			if mode == "global-config" || mode == "missing-alias" {
+				if _, err := s.strandedOwnRoom(context.Background(), ""); err == nil || err.Error() != "unavailable: incident route" {
+					t.Fatal("alias guard did not refuse", err)
+				}
+				e.hs.mu.Lock()
+				saved := e.hs.rooms[room].state["m.room.canonical_alias|"]
+				e.hs.rooms[room].state["m.room.canonical_alias|"] = json.RawMessage(`{"alias":"#project-lane:test.local"}`)
+				e.hs.mu.Unlock()
+				if got, err := s.strandedOwnRoom(context.Background(), ""); err != nil || got != room {
+					t.Fatal("alias positive control unusable", err)
+				}
+				e.hs.mu.Lock()
+				if saved == nil {
+					delete(e.hs.rooms[room].state, "m.room.canonical_alias|")
+				} else {
+					e.hs.rooms[room].state["m.room.canonical_alias|"] = saved
+				}
+				e.hs.mu.Unlock()
+			}
+			wantStatus := "unavailable: incident route"
+			if mode == "joined" {
+				wantStatus = "published"
+			} else if mode == "missing" || mode == "global-only" {
+				wantStatus = "incident route not configured"
 			}
 			err := a.reportStrandedTerminalNotice(context.Background(), s, "gen")
 			b := e.state("alice").Terminal
@@ -108,20 +142,21 @@ func TestNoticeOwnRoomRoute(t *testing.T) {
 			} else if err == nil || count != 0 || b.NoticeReport.Sent || e.hs.CallCount(sendRoute) != 0 || terminalNoticeReportStatus(b) == "published" {
 				t.Fatal("unavailable route sent or claimed success", err, b.NoticeReport)
 			}
-			if mode == "missing" || mode == "global-only" {
-				if terminalNoticeReportStatus(b) != "incident route not configured" {
-					t.Fatal("missing local status")
-				}
+			if terminalNoticeReportStatus(b) != wantStatus {
+				t.Fatal("unexpected local status", terminalNoticeReportStatus(b), wantStatus)
 			}
 			if mode == "foreign-metadata" {
 				e.as("alice", "bind", "status").failsWith(t, ExitError, "credential user_id does not match selected identity")
 				return
 			}
-			if text := e.as("alice", "bind", "status").ok(t).stdout; !strings.Contains(text, "system-report="+terminalNoticeReportStatus(b)) {
+			if text := e.as("alice", "bind", "status").ok(t).stdout; !strings.Contains(text, "system-report="+wantStatus) {
 				t.Fatal("text report status", text)
 			}
-			if got := e.as("alice", "bind", "status", "--json").ok(t).stdout; !strings.Contains(got, `"system_report"`) || !strings.Contains(got, terminalNoticeReportStatus(b)) {
-				t.Fatal("JSON report status", got)
+			var status struct {
+				Report string `json:"system_report"`
+			}
+			if err := json.Unmarshal([]byte(e.as("alice", "bind", "status", "--json").ok(t).stdout), &status); err != nil || status.Report != wantStatus {
+				t.Fatal("JSON report status", err, status.Report)
 			}
 		})
 	}
@@ -167,7 +202,31 @@ func TestNoticeOwnRoomAmbiguousPin(t *testing.T) {
 			if r.Sent || !reflect.DeepEqual(r.Message, pin.Message) || e.hs.CallCount(sendRoute) != before {
 				t.Fatal("pin mutated/replayed", r)
 			}
-			e.ownReportRoom("alice")
+			wantStatus := "unavailable: pinned incident route changed"
+			if mode == "missing" {
+				wantStatus = "incident route not configured"
+			} else if mode == "denied" {
+				wantStatus = "unavailable: incident route"
+			}
+			if terminalNoticeReportStatus(e.state("alice").Terminal) != wantStatus {
+				t.Fatal("wrong refusal status")
+			}
+			if text := e.as("alice", "bind", "status").ok(t).stdout; !strings.Contains(text, "system-report="+wantStatus) {
+				t.Fatal("wrong text refusal status", text)
+			}
+			var status struct {
+				Report string `json:"system_report"`
+			}
+			if err := json.Unmarshal([]byte(e.as("alice", "bind", "status", "--json").ok(t).stdout), &status); err != nil || status.Report != wantStatus {
+				t.Fatal("wrong JSON refusal status", err, status.Report)
+			}
+			// Restore the original room without recreating the fake room or events.
+			e.hs.mu.Lock()
+			e.hs.rooms[room].state["m.room.power_levels|"] = json.RawMessage(`{"users_default":0,"events_default":0}`)
+			e.hs.mu.Unlock()
+			if _, err := config.UpdateCredentials(e.paths(), "alice", func(c *config.Credentials) error { c.OwnRoom = room; return nil }); err != nil {
+				t.Fatal(err)
+			}
 			_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Terminal.NoticeReport.RetryAt = time.Time{}; return nil })
 			if err != nil {
 				t.Fatal(err)
@@ -175,16 +234,16 @@ func TestNoticeOwnRoomAmbiguousPin(t *testing.T) {
 			if err := a.reportStrandedTerminalNotice(context.Background(), s, "gen"); err != nil {
 				t.Fatal(err)
 			}
-			if len(e.projectionsFrom(room, s.creds.UserID)) != 1 || !reflect.DeepEqual(e.state("alice").Terminal.NoticeReport.Message, pin.Message) {
+			if !e.state("alice").Terminal.NoticeReport.Sent || e.hs.CallCount(sendRoute) != before+1 || len(e.projectionsFrom(room, s.creds.UserID)) != 1 || !reflect.DeepEqual(e.state("alice").Terminal.NoticeReport.Message, pin.Message) {
 				t.Fatal("retry changed immutable pin")
 			}
 		})
 	}
 }
 
-// Exercise dispatch's actual completion return path used by runTerminal:
-// successful and failed incident sends both preserve healthy suspicion and
-// outcome, and neither returns a consumer error. No terminal/process probe.
+// Direct helper calls preserve suspicion/outcome on successful and failed reports
+// and return no consumer error. Dispatch/runTerminal wiring is inspected statically;
+// this test cannot detect a caller bypassing the helper. No terminal/process probe.
 func TestNoticeReportCompletionIsolation(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "failure"}[failed], func(t *testing.T) {
@@ -204,18 +263,18 @@ func TestNoticeReportCompletionIsolation(t *testing.T) {
 	}
 }
 
-// First observation and the persisted SessionStart/manual-rebind boundaries
-// keep retained partial/untyped input unknown. Fully typed and empty-rendered
-// neighbours still yield suspicion and clear. No consumer or input is started.
+// First observation and actual persisted SessionStart keep retained partial/untyped
+// input unknown; typed and empty neighbours yield suspicion and clear. This does
+// not exercise manual bind's journal-cloning/process boundary or terminal input.
 func TestNoticeRetainedAttemptUncertainty(t *testing.T) {
-	for _, edge := range []string{"first", "session-start", "manual"} {
-		for _, mode := range []string{"partial", "untyped", "typed", "empty", "no-attempt"} {
+	for _, edge := range []string{"first", "session-start"} {
+		for _, mode := range []string{"partial", "untyped", "untyped-receipted", "typed", "empty", "no-attempt"} {
 			t.Run(edge+"/"+mode, func(t *testing.T) {
 				e, a, s, _ := reportFixture(t)
 				b := *e.state("alice").Terminal
 				b.OwnNotice = config.OwnNoticeObservation{}
 				b.NoticeReport = nil
-				b.Typed = mode != "untyped"
+				b.Typed = mode != "untyped" && mode != "untyped-receipted"
 				b.NoticeCount = 1
 				b.Notice = tmuxwake.Notice(1)
 				b.AttemptIDs = []string{"mail"}
@@ -223,16 +282,16 @@ func TestNoticeRetainedAttemptUncertainty(t *testing.T) {
 					b.NoticeCount = 2
 					b.Notice = tmuxwake.Notice(2)
 				}
+				// Dispatch prunes receipted IDs but retains Notice until settlement or
+				// empty typed reconciliation: no IDs alone does not prove settlement.
+				if mode == "untyped-receipted" {
+					b.AttemptIDs = nil
+				}
 				if mode == "no-attempt" {
 					b.Typed = false
 					b.Notice = ""
 					b.NoticeCount = 0
 					b.AttemptIDs = nil
-				}
-				if edge == "manual" {
-					next := b
-					carryTerminalNoticeEpisode(&b, &next, false)
-					b = next
 				}
 				_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Terminal = &b; return nil })
 				if err != nil {
@@ -278,7 +337,7 @@ func TestNoticeRetainedAttemptUncertainty(t *testing.T) {
 
 // The closed status vocabulary includes idle, pending, published and invalid.
 func TestNoticeReportStatusVocabulary(t *testing.T) {
-	for _, status := range []string{"pending", "published", "invalid"} {
+	for _, status := range []string{"pending", "published", "invalid", "incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed", "unavailable: system incident report failed"} {
 		b := &config.TerminalBinding{NoticeReport: &config.NoticeReport{Outcome: status}}
 		want := status
 		if status == "invalid" {
