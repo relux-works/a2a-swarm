@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: relux-works/curator
-          ref: f1bb3e85e670ba1bc904e480a952c50b35a6e784
+          ref: 55d4e773249ad7f36d7c18e47016b525ecae07c5
           path: curator
           persist-credentials: false
       - uses: actions/setup-go@v5
