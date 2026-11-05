@@ -357,21 +357,34 @@ func TestTerminalAlreadySubmittedNoticeGetsNoSecondEnter(t *testing.T) {
 	}
 }
 
-// Foreign text that is not a prefix of the notice stops polling at once, with
-// no Enter, even while the window is still open.
-func TestTerminalForeignTextDuringWindowStopsWithoutEnter(t *testing.T) {
-	for _, runtime := range []string{"codex", "claude"} {
-		t.Run(runtime, func(t *testing.T) {
-			f := newTerminalFixture(t, runtime)
-			start := time.Now()
+// Foreign text appended to the notice never gets an Enter while the window is
+// open. The outcome depends on what the layout can recognize: Claude's composer
+// stays readable, so the text is classified as changed and polling stops at once.
+// A filled Codex composer hides its shortcut hint, so only the exact notice is
+// recognizable; appended text reads as unavailable and polling runs to the deadline.
+func TestTerminalForeignTextDuringWindowGetsNoEnter(t *testing.T) {
+	for _, c := range []struct {
+		runtime    string
+		outcome    string
+		stopsEarly bool
+	}{
+		{"codex", "notice left in draft: input unavailable", false},
+		{"claude", "notice left in draft: changed input", true},
+	} {
+		t.Run(c.runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, c.runtime)
+			var typed time.Time
 			outcome, err := f.target.Send(context.Background(), 2, nil, func() {
 				f.typeText("X")
+				f.wait(func(s fixtureState) bool { return s.Text == Notice(2)+"X" })
+				typed = time.Now()
 			})
-			if err != nil || outcome != "notice left in draft: changed input" {
+			elapsed := time.Since(typed)
+			if err != nil || outcome != c.outcome {
 				t.Fatalf("unexpected outcome: %q %v", outcome, err)
 			}
-			if time.Since(start) >= redrawWait {
-				t.Fatalf("foreign text did not stop polling early: %v", time.Since(start))
+			if stopped := elapsed < redrawWait; stopped != c.stopsEarly {
+				t.Fatalf("polling window: elapsed %v of %v, want stopsEarly=%v", elapsed, redrawWait, c.stopsEarly)
 			}
 			s := f.wait(func(s fixtureState) bool { return s.Text == Notice(2)+"X" })
 			if len(s.Submitted) != 0 {

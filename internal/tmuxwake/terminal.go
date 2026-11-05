@@ -267,7 +267,10 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 	// terminal can take far longer than one fixed delay (#89). Polling does
 	// not submit anything: Enter still requires one capture showing exactly
 	// the notice. An empty box or a strict prefix of the notice is a lagging
-	// redraw and keeps waiting; any other text is foreign input and stops.
+	// redraw and keeps waiting; any other recognized text is foreign input and
+	// stops. A layout that cannot be read (a filled Codex composer holding
+	// anything but the exact notice, a dialog, a failed capture) also keeps
+	// waiting, and ends as unavailable at the deadline.
 	deadline := time.NewTimer(redrawWait)
 	defer deadline.Stop()
 	tick := time.NewTicker(redrawPoll)
