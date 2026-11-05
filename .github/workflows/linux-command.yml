@@ -36,8 +36,8 @@ jobs:
             env -u GIT_DIR -u GIT_WORK_TREE -u SSH_AUTH_SOCK -u GOFLAGS \
               -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u CODEX_HOME \
               -u CLAUDE_CONFIG_DIR HOME="$scratch" GOENV=off GOTOOLCHAIN=local \
-              CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-              go build -o "$scratch/a2a-$arch" ./cmd/a2a
+              GOPROXY=off GOSUMDB=off CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -mod=vendor -o "$scratch/a2a-$arch" ./cmd/a2a
             file "$scratch/a2a-$arch" | tee "$scratch/file-$arch"
             grep -q 'statically linked' "$scratch/file-$arch"
           done
