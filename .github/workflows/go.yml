@@ -12,7 +12,7 @@ jobs:
     runs-on: [self-hosted, macOS, relux-a2a]
     # A hung step must not hold a PR for the 6 h default (2026-10-06: a cache
     # tar sat 70 min in uninterruptible I/O after the tests had passed).
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -24,16 +24,16 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      # The full CLI suite took 565s in the successful base-main run39958808425;
-      # Go's default 10m aggregate watchdog left only 35s for runtime variance.
-      # Keep a bounded suite watchdog inside this job's existing 30m budget.
-      - run: go test -race -timeout 20m ./...
+      # internal/cli takes about 860s on main; a PR with added tests hit the
+      # 20m Go test timeout at 1201s on the Mac runner. More tests are coming.
+      # Allow a 28m test watchdog inside a 35m job budget.
+      - run: go test -race -timeout 28m ./...
 
   test-linux:
     # Add capacity while the repo is private and the single Mac runner is queued.
     # Transitional F1 step: moving off macOS and to public-allowed labels is later.
     runs-on: [self-hosted, Linux, swarma-ci]
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          go test -race -timeout 20m -v ./... 2>&1 | tee "$RUNNER_TEMP/go-test-linux.log"
+          go test -race -timeout 28m -v ./... 2>&1 | tee "$RUNNER_TEMP/go-test-linux.log"
           test_status=${PIPESTATUS[0]}
           set -e
           skipped=$(grep -c '^[[:space:]]*--- SKIP:' "$RUNNER_TEMP/go-test-linux.log" || true)
