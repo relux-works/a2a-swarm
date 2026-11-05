@@ -292,3 +292,91 @@ func TestTerminalClearFreshFence(t *testing.T) {
 		})
 	}
 }
+
+// #89 regression: a renderer that catches up inside the bounded verification
+// window is submitted exactly once instead of being stranded as a draft. The
+// hold models a slow (background-priority) terminal; it does not prove any
+// bound beyond redrawWait, which TestTerminalDelayedRendererDoesNotSubmit covers.
+func TestTerminalLateRendererInsideWindowSubmitsOnce(t *testing.T) {
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			hold := f.path + ".hold"
+			defer os.Remove(hold)
+			outcome, err := f.target.Send(context.Background(), 2, func() {
+				if err := os.WriteFile(hold, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}, func() {
+				go func() { time.Sleep(400 * time.Millisecond); os.Remove(hold) }()
+			})
+			if err != nil || outcome != "wake submitted" {
+				t.Fatalf("late renderer not submitted: %q %v", outcome, err)
+			}
+			s := f.wait(func(s fixtureState) bool { return len(s.Submitted) > 0 })
+			if len(s.Submitted) != 1 || s.Submitted[0] != Notice(2) || s.Text != "" {
+				t.Fatalf("unexpected submission: %+v", s)
+			}
+		})
+	}
+}
+
+// Negative control for the polling window: once the box is empty because the
+// notice was already submitted by someone else, polling never adds a second
+// Enter; the attempt ends as a draft outcome with exactly one submission.
+func TestTerminalAlreadySubmittedNoticeGetsNoSecondEnter(t *testing.T) {
+	old := redrawWait
+	redrawWait = 600 * time.Millisecond
+	defer func() { redrawWait = old }()
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			hold := f.path + ".hold"
+			defer os.Remove(hold)
+			outcome, err := f.target.Send(context.Background(), 2, func() {
+				if err := os.WriteFile(hold, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}, func() {
+				// Foreign Enter queued behind the typed notice, then the renderer catches up.
+				if _, err := f.target.command(context.Background(), "send-keys", "-t", f.target.Pane, "Enter"); err != nil {
+					t.Fatal(err)
+				}
+				os.Remove(hold)
+				f.wait(func(s fixtureState) bool { return len(s.Submitted) == 1 })
+			})
+			if err != nil || outcome != "notice left in draft: changed input" {
+				t.Fatalf("unexpected outcome: %q %v", outcome, err)
+			}
+			time.Sleep(200 * time.Millisecond)
+			s := f.wait(func(s fixtureState) bool { return true })
+			if len(s.Submitted) != 1 || s.Submitted[0] != Notice(2) || s.Text != "" {
+				t.Fatalf("second Enter or lost notice: %+v", s)
+			}
+		})
+	}
+}
+
+// Foreign text that is not a prefix of the notice stops polling at once, with
+// no Enter, even while the window is still open.
+func TestTerminalForeignTextDuringWindowStopsWithoutEnter(t *testing.T) {
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			start := time.Now()
+			outcome, err := f.target.Send(context.Background(), 2, nil, func() {
+				f.typeText("X")
+			})
+			if err != nil || outcome != "notice left in draft: changed input" {
+				t.Fatalf("unexpected outcome: %q %v", outcome, err)
+			}
+			if time.Since(start) >= redrawWait {
+				t.Fatalf("foreign text did not stop polling early: %v", time.Since(start))
+			}
+			s := f.wait(func(s fixtureState) bool { return s.Text == Notice(2)+"X" })
+			if len(s.Submitted) != 0 {
+				t.Fatalf("foreign draft submitted: %+v", s)
+			}
+		})
+	}
+}

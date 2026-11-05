@@ -263,25 +263,45 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 			afterType()
 		}
 	}
-	// The redraw may lag key delivery. Waiting does not submit anything; it
-	// merely lets the next capture observe the application input state.
-	timer := time.NewTimer(150 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return SendResult{SendUncertain, SendInterrupted}, ctx.Err()
-	case <-timer.C:
-	}
-	box, ok = inspect(ctx, notice)
-	if !ok {
-		return SendResult{SendDraft, SendDraftUnavailable}, nil
-	}
-	if box.Text == notice {
-		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
-			return SendResult{SendUncertain, SendEnterUncertain}, err
+	// The redraw may lag key delivery, and a background-priority or busy
+	// terminal can take far longer than one fixed delay (#89). Polling does
+	// not submit anything: Enter still requires one capture showing exactly
+	// the notice. An empty box or a strict prefix of the notice is a lagging
+	// redraw and keeps waiting; any other text is foreign input and stops.
+	deadline := time.NewTimer(redrawWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(redrawPoll)
+	defer tick.Stop()
+	outcome := SendDraftUnavailable
+	for {
+		select {
+		case <-ctx.Done():
+			return SendResult{SendUncertain, SendInterrupted}, ctx.Err()
+		case <-deadline.C:
+			return SendResult{SendDraft, outcome}, nil
+		case <-tick.C:
 		}
-		return SendResult{SendSubmitted, SendWakeSubmitted}, nil
+		box, ok = inspect(ctx, notice)
+		if !ok {
+			outcome = SendDraftUnavailable
+			continue
+		}
+		if box.Text == notice {
+			if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
+				return SendResult{SendUncertain, SendEnterUncertain}, err
+			}
+			return SendResult{SendSubmitted, SendWakeSubmitted}, nil
+		}
+		outcome = SendDraftChanged
+		if !strings.HasPrefix(notice, box.Text) {
+			return SendResult{SendDraft, SendDraftChanged}, nil
+		}
 	}
-
-	return SendResult{SendDraft, SendDraftChanged}, nil
 }
+
+// redrawPoll and redrawWait bound the post-type verification. Variables only
+// so tests can shorten the window; production never changes them.
+var (
+	redrawPoll = 100 * time.Millisecond
+	redrawWait = 2 * time.Second
+)
