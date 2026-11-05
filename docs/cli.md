@@ -948,7 +948,8 @@ same-image `wait`/`watch` (`ErrBindingParallelWait`). The reverse direction is e
 wait/watch work normally. Refusal leaves binding/mail untouched and never signals that process. Inspection failure fails closed.
 The scanner covers own-UID a2a-named executables on macOS/Linux, resolves `--as` or `A2A_AGENT` and `A2A_CONFIG_DIR` in RAM, and never logs argv,
 environment, tokens or bodies. Renamed unrelated executables and an old binary started after admission are not prevented by this snapshot;
-rollout must stop old consumers first and use only the newly installed binary for subsequent commands. An old schema can otherwise erase the binding.
+old-image refusal remains in effect until a terminal consumer has refreshed to the installed image. Use only the newly installed binary for
+subsequent commands; unrelated old waiters still need to be stopped by their owners. An old schema can otherwise erase the binding.
 Current CLI identity selection requires `--as` or `A2A_AGENT`; there is no third implicit identity fallback for the scanner to infer.
 macOS inspection uses `/usr/sbin/lsof` executable vnode metadata; Linux uses `/proc/PID/exe`. Other platforms refuse unavailable inspection.
 
@@ -967,7 +968,53 @@ The detached consumer outlives the invoking hook or session, so it starts from a
 `A2A_AGENT`, `A2A_MATRIX_URL`, `A2A_MATRIX_SERVER_NAME` and `A2A_SECRET_STORE`; `A2A_CONFIG_DIR` and `A2A_SESSION_ID` are set explicitly.
 Session-scoped runtime variables (for example `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CONFIG_DIR`, `CODEX_THREAD_ID`,
 `CODEX_HOME`), `TMUX`/`TMUX_PANE` (the target is already pinned in the binding) and `A2A_MATRIX_REGISTRATION_TOKEN` never reach it.
-A consumer started by an older build keeps its inherited environment until its own session rebinds.
+A consumer started before the allowlist fix keeps its inherited environment until its own session rebinds. Refresh reapplies the same allowlist;
+it does not add environment markers or carry the invoking session's environment.
+
+Terminal consumers on macOS and Linux automatically pick up a replacement executable at their original absolute path.
+On Linux, `os.Executable` resolves a launch symlink: retargeting that link is not observed unless the consumer's argv retains
+the link. Refresh is reliable for replacing the regular file at the retained executable path. When a matching absolute launch alias
+is available in argv, it is retained and resolved on each poll and before exec; only then can retargeting that alias trigger refresh.
+Exec uses the resolved path and retains the launch path as argv[0] for later refreshes. This applies only to
+terminal `bind`; native Codex `runtime bind` consumers are out of scope. **One manual unbind/rebind from the owning session is still needed to
+get an already-running old consumer onto the first build containing this feature.** Later compatible replacements need no unbind, `--force`, new
+consumer or new generation. A pre-feature or incompatible candidate is refused and needs a manual rebind.
+The process execs in place: PID and process birth, consumer lock, owner PID/birth, pinned pane/socket, session,
+lease ownership, attempt history, hourly reservations and mailbox remain. Lease expiry continues its ordinary renewal; refresh never releases it.
+
+The file must be an own-UID regular native executable with owner execute permission, no group/world write or set-ID bits, complete declared
+executable file ranges, and matching identity, metadata and SHA-256 content across observations at least one second apart. Unchanged current
+and failed images have a steady-state cost of path resolution plus lstat. A pending candidate with matching metadata skips full
+observation after its initial stability check. Changed candidates, stability confirmation and the final pre-exec check still parse and hash the full image.
+The resolved final path is opened with `O_NOFOLLOW`; missing, truncated, foreign-owned and non-executable targets are refused. Install a
+complete image using an atomic rename at the same path; do not write a running executable in place. A final full observation immediately precedes exec. Filesystem inspection and pathname exec are separate kernel
+operations: concurrent modification after the final observation is outside this check; atomic installation remains required.
+
+Refresh setup is lazy: no loaded-image probe or hash runs before ready is written and the first delivery cycle has started.
+Refresh runs only between complete delivery cycles, after Send, its final journal write and notice publication have returned. A fresh control-locked
+state read must show this live generation/PID/birth and its own unexpired lease, no attempt IDs, no typed or pending notice, and no shared
+notification reservation. An uncertain attempt/reservation defers refresh; it is never cleared just to permit an upgrade. Completed historical
+attempt times/counts and hourly reservations do not block it. A pending candidate checks safety at most once per 30 seconds,
+including the control lock and process-birth probe. Once state becomes safe, the next check is due within 30 seconds and runs at
+the next completed cycle: worst-case scheduling delay is 30 seconds plus one cycle duration and its sleep (up to 60 seconds
+normally, or 5 minutes under sync-error backoff), plus probe/inspection time; stalled cycles have no finite wall-clock bound.
+The control lock is released before exec; the existing consumer flock is inherited
+without a release/reacquire gap. The resumed image validates the same PID/birth/generation, skips the already-used startup pipe, and starts with
+fresh idle qualification. Its loaded image becomes the baseline, preventing exec loops. Arguments are rebuilt from the selected connection pin,
+identity, generation and inherited lock descriptor; the allowlisted environment above is reapplied.
+
+Before exec, a short-lived candidate subprocess runs `bind --consumer-protocol` with the same allowlisted environment and no
+inherited lock/readiness descriptors. It must exit successfully within a 2-second deadline (plus at most 100ms pipe drain), emit
+exactly `a2a-bind-consumer/1` followed by a newline, and emit no stderr. Output memory is bounded to the token length. The token
+versions both the inherited-lock launch protocol and the persisted consumer state contract. A failed, hanging or incompatible
+probe keeps the old consumer running and logs exactly `binding re-exec refused: protocol incompatible` once per fingerprint;
+it is not retried until the file changes. A successful probe is also cached for that fingerprint.
+
+A successful resumed consumer logs exactly `binding re-exec: executable changed` in `state/NAME.binding.log`. If exec fails, the old image keeps
+running and logs exactly `binding re-exec refused: exec failed`, once for that file fingerprint. It retries that file only after identity, metadata
+or bytes change, then requires stability again. No argv, environment, path, error text, tokens or peer bodies are logged by refresh. Failed
+authority/state observations postpone refresh. Sync failures retain the existing bounded retry and do not by themselves block a safe refresh;
+refresh never drops the lease or starts a second consumer.
 
 The only typed text is `a2a: N new peer events; run a2a inbox`. Ordinary fresh delivery requires two consecutive qualified rendered-empty
 observations at least `--interval` apart on the same pinned target. Busy, unknown, draft, gate, session/generation/daemon or authority changes

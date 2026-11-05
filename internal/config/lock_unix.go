@@ -28,6 +28,14 @@ const lockRetry = 10 * time.Millisecond
 // lockFileBy is lockFile with non-blocking attempts until deadline; a lock
 // still held then is ErrLockTimeout.
 func lockFileBy(path string, deadline time.Time) (func(), error) {
+	f, err := lockedFileBy(path, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return unlocker(f), nil
+}
+
+func lockedFileBy(path string, deadline time.Time) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|openNoFollow, SecretFileMode)
 	if err != nil {
 		return nil, err
@@ -35,7 +43,7 @@ func lockFileBy(path string, deadline time.Time) (func(), error) {
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return unlocker(f), nil
+			return f, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
 			f.Close()

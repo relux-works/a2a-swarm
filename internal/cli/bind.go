@@ -39,6 +39,10 @@ func descendant(ctx context.Context, pid, ancestor int) bool {
 	return false
 }
 
+// consumerProtocol must be bumped by anyone changing the inherited-FD launch
+// protocol or the persisted consumer state contract.
+const consumerProtocol = "a2a-bind-consumer/1\n"
+
 func cmdBind(ctx context.Context, a *App, args []string) error {
 	return a.bindTerminal(ctx, args, bindingManual)
 }
@@ -52,6 +56,11 @@ const (
 )
 
 func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode) error {
+	// Handle this exact hidden invocation before session/state/lease access.
+	if len(args) == 1 && args[0] == "--consumer-protocol" {
+		_, err := io.WriteString(a.Stdout, consumerProtocol)
+		return err
+	}
 	automatic := mode != bindingManual
 	if len(args) > 0 && args[0] == "status" {
 		return a.terminalStatus(ctx, args[1:])
@@ -67,6 +76,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	retryMax := fs.Duration("retry-max", 0, "explicit maximum sync-error backoff (at most 5m)")
 	rate := fs.Int("max-wakes-per-hour", 0, "explicit maximum wake attempts per hour")
 	run := fs.String("run-generation", "", "internal detached consumer generation")
+	lockFD := fs.Int("consumer-lock-fd", 0, "internal inherited consumer lock")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -82,7 +92,10 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		return err
 	}
 	if *run != "" {
-		return runBoundChild(ctx, a, *run)
+		return runBoundChild(ctx, a, *run, *lockFD)
+	}
+	if *lockFD != 0 {
+		return usagef("consumer lock requires detached generation")
 	}
 	if *sessionID == "" {
 		*sessionID = a.Getenv(EnvSessionID)
@@ -306,19 +319,23 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	return nil
 }
 
-func runBoundChild(ctx context.Context, a *App, generation string) error {
+func runBoundChild(ctx context.Context, a *App, generation string, inherited int) error {
 	reason := "startup unavailable"
 	defer func() { fmt.Fprintln(a.Stderr, "binding exit: "+reason) }()
-	ready := os.NewFile(3, "binding-ready")
-	if ready == nil {
-		return errors.New("missing bind startup pipe")
+	var ready *os.File
+	if inherited == 0 {
+		ready = os.NewFile(3, "binding-ready")
+		if ready == nil {
+			return errors.New("missing bind startup pipe")
+		}
+		defer ready.Close()
 	}
-	defer ready.Close()
 	s, err := a.session()
 	if err != nil {
 		return err
 	}
-	return config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error {
+	return config.WithConsumerLock(s.paths, s.name, time.Now().Add(100*time.Millisecond), inherited, func(lock *os.File) error {
+		refresh := newTerminalRefresh(ctx)
 		var initial config.TerminalBinding
 		err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 			st, err := config.LoadState(s.paths, s.name)
@@ -335,17 +352,22 @@ func runBoundChild(ctx context.Context, a *App, generation string) error {
 				return err
 			}
 			initial = *b
-			if _, err = ready.WriteString("ready\n"); err != nil {
-				return err
+			if ready != nil {
+				if _, err = ready.WriteString("ready\n"); err != nil {
+					return err
+				}
+				ready.Close()
 			}
-			ready.Close()
 			return nil
 		})
 		if err != nil {
 			return err
 		}
+		if inherited != 0 {
+			fmt.Fprintln(a.Stderr, "binding re-exec: executable changed")
+		}
 		var runErr error
-		reason, runErr = a.runTerminal(ctx, s, generation, initial)
+		reason, runErr = a.runTerminalWithRefresh(ctx, s, generation, initial, func() { refresh.poll(ctx, a, s, generation, lock) })
 		return runErr
 	})
 }
@@ -433,6 +455,10 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 // runTerminal retains its validated policy snapshot across local read errors;
 // no delivery action runs until fresh authority and a lease are available.
 func (a *App) runTerminal(ctx context.Context, s *session, generation string, initial config.TerminalBinding) (string, error) {
+	return a.runTerminalWithRefresh(ctx, s, generation, initial, nil)
+}
+
+func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
 	policy := initial
 	delay := policy.Interval
 	qualificationInterrupted := true
@@ -515,6 +541,13 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 			if fresh, readErr := config.LoadState(s.paths, s.name); readErr == nil {
 				delay = a.notificationWait(fresh, delay)
 			}
+		}
+		// Dispatch (including Send, finish and all notice publication) returned;
+		// no control/state lock or synchronous effect is in flight. Sync errors
+		// alone must not strand an old image: refresh obtains fresh authority
+		// and independently refuses any outstanding attempt or reservation.
+		if refresh != nil {
+			refresh()
 		}
 		timer := time.NewTimer(delay)
 		select {

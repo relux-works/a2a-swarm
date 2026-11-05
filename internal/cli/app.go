@@ -181,6 +181,11 @@ func (a *App) usage(w io.Writer) {
 
 // Run executes one a2a invocation and returns the exit code.
 func (a *App) Run(ctx context.Context, args []string) int {
+	// This exact hidden probe must bypass connection preflight and owner-DM
+	// diagnostics: neither state nor credentials may be consulted by negotiation.
+	if len(args) == 2 && args[0] == "bind" && args[1] == "--consumer-protocol" {
+		return a.fail(cmdBind(ctx, a, args[1:]))
+	}
 	a.ctx = ctx
 	a.connectionResolved = false
 	a.connection = nil
