@@ -464,6 +464,26 @@ func TestBoundNewVersionSend(t *testing.T) {
 	}
 }
 
+// A named 2.1.318 lane with a null converted-skills flag acquires a qualified
+// key and submits exactly one notice with one Enter through BoundTerminal.Send.
+func TestBoundConvertedSkillsNullSend(t *testing.T) {
+	f := newBoundFixture(t, "claude-named", "2.1.318", "idle")
+	f.m["asksForConvertedSkills"] = nil
+	f.write(t)
+	sample := f.b.AssessReadiness(context.Background())
+	if !sample.Eligible() || sample.Key.Route != RegistryNamed || sample.Key.RegistryVersion != "2.1.318" {
+		t.Fatal("null flag refused qualified named route", sample)
+	}
+	result, err := f.b.Send(context.Background(), 1, sample.Key, nil, nil)
+	if err != nil || result.Disposition != SendSubmitted {
+		t.Fatal(result, err)
+	}
+	state := f.f.wait(func(s fixtureState) bool { return len(s.Submitted) > 0 })
+	if len(state.Submitted) != 1 || state.Submitted[0] != Notice(1) || state.Text != "" {
+		t.Fatal("wrong null-flag submission", state)
+	}
+}
+
 // Unknown releases admit named and unnamed matching composers and submit exactly
 // one notice. TestBoundNewVersionSchemaRefusal pairs these with invalid records.
 func TestBoundNeighborVersionsStructure(t *testing.T) {

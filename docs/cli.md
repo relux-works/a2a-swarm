@@ -1039,7 +1039,8 @@ Registry qualification follows observed structure, with no release allowlist. An
 (three dot-separated numeric components, each 1–5 digits) is admitted and retained in the assessment and readiness key.
 Missing or malformed string versions yield `version_unqualified`, because no safe version token can identify that key;
 a present non-string version yields `schema_unqualified`, like other wrong required types. Qualification checks
-all required keys/types, optional `tmux`/`bridgeSessionId`, optional boolean `asksForConvertedSkills` and recursive `formerNames`.
+all required keys/types, optional `tmux`/`bridgeSessionId`, optional boolean-or-null `asksForConvertedSkills` and recursive `formerNames`.
+`asksForConvertedSkills` may be absent, either boolean or null (observed on Claude Code 2.1.318); all other types yield `schema_unqualified`.
 Unknown additional top-level keys (including `hostSessionId`) are admitted; known optional fields with wrong types still refuse.
 Duplicate keys at any depth, trailing JSON, excessive depth and oversized records still refuse. Interactivity
 requires `entrypoint=cli` and the matching tmux pane; `kind=interactive` alone is insufficient. A qualified `idle` or `shell` record is

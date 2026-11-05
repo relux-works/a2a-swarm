@@ -87,8 +87,8 @@ func TestRegistryQualifiedSchemas(t *testing.T) {
 	}
 }
 
-// The converted-skills flag is optional and accepts either boolean; other
-// JSON types refuse; an additional hostSessionId is diagnostic only.
+// The converted-skills flag accepts absence, either boolean and null (including
+// on 2.1.318); other JSON types refuse. An additional hostSessionId is diagnostic only.
 func TestRegistryConvertedSkillsSchema(t *testing.T) {
 	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
 	for _, version := range []string{"2.1.312", "2.1.317", "2.1.318", "2.1.319", "3.0.0"} {
@@ -100,7 +100,7 @@ func TestRegistryConvertedSkillsSchema(t *testing.T) {
 			{"absent", nil, RuntimeNone},
 			{"false", false, RuntimeNone},
 			{"true", true, RuntimeNone},
-			{"null", nil, RuntimeSchemaUnqualified},
+			{"null", nil, RuntimeNone},
 			{"string", "false", RuntimeSchemaUnqualified},
 			{"number", 0, RuntimeSchemaUnqualified},
 			{"array", []any{}, RuntimeSchemaUnqualified},

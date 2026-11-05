@@ -202,7 +202,7 @@ func registrySchema(m map[string]any) bool {
 		default:
 			switch k {
 			case "asksForConvertedSkills":
-				if _, ok := v.(bool); !ok {
+				if _, ok := v.(bool); !ok && v != nil {
 					return false
 				}
 			case "tmux", "bridgeSessionId":
