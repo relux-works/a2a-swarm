@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           scratch=$(mktemp -d)
-          trap 'rm -rf "$scratch"' EXIT
+          trap 'chmod -R u+w "$scratch"; rm -rf "$scratch"' EXIT
           for name in $(compgen -e); do
             case "$name" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|XDG_*) unset "$name";; esac
           done
