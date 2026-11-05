@@ -89,6 +89,13 @@ func IsStatus(err error, status int) bool {
 // ErrAuth wraps token rejections so the CLI can print one clear message.
 var ErrAuth = errors.New("access token rejected by the homeserver")
 
+// Retain the interpreted original-response evidence for callers distinguishing
+// a definite token refusal from an uncertain mutation. Error text is unchanged.
+type authRejection struct{ response *Error }
+
+func (e *authRejection) Error() string   { return fmt.Sprintf("%s (%s)", ErrAuth, e.response.ErrCode) }
+func (e *authRejection) Unwrap() []error { return []error{ErrAuth, e.response} }
+
 // seg escapes one path segment (room ids, aliases, event ids, user ids).
 func seg(s string) string { return url.PathEscape(s) }
 
@@ -222,7 +229,7 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 			}
 		}
 		if resp.StatusCode == http.StatusUnauthorized && (me.ErrCode == "M_UNKNOWN_TOKEN" || me.ErrCode == "M_MISSING_TOKEN") {
-			return nil, fmt.Errorf("%w (%s)", ErrAuth, me.ErrCode)
+			return nil, &authRejection{response: me}
 		}
 		return nil, me
 	}

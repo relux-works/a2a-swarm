@@ -52,15 +52,16 @@ func (s *namedTestStore) Create(_ context.Context, _ config.Paths, r config.Secr
 }
 
 type namedFixture struct {
-	t         *testing.T
-	root      string
-	r         config.ConnectionRegistry
-	store     *namedTestStore
-	env       map[string]string
-	out, err  bytes.Buffer
-	mu        sync.Mutex
-	httpCalls atomic.Int32
-	mode      string
+	t             *testing.T
+	root          string
+	r             config.ConnectionRegistry
+	store         *namedTestStore
+	env           map[string]string
+	out, err      bytes.Buffer
+	mu            sync.Mutex
+	httpCalls     atomic.Int32
+	mode          string
+	registerCheck func()
 }
 
 func newNamedFixture(t *testing.T, metadata bool) *namedFixture {
@@ -73,9 +74,13 @@ func newNamedFixture(t *testing.T, metadata bool) *namedFixture {
 			f.mu.Lock()
 			f.httpCalls.Add(1)
 			mode := f.mode
+			registerCheck := f.registerCheck
 			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			if strings.HasSuffix(r.URL.Path, "/register") {
+				if registerCheck != nil {
+					registerCheck()
+				}
 				if mode == "ambiguous" {
 					h := w.(http.Hijacker)
 					conn, _, e := h.Hijack()
@@ -87,6 +92,15 @@ func newNamedFixture(t *testing.T, metadata bool) *namedFixture {
 				if mode == "rejected" {
 					w.WriteHeader(403)
 					io.WriteString(w, `{"errcode":"M_FORBIDDEN","error":"rejected"}`)
+					return
+				}
+				if mode == "unknown-token" || mode == "missing-token" {
+					code := "M_UNKNOWN_TOKEN"
+					if mode == "missing-token" {
+						code = "M_MISSING_TOKEN"
+					}
+					w.WriteHeader(401)
+					fmt.Fprintf(w, `{"errcode":%q,"error":"rejected"}`, code)
 					return
 				}
 				fmt.Fprintf(w, `{"user_id":"@alice:%s.invalid","access_token":"isolated-new-token","device_id":"new-device"}`, label)
@@ -390,9 +404,13 @@ func TestNamedConnectionManagement(t *testing.T) {
 
 // Proves authorized first creation uses only selected bootstrap and exclusive
 // selected items. Negative outcomes retain precise private recovery evidence,
-// publish no credentials and never repeat a remote attempt on re-invocation.
+// publish no credential metadata and never repeat a remote attempt on re-invocation.
+// Both 401 token refusals must retain remote-rejected, never an ambiguous
+// journal, preserve exactly one selected recovery password from before HTTP
+// through refusal and re-invocation, and neither create nor store an access token.
+// The existing success, 403 rejection and transport ambiguity are neighboring controls.
 func TestNamedFirstRegistration(t *testing.T) {
-	for _, mode := range []string{"success", "unauthorized", "human", "bound-other", "no-bootstrap-ref", "missing-bootstrap", "existing-metadata", "existing-item", "token-store-failure", "publication-interruption", "ambiguous", "rejected"} {
+	for _, mode := range []string{"success", "unauthorized", "human", "bound-other", "no-bootstrap-ref", "missing-bootstrap", "existing-metadata", "existing-item", "token-store-failure", "publication-interruption", "ambiguous", "rejected", "unknown-token", "missing-token"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newNamedFixture(t, false)
 			a := f.app()
@@ -420,10 +438,46 @@ func TestNamedFirstRegistration(t *testing.T) {
 				f.store.failToken = true
 			case "publication-interruption":
 				a.beforeNamedPublish = func() error { return errors.New("injected interruption") }
-			case "ambiguous", "rejected":
+			case "ambiguous", "rejected", "unknown-token", "missing-token":
 				f.mode = mode
 			}
+			var recoveryPassword string // Synthetic value only; never include it in diagnostics.
+			var checkRecoveryPassword func()
+			if mode == "unknown-token" || mode == "missing-token" {
+				b, _ := f.r.Profiles["alpha"].Binding("alice", false)
+				ref := config.SecretReference{Service: "test.alpha.password", Account: b.UserID}
+				passwordCreates := func() int {
+					n := 0
+					for _, created := range f.store.creates {
+						if created == ref {
+							n++
+						}
+					}
+					return n
+				}
+				f.mu.Lock()
+				f.registerCheck = func() {
+					f.store.mu.Lock()
+					defer f.store.mu.Unlock()
+					recoveryPassword = f.store.items[ref]
+					if recoveryPassword == "" || passwordCreates() != 1 {
+						t.Error("401 recovery password must be created exactly once before HTTP")
+					}
+				}
+				f.mu.Unlock()
+				checkRecoveryPassword = func() {
+					t.Helper()
+					f.store.mu.Lock()
+					defer f.store.mu.Unlock()
+					if recoveryPassword == "" || f.store.items[ref] != recoveryPassword || passwordCreates() != 1 {
+						t.Fatal("401 recovery password changed or was recreated")
+					}
+				}
+			}
 			code := a.Run(context.Background(), args)
+			if checkRecoveryPassword != nil {
+				checkRecoveryPassword()
+			}
 			p := f.paths("alpha", false)
 			if mode == "success" {
 				if code != 0 {
@@ -452,7 +506,7 @@ func TestNamedFirstRegistration(t *testing.T) {
 						t.Fatal("failed registration published metadata")
 					}
 				}
-				stages := map[string]string{"token-store-failure": "remote-created-token-store-failed", "publication-interruption": "remote-created-metadata-publication-pending", "ambiguous": "remote-outcome-ambiguous", "rejected": "remote-rejected"}
+				stages := map[string]string{"token-store-failure": "remote-created-token-store-failed", "publication-interruption": "remote-created-metadata-publication-pending", "ambiguous": "remote-outcome-ambiguous", "rejected": "remote-rejected", "unknown-token": "remote-rejected", "missing-token": "remote-rejected"}
 				if want, ok := stages[mode]; ok {
 					raw, e := os.ReadFile(filepath.Join(p.Base, "registration.pending.json"))
 					if e != nil {
@@ -468,8 +522,30 @@ func TestNamedFirstRegistration(t *testing.T) {
 					if f.app().Run(context.Background(), args) == 0 || f.httpCalls.Load() != 1 {
 						t.Fatal("pending registration repeated remote creation")
 					}
+					if mode == "unknown-token" || mode == "missing-token" {
+						checkRecoveryPassword()
+						after, err := os.ReadFile(filepath.Join(p.Base, "registration.pending.json"))
+						if err != nil || !bytes.Equal(raw, after) {
+							t.Fatal("401 recovery journal changed on re-invocation")
+						}
+					}
 				} else if f.httpCalls.Load() != 0 {
 					t.Fatal("early refusal contacted server")
+				}
+				if mode == "unknown-token" || mode == "missing-token" {
+					if _, err := os.Lstat(p.AgentFile("alice")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatal("401 registration published metadata on re-invocation")
+					}
+					b, _ := f.r.Profiles["alpha"].Binding("alice", false)
+					tokenRef := config.SecretReference{Service: "test.alpha.token", Account: b.UserID}
+					if _, ok := f.store.items[tokenRef]; ok {
+						t.Fatal("401 registration stored an access token")
+					}
+					for _, ref := range f.store.creates {
+						if ref == tokenRef {
+							t.Fatal("401 registration attempted token provisioning")
+						}
+					}
 				}
 			}
 			for _, r := range append(f.store.reads, f.store.creates...) {
@@ -477,7 +553,11 @@ func TestNamedFirstRegistration(t *testing.T) {
 					t.Fatal("cross-profile credential access")
 				}
 			}
-			if strings.Contains(f.out.String()+f.err.String(), "isolated-new-token") || strings.Contains(f.out.String()+f.err.String(), "isolated-bootstrap") {
+			output := f.out.String() + f.err.String()
+			f.store.mu.Lock()
+			passwordLeaked := recoveryPassword != "" && strings.Contains(output, recoveryPassword)
+			f.store.mu.Unlock()
+			if strings.Contains(output, "isolated-new-token") || strings.Contains(output, "isolated-bootstrap") || passwordLeaked {
 				t.Fatal("secret leaked in output")
 			}
 		})

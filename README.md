@@ -34,6 +34,13 @@ It returns only principals/membership after a complete validated response and
 refuses archived caller state; it does not export history or change the room.
 See [the command contract](docs/cli.md#commands) for completeness and error limits.
 
+Use `a2a room avatar get|set` for one room's avatar MXC and
+`a2a room parent get|set` for one child-side Space parent link. Set requires
+explicit expected room IDs; parent set also requires explicit `--via` servers
+and `--canonical true|false`. Version 1 results distinguish a write ACK from
+verified content and an uncertain outcome. These commands never upload media
+or add reciprocal child links. See the [typed property commands](docs/cli.md#typed-room-properties).
+
 Hook, native and terminal notifications share a fixed 30-second per-identity
 window in one selected connection/config namespace. Existing consumers deliver
 pending mail after the fixed due time; hook-only Stop keeps its existing fallback
