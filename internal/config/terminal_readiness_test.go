@@ -35,3 +35,20 @@ func TestTerminalReadinessDiagnosticDecode(t *testing.T) {
 		}
 	}
 }
+
+// Old diagnostics without drift remain readable; corrupt drift fields cannot
+// break the journal, and hostile stored names are bounded before reuse.
+func TestTerminalReadinessUnknownKeysDecode(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"unknown_keys":42}`, `{"unknown_keys":"future"}`, `{"unknown_keys":"bad\nname"}`} {
+		var b TerminalBinding
+		if err := json.Unmarshal([]byte(`{"generation":"g","readiness":`+raw+`}`), &b); err != nil {
+			t.Fatal(err)
+		}
+		if b.Generation != "g" || b.Readiness == nil || b.Readiness.UnknownKeys != tmuxwake.SafeRegistryUnknownKeys(b.Readiness.UnknownKeys) {
+			t.Fatal("drift broke old state", b)
+		}
+		if raw == `{"unknown_keys":"future"}` && b.Readiness.UnknownKeys != "future" {
+			t.Fatal("name lost")
+		}
+	}
+}

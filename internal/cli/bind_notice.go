@@ -191,7 +191,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	}
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if readiness != nil {
-		a.printf("readiness=%s reason=%s version=%s since=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano))
+		a.printf("readiness=%s reason=%s version=%s since=%s unknown_keys=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano), readiness.UnknownKeys)
 	}
 	if st.Terminal == nil {
 		a.printf("%s unbound; %s\n", s.name, noticeText(n))

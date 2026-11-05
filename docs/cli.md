@@ -983,14 +983,19 @@ session ID and tmux pane with the already-pinned local target. The existing owne
 is not a process-birth substitute. A session handover clears the old root and readiness/idle observations; trusted rebind must prove the new
 association. A matching bind can associate a previously rootless binding without discarding its generation or attempt journal.
 
-The exact schema versions qualified by source fixtures are **2.1.302, 2.1.309, 2.1.310, 2.1.312, 2.1.317 and 2.1.318**, not an inclusive range. Qualification checks
-all required keys/types, optional `tmux`/`bridgeSessionId`, optional boolean `asksForConvertedSkills` and recursive `formerNames`, duplicate keys
-and unknown fields. Non-boolean `asksForConvertedSkills` and desktop-only `hostSessionId` remain schema-unqualified. Interactivity
+Registry qualification follows observed structure, with no release allowlist. Any version matching `SafeRegistryVersion`
+(three dot-separated numeric components, each 1–5 digits) is admitted and retained in the assessment and readiness key.
+Missing or malformed string versions yield `version_unqualified`, because no safe version token can identify that key;
+a present non-string version yields `schema_unqualified`, like other wrong required types. Qualification checks
+all required keys/types, optional `tmux`/`bridgeSessionId`, optional boolean `asksForConvertedSkills` and recursive `formerNames`.
+Unknown additional top-level keys (including `hostSessionId`) are admitted; known optional fields with wrong types still refuse.
+Duplicate keys at any depth, trailing JSON, excessive depth and oversized records still refuse. Interactivity
 requires `entrypoint=cli` and the matching tmux pane; `kind=interactive` alone is insufficient. A qualified `idle` or `shell` record is
 runtime-ready under the same input gates; `busy`, headless, identity mismatch and unknown status refuse both old and named layouts.
 `statusUpdatedAt` and `updatedAt` are transition metadata, not heartbeats or freshness deadlines. Long idle alone does not expire a record.
-Missing/unreadable registry, unknown version or unqualified schema preserves the existing legacy-layout admission only; it never enables
-the new named geometry. Codex keeps an independent legacy route and does not use Claude registry metadata.
+Missing/unreadable registry, missing/malformed version or unqualified schema preserves the existing legacy-layout admission only; it never enables
+the new named geometry. Structural qualification gives up detection of a new release changing the meaning of an existing
+field, or displaying a new dialog with composer-like geometry. Real-binary probes are future work. Codex keeps an independent legacy route and does not use Claude registry metadata.
 
 `BoundTerminal.AssessReadiness(ctx)` supplies runtime diagnostics, rendered input and a private comparable key from one logical assessment.
 It comprises separate target/registry/capture reads and is **not atomic**. Two samples must match the route, exact target/root, generation,
@@ -1006,13 +1011,17 @@ nonempty diagnostics when a filled Codex composer hides its hint. A saved fixed 
 no key, never becomes empty/eligible, and cannot reuse a prior empty key to submit the draft. `AssessReadiness(ctx)` remains the strict
 no-journal observation; Send separately recognizes only text typed by its current invocation. No second capture is taken for notice telemetry.
 
-`bind status` prominently reports `readiness=STATE reason=REASON version=VERSION since=TIME`; JSON adds `readiness` with those fields.
+`bind status` prominently reports `readiness=STATE reason=REASON version=VERSION since=TIME unknown_keys=NAMES`; JSON adds `readiness` with those fields.
 States are `ready`, `refused`, `unavailable`. Reasons are `none`, `target_unavailable`, `root_unavailable`, `registry_unavailable`,
 `identity_mismatch`, `headless`, `busy`, `status_unqualified`, `version_unqualified`, `schema_unqualified`. The version is a bounded numeric
-token. No raw registry value, path, label, socket or parser error is projected. Unbound status omits readiness. Status is read-only and uses
+token. `unknown_keys` is a comma-separated string of at most 16 unknown top-level key names in source-name sort order, each at most 64 ASCII
+bytes from `[A-Za-z0-9_.-]`; unsafe bytes become `_`. Replacement and truncation may collapse distinct names; excess names are
+omitted. Names only are reported, never their values. Reporting is diagnostic and cannot qualify or block admission. The consumer
+persists names with readiness diagnostics, updates them when drift changes, and preserves the reason/version `since`; old state
+files without this optional field remain readable. No raw registry value, path, label, socket or parser error is projected. Unbound status omits readiness. Status is read-only and uses
 one fresh assessment; stored telemetry never grants readiness. The consumer persists diagnostic pair transitions with their first-known
 `since`, or repairs a zero/future/corrupt stored `since` once at the first valid consumer observation. It preserves an already-valid concurrent
-same-pair timestamp and retains it without a per-loop diagnostic write while reason/version are unchanged. Unknown/corrupt stored diagnostics project
+same-pair timestamp and retains it without a per-loop diagnostic write while reason/version and reported names are unchanged. Unknown/corrupt stored diagnostics project
 unknown safely. A runtime-ready status alone does not mean input is empty, notification is admitted, mail was receipted or a reply occurred.
 
 Send returns a closed typed disposition/outcome pair. Only `submitted` + `wake submitted`, with no error and the matching attempt/token/scope,

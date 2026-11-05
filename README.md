@@ -77,16 +77,22 @@ fixtures use private terminals and never inspect a live provider pane.
 
 Bound delivery uses `tmuxwake.BoundTerminal.AssessReadiness(ctx)` to keep
 runtime readiness separate from rendered input. Claude named-session rules
-require an own-bind-associated registry and an exact qualified schema version
-(2.1.302, 2.1.309, 2.1.310, 2.1.312, 2.1.317 or 2.1.318). Qualified idle/shell permits input qualification;
+require an own-bind-associated registry with matching required structure and a
+safe numeric version token. Unknown releases and additional top-level keys are
+admitted; required and known optional field types remain checked. Qualified idle/shell permits input qualification;
 busy, headless and identity mismatch refuse. Missing or unqualified registry
 retains the existing legacy-layout gates. Codex retains its independent legacy
 route. One assessment involves several independent reads, not an atomic
 snapshot; a changed key restarts qualification and Send rechecks before typing
 and Enter. `a2a bind status [--json]` reports closed readiness diagnostics without
-printing registry paths or source values or changing state. See the
+printing registry paths or source values or changing state. Unknown key names
+appear in `unknown_keys` (at most 16 comma-separated ASCII names, 64 bytes each;
+unsafe characters become `_`, and names may be truncated). Structure alone
+cannot detect a release changing an existing field’s meaning or a new dialog
+with composer-like geometry. Real-binary probes are future work. See the
 [binding contract](docs/cli.md#a2a-bind--a2a-bind-status--a2a-unbind).
 
+Run these fixtures and mutation controls only on CI runners, never on this host.
 Run readiness fixtures with `go test -race ./internal/tmuxwake ./internal/cli ./internal/config -run 'TestRegistry|TestBound|TestReadiness|TestTerminalReadiness' -count=1`.
 Run bounded source controls with `A2A_RUN_TERMINAL_ORPHAN_MUTANTS=1 go test ./internal/cli -run '^TestTerminalOrphanNarrowingPlants/registry-' -count=1 -v`.
 Fixtures and source copies use private temporary directories; process cleanup

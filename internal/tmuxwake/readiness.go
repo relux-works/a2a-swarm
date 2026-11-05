@@ -200,7 +200,10 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 		return r, Box{}
 	}
 	// A changed registry observation cannot be downgraded into fallback.
-	if before != after {
+	// Reported key names are diagnostic only and never change admission.
+	beforeAuthority, afterAuthority := before, after
+	beforeAuthority.UnknownKeys, afterAuthority.UnknownKeys = "", ""
+	if beforeAuthority != afterAuthority {
 		r.Runtime = runtimeResult(RuntimeRegistryUnavailable, after.Version)
 		return r, Box{}
 	}

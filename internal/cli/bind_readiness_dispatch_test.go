@@ -52,10 +52,11 @@ func writeDispatchRegistry(t *testing.T, path string, m map[string]any) {
 
 // Real dispatch uses one registry/parser assessment for diagnostics and both
 // idle samples. Busy never types; named rootless/unqualified never types; old
-// qualified legacy geometry retains fallback. Shell/idle changes restart even
+// qualified legacy geometry retains fallback; matching unknown releases admit
+// named geometry. Shell/idle changes restart even
 // when the producer's timestamp is identical. Mail is never receipted here.
 func TestReadinessDispatch(t *testing.T) {
-	for _, mode := range []string{"named-idle", "named-shell", "named-busy", "named-rootless", "named-unqualified", "legacy-rootless", "status-transition"} {
+	for _, mode := range []string{"named-idle", "named-shell", "named-busy", "named-rootless", "named-unqualified", "named-new-version", "legacy-rootless", "status-transition"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
 			id := f.mail()
@@ -71,7 +72,11 @@ func TestReadinessDispatch(t *testing.T) {
 				f.update(func(st *config.State) { st.Terminal.ClaudeRegistryRoot = "" })
 			}
 			if mode == "named-unqualified" {
-				m["version"] = "2.1.311"
+				delete(m, "cwd")
+				writeDispatchRegistry(t, path, m)
+			}
+			if mode == "named-new-version" {
+				m["version"] = "3.0.0"
 				writeDispatchRegistry(t, path, m)
 			}
 			f.control(map[string]any{"claude": true, "named": mode != "legacy-rootless"})
@@ -135,5 +140,53 @@ func TestReadinessStatusReadOnly(t *testing.T) {
 	}
 	if got.Readiness.Reason != tmuxwake.RuntimeBusy || got.Readiness.State != tmuxwake.RuntimeRefused || !got.Readiness.Since.Equal(f.now) || strings.Contains(out.String(), "private") {
 		t.Fatal("status projection", out.String())
+	}
+}
+
+// Both public status forms expose only bounded safe key names on an unknown
+// release; hostile names/values neither inject output nor change admission.
+func TestReadinessUnknownKeysStatus(t *testing.T) {
+	f := newOrphanDispatchFixture(t)
+	path, m := dispatchRegistry(t, f, "idle")
+	m["version"] = "3.0.0"
+	m["futureField"] = map[string]any{"private": "NEVER-SHOW-VALUE"}
+	m["\x1b[31m\nHOSTILE,"+strings.Repeat("x", 1000)] = "NEVER-SHOW-VALUE"
+	for i := 0; i < 25; i++ {
+		m["z"+strconv.Itoa(i)] = "NEVER-SHOW-VALUE"
+	}
+	writeDispatchRegistry(t, path, m)
+	f.control(map[string]any{"claude": true, "named": true})
+	for _, args := range [][]string{nil, {"--json"}} {
+		var out bytes.Buffer
+		f.a.Stdout = &out
+		if err := f.a.terminalStatus(context.Background(), args); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "futureField") || strings.Contains(out.String(), "NEVER-SHOW-VALUE") || strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), strings.Repeat("x", 65)) {
+			t.Fatal("unsafe or missing drift projection", out.String())
+		}
+		if len(args) > 0 {
+			var got struct{ Readiness terminalReadinessStatus }
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Readiness.State != tmuxwake.RuntimeReady || got.Readiness.Version != "3.0.0" || len(strings.Split(got.Readiness.UnknownKeys, ",")) != 16 {
+				t.Fatal("bad drift assessment", got)
+			}
+			for _, name := range strings.Split(got.Readiness.UnknownKeys, ",") {
+				if len(name) == 0 || len(name) > 64 {
+					t.Fatal("unbounded name", name)
+				}
+				for _, c := range name {
+					if !strings.ContainsRune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-", c) {
+						t.Fatal("unsafe name", name)
+					}
+				}
+			}
+		}
+	}
+	sample := boundTerminal(*f.binding()).AssessReadiness(context.Background())
+	if !sample.Eligible() {
+		t.Fatal("reporting blocked admission", sample)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -57,13 +58,14 @@ func ValidRuntimeReason(reason RuntimeReason) bool {
 }
 
 type RuntimeAssessment struct {
-	State   RuntimeState  `json:"state"`
-	Reason  RuntimeReason `json:"reason"`
-	Version string        `json:"version,omitempty"`
+	State       RuntimeState  `json:"state"`
+	Reason      RuntimeReason `json:"reason"`
+	Version     string        `json:"version,omitempty"`
+	UnknownKeys string        `json:"unknown_keys,omitempty"`
 }
 
 func runtimeResult(reason RuntimeReason, version string) RuntimeAssessment {
-	return RuntimeAssessment{RuntimeStateFor(reason), reason, SafeRegistryVersion(version)}
+	return RuntimeAssessment{State: RuntimeStateFor(reason), Reason: reason, Version: SafeRegistryVersion(version)}
 }
 
 var registryVersion = regexp.MustCompile(`^[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$`)
@@ -168,15 +170,17 @@ func registryInt(v any) (int64, bool) {
 	return i, err == nil && i >= 0
 }
 func recordString(m map[string]any, key string) string { s, _ := m[key].(string); return s }
+
+var requiredRegistryKeys = map[string]string{"cwd": "s", "entrypoint": "s", "kind": "s", "messagingSocketPath": "s", "name": "s", "nameSince": "n", "nameSource": "s", "peerFeatures": "a", "peerProtocol": "n", "pid": "n", "pidDomain": "s", "procStart": "s", "sessionId": "s", "startedAt": "n", "status": "s", "statusUpdatedAt": "n", "updatedAt": "n", "version": "s"}
+
 func registrySchema(m map[string]any) bool {
-	required := map[string]string{"cwd": "s", "entrypoint": "s", "kind": "s", "messagingSocketPath": "s", "name": "s", "nameSince": "n", "nameSource": "s", "peerFeatures": "a", "peerProtocol": "n", "pid": "n", "pidDomain": "s", "procStart": "s", "sessionId": "s", "startedAt": "n", "status": "s", "statusUpdatedAt": "n", "updatedAt": "n", "version": "s"}
-	for k := range required {
+	for k := range requiredRegistryKeys {
 		if _, ok := m[k]; !ok {
 			return false
 		}
 	}
 	for k, v := range m {
-		switch required[k] {
+		switch requiredRegistryKeys[k] {
 		case "s":
 			if _, ok := v.(string); !ok {
 				return false
@@ -226,12 +230,61 @@ func registrySchema(m map[string]any) bool {
 					}
 				}
 			default:
-				return false
+				// Additional top-level fields do not change structural admission.
 			}
 		}
 	}
 	return true
 }
+
+// SafeRegistryUnknownKeys projects names only: at most 16 comma-separated
+// ASCII tokens of at most 64 bytes. Replacement/truncation is deliberately lossy.
+// This diagnostic must never supply readiness authority.
+func SafeRegistryUnknownKeys(names string) string {
+	var out []string
+	for _, name := range strings.SplitN(names, ",", 17) {
+		if name == "" {
+			continue
+		}
+		var b strings.Builder
+		for i := 0; i < len(name) && i < 64; i++ {
+			c := name[i]
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+				c = '_'
+			}
+			b.WriteByte(c)
+		}
+		out = append(out, b.String())
+		if len(out) == 16 {
+			break
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func registryUnknownKeys(m map[string]any) string {
+	var names []string
+	for k := range m {
+		if _, known := requiredRegistryKeys[k]; known {
+			continue
+		}
+		switch k {
+		case "asksForConvertedSkills", "tmux", "bridgeSessionId", "formerNames":
+			continue
+		}
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	// Sanitize individually so a comma in a source name cannot create entries.
+	for i, name := range names {
+		if name == "" {
+			name = "_"
+		}
+		names[i] = SafeRegistryUnknownKeys(strings.ReplaceAll(name, ",", "_"))
+	}
+	return SafeRegistryUnknownKeys(strings.Join(names, ","))
+}
+
 func parseUTCBirth(s string) (time.Time, error) {
 	return time.Parse("Mon Jan 2 15:04:05 2006", strings.Join(strings.Fields(s), " "))
 }
@@ -257,17 +310,23 @@ func registryIdentityReason(m map[string]any, id registryIdentity) RuntimeReason
 	return RuntimeNone
 }
 func decodeRegistry(data []byte, id registryIdentity) registryAssessment {
+	unknown := ""
 	result := func(reason RuntimeReason, version string) registryAssessment {
-		return registryAssessment{RuntimeAssessment: runtimeResult(reason, version)}
+		r := registryAssessment{RuntimeAssessment: runtimeResult(reason, version)}
+		r.UnknownKeys = unknown
+		return r
 	}
 	m, err := decodeObject(data)
 	if err != nil {
 		return result(RuntimeRegistryUnavailable, "")
 	}
+	unknown = registryUnknownKeys(m)
 	version := recordString(m, "version")
-	switch version {
-	case "2.1.302", "2.1.309", "2.1.310", "2.1.312", "2.1.317", "2.1.318":
-	default:
+	// Missing/malformed string versions cannot identify a readiness key.
+	// Present non-string versions remain schema violations.
+	_, versionPresent := m["version"]
+	_, versionString := m["version"].(string)
+	if !versionPresent || (versionString && SafeRegistryVersion(version) == "") {
 		return result(RuntimeVersionUnqualified, version)
 	}
 	if !registrySchema(m) {

@@ -378,3 +378,32 @@ func TestReadinessRootAssociationCAS(t *testing.T) {
 		})
 	}
 }
+
+// Name-only drift changes are persisted once, retain the reason/version since,
+// and leave the binding/journal intact. Repeating the observation is a no-op.
+func TestReadinessUnknownKeysPersistence(t *testing.T) {
+	e, _ := world(t)
+	a, s := notificationApp(t, e)
+	now := a.Now()
+	b := config.TerminalBinding{Generation: "g", SessionID: "s", NotificationToken: "token", Readiness: &config.TerminalReadiness{Reason: tmuxwake.RuntimeBusy, Version: "3.0.0", Since: now.Add(-time.Hour)}}
+	notificationState(t, e, func(st *config.State) { copy := b; st.Terminal = &copy })
+	r := tmuxwake.ReadinessAssessment{Runtime: tmuxwake.RuntimeAssessment{State: tmuxwake.RuntimeRefused, Reason: tmuxwake.RuntimeBusy, Version: "3.0.0", UnknownKeys: "future"}}
+	if err := a.observeTerminalReadiness(s, b, r); err != nil {
+		t.Fatal(err)
+	}
+	got := e.state("alice").Terminal
+	if got.Readiness.UnknownKeys != "future" || !got.Readiness.Since.Equal(b.Readiness.Since) || got.NotificationToken != "token" {
+		t.Fatal("drift not persisted safely", got)
+	}
+	info, err := os.Stat(s.paths.StateFile(s.name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeTerminalReadiness(s, *got, r); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(s.paths.StateFile(s.name))
+	if err != nil || !os.SameFile(info, after) {
+		t.Fatal("stable drift caused write", err)
+	}
+}

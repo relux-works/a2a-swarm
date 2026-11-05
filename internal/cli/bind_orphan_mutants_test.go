@@ -50,8 +50,12 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"manual-pulse-reset-exemption", "cli/liveness.go", `if st.Terminal != nil && manualWakeGate(*st) != "" {`, `if st.Terminal != nil && manualWakeGate(*st) != "" && st.Terminal.SessionID != "owned-thread" {`, "TestTerminalDispatchQualificationInterruption/manual-pulse", admission + "/none"},
 		{"unwritable-idle-reset-exemption", "cli/bind.go", `qualificationInterrupted = true`, `qualificationInterrupted = policy.SessionID != "owned-thread"`, "TestTerminalRunAuthorityReadFailure", admission + "/none"},
 		{"recovery-first-glimpse-count-one", "cli/bind_readiness.go", `if previous := b.Idle; previous != nil {`, `if b.Idle==nil && b.NoticeCount==1 && len(b.AttemptIDs)>0 {return true,nil}; if previous := b.Idle; previous != nil {`, "TestReviewerFreshRecoveryQualification", admission + "/none"},
-		{"registry-schema-extra", "tmuxwake/registry.go", `for k, v := range m {`, `for k, v := range m {if k=="future"{continue}`, "TestRegistryQualifiedSchemas/extra", "TestRegistryQualifiedSchemas/renamed"},
-		{"registry-version-range", "tmuxwake/registry.go", `case "2.1.302", "2.1.309", "2.1.310", "2.1.312", "2.1.317", "2.1.318":`, `case "2.1.302", "2.1.309", "2.1.310", "2.1.311", "2.1.312", "2.1.317", "2.1.318":`, "TestRegistryQualifiedSchemas/unknown-version", "TestRegistryQualifiedSchemas/2.1.310/idle"},
+		// Structural gates must still reject missing keys, invalid types and
+		// unknown statuses, with valid controls on the same unknown release.
+		{"registry-required-key", "tmuxwake/registry.go", `if _, ok := m[k]; !ok {`, `if _, ok := m[k]; !ok && k != "cwd" {`, "TestRegistryQualifiedSchemas/missing", "TestRegistryQualifiedSchemas/renamed"},
+		{"registry-required-type", "tmuxwake/registry.go", `if _, ok := registryInt(v); !ok {`, `if _, ok := registryInt(v); !ok && k != "statusUpdatedAt" {`, "TestRegistryQualifiedSchemas/wrong-type", "TestRegistryQualifiedSchemas/renamed"},
+		{"registry-unknown-status", "tmuxwake/registry.go", `reason = RuntimeStatusUnqualified`, `reason = RuntimeNone`, "TestRegistryQualifiedSchemas/unknown-status", "TestRegistryQualifiedSchemas/renamed"},
+		{"registry-named-without-ready", "tmuxwake/readiness.go", `boundInput(screen, runtime, parserNotice, after.State == RuntimeReady)`, `boundInput(screen, runtime, parserNotice, true)`, "TestBoundReadinessRoutes/named-schema-drift", "TestBoundReadinessRoutes/named-new-version"},
 		{"registry-birth-reuse", "tmuxwake/registry.go", `!birth.Equal(id.Birth)`, `(!birth.Equal(id.Birth) && false)`, "TestRegistryQualifiedSchemas/reused-pid", "TestRegistryQualifiedSchemas/startedAt-not-birth"},
 		{"registry-busy-ready", "tmuxwake/registry.go", `reason = RuntimeBusy`, `reason = RuntimeNone`, "TestRegistryQualifiedSchemas/2.1.310/busy", "TestRegistryQualifiedSchemas/2.1.310/shell"},
 		{"registry-input-runtime-only", "tmuxwake/readiness.go", `return r.Input.State == InputEmpty && r.Input.Reason == InputReasonNone && r.runtimeEligible()`, `return r.runtimeEligible()`, "TestReadinessAdmissionState/codex/nonempty", "TestReadinessAdmissionState/codex/empty"},
@@ -228,7 +232,7 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			killed, positive, assertion := false, false, false
 			intended := ""
 			switch strings.Split(p.killer, "/")[0] {
-			case "TestRegistryQualifiedSchemas":
+			case "TestRegistryQualifiedSchemas", "TestBoundReadinessRoutes":
 				intended = "got "
 			case "TestReadinessAdmissionState":
 				intended = "runtime alone admitted input state"

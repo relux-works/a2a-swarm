@@ -72,9 +72,10 @@ type TerminalIdle struct {
 
 // Diagnostic only. A persisted record never supplies a live observation key.
 type TerminalReadiness struct {
-	Reason  tmuxwake.RuntimeReason `json:"reason"`
-	Version string                 `json:"version,omitempty"`
-	Since   time.Time              `json:"since"`
+	UnknownKeys string                 `json:"unknown_keys,omitempty"`
+	Reason      tmuxwake.RuntimeReason `json:"reason"`
+	Version     string                 `json:"version,omitempty"`
+	Since       time.Time              `json:"since"`
 }
 
 // Corrupt diagnostic fields do not become authority or make a raw time/parser
@@ -88,6 +89,8 @@ func (r *TerminalReadiness) UnmarshalJSON(data []byte) error {
 	_ = json.Unmarshal(fields["reason"], &r.Reason)
 	_ = json.Unmarshal(fields["version"], &r.Version)
 	_ = json.Unmarshal(fields["since"], &r.Since)
+	_ = json.Unmarshal(fields["unknown_keys"], &r.UnknownKeys)
+	r.UnknownKeys = tmuxwake.SafeRegistryUnknownKeys(r.UnknownKeys)
 	return nil
 }
 

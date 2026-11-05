@@ -28,6 +28,7 @@ def draw():
         footer='  ⏵⏵ bypass permissions on'
         if runtime=='claude-named-busy': footer+=' (esc to interrupt)'
         if runtime=='claude-named-dialog': footer+=' Permission required'
+        if runtime=='claude-named-unknown': top='Unrecognized layout'
         screen='\x1b[2J\x1b[19;1H'+top+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n'+footer+'\x1b[20;'+str(3+len(text))+'H'
     else:
         footer='Codex · Ready · Context 50% left' if text else '? for shortcuts'

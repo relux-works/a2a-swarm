@@ -74,10 +74,11 @@ func readinessInput(r tmuxwake.ReadinessAssessment) string {
 }
 
 type terminalReadinessStatus struct {
-	State   tmuxwake.RuntimeState  `json:"state"`
-	Reason  tmuxwake.RuntimeReason `json:"reason"`
-	Version string                 `json:"version,omitempty"`
-	Since   time.Time              `json:"since"`
+	UnknownKeys string                 `json:"unknown_keys,omitempty"`
+	State       tmuxwake.RuntimeState  `json:"state"`
+	Reason      tmuxwake.RuntimeReason `json:"reason"`
+	Version     string                 `json:"version,omitempty"`
+	Since       time.Time              `json:"since"`
 }
 
 func readinessStatus(r tmuxwake.RuntimeAssessment, stored *config.TerminalReadiness, now time.Time) terminalReadinessStatus {
@@ -86,7 +87,7 @@ func readinessStatus(r tmuxwake.RuntimeAssessment, stored *config.TerminalReadin
 	}
 	r.State = tmuxwake.RuntimeStateFor(r.Reason)
 	r.Version = tmuxwake.SafeRegistryVersion(r.Version)
-	out := terminalReadinessStatus{r.State, r.Reason, r.Version, now.UTC()}
+	out := terminalReadinessStatus{State: r.State, Reason: r.Reason, Version: r.Version, Since: now.UTC(), UnknownKeys: tmuxwake.SafeRegistryUnknownKeys(r.UnknownKeys)}
 	if stored != nil && stored.Reason == r.Reason && stored.Version == r.Version && !stored.Since.IsZero() && !stored.Since.After(now) {
 		out.Since = stored.Since.UTC()
 	}
@@ -96,7 +97,7 @@ func (a *App) observeTerminalReadiness(s *session, expected config.TerminalBindi
 	now := a.Now()
 	projected := readinessStatus(r.Runtime, expected.Readiness, now)
 	validSince := func(old *config.TerminalReadiness) bool { return !old.Since.IsZero() && !old.Since.After(now) }
-	if old := expected.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version && validSince(old) {
+	if old := expected.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version && old.UnknownKeys == projected.UnknownKeys && validSince(old) {
 		return nil
 	}
 	if err := s.checkConnection(); err != nil {
@@ -111,10 +112,13 @@ func (a *App) observeTerminalReadiness(s *session, expected config.TerminalBindi
 			return errors.New("binding changed before readiness observation")
 		}
 		// An intervening diagnostic writer cannot reset the continuous since.
-		if old := b.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version && validSince(old) {
+		if old := b.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version && old.UnknownKeys == projected.UnknownKeys && validSince(old) {
 			return nil
 		}
-		b.Readiness = &config.TerminalReadiness{Reason: projected.Reason, Version: projected.Version, Since: projected.Since}
+		if old := b.Readiness; old != nil && old.Reason == projected.Reason && old.Version == projected.Version && validSince(old) {
+			projected.Since = old.Since
+		}
+		b.Readiness = &config.TerminalReadiness{Reason: projected.Reason, Version: projected.Version, Since: projected.Since, UnknownKeys: projected.UnknownKeys}
 		if !r.Eligible() {
 			b.Idle = nil
 		}
