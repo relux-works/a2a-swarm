@@ -1,3 +1,5 @@
+# Public-repository CI: exclude fork PRs from self-hosted runners, limit token
+# exposure, and cancel superseded PR runs while allowing main runs to finish.
 name: go
 
 on:
@@ -5,8 +7,16 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Self-hosted on the owner's MacBook (repo-level runner m1max-a2a-swarm, agreed in
     # #gha-runner-m1max): hosted runners cannot start (billing, ruling ac-R8).
     runs-on: [self-hosted, macOS, relux-a2a]
@@ -15,6 +25,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -30,12 +42,15 @@ jobs:
       - run: go test -race -timeout 28m ./...
 
   test-linux:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Add capacity while the repo is private and the single Mac runner is queued.
     # Transitional F1 step: moving off macOS and to public-allowed labels is later.
     runs-on: [self-hosted, Linux, swarma-ci]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -60,6 +75,7 @@ jobs:
           exit "$test_status"
 
   voice-native:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
     # unrelated launcher/credential fixtures a second time.
@@ -67,6 +83,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
