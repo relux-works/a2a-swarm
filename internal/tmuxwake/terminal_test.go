@@ -22,10 +22,13 @@ tty.setraw(0)
 text=''; submitted=[]; path=sys.argv[1]; runtime=sys.argv[2]
 def draw():
     global text
-    if runtime in ('claude','claude-named'):
+    if runtime=='claude' or runtime.startswith('claude-named'):
         content=text+'\x1b[7m \x1b[0m' if text else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
         top='─'*110 if runtime=='claude' else '─'*90+' synthetic-session'
-        screen='\x1b[2J\x1b[19;1H'+top+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n  ⏵⏵ bypass permissions on\x1b[20;'+str(3+len(text))+'H'
+        footer='  ⏵⏵ bypass permissions on'
+        if runtime=='claude-named-busy': footer+=' (esc to interrupt)'
+        if runtime=='claude-named-dialog': footer+=' Permission required'
+        screen='\x1b[2J\x1b[19;1H'+top+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n'+footer+'\x1b[20;'+str(3+len(text))+'H'
     else:
         footer='Codex · Ready · Context 50% left' if text else '? for shortcuts'
         screen='\x1b[2J\x1b[20;1H\x1b[1m›\x1b[0m '+text+'\x1b[22;1H  '+footer+'\x1b[20;'+str(3+len(text))+'H'
@@ -93,7 +96,7 @@ func newTerminalFixture(t *testing.T, runtime string) *terminalFixture {
 		}
 	})
 	targetRuntime := runtime
-	if runtime == "claude-named" {
+	if strings.HasPrefix(runtime, "claude-named") {
 		targetRuntime = "claude"
 	}
 	f.target, err = Pin(context.Background(), socket, "%0", targetRuntime)

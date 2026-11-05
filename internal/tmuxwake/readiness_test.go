@@ -253,7 +253,7 @@ func TestBoundReadinessRoutes(t *testing.T) {
 			}
 		})
 	}
-	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310"} {
+	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310", "2.1.312", "2.1.317", "2.1.318"} {
 		for _, status := range []string{"idle", "shell", "busy"} {
 			t.Run(version+"/"+status, func(t *testing.T) {
 				f := newBoundFixture(t, "claude-named", version, status)
@@ -372,5 +372,131 @@ func TestReadinessKeyCoordinatesAndCrossRuntime(t *testing.T) {
 	data, _ := json.Marshal(k)
 	if string(data) != "{}" {
 		t.Fatal("key projected")
+	}
+}
+
+// The existing named composer on 2.1.318 admits an empty bound lane and
+// BoundTerminal.Send submits exactly its typed notice once. Registry busy,
+// rendered busy/dialog, and foreign drafts refuse without an Enter; racing
+// foreign suffixes preserve the complete draft after our notice was typed.
+func TestBoundNewVersionSend(t *testing.T) {
+	for _, mode := range []string{"valid", "registry-busy", "rendered-busy", "dialog", "foreign", "foreign-after-type"} {
+		t.Run(mode, func(t *testing.T) {
+			runtime, status := "claude-named", "idle"
+			switch mode {
+			case "registry-busy":
+				status = "busy"
+			case "rendered-busy":
+				runtime = "claude-named-busy"
+			case "dialog":
+				runtime = "claude-named-dialog"
+			}
+			f := newBoundFixture(t, runtime, "2.1.318", status)
+			if mode == "foreign" {
+				f.f.typeText("KEEP")
+				f.f.wait(func(s fixtureState) bool { return s.Text == "KEEP" })
+			}
+			sample := f.b.AssessReadiness(context.Background())
+			wantEligible := mode == "valid" || mode == "foreign-after-type"
+			if sample.Eligible() != wantEligible {
+				t.Fatalf("unexpected readiness: %#v", sample)
+			}
+			if wantEligible {
+				if sample.Key.Route != RegistryNamed || sample.Key.RegistryVersion != "2.1.318" {
+					t.Fatalf("missing qualified named route: %#v", sample)
+				}
+			} else if sample.Key != (ReadinessKey{}) {
+				t.Fatal("refused lane acquired a key")
+			}
+			switch mode {
+			case "registry-busy":
+				if sample.Runtime.Reason != RuntimeBusy {
+					t.Fatal(sample)
+				}
+			case "rendered-busy", "dialog":
+				if sample.Input.Reason != InputReasonBusyOrDialog {
+					t.Fatal(sample)
+				}
+			case "foreign":
+				if sample.Input.State != InputNonempty {
+					t.Fatal(sample)
+				}
+			}
+			var after func()
+			if mode == "foreign-after-type" {
+				after = func() {
+					f.f.typeText("KEEP")
+					f.f.wait(func(s fixtureState) bool { return s.Text == Notice(1)+"KEEP" })
+				}
+			}
+			result, err := f.b.Send(context.Background(), 1, sample.Key, nil, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "valid" {
+				if result.Disposition != SendSubmitted {
+					t.Fatal(result)
+				}
+				state := f.f.wait(func(s fixtureState) bool { return len(s.Submitted) > 0 })
+				if len(state.Submitted) != 1 || state.Submitted[0] != Notice(1) || state.Text != "" {
+					t.Fatal("wrong bound submission", state)
+				}
+				return
+			}
+			wantText, wantDisposition := "", SendRefused
+			if mode == "foreign" {
+				wantText = "KEEP"
+			}
+			if mode == "foreign-after-type" {
+				wantText, wantDisposition = Notice(1)+"KEEP", SendDraft
+			}
+			state := f.f.wait(func(s fixtureState) bool { return s.PID > 1 })
+			if result.Disposition != wantDisposition || state.Text != wantText || len(state.Submitted) != 0 {
+				t.Fatal("refusal changed or submitted input", result, state)
+			}
+		})
+	}
+}
+
+// Neighboring unknown versions cannot qualify a named lane or obtain a key;
+// attempting bound Send with the returned key has no input effects.
+func TestBoundNeighborVersionsUnqualified(t *testing.T) {
+	for _, version := range []string{"2.1.311", "2.1.313", "2.1.316", "2.1.319"} {
+		t.Run(version, func(t *testing.T) {
+			f := newBoundFixture(t, "claude-named", "2.1.318", "idle")
+			f.m["version"] = version
+			f.write(t)
+			sample := f.b.AssessReadiness(context.Background())
+			if sample.Runtime.Reason != RuntimeVersionUnqualified || sample.Eligible() || sample.Key != (ReadinessKey{}) {
+				t.Fatalf("unknown named lane admitted: %#v", sample)
+			}
+			result, err := f.b.Send(context.Background(), 1, sample.Key, nil, nil)
+			if err != nil || result.Disposition != SendRefused {
+				t.Fatal(result, err)
+			}
+			f.empty(t)
+		})
+	}
+}
+
+// Schema drift on a qualified new release cannot unlock named geometry:
+// a non-boolean flag or desktop-only field yields no key and no Send effects.
+// TestBoundNewVersionSend/valid is the matching qualified positive control.
+func TestBoundNewVersionSchemaRefusal(t *testing.T) {
+	for _, field := range []string{"asksForConvertedSkills", "hostSessionId"} {
+		t.Run(field, func(t *testing.T) {
+			f := newBoundFixture(t, "claude-named", "2.1.318", "idle")
+			f.m[field] = "unqualified"
+			f.write(t)
+			sample := f.b.AssessReadiness(context.Background())
+			if sample.Runtime.Reason != RuntimeSchemaUnqualified || sample.Eligible() || sample.Key != (ReadinessKey{}) {
+				t.Fatalf("schema drift admitted named lane: %#v", sample)
+			}
+			result, err := f.b.Send(context.Background(), 1, sample.Key, nil, nil)
+			if err != nil || result.Disposition != SendRefused {
+				t.Fatal(result, err)
+			}
+			f.empty(t)
+		})
 	}
 }

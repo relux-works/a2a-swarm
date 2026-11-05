@@ -8,7 +8,15 @@ import (
 )
 
 func registryFixture(version, status string) map[string]any {
-	return map[string]any{"cwd": "/synthetic", "entrypoint": "cli", "kind": "interactive", "messagingSocketPath": "/synthetic/not-opened", "name": "synthetic", "nameSince": int64(1), "nameSource": "user", "peerFeatures": []string{"notify_idle", "reply_across_default_dirs", "artifact_yield"}, "peerProtocol": 1, "pid": 1234, "pidDomain": "darwin", "procStart": "Mon Oct 26 12:00:00 2026", "sessionId": "11111111-1111-4111-8111-111111111111", "startedAt": int64(1793016001000), "status": status, "statusUpdatedAt": int64(1793016002000), "tmux": "synthetic:@0.%1", "updatedAt": int64(1793016002000), "version": version}
+	m := map[string]any{"cwd": "/synthetic", "entrypoint": "cli", "kind": "interactive", "messagingSocketPath": "/synthetic/not-opened", "name": "synthetic", "nameSince": int64(1), "nameSource": "user", "peerFeatures": []string{"notify_idle", "reply_across_default_dirs", "artifact_yield"}, "peerProtocol": 1, "pid": 1234, "pidDomain": "darwin", "procStart": "Mon Oct 26 12:00:00 2026", "sessionId": "11111111-1111-4111-8111-111111111111", "startedAt": int64(1793016001000), "status": status, "statusUpdatedAt": int64(1793016002000), "tmux": "synthetic:@0.%1", "updatedAt": int64(1793016002000), "version": version}
+	switch version {
+	case "2.1.312", "2.1.317", "2.1.318":
+		m["bridgeSessionId"] = "synthetic"
+	}
+	if version == "2.1.317" || version == "2.1.318" {
+		m["asksForConvertedSkills"] = false
+	}
+	return m
 }
 
 // Qualified fixtures establish schema/identity/status decisions, not provider
@@ -16,17 +24,19 @@ func registryFixture(version, status string) map[string]any {
 // busy record carrying the identical background-feature fields.
 func TestRegistryQualifiedSchemas(t *testing.T) {
 	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
-	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310"} {
+	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310", "2.1.312", "2.1.317", "2.1.318"} {
 		for _, status := range []string{"idle", "shell", "busy"} {
 			t.Run(version+"/"+status, func(t *testing.T) {
 				m := registryFixture(version, status)
 				data, _ := json.Marshal(m)
 				got := decodeRegistry(data, id)
 				want := RuntimeReady
+				wantReason := RuntimeNone
 				if status == "busy" {
 					want = RuntimeRefused
+					wantReason = RuntimeBusy
 				}
-				if got.State != want || got.Version != version || got.Status != status {
+				if got.State != want || got.Reason != wantReason || got.Version != version || got.Status != status {
 					t.Fatalf("got %#v", got)
 				}
 			})
@@ -71,5 +81,66 @@ func TestRegistryQualifiedSchemas(t *testing.T) {
 		if got := decodeRegistry([]byte(data), id); got.Reason != RuntimeRegistryUnavailable {
 			t.Fatalf("malformed/duplicate/oversized: %#v", got)
 		}
+	}
+}
+
+// The converted-skills flag is optional and accepts either boolean; other
+// JSON types and the desktop-only hostSessionId remain schema_unqualified.
+func TestRegistryConvertedSkillsSchema(t *testing.T) {
+	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	for _, version := range []string{"2.1.312", "2.1.317", "2.1.318"} {
+		for _, c := range []struct {
+			name  string
+			value any
+			want  RuntimeReason
+		}{
+			{"absent", nil, RuntimeNone},
+			{"false", false, RuntimeNone},
+			{"true", true, RuntimeNone},
+			{"null", nil, RuntimeSchemaUnqualified},
+			{"string", "false", RuntimeSchemaUnqualified},
+			{"number", 0, RuntimeSchemaUnqualified},
+			{"array", []any{}, RuntimeSchemaUnqualified},
+			{"object", map[string]any{}, RuntimeSchemaUnqualified},
+			{"hostSessionId", "desktop-session", RuntimeSchemaUnqualified},
+		} {
+			t.Run(version+"/"+c.name, func(t *testing.T) {
+				m := registryFixture(version, "idle")
+				if c.name == "absent" {
+					delete(m, "asksForConvertedSkills")
+				} else if c.name == "hostSessionId" {
+					m["hostSessionId"] = c.value
+				} else {
+					m["asksForConvertedSkills"] = c.value
+				}
+				data, err := json.Marshal(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := decodeRegistry(data, id)
+				if got.Reason != c.want || got.State != RuntimeStateFor(c.want) {
+					t.Fatalf("got %#v want %s", got, c.want)
+				}
+			})
+		}
+	}
+}
+
+// Adjacent releases are not admitted by the explicit whitelist, even with
+// a complete otherwise qualified CLI record.
+func TestRegistryNeighborVersionsUnqualified(t *testing.T) {
+	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	for _, version := range []string{"2.1.311", "2.1.313", "2.1.316", "2.1.319"} {
+		t.Run(version, func(t *testing.T) {
+			m := registryFixture("2.1.318", "idle")
+			m["version"] = version
+			data, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := decodeRegistry(data, id); got.Reason != RuntimeVersionUnqualified || got.State != RuntimeUnavailable {
+				t.Fatalf("unknown version admitted: %#v", got)
+			}
+		})
 	}
 }

@@ -78,7 +78,7 @@ fixtures use private terminals and never inspect a live provider pane.
 Bound delivery uses `tmuxwake.BoundTerminal.AssessReadiness(ctx)` to keep
 runtime readiness separate from rendered input. Claude named-session rules
 require an own-bind-associated registry and an exact qualified schema version
-(2.1.302, 2.1.309 or 2.1.310). Qualified idle/shell permits input qualification;
+(2.1.302, 2.1.309, 2.1.310, 2.1.312, 2.1.317 or 2.1.318). Qualified idle/shell permits input qualification;
 busy, headless and identity mismatch refuse. Missing or unqualified registry
 retains the existing legacy-layout gates. Codex retains its independent legacy
 route. One assessment involves several independent reads, not an atomic

@@ -197,6 +197,10 @@ func registrySchema(m map[string]any) bool {
 			}
 		default:
 			switch k {
+			case "asksForConvertedSkills":
+				if _, ok := v.(bool); !ok {
+					return false
+				}
 			case "tmux", "bridgeSessionId":
 				if _, ok := v.(string); !ok {
 					return false
@@ -262,7 +266,7 @@ func decodeRegistry(data []byte, id registryIdentity) registryAssessment {
 	}
 	version := recordString(m, "version")
 	switch version {
-	case "2.1.302", "2.1.309", "2.1.310":
+	case "2.1.302", "2.1.309", "2.1.310", "2.1.312", "2.1.317", "2.1.318":
 	default:
 		return result(RuntimeVersionUnqualified, version)
 	}
