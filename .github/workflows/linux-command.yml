@@ -2,8 +2,24 @@ name: Linux command
 
 on:
   pull_request:
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - 'vendor/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'skill-build.json'
+      - '.github/workflows/linux-command.yml'
   push:
     branches: [main]
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - 'vendor/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'skill-build.json'
+      - '.github/workflows/linux-command.yml'
 
 permissions:
   contents: read
@@ -20,7 +36,24 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # Compares generated upstream inputs, not just Go's module cache hashes.
+      - name: Verify vendor tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d)
+          trap 'chmod -R u+w "$scratch"; rm -rf "$scratch"' EXIT
+          for name in $(compgen -e); do
+            case "$name" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|XDG_*) unset "$name";; esac
+          done
+          env -u GIT_DIR -u GIT_WORK_TREE -u SSH_AUTH_SOCK -u GOFLAGS \
+            -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u CODEX_HOME \
+            -u CLAUDE_CONFIG_DIR HOME="$scratch" GOENV=off GOTOOLCHAIN=local \
+            GOCACHE="$scratch/cache" GOMODCACHE="$scratch/mod" \
+            go mod vendor -o "$scratch/vendor"
+          diff -r "$scratch/vendor" vendor
       # Proves both Linux builds and native amd64 help without a live account.
+      # Fixed Curator flags fail this job if either architecture cannot link.
       # It does not qualify Matrix authentication or arm64 execution.
       - name: Build static commands and run help in an isolated home
         shell: bash
@@ -37,7 +70,8 @@ jobs:
               -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u CODEX_HOME \
               -u CLAUDE_CONFIG_DIR HOME="$scratch" GOENV=off GOTOOLCHAIN=local \
               GOPROXY=off GOSUMDB=off CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-              go build -mod=vendor -o "$scratch/a2a-$arch" ./cmd/a2a
+              go build -mod=vendor -trimpath -buildvcs=false -buildmode=exe -compiler=gc -pgo=off \
+                -ldflags="-linkmode=internal -libgcc=none" -o "$scratch/a2a-$arch" ./cmd/a2a
             file "$scratch/a2a-$arch" | tee "$scratch/file-$arch"
             grep -q 'statically linked' "$scratch/file-$arch"
           done

@@ -16,7 +16,7 @@ Go voice”, acknowledged by Meta with the original ambiguity retained. The owne
 did not literally name a model. Stress/pronunciation defects remain. Scope narrowing: `$I17bMT13_Bm0gg0A-H-PXapr8kTnl8Se3sgrxXGE-58`, provenance `$ViV6k1qL0k04KFFBy9cs6tCkG_yqO6u5lJfDTa6Lmig`.
 
 ```sh
-go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
+go build -mod=readonly -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
 .temp/voice/a2a-voice voice install
 .temp/voice/a2a-voice voice config --enable
 .temp/voice/a2a-voice post ROOM --topic TOPIC --voice 'Complete original text'
@@ -33,7 +33,7 @@ source delivery; the commands document the interface.
 
 The single route currently requires macOS: sherpa-onnx through the native Go
 binding `github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8`, CGO, CPU, four threads
-and the Piper ru_RU Irina model. Build with `-tags sherpa`. Normal builds retain
+and the Piper ru_RU Irina model. Build with `-mod=readonly -tags sherpa`. Normal builds retain
 text operation without inference linkage; requesting voice there retains text
 and warns. Other platforms retain normal text operation. The tagged executable
 depends on pinned native dylibs at its Go module-cache path; retain that
@@ -99,12 +99,12 @@ or private-content diagnostic logs are supported.
 go test ./internal/voice ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict'
 go vet ./...
 go test -race ./...
-go vet -tags sherpa ./...
-go test -tags sherpa -race ./...
+go vet -mod=readonly -tags sherpa ./...
+go test -mod=readonly -tags sherpa -race ./...
 # Actual local synthesis/encode/decode; explicitly prepared isolated base:
 A2A_VOICE_IT=1 A2A_VOICE_IT_BASE=/absolute/isolated/config \
  A2A_VOICE_IT_EXECUTABLE=/absolute/candidate/a2a-voice \
- go test -tags sherpa ./internal/voice -run '^TestVoiceReal$' -v
+ go test -mod=readonly -tags sherpa ./internal/voice -run '^TestVoiceReal$' -v
 # Add A2A_VOICE_IT_LONG=1 for the actual long/capped synthesis witness.
 ```
 
