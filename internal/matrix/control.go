@@ -27,6 +27,9 @@ func (a ACKReceipt) Raw() []byte          { return append([]byte(nil), a.raw...)
 func (a ACKReceipt) Status() int          { return a.status }
 func (a ACKReceipt) ContentLength() int64 { return a.contentLength }
 
+// errControlTooLarge is distinct so strict projections can name the refusal.
+var errControlTooLarge = errors.New("matrix: control response exceeds evidence limit")
+
 type controlValue struct {
 	raw      []byte
 	value    map[string]any
@@ -66,7 +69,7 @@ func readControl(ctx context.Context, resp *http.Response, limit int64) (*contro
 		return v, errors.New("matrix: control response close failed")
 	}
 	if limit > 0 && int64(len(raw)) >= limit {
-		return v, errors.New("matrix: control response exceeds evidence limit")
+		return v, errControlTooLarge
 	}
 	if resp.ContentLength >= 0 && int64(len(raw)) != resp.ContentLength {
 		return v, errors.New("matrix: incomplete control response")

@@ -14,7 +14,7 @@ import (
 // no second semantic JSON decoder is permitted on this partition.
 func strictJSON(raw []byte) (any, error) {
 	if !utf8.Valid(raw) {
-		return nil, errors.New("matrix: response is not UTF-8")
+		return nil, errWireNotUTF8
 	}
 	p := wireParser{b: raw}
 	v, err := p.value(0)
@@ -23,12 +23,28 @@ func strictJSON(raw []byte) (any, error) {
 	}
 	p.space()
 	if p.i != len(raw) {
-		return nil, errWireJSON
+		return nil, errWireTrailing
 	}
 	return v, nil
 }
 
 var errWireJSON = errors.New("matrix: invalid control JSON")
+
+// errWireNotUTF8 keeps the original message; callers may tell it apart.
+var errWireNotUTF8 = errors.New("matrix: response is not UTF-8")
+
+// wireReason refines errWireJSON for callers that must report a specific
+// refusal. It keeps the same text and errors.Is(err, errWireJSON) identity.
+type wireReason struct{ reason string }
+
+func (*wireReason) Error() string { return errWireJSON.Error() }
+func (*wireReason) Unwrap() error { return errWireJSON }
+
+var (
+	errWireDuplicate = &wireReason{"duplicate member name"}
+	errWireTrailing  = &wireReason{"data after the JSON value"}
+	errWireSurrogate = &wireReason{"unpaired surrogate escape"}
+)
 
 const maxJSONDepth = 10000 // encoding/json's existing composite nesting limit
 
@@ -73,7 +89,7 @@ func (p *wireParser) value(depth int) (any, error) {
 					return nil, err
 				}
 				if _, exists := m[k]; exists {
-					return nil, errWireJSON
+					return nil, errWireDuplicate
 				}
 				p.space()
 				if !p.take(':') {
@@ -221,15 +237,18 @@ func (p *wireParser) str() (string, error) {
 			}
 			if r >= 0xd800 && r <= 0xdbff {
 				if !p.take('\\') || !p.take('u') {
-					return "", errWireJSON
+					return "", errWireSurrogate
 				}
 				low, err := p.hex()
-				if err != nil || low < 0xdc00 || low > 0xdfff {
-					return "", errWireJSON
+				if err != nil {
+					return "", err
+				}
+				if low < 0xdc00 || low > 0xdfff {
+					return "", errWireSurrogate
 				}
 				r = utf16.DecodeRune(r, low)
 			} else if r >= 0xdc00 && r <= 0xdfff {
-				return "", errWireJSON
+				return "", errWireSurrogate
 			}
 			b.WriteRune(r)
 		default:
