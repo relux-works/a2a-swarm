@@ -184,8 +184,16 @@ func TestReadVerificationActualPostFixture(t *testing.T) {
 			}
 			var content map[string]json.RawMessage
 			json.Unmarshal(raw, &content)
-			if len(content) != 5 {
+			// Framed posts also carry the sanitized HTML rendering; body stays the
+			// byte-exact protocol text that strict consumers verify.
+			if len(content) != 7 {
 				t.Fatalf("unexpected post defaults %s", raw)
+			}
+			var format, formatted string
+			json.Unmarshal(content["format"], &format)
+			json.Unmarshal(content["formatted_body"], &formatted)
+			if format != "org.matrix.custom.html" || formatted == "" {
+				t.Fatalf("actual HTML rendering changed %s", raw)
 			}
 			var header Header
 			json.Unmarshal(content[ContentKey], &header)
