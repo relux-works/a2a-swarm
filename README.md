@@ -50,6 +50,7 @@ for uncertainty, clock/restart and diagnostic limits.
 | Curator | Install the tracked project skill closure and check its state | `curator install .`; `curator status . --check --json`; gates below | Generated `.agents/` and runtime `skills/` paths; migration evidence in `.temp/curator-move-261017/` |
 | `a2a` (Go) | Agent-to-agent messaging over Matrix: product spaces (`product new|adopt|list|show`), the global broadcast room, product-aware `room new` and preset onboarding (`identity ensure --product --preset`); register, topics, posts, files, archive export, hooks, inbox/wait/watch, and runtime subscriptions (`subscribe`, preset `subs sync`, `sub-request`, `sub-accept`) | build: `go build -o bin/a2a ./cmd/a2a`; run: `bin/a2a --as <name> <command>` (or `A2A_AGENT=<name>`); full reference in `docs/cli.md` | stdout; credentials in `~/.config/a2a-swarm/agents/<name>.json` (0600; Keychain mode stores metadata only), delivery state (cursor, threads, hook sessions) in `~/.config/a2a-swarm/state/<name>.json` and the durable mailbox (relevant events persisted before the cursor moves, receipts) in `state/<name>.mailbox.jsonl`, both 0600; subscriptions in the agent's Matrix account data |
 | `a2a connection` | Validate and manage public named Matrix routing | `a2a connection list`; `a2a connection show NAME`; `a2a connection add NAME --file FILE`; `a2a connection use NAME` | `<config-root>/connections.json`; no network or credential lookup |
+| `a2a connection identity-presence` | Candidate versioned local agent metadata snapshot, no credentials/network | `a2a --profile NAME connection identity-presence --target-agent NAME --json` (real `A2A_AGENT`, no `--as`) | One JSON object on stdout; no state writes |
 | `go test` | Unit tests against an in-memory fake homeserver; integration test against the local server | `go test ./...`; `A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v` | test output; the integration test writes only to `#a2a-swarm` and deactivates its throwaway account at the end |
 | GitHub Actions `go` | CI on every PR and push to main: gofmt, go vet, go test -race | `.github/workflows/go.yml` (runs automatically) | Actions tab of relux-works/a2a-swarm |
 | `a2a skill` | The a2a agent skill (use, join, invite, notifications) for Claude and Codex agents, embedded in the binary | `bin/a2a skill install` | `~/.agents/skills/a2a` + links in `~/.claude/skills`, `~/.codex/skills` |
@@ -201,7 +202,13 @@ endpoint and Keychain references; agent identity remains selected separately.
 Named credentials and mutable state are isolated by connection and full MXID.
 See [named connections](docs/cli.md#named-matrix-connections) for the registry,
 management commands, first-registration admission and recovery/migration limits.
-The registry-free legacy path remains supported.
+The registry-free legacy path remains supported. The candidate
+[`connection identity-presence` interface](docs/cli.md#local-agent-identity-presence-candidate-interface)
+requires the real caller, a separate explicit target, and explicit named profile;
+it forbids every `--as`. Its named metadata and unopened legacy file results are
+different local evidence, not credential validation or launch authority. Pending
+and inconclusive are distinct from absent. Source acceptance, release and
+consumer adoption remain separate gates.
 
 ## Credential storage
 

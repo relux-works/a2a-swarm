@@ -1740,3 +1740,95 @@ or manufacture receipts. Preserve the old working path until separately
 admitted migration and retirement are verified. Binary installation, profile
 activation, bindings, identity creation, federation and rollout each retain
 their existing owner/keeper admission gates.
+
+
+### Local agent identity presence (candidate interface)
+
+This source introduces the versioned local query below. It is a candidate until
+source review, landing and a containing release; installing/adopting it remains
+separately admitted. It does not perform bootstrap or grant launch authority.
+
+```bash
+# Retain the invoking custodian's existing real A2A_AGENT; TARGET is separate.
+a2a --profile coordination connection identity-presence --target-agent worker-name --json
+# Registry-free legacy compatibility only:
+a2a connection identity-presence --target-agent worker-name --json
+```
+
+`A2A_AGENT` must name the actual invoking agent under the existing caller
+convention. **Every `--as` is prohibited, including the caller's own name and an
+empty value.** `--human` is prohibited. The command never clears or replaces the
+caller. Host/operator admission of that custodian is external custody: neither
+an environment string nor this metadata snapshot authenticates it. There is no
+new role parser, grant registry, human target or arbitrary target-path option.
+Other commands retain their existing identity guards.
+
+Named mode requires explicit `--profile NAME`, even when `current` is set. The
+selected connection's ID, endpoint, identity domain, credential services, agent
+class and exact target MXID must match public metadata/journal bindings. An
+optional existing `--connection-fingerprint` pin must match. Legacy routing
+values from the environment or the public routing keys in `matrix.env` must
+match named routing/store selection. Registration-token values are ignored,
+never decoded or printed. Missing, malformed or unsafe registries cannot be
+forced into legacy mode; only a genuinely absent registry with no named
+selection/pin admits legacy inspection.
+
+Stdout contains exactly one JSON object with four required fields, for example:
+
+```json
+{"schema":"a2a.local-identity-presence/1","state":"present","evidence":"named_bound_metadata","reason":"validated"}
+```
+
+| State | Evidence | Reason | Exit | Local claim |
+| --- | --- | --- | ---: | --- |
+| `present` | `named_bound_metadata` | `validated` | 0 | Public target metadata and operational binding validate; a journal is absent or valid `complete`. |
+| `present` | `legacy_regular_file_only` | `regular_file_only` | 0 | A private, owned regular legacy file exists; its contents were never opened. |
+| `absent` | `none` | `local_absence` | 0 | Selected local metadata is missing and inspected target state is clear. |
+| `pending` | `registration_journal` | `registration_incomplete` | 0 | A matching recognized incomplete registration journal exists, with or without published metadata. |
+| `inconclusive` | `none` | One refusal code below | 1 | Unsafe, conflicting, unknown or unqualified local evidence prevents a conclusion. |
+
+Refusal codes are `invalid_target`, `unsafe_or_unreadable`, `snapshot_changed`,
+`invalid_registry`, `invalid_selection`, `binding_mismatch`, `routing_conflict`,
+`identity_class`, `invalid_metadata`, `invalid_journal`, `unqualified_state`.
+Usage errors return 2 with a fixed diagnostic and may have no JSON. Output
+failure returns 1 and may leave incomplete output. No raw input, paths, target
+payloads or registration-token references appear in diagnostics/results.
+Consumers must validate the exact schema, all fields/enums and the state/exit
+pair; missing output, unknown versions, malformed output and inconclusive
+results fail closed. An admitted launcher may consume the two **distinct**
+`present` evidence kinds under its own policy. The weaker legacy result proves
+neither credential validity, token/account existence nor a binding. `pending`
+and `inconclusive` are not absence. Even `absent` never authorizes account
+creation/replay and never proves remote account or secret absence.
+
+The public named decoder has a dedicated schema, not the credential record
+schema. It rejects duplicate/unknown keys, case aliases, secret-bearing fields
+(even empty), missing required fields, nulls, invalid UTF-8 and trailing JSON at every
+relevant depth. A valid `complete` journal retained by successful registration is a
+positive neighbor. Recognized incomplete stages remain pending; unknown,
+malformed or mismatched journals refuse. Missing metadata with a retained
+complete journal or any other target state refuses clean absence. Published
+valid metadata may coexist with normal runtime state. A human metadata collision
+refuses agent reinterpretation.
+
+Inspection requires an existing config root and traversed directories owned by
+the effective UID with mode 0700, and nonempty regular files with mode 0600 and
+the same owner. Symlinks, special files, unreadable files/directories and observed
+path/identity changes refuse. Missing config root is inconclusive. Registry
+reads are bounded to 1 MiB; public metadata, journal and routing reads to 64 KiB;
+legacy presence requires a file of 1 byte through 1 MiB but never opens it.
+Named target state listing is bounded to 1024 entries. Legacy absence checks
+bounded `state`/`owner-dm` entries for the exact target or target-dot prefix,
+plus root registration residue; entry contents/names are never returned and
+credential directories are never enumerated. Excessive listings refuse.
+
+Rooted, read-only filesystem operations compare lstat/open-fstat/read-fstat
+identity, mode, size and modification time and recheck observed paths/absences.
+These checks detect observed races; they do not supply atomic cross-file
+snapshots, future liveness or protection against all same-UID ABA changes, ACLs
+or changes to ancestors above the configured root. Unsupported ownership
+platforms refuse. Reading public files can update filesystem access times.
+No Keychain lookup, credential decoding, HTTP/auth, registration/recovery, writer
+lock, directory creation, state/journal/cooldown/registry mutation or generic
+owner-channel warning runs on this narrow query path. It proves no member,
+record, host, native-wake or actual runtime admission.
