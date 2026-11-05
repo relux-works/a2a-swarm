@@ -39,6 +39,8 @@ def draw():
         top=rule+(' synthetic-session' if mode.get('named') else '')
         layout='\x1b[19;1H'+top+'\x1b[20;1H❯ '+prefix+text+suffix+'\x1b[21;1H'+rule+'\x1b[23;1H  '+footer
     if mode.get('unknown'): layout+='\x1b[21;1Hunknown input'
+    if mode.get('no-composer'): layout=''
+    if mode.get('diagnostic-row'): layout+='\x1b['+str(mode['diagnostic-row'])+';1H'+mode['diagnostic-text']
     os.write(1,('\x1b[2J\x1b[1;1Ha2a-fixture-frame:'+str(rev)+':end'+layout+'\x1b[20;'+str(3+len(text)+mode.get('cursor',0))+'H').encode())
     with open(root+'/screen.next','w') as f: json.dump(dict(text=text,submitted=submitted,erased=erased,pid=os.getpid(),rev=rev),f)
     os.replace(root+'/screen.next',root+'/screen.json')

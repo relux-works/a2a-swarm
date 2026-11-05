@@ -190,3 +190,68 @@ func TestReadinessUnknownKeysStatus(t *testing.T) {
 		t.Fatal("reporting blocked admission", sample)
 	}
 }
+
+// Fresh status explains rendered suppression using closed tokens in text and
+// JSON, omits a private draft, and leaves the persisted binding unchanged.
+func TestReadinessInputStatus(t *testing.T) {
+	f := newOrphanDispatchFixture(t)
+	for _, mode := range []string{"busy", "draft", "empty"} {
+		control := map[string]any{"text": ""}
+		want := tmuxwake.InputAssessment{State: tmuxwake.InputEmpty, Reason: tmuxwake.InputReasonNone}
+		if mode == "busy" {
+			control["busy"] = true
+			want = tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonBusyOrDialog}
+		}
+		if mode == "draft" {
+			control["text"] = "PRIVATE_SCREEN_SENTINEL"
+			control["hint"] = true
+			want = tmuxwake.InputAssessment{State: tmuxwake.InputNonempty, Reason: tmuxwake.InputReasonInputNonempty}
+		}
+		f.control(control)
+		for _, format := range []string{"text", "json"} {
+			t.Run(mode+"/"+format, func(t *testing.T) {
+				before, _ := json.Marshal(f.e.state("alice"))
+				var out bytes.Buffer
+				f.a.Stdout = &out
+				args := []string{}
+				if format == "json" {
+					args = append(args, "--json")
+				}
+				if err := f.a.terminalStatus(context.Background(), args); err != nil {
+					t.Fatal(err)
+				}
+				if format == "json" {
+					var got struct {
+						Input    tmuxwake.InputAssessment
+						Location string `json:"busy_match_location"`
+					}
+					if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+						t.Fatal(err)
+					}
+					wantLocation := ""
+					if mode == "busy" {
+						wantLocation = "at_or_below_composer"
+					}
+					if got.Location != wantLocation {
+						t.Fatalf("location=%q want=%q", got.Location, wantLocation)
+					}
+					if got.Input != want {
+						t.Fatalf("input diagnostic=%+v want=%+v", got.Input, want)
+					}
+				} else if !strings.Contains(out.String(), "input="+string(want.State)+" reason="+string(want.Reason)+"\n") {
+					t.Fatal("input diagnostic absent", out.String())
+				}
+				if mode != "busy" && strings.Contains(out.String(), "busy_match_location") {
+					t.Fatal("location emitted for non-busy input")
+				}
+				if strings.Contains(out.String(), "PRIVATE_SCREEN_SENTINEL") || strings.Contains(out.String(), "esc to interrupt") || strings.Contains(out.String(), "a2a-fixture-frame") {
+					t.Fatal("screen text leaked")
+				}
+				after, _ := json.Marshal(f.e.state("alice"))
+				if string(before) != string(after) {
+					t.Fatal("status wrote state")
+				}
+			})
+		}
+	}
+}

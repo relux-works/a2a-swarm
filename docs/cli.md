@@ -1064,6 +1064,11 @@ nonempty diagnostics when a filled Codex composer hides its hint. A saved fixed 
 no key, never becomes empty/eligible, and cannot reuse a prior empty key to submit the draft. `AssessReadiness(ctx)` remains the strict
 no-journal observation; Send separately recognizes only text typed by its current invocation. No second capture is taken for notice telemetry.
 
+Status also prints `input=STATE reason=REASON` immediately after readiness; JSON adds a sibling `input: {"state": STATE, "reason": REASON}`. States are `empty`, `nonempty`, `unavailable`; reasons are `none`, `input_nonempty`, `busy_or_dialog`, `layout_unrecognized`, `cursor_mismatch`, `target_unavailable`, `capture_unavailable`. These fixed tokens carry no screen text. Stopped/uninspectable bindings report `unavailable` / `target_unavailable`; unbound status omits input. The same fresh assessment supplies readiness and input, with the saved fixed notice used only for nonempty diagnostics. No new persisted fields or older-reader changes are required.
+
+`busy_or_dialog` can also come from transcript text in the bottom 18 rows, as a known limitation; it is not proof that the lane is busy.
+When that reason is reported, status adds `busy_match_location` in text and JSON: `above_composer`, `at_or_below_composer`, or `no_composer`. This separate read-only capture locates matches relative to the composer's top rule (Claude) or prompt line (Codex); matches on both sides report `at_or_below_composer`. `unavailable` means the extra read failed or the match disappeared between observations. These fixed tokens disclose neither matched phrases nor screen text, and never affect admission. Composer geometry here is only a location hint, not proof that a dialog is absent.
+
 `bind status` prominently reports `readiness=STATE reason=REASON version=VERSION since=TIME unknown_keys=NAMES`; JSON adds `readiness` with those fields.
 States are `ready`, `refused`, `unavailable`. Reasons are `none`, `target_unavailable`, `root_unavailable`, `registry_unavailable`,
 `identity_mismatch`, `headless`, `busy`, `status_unqualified`, `version_unqualified`, `schema_unqualified`. The version is a bounded numeric

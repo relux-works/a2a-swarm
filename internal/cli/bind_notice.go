@@ -172,19 +172,28 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	noticeError := ""
 	var readiness *terminalReadinessStatus
 	var sendRefusal *config.TerminalSendRefusal
+	var input *tmuxwake.InputAssessment
+	matchLocation := ""
 	if b := st.Terminal; b != nil {
 		if b.SendRefusal != nil {
 			copy := *b.SendRefusal
 			copy.Reason = tmuxwake.SafeSendReason(copy.Reason)
 			sendRefusal = &copy
 		}
-		live := tmuxwake.RuntimeAssessment{State: tmuxwake.RuntimeUnavailable, Reason: tmuxwake.RuntimeTargetUnavailable}
+		live := tmuxwake.ReadinessAssessment{
+			Runtime: tmuxwake.RuntimeAssessment{State: tmuxwake.RuntimeUnavailable, Reason: tmuxwake.RuntimeTargetUnavailable},
+			Input:   tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonTargetUnavailable},
+		}
 		if !b.Stopped && ownTerminalTarget(b, b.Target) {
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-			live = boundTerminal(*b).AssessReadiness(probe).Runtime
+			live = boundTerminal(*b).ObserveReadiness(probe, b.Notice)
+			if live.Input.Reason == tmuxwake.InputReasonBusyOrDialog {
+				matchLocation = observeBusyMatchLocation(probe, b.Target)
+			}
 			cancel()
 		}
-		projected := readinessStatus(live, b.Readiness, a.Now())
+		projected := readinessStatus(live.Runtime, b.Readiness, a.Now())
+		input = &live.Input
 		readiness = &projected
 	}
 	if noticeValid(n) != nil {
@@ -195,14 +204,16 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
-			Publication  string                      `json:"publication"`
-			Report       string                      `json:"system_report"`
-			NoticeError  string                      `json:"notice_error,omitempty"`
-			Notification notificationStatus          `json:"notification"`
-			Readiness    *terminalReadinessStatus    `json:"readiness,omitempty"`
-			SendRefusal  *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
-			MailAlarm    mailAlarmStatus             `json:"mail_alarm"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, sendRefusal, alarmStatus(s, st)})
+			Publication       string                      `json:"publication"`
+			Report            string                      `json:"system_report"`
+			NoticeError       string                      `json:"notice_error,omitempty"`
+			Notification      notificationStatus          `json:"notification"`
+			Readiness         *terminalReadinessStatus    `json:"readiness,omitempty"`
+			Input             *tmuxwake.InputAssessment   `json:"input,omitempty"`
+			BusyMatchLocation string                      `json:"busy_match_location,omitempty"`
+			SendRefusal       *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
+			MailAlarm         mailAlarmStatus             `json:"mail_alarm"`
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, alarmStatus(s, st)})
 	}
 	if sendRefusal != nil {
 		a.printf("send_refusal=%s at=%s\n", sendRefusal.Reason, sendRefusal.At.Format(time.RFC3339Nano))
@@ -211,6 +222,12 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if readiness != nil {
 		a.printf("readiness=%s reason=%s version=%s since=%s unknown_keys=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano), readiness.UnknownKeys)
+	}
+	if input != nil {
+		a.printf("input=%s reason=%s\n", input.State, input.Reason)
+		if matchLocation != "" {
+			a.printf("busy_match_location=%s\n", matchLocation)
+		}
 	}
 	if st.Terminal == nil {
 		a.printf("%s unbound; %s\n", s.name, noticeText(n))
