@@ -404,6 +404,7 @@ also listed in `m.mentions.user_ids`. Prints the event id.
 | `--trunk` | - | git object id (hex, 7-64 chars) when the message talks about code |
 | `--subtype` | - | only with `--kind system`: landing, window, incident, blocker, ownership, budget (protocol rule 24); queue (readiness claims, slot requests); redline, redline-closed (rule 28); impact-start, impact-end (rule 31) |
 | `--subject` | - | what the message is about, 1-128 chars of `[A-Za-z0-9#._/:@-]`, e.g. `relux-works/skill-project-management@main`, `BUG-260928-2qon2t`, `PR#12` |
+| `--envelope` | - | `@file`: carry the exact bytes of the file as a swarm envelope next to the text ([below](#carrying-a-swarm-envelope---envelope-file)) |
 
 Empty bodies (after trimming), bodies over 32 KiB, and invalid UTF-8 are refused before anything is sent.
 Repeated `--to` values are combined like one comma-separated list. Empty segments
@@ -416,6 +417,36 @@ a2a post a2a-swarm --topic bridge-daemon --kind answer --re '$Q1...' @answer.md
 echo "ack" | a2a post a2a-swarm --topic bridge-daemon --kind ack -
 a2a post skill-project-management --topic landings --kind system --subtype landing --subject relux-works/skill-project-management@main "PR #12 landed"
 ```
+
+#### Carrying a swarm envelope (`--envelope @file`)
+
+```bash
+a2a post <room> --topic T --envelope @envelope.json 'human-readable text'
+```
+
+Places a completed swarm-envelope/2 in the event content, unchanged, under the fixed key
+`works.relux.swarm.envelope`, next to a human-readable text body. The command only carries: it never parses,
+canonicalizes, re-serializes or validates the envelope, and it derives no authority from the sender, a display
+name or anything the envelope claims. Signing, hashing and verification belong to the consumer.
+
+- **Encoding.** Matrix content is JSON, so raw bytes cannot be carried. The value is one JSON string: the
+  unpadded base64url (RFC 4648 section 5: `-` and `_`, no `=`) of the exact file bytes. It is the only form;
+  decoding must re-encode to the same text.
+- **Body.** The event `body` is exactly the text argument: no `- from:` header lines are added, because the
+  envelope binds the SHA-256 of the exact event text and the header's `at` is only known at send time. Give
+  exactly one text argument (literal, `@file` or `-`). Nothing is trimmed or normalized, so a trailing newline
+  from a file or stdin is part of the text and of its hash. The text must be valid UTF-8 and not blank; text that
+  the ordinary body path would alter (CR, control or bidi characters) is refused, never repaired. Thread
+  relation, `--to`, `--re`, `--kind` and the `ai.relux.a2a` header work as for any post.
+- **Limits.** An envelope over 65,536 bytes (the envelope specification's limit, enforced independently of Matrix)
+  is refused as `envelope_too_large`; an empty file as `envelope_empty`. The serialized event content must stay
+  within 61,440 bytes (the published event byte budget: Matrix limits a whole event to 65,536 bytes and base64url
+  grows the envelope by a third), else `event_too_large`; with a typical header about 45 KB of envelope fit.
+  Nothing is truncated, no pointer form exists and no URL is fetched. The homeserver stays authoritative.
+- **Refusals** happen before any request and print `a2a: envelope refused: <code>` (exit 1):
+  `envelope_unreadable`, `envelope_empty`, `envelope_too_large`, `event_too_large`, `text_invalid`, `text_empty`.
+  Usage errors (exit 2): `--envelope` without a `@file` operand, repeated, combined with `--voice`, or without
+  exactly one text argument.
 
 ### `a2a attach <room> --topic <slug|$event_id> <file> [--kind K] [--to a,b] [--pin] [caption|@file|-]`
 Shares a file through the homeserver's media repository. The file must be a regular, non-empty file whose base name is a safe file name
@@ -716,6 +747,52 @@ by real post commands in the fake homeserver, run
 `A2A_VERIFICATION_FIXTURE_DIR=.temp/verification-fixtures GOMAXPROCS=2 go test -p 1 ./internal/cli -run '^TestReadVerificationActualPostFixture$' -v`.
 Their intentionally invalid signature cannot authorize an effect; receiver-side
 signed positive and negative controls remain separate.
+
+For the swarm envelope carried by `post --envelope`, use the second strict mode:
+
+```bash
+a2a --as <own-identity> read '!explicit-room-id' --event '$explicit-event-id' --envelope-input --json
+```
+
+It has the same selection rules and the same transport as `--verification-input` (explicit room and event IDs and
+`--json`; no aliases, `--topic` or `--last`; repeated selection or mode flags, repeated `--as`/`--profile`
+selectors and the combination with `--verification-input` refuse before any request). One authenticated
+room-scoped GET with redirects disabled, no refetch; the 1 MiB entity and 64 KiB content caps are inclusive.
+It emits exactly one JSON record and LF with these fields, all required:
+
+| Field | Value |
+| --- | --- |
+| `type` | `a2a.event-envelope-input/1` |
+| `sender_mxid` | the event's authenticated sender, full spelling as returned |
+| `receiver_mxid` | the selected stored-session identity (not freshly verified) |
+| `requested_room_id`, `requested_event_id` | exactly the IDs asked for |
+| `returned_room_id`, `returned_event_id` | the IDs the server returned; both must equal the requested ones |
+| `envelope_base64` | unpadded base64url of the exact envelope bytes |
+| `body_text_base64` | unpadded base64url of the exact UTF-8 bytes of the event's `body` text |
+
+`body_text_base64` is there because the envelope specification requires the consumer to hash the actual
+human-readable event text. The text is projected even when empty. Unlike `--verification-input`, the server must
+return `room_id` (the Matrix event endpoint always does) because the envelope binds its room to the actual room.
+The event must be an `m.room.message` with `msgtype` `m.text`, a string `body` and the envelope key.
+
+Every refusal exits 1 with `a2a: envelope refused: <code>` on stderr and prints no record; the diagnostic never
+contains response data. Codes: `selection_invalid`, `response_invalid`, `entity_too_large`, `content_too_large`,
+`invalid_utf8` (raw invalid bytes or an unpaired surrogate escape), `duplicate_key` (any depth, including escaped
+spellings), `trailing_data`, `key_case_alias` (case-fold collisions, or a case variant of `body`, `msgtype` or the
+envelope key), `event_id_mismatch`, `event_type_invalid`, `sender_invalid`, `room_id_missing`, `room_id_mismatch`,
+`content_invalid`, `msgtype_invalid`, `body_missing`, `envelope_missing`, `envelope_malformed` (not a string, empty,
+padded, wrong alphabet, whitespace, non-canonical trailing bits) and `envelope_too_large` (decoded size over
+65,536 bytes, checked before decoding). A missing key and a malformed key are different refusals, never empty output.
+
+This projection only carries and observes. It does not parse or verify the envelope, does not compare the sender with
+anything and grants no authority: the consumer verifies the envelope, hashes the text and decides. As with
+`--verification-input`, the sender and the content headers are declarations of the event's account, not a
+portable attestation, and a broken stdout writer can leave incomplete bytes, so a consumer must require a
+successful exit and exactly one complete record.
+
+Focused checks: `GOMAXPROCS=2 go test -p 1 ./internal/matrix ./internal/cli -run 'TestEnvelope|TestPostEnvelope|TestReadEnvelope|TestStrictReader'`.
+Known-violation controls (isolated source overlays; each plant must fail its intended assertion, with passing
+original and restored runs): `A2A_RUN_ENVELOPE_CONTROLS=1 go test -p 1 ./internal/cli -run '^TestEnvelopeInstrumentControls$' -v -timeout 40m`.
 
 ### `a2a archive <room|all> [--dir archive] [--json-index]`
 Exports the full history of a room as markdown, so the record stays diffable, signed and attributable in git outside Matrix.

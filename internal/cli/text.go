@@ -77,6 +77,23 @@ func snippet(s string, max int) string {
 // readBody resolves a body argument: "-" reads stdin, "@path" reads a file,
 // anything else is literal text. Empty bodies and bodies over MaxBodyBytes are refused.
 func (a *App) readBody(arg string) (string, error) {
+	data, err := a.readBodyBytes(arg)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("body is not valid UTF-8")
+	}
+	body := strings.TrimRight(sanitizeText(string(data)), " \t\n")
+	if strings.TrimSpace(body) == "" {
+		return "", usagef("empty message body refused")
+	}
+	return body, nil
+}
+
+// readBodyBytes returns the exact bytes of a body argument (see readBody),
+// bounded by MaxBodyBytes, without any validation or transformation.
+func (a *App) readBodyBytes(arg string) ([]byte, error) {
 	var data []byte
 	var err error
 	switch {
@@ -93,19 +110,12 @@ func (a *App) readBody(arg string) (string, error) {
 		data = []byte(arg)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read body: %w", err)
+		return nil, fmt.Errorf("read body: %w", err)
 	}
 	if len(data) > MaxBodyBytes {
-		return "", fmt.Errorf("body too large (limit %d bytes)", MaxBodyBytes)
+		return nil, fmt.Errorf("body too large (limit %d bytes)", MaxBodyBytes)
 	}
-	if !utf8.Valid(data) {
-		return "", fmt.Errorf("body is not valid UTF-8")
-	}
-	body := strings.TrimRight(sanitizeText(string(data)), " \t\n")
-	if strings.TrimSpace(body) == "" {
-		return "", usagef("empty message body refused")
-	}
-	return body, nil
+	return data, nil
 }
 
 var aliasLocalRE = regexp.MustCompile(`^[A-Za-z0-9._=\-]+$`)

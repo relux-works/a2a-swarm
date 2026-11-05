@@ -375,7 +375,7 @@ func validKind(k string) bool {
 
 // cmdPost: a2a post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
 func cmdPost(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] <text|@file|->"
+	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
 	fs := newFlagSet("post")
 	withVoice := fs.Bool("voice", false, "add a local voice reply after the unchanged text post")
 	topic := fs.String("topic", "", "topic slug or root event id")
@@ -387,6 +387,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	trunk := fs.String("trunk", "", "repo OID the message talks about")
 	subtype := fs.String("subtype", "", "system subtype (only with --kind system)")
 	subject := fs.String("subject", "", "structured subject (repo@branch, board id, PR#12)")
+	envelopeArg := fs.String("envelope", "", "carry the exact bytes of @file as a swarm envelope in the event; the text becomes the exact event body")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -396,6 +397,13 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 			return usagef("empty message body refused")
 		}
 		return usagef(use)
+	}
+	envelopeMode := false
+	fs.Visit(func(f *flag.Flag) { envelopeMode = envelopeMode || f.Name == "envelope" })
+	if envelopeMode {
+		if err := envelopePostSelection(args, *envelopeArg, *withVoice, len(pos)); err != nil {
+			return err
+		}
 	}
 	if *topic == "" {
 		return usagef("--topic is required (%s)", use)
@@ -433,7 +441,16 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if len(pos) > 2 && (pos[1] == "-" || strings.HasPrefix(pos[1], "@")) {
 		return usagef("give exactly one body: text, @file, or -")
 	}
-	text, err := a.readBody(bodyArg)
+	var text, encodedEnvelope string
+	if envelopeMode {
+		// Both refusals happen before any network request.
+		if encodedEnvelope, err = readEnvelopeFile(*envelopeArg); err != nil {
+			return err
+		}
+		text, err = a.readEnvelopeText(pos[1])
+	} else {
+		text, err = a.readBody(bodyArg)
+	}
 	if err != nil {
 		return err
 	}
@@ -458,7 +475,12 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	h := Header{V: 1, Type: "message", Slug: slug, Topic: root, From: s.name, To: toNames,
 		At: now.Format(time.RFC3339), Re: *re, Kind: *kind, ReplyBy: rb, Trunk: *trunk,
 		Subtype: *subtype, Subject: *subject}
-	id, err := s.sendThreadMessage(ctx, roomID, label, h, text, mentions)
+	var id string
+	if envelopeMode {
+		id, err = s.sendThreadEnvelope(ctx, roomID, label, h, text, encodedEnvelope, mentions)
+	} else {
+		id, err = s.sendThreadMessage(ctx, roomID, label, h, text, mentions)
+	}
 	if err != nil {
 		return err
 	}
@@ -478,6 +500,11 @@ func (s *session) sendThreadMessage(ctx context.Context, roomID, label string, h
 	if err != nil {
 		return "", err
 	}
+	return s.sendThreadContent(ctx, roomID, label, h, content)
+}
+
+// sendThreadContent sends prepared thread-reply content and records the thread.
+func (s *session) sendThreadContent(ctx context.Context, roomID, label string, h Header, content map[string]any) (string, error) {
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
 		return "", fmt.Errorf("post to %s: %w", label, err)
@@ -585,12 +612,22 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 	event := fs.String("event", "", "print only this event id")
 	asJSON := fs.Bool("json", false, "one JSON object per event")
 	verification := fs.Bool("verification-input", false, "strict single-event observation with full IDs and exact encoded content (requires --event and --json)")
+	envelopeInput := fs.Bool("envelope-input", false, "strict single-event projection of the carried swarm envelope and event text, exact bytes (requires --event and --json)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
 		return usagef("usage: a2a read <room> [--topic X] [--last N] [--event ID] [--json]")
+	}
+	if *verification && *envelopeInput {
+		return usagef("--verification-input and --envelope-input are separate modes")
+	}
+	if *envelopeInput {
+		if err := envelopeSelection(args, pos[0], *event, *asJSON); err != nil {
+			return err
+		}
+		return readEnvelopeInput(ctx, a, pos[0], *event)
 	}
 	if *verification {
 		if err := verificationSelection(args, pos[0], *event, *asJSON); err != nil {

@@ -74,6 +74,16 @@ for one bounded original-endpoint observation with full identity spelling and
 lossless base64url content. This is separate from safe display JSON and does not
 verify application authority. See [read and verification mode](docs/cli.md#a2a-read-room---topic-x---last-n---event-ev---json)
 for its exact schema, refusal behavior, trust limits and focused validation commands.
+
+A completed swarm envelope travels in an event with
+`a2a post '<room>' --topic T --envelope @envelope.json 'human-readable text'`: the exact file bytes go
+under the event-content key `works.relux.swarm.envelope` (unpadded base64url), the text is the exact event body, and
+an envelope over the size limit is refused, never truncated. A strict consumer reads it back with
+`a2a --as <own-identity> read '!room-id' --event '$event-id' --envelope-input --json`, one record with the sender,
+receiver, requested and returned IDs, and the exact envelope and text bytes. Both only carry and project; they verify
+nothing. See [`post --envelope`](docs/cli.md#carrying-a-swarm-envelope---envelope-file) and
+[`read --envelope-input`](docs/cli.md#a2a-read-room---topic-x---last-n---event-ev---json) for the encoding, limits and
+refusal codes.
 Audit ordinary-room notification coverage with `bin/a2a subs check [--json]`: it reads subscriptions and the identity's private trim policy, reports missing/trimmed/covered rooms and exits nonzero on gaps. `bin/a2a subs trim --room R --drop KINDS --reason TEXT` records a deliberate exception after narrowing subscriptions; `subs sync` and session-preset onboarding preserve it. Policy lives in `state/NAME.subscription-trims.json` separately from delivery state; see [subscription commands](docs/cli.md#runtime-subscriptions-a2a-subscribe--a2a-unsubscribe--a2a-subs).
 
 The Go `tmuxwake.Target.AssessInput(ctx)` API returns only typed `State` and

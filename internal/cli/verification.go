@@ -30,7 +30,7 @@ type VerificationInput struct {
 }
 
 // Global selectors are removed before command parsing. Refuse repetitions
-// only for the new opt-in mode, preserving ordinary commands' compatibility.
+// only for the opt-in strict input modes, preserving ordinary commands' compatibility.
 func verificationGlobalSelection(args []string) error {
 	seen := map[string]int{}
 	mode := false
@@ -43,7 +43,7 @@ func verificationGlobalSelection(args []string) error {
 		}
 		name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "=")
 		switch name {
-		case "verification-input":
+		case "verification-input", "envelope-input":
 			mode = true
 		case "as", "profile", "connection-fingerprint":
 			seen[name]++
@@ -52,7 +52,7 @@ func verificationGlobalSelection(args []string) error {
 	if mode {
 		for _, count := range seen {
 			if count > 1 {
-				return usagef("--verification-input refuses repeated identity or connection selectors")
+				return usagef("--verification-input and --envelope-input refuse repeated identity or connection selectors")
 			}
 		}
 	}
