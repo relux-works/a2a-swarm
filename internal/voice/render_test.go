@@ -154,37 +154,50 @@ func TestVoiceReal(t *testing.T) {
 		t.Fatal("explicit isolated base and executable required")
 	}
 	c := Config{true, 180}
-	t.Run("sherpa", func(t *testing.T) {
-		audio, err := (LocalRenderer{Executable: exe}).Render(context.Background(), base, c, "Проверка голосового ответа. Полный текст сохраняется в сообщении.")
-		if err != nil {
-			t.Fatal(err)
+	bases := []struct{ name, base string }{{"sherpa", base}}
+	if longBase := os.Getenv("A2A_VOICE_IT_LONG_BASE"); longBase != "" {
+		if !filepath.IsAbs(base) || !filepath.IsAbs(longBase) {
+			t.Fatal("paired path witness requires explicit absolute bases")
 		}
-		if audio.DurationMS < 1000 || audio.DurationMS > 180000 || len(audio.Waveform) != 100 || audio.Truncated {
-			t.Fatalf("invalid rendered witness duration=%d waveform=%d", audio.DurationMS, len(audio.Waveform))
+		if len(filepath.Join(ModelDir(base), "espeak-ng-data")) >= 257 || len(filepath.Join(ModelDir(longBase), "espeak-ng-data")) < 257 {
+			t.Fatal("paired path witness requires a short control and >=257-byte long DataDir")
 		}
-		nonzero := false
-		for _, v := range audio.Waveform {
-			nonzero = nonzero || v > 0
-		}
-		if !nonzero {
-			t.Fatal("silent rendered audio")
-		}
-		// Independently inspect basic codec signature; pipeline also fully decodes it.
-		if !bytes.HasPrefix(audio.OGG, []byte("OggS")) || !bytes.Contains(audio.OGG, []byte("OpusHead")) {
-			t.Fatal("not Ogg Opus")
-		}
-		t.Logf("engine=%s duration_ms=%d ogg_bytes=%d waveform_bins=%d", "sherpa", audio.DurationMS, len(audio.OGG), len(audio.Waveform))
-		if os.Getenv("A2A_VOICE_IT_LONG") == "1" {
-			long, err := (LocalRenderer{Executable: exe}).Render(context.Background(), base, c, strings.Repeat("Это проверка ограничения длительности голосового ответа. ", 160))
+		bases = append(bases, struct{ name, base string }{"long-base", longBase})
+	}
+	for _, test := range bases {
+		t.Run(test.name, func(t *testing.T) {
+			base := test.base
+			audio, err := (LocalRenderer{Executable: exe}).Render(context.Background(), base, c, "Проверка голосового ответа. Полный текст сохраняется в сообщении.")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !long.Truncated || long.DurationMS > 180000 || long.DurationMS < 179000 {
-				t.Fatalf("actual capped output: truncated=%v duration_ms=%d", long.Truncated, long.DurationMS)
+			if audio.DurationMS < 1000 || audio.DurationMS > 180000 || len(audio.Waveform) != 100 || audio.Truncated {
+				t.Fatalf("invalid rendered witness duration=%d waveform=%d", audio.DurationMS, len(audio.Waveform))
 			}
-			t.Logf("engine=%s actual_capped_duration_ms=%d ogg_bytes=%d truncated=%v", "sherpa", long.DurationMS, len(long.OGG), long.Truncated)
-		}
-	})
+			nonzero := false
+			for _, v := range audio.Waveform {
+				nonzero = nonzero || v > 0
+			}
+			if !nonzero {
+				t.Fatal("silent rendered audio")
+			}
+			// Independently inspect basic codec signature; pipeline also fully decodes it.
+			if !bytes.HasPrefix(audio.OGG, []byte("OggS")) || !bytes.Contains(audio.OGG, []byte("OpusHead")) {
+				t.Fatal("not Ogg Opus")
+			}
+			t.Logf("engine=%s original_data_dir_bytes=%d worker_data_dir_bytes=14 duration_ms=%d ogg_bytes=%d waveform_bins=%d", "sherpa", len(filepath.Join(ModelDir(base), "espeak-ng-data")), audio.DurationMS, len(audio.OGG), len(audio.Waveform))
+			if os.Getenv("A2A_VOICE_IT_LONG") == "1" {
+				long, err := (LocalRenderer{Executable: exe}).Render(context.Background(), base, c, strings.Repeat("Это проверка ограничения длительности голосового ответа. ", 160))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !long.Truncated || long.DurationMS > 180000 || long.DurationMS < 179000 {
+					t.Fatalf("actual capped output: truncated=%v duration_ms=%d", long.Truncated, long.DurationMS)
+				}
+				t.Logf("engine=%s actual_capped_duration_ms=%d ogg_bytes=%d truncated=%v", "sherpa", long.DurationMS, len(long.OGG), long.Truncated)
+			}
+		})
+	}
 }
 
 // Little-endian signed waveform decoding is a format assertion, including the

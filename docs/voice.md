@@ -53,6 +53,27 @@ verifies installed asset hashes. Posting never installs/downloads. The bundle
 retains its upstream model card, which marks dataset license Unknown. This
 feature asserts no model licensing clearance and does not redistribute it.
 
+For #185, the dedicated `--voice-worker` process opens the installed model
+directory, checks its identity against the non-symlink directory it inspected,
+enters it through that descriptor, and revalidates the pinned manifest/assets
+through the held working directory before native construction. Model and token
+filenames and `espeak-ng-data` are relative to that directory. DataDir is always
+the 14-byte `espeak-ng-data`, independent of config-root or TMPDIR length;
+the output filename becomes absolute before entering the model directory.
+The worker holds cwd through generation, saving and native object destruction.
+The parent CLI never changes cwd. Concurrent renders and truncation notices
+run in separate reapable workers. No model alias, short-root selection, resource
+copy, cache migration or additional temporary artifact is involved.
+
+This preserves manifest authentication and rejects redirected model roots/assets;
+holding cwd also survives replacement of the source directory's pathname.
+It does not make model contents immutable against a same-UID writer after
+validation. The existing parent process deadlines still bound validation and
+native failure. Public failure strings and `[VOICE_TEXT_ONLY]` are unchanged;
+there is no new #171 error category. PR153 must carry this path preparation
+into its dedicated helper while retaining its separate executable/library
+authentication and snapshot lifecycle.
+
 `ffmpeg` must be on PATH with libopus encode and Opus decode support. Output
 is mono Ogg/Opus,48kHz,24kbps, voice application. There is no qualified
 `afconvert` Opus fallback in v1: unavailable/failed encoding retains text and
@@ -106,6 +127,13 @@ A2A_VOICE_IT=1 A2A_VOICE_IT_BASE=/absolute/isolated/config \
  A2A_VOICE_IT_EXECUTABLE=/absolute/candidate/a2a-voice \
  go test -tags sherpa ./internal/voice -run '^TestVoiceReal$' -v
 # Add A2A_VOICE_IT_LONG=1 for the actual long/capped synthesis witness.
+# Paired #185 witness, using separately prepared/authenticated installed models:
+# A2A_VOICE_IT_BASE must give a DataDir shorter than257 bytes, and
+# A2A_VOICE_IT_LONG_BASE must give one of at least257 bytes. No auto-install/copy.
+A2A_VOICE_IT=1 A2A_VOICE_IT_BASE=/absolute/isolated/short-config \
+ A2A_VOICE_IT_LONG_BASE=/absolute/isolated/long-per-connection-config \
+ A2A_VOICE_IT_EXECUTABLE=/absolute/candidate/a2a-voice A2A_VOICE_IT_LONG=1 \
+ go test -tags sherpa ./internal/voice -run '^TestVoiceReal$' -v
 ```
 
 The gated witness synthesizes and encodes Irina, renders Opus back to
@@ -114,6 +142,18 @@ play on the user's speakers or establish client UI acceptance. Missing tools
 are failures, never passing Opus results. Unit tests cover text identity and
 failure verdicts, event/reply/metadata and integrity ordering, cap/notice,
 foreign/cloud option rejection, private scratch cleanup, wrong pins and unsafe archives.
+
+The #185 Linux controls use tiny synthetic pinned fixtures and an inert native
+constructor callback at the production path boundary. They establish relative
+path spelling, asset validation, output placement, source-rename isolation and
+independent worker lifetimes; they do not establish Sherpa/espeak relative-path
+handling or real speech/Opus. The paired gated witness above must be run on the
+exact candidate head by the authorized Mac operator with pinned native assets
+and encoder, including cap/notice. Both current CI jobs use
+`[self-hosted, macOS, relux-a2a]`; configured jobs and Linux passes are not
+evidence of a successful native run. The CI native job links/builds Sherpa and
+runs affected unit contracts, but does not enable `TestVoiceReal` or install
+the model. Native confirmation remains a delivery gate.
 
 Source delivery requires own complete and keeper exact-head review, real
 hosted CI for normal/native variants, landing window and signed plain FF.
