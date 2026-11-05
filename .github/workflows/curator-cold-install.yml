@@ -1,0 +1,49 @@
+name: Curator cold candidate install
+
+on:
+  push:
+    branches: [task-261105-curator-cold-measurement]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cold-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: b738a8148d0c2c972a61126dfb2ea5b277e755f6
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: relux-works/curator
+          ref: f1bb3e85e670ba1bc904e480a952c50b35a6e784
+          path: curator
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Export frozen candidate without checkout administration
+        run: |
+          mkdir candidate-source
+          git -C candidate archive HEAD | tar -x -C candidate-source
+      - name: Measure cold candidate through the real worker
+        working-directory: curator
+        env:
+          CURATOR_COLD_REPOSITORY: ${{ github.workspace }}/candidate-source
+          CURATOR_COLD_COMMAND: a2a
+        run: bash .github/ci/isolated-test.sh go test -tags=curator_cold_repository -count=1 -v -timeout=25m ./internal/godriver -run '^TestColdRepositoryMeasurement$'
+      - name: Full candidate install and a2a on PATH
+        working-directory: curator
+        env:
+          CURATOR_COLD_REPOSITORY: ${{ github.workspace }}/candidate-source
+          CURATOR_COLD_COMMAND: a2a
+        run: bash .github/ci/isolated-test.sh go test -tags=curator_cold_repository -count=1 -v -timeout=25m ./cmd/curator -run '^TestColdRepositoryInstallOnPATH$'
