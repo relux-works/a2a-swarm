@@ -29,6 +29,36 @@ jobs:
       # Keep a bounded suite watchdog inside this job's existing 30m budget.
       - run: go test -race -timeout 20m ./...
 
+  test-linux:
+    # Add capacity while the repo is private and the single Mac runner is queued.
+    # Transitional F1 step: moving off macOS and to public-allowed labels is later.
+    runs-on: [self-hosted, Linux, swarma-ci]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Require terminal test dependencies
+        run: |
+          for tool in tmux python3; do
+            command -v "$tool" >/dev/null || { echo "Missing required test dependency: $tool"; exit 1; }
+          done
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - name: Test and report skips
+        shell: bash
+        run: |
+          set +e
+          go test -race -timeout 20m -v ./... 2>&1 | tee "$RUNNER_TEMP/go-test-linux.log"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          skipped=$(grep -c '^[[:space:]]*--- SKIP:' "$RUNNER_TEMP/go-test-linux.log" || true)
+          echo "Skipped tests (including subtests): $skipped"
+          exit "$test_status"
+
   voice-native:
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
