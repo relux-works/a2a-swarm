@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +29,20 @@ func init() {
 		fmt.Fprintln(os.Stderr, "flag provided but not defined: -consumer-protocol")
 		os.Exit(2)
 	case "hang":
-		time.Sleep(time.Minute)
+		time.Sleep(5 * time.Minute)
+	case "slow":
+		// The first probe times out; the same executable answers on the next run.
+		marker := os.Args[0] + ".attempted"
+		if _, err := os.Stat(marker); os.IsNotExist(err) {
+			if err := os.WriteFile(marker, nil, 0600); err != nil {
+				os.Exit(2)
+			}
+			time.Sleep(5 * time.Minute)
+		}
+		fmt.Print(consumerProtocol)
+	case "nonzero":
+		fmt.Print(consumerProtocol)
+		os.Exit(1)
 	case "wrong":
 		fmt.Print("a2a-bind-consumer/0\n")
 	case "extra":
@@ -52,12 +66,12 @@ func TestTerminalConsumerProtocol(t *testing.T) {
 	}
 }
 
-// Native old-flag, hanging, wrong, excess-output and stderr candidates never
-// reach exec; a good token does. Every fingerprint is probed once, with the
-// allowlisted environment, while state/lease remain unchanged on refusal.
+// Native old-flag, nonzero, wrong, excess-output and stderr candidates never
+// reach exec and stay fenced across minutes; a good token does. Each is probed
+// once with the allowlisted environment, leaving state/lease unchanged.
 func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 	_, raw := refreshExecutable(t)
-	for _, kind := range []string{"old", "hang", "wrong", "extra", "stderr", "good"} {
+	for _, kind := range []string{"old", "nonzero", "wrong", "extra", "stderr", "good"} {
 		t.Run(kind, func(t *testing.T) {
 			a, s, e := refreshApp(t)
 			path := filepath.Join(t.TempDir(), kind)
@@ -68,25 +82,27 @@ func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 			var log bytes.Buffer
 			a.Stderr = &log
 			probes, execs := 0, 0
-			r := &terminalRefresh{path: path, current: terminalExecutable{Image: "old-image"},
+			now := time.Now()
+			r := &terminalRefresh{path: path, current: terminalExecutable{Image: "old-image"}, now: func() time.Time { return now },
+				safety: func(context.Context, *App, *session, string) (string, bool, error) {
+					return "refresh-session", true, nil
+				},
 				probe: func(ctx context.Context, path string, env []string) error {
 					probes++
 					if !slices.Equal(env, detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), "refresh-session")) {
 						t.Fatal("probe environment widened")
 					}
-					start := time.Now()
-					err := probeTerminalConsumer(ctx, path, env)
-					if time.Since(start) > 4*time.Second {
-						t.Fatal("probe exceeded bounded timeout/drain")
-					}
-					return err
+					// Success has the production 10s budget, with no tighter elapsed assertion.
+					return probeTerminalConsumer(ctx, path, env)
 				},
 				exec: func(string, []string, []string) error { execs++; return syscall.ENOEXEC },
 			}
 			matureRefresh(t, r)
+			r.since = now.Add(-time.Second)
 			err := config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
 				for i := 0; i < 5; i++ {
 					r.poll(context.Background(), a, s, "refresh-gen", lock)
+					now = now.Add(time.Minute)
 				}
 				if probes != 1 {
 					t.Fatalf("probe count %d", probes)
@@ -118,9 +134,102 @@ func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 				t.Fatal(err)
 			}
 			matureRefresh(t, r)
+			r.since = now.Add(-time.Second)
 			err = config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error { r.poll(context.Background(), a, s, "refresh-gen", lock); return nil })
 			if err != nil || probes != 2 {
 				t.Fatalf("changed fingerprint: probes=%d err=%v", probes, err)
+			}
+		})
+	}
+}
+
+// A real slow candidate times out without being fenced, then execs on a later
+// poll of the identical fingerprint. A real hanging candidate never execs over
+// three attempts. The clock seam proves no retry at any poll before 60s and one
+// fixed transient log across retries; a failed Start has the same retry policy.
+func TestTerminalRefreshProtocolRetry(t *testing.T) {
+	_, raw := refreshExecutable(t)
+	for _, kind := range []string{"slow", "hang", "start"} {
+		t.Run(kind, func(t *testing.T) {
+			a, s, e := refreshApp(t)
+			before := e.state("alice")
+			path := filepath.Join(t.TempDir(), kind)
+			if err := os.WriteFile(path, raw, 0700); err != nil {
+				t.Fatal(err)
+			}
+			var log bytes.Buffer
+			a.Stderr = &log
+			now := time.Now()
+			probes, execs := 0, 0
+			r := &terminalRefresh{path: path, current: terminalExecutable{Image: "old-image"}, now: func() time.Time { return now },
+				safety: func(context.Context, *App, *session, string) (string, bool, error) {
+					return "refresh-session", true, nil
+				},
+				probe: func(ctx context.Context, path string, env []string) error {
+					probes++
+					if kind == "start" {
+						path += ".missing"
+					}
+					started := time.Now()
+					err := probeTerminalConsumer(ctx, path, env)
+					if kind != "slow" || probes == 1 {
+						if !errors.Is(err, errConsumerProbeUnavailable) {
+							t.Fatalf("probe result: %v", err)
+						}
+						// The child sleeps for five minutes: this loose watchdog catches
+						// failure to cancel/drain, allowing 50s of loaded-runner slack.
+						if kind != "start" && (time.Since(started) < terminalConsumerProbeTimeout || time.Since(started) > terminalConsumerProbeTimeout+50*time.Second) {
+							t.Fatal("probe did not honor timeout/drain watchdog")
+						}
+					}
+					return err
+				},
+				exec: func(string, []string, []string) error { execs++; return syscall.ENOEXEC },
+			}
+			matureRefresh(t, r)
+			r.since = now.Add(-time.Second)
+			err := config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
+				r.poll(context.Background(), a, s, "refresh-gen", lock)
+				if probes != 1 || execs != 0 || r.failed != (terminalExecutable{}) {
+					t.Fatalf("first attempt: probes=%d execs=%d failed=%+v", probes, execs, r.failed)
+				}
+				for attempt := 2; attempt <= 3; attempt++ {
+					for second := 1; second < 60; second++ {
+						now = now.Add(time.Second)
+						r.poll(context.Background(), a, s, "refresh-gen", lock)
+						if probes != attempt-1 || execs != 0 {
+							t.Fatalf("early retry at second %d: probes=%d execs=%d", second, probes, execs)
+						}
+					}
+					now = now.Add(time.Second)
+					r.poll(context.Background(), a, s, "refresh-gen", lock)
+					if probes != attempt {
+						t.Fatalf("retry count: %d", probes)
+					}
+					if kind == "slow" {
+						if execs != 1 {
+							t.Fatalf("healthy retry did not exec: %d", execs)
+						}
+						break
+					}
+					if execs != 0 || r.failed != (terminalExecutable{}) {
+						t.Fatal("unanswered probe executed or fenced")
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "binding re-exec deferred: protocol probe unavailable\n"
+			if kind == "slow" {
+				want += "binding re-exec refused: exec failed\n"
+			}
+			if log.String() != want {
+				t.Fatalf("retry logs: %q", log.String())
+			}
+			if !reflect.DeepEqual(before, e.state("alice")) {
+				t.Fatal("probe changed consumer authority")
 			}
 		})
 	}

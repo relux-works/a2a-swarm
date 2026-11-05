@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,6 +44,12 @@ func executableMetadata(info os.FileInfo) terminalExecutable {
 }
 
 var errExecutableNotReady = errors.New("executable not ready")
+
+// Loaded hosts can delay even a healthy candidate's startup by several seconds.
+const terminalConsumerProbeTimeout = 10 * time.Second
+const terminalConsumerProbeRetry = 60 * time.Second
+
+var errConsumerProbeUnavailable = errors.New("consumer protocol unavailable")
 
 func observeTerminalExecutable(path string) (terminalExecutable, error) {
 	// Do not follow a newly substituted symlink or block opening a FIFO/device.
@@ -108,6 +115,8 @@ type terminalRefresh struct {
 	stable     bool
 	nextSafety time.Time
 	probed     terminalExecutable
+	// Retain cooldowns across path changes and suppress repeated transient logs.
+	probeRetries map[terminalExecutable]time.Time
 	// Optional seams count expensive work and advance monotonic time in tests.
 	now    func() time.Time
 	safety func(context.Context, *App, *session, string) (string, bool, error)
@@ -227,6 +236,9 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	if now.Before(r.nextSafety) {
 		return
 	}
+	if now.Before(r.probeRetries[stamp]) {
+		return
+	}
 	r.nextSafety = now.Add(30 * time.Second)
 	if err := s.checkConnection(); err != nil {
 		return
@@ -246,6 +258,22 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 			probe = probeTerminalConsumer
 		}
 		if err := probe(ctx, resolved, env); err != nil {
+			if errors.Is(err, errConsumerProbeUnavailable) {
+				if r.probeRetries == nil {
+					r.probeRetries = make(map[terminalExecutable]time.Time)
+				}
+				if _, logged := r.probeRetries[stamp]; !logged {
+					fmt.Fprintln(a.Stderr, "binding re-exec deferred: protocol probe unavailable")
+				}
+				// Start cooldown after completion so safety/probe latency cannot
+				// shorten the interval between actual subprocess starts.
+				retryAt := time.Now()
+				if r.now != nil {
+					retryAt = r.now()
+				}
+				r.probeRetries[stamp] = retryAt.Add(terminalConsumerProbeRetry)
+				return
+			}
 			r.failed = stamp
 			fmt.Fprintln(a.Stderr, "binding re-exec refused: protocol incompatible")
 			return
@@ -310,12 +338,14 @@ func terminalRefreshAuthority(ctx context.Context, a *App, s *session, generatio
 
 // Cap memory and reject even a correct token followed by extra output.
 type protocolOutput struct {
-	data  []byte
-	limit int
+	data   []byte
+	limit  int
+	excess bool
 }
 
 func (b *protocolOutput) Write(p []byte) (int, error) {
 	if len(p) > b.limit-len(b.data) {
+		b.excess = true
 		return 0, io.ErrShortBuffer
 	}
 	b.data = append(b.data, p...)
@@ -323,7 +353,7 @@ func (b *protocolOutput) Write(p []byte) (int, error) {
 }
 
 func probeTerminalConsumer(ctx context.Context, path string, env []string) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, terminalConsumerProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "bind", "--consumer-protocol")
 	cmd.Env = env
@@ -335,11 +365,21 @@ func probeTerminalConsumer(ctx context.Context, path string, env []string) error
 	out := &protocolOutput{limit: len(consumerProtocol)}
 	stderr := &protocolOutput{limit: 0}
 	cmd.Stdout, cmd.Stderr = out, stderr
-	err := cmd.Run()
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if err := cmd.Start(); err != nil {
+		return errConsumerProbeUnavailable
 	}
-	if err != nil || ctx.Err() != nil || string(out.data) != consumerProtocol {
+	err := cmd.Wait()
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	// Explicit bad output is a refusal even if the process subsequently hangs.
+	// A signal caused by our deadline is not a candidate's nonzero exit.
+	if out.excess || stderr.excess || !strings.HasPrefix(consumerProtocol, string(out.data)) ||
+		(cmd.ProcessState != nil && cmd.ProcessState.ExitCode() > 0) {
+		return errors.New("consumer protocol refused")
+	}
+	if ctx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) {
+		return errConsumerProbeUnavailable
+	}
+	if err != nil || string(out.data) != consumerProtocol {
 		return errors.New("consumer protocol refused")
 	}
 	return nil

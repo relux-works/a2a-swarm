@@ -1004,11 +1004,16 @@ fresh idle qualification. Its loaded image becomes the baseline, preventing exec
 identity, generation and inherited lock descriptor; the allowlisted environment above is reapplied.
 
 Before exec, a short-lived candidate subprocess runs `bind --consumer-protocol` with the same allowlisted environment and no
-inherited lock/readiness descriptors. It must exit successfully within a 2-second deadline (plus at most 100ms pipe drain), emit
+inherited lock/readiness descriptors. It must exit successfully within a 10-second deadline (plus at most 100ms pipe drain), emit
 exactly `a2a-bind-consumer/1` followed by a newline, and emit no stderr. Output memory is bounded to the token length. The token
-versions both the inherited-lock launch protocol and the persisted consumer state contract. A failed, hanging or incompatible
-probe keeps the old consumer running and logs exactly `binding re-exec refused: protocol incompatible` once per fingerprint;
-it is not retried until the file changes. A successful probe is also cached for that fingerprint.
+versions both the inherited-lock launch protocol and the persisted consumer state contract. A nonzero exit, stderr output,
+or wrong or extra token permanently fences that fingerprint and logs exactly `binding re-exec refused: protocol incompatible`;
+it is not retried until the file changes. A timeout or failure to start leaves the old consumer running without fencing the
+fingerprint. It logs exactly `binding re-exec deferred: protocol probe unavailable` once per fingerprint, and retries on a later
+poll, at most once per 60 seconds (cooldown starts when the previous attempt completes). Retries do not repeat that log line. The 10-second budget
+allows healthy startup on heavily loaded hosts. A hanging candidate can hold one consumer delivery cycle for that long,
+plus the 100ms pipe drain, at most once per 60 seconds for that fingerprint. Its process group is killed on timeout and it
+never reaches exec. A successful probe is also cached for that fingerprint.
 
 A successful resumed consumer logs exactly `binding re-exec: executable changed` in `state/NAME.binding.log`. If exec fails, the old image keeps
 running and logs exactly `binding re-exec refused: exec failed`, once for that file fingerprint. It retries that file only after identity, metadata
