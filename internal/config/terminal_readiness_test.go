@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,36 @@ func TestTerminalReadinessUnknownKeysDecode(t *testing.T) {
 		}
 		if raw == `{"unknown_keys":"future"}` && b.Readiness.UnknownKeys != "future" {
 			t.Fatal("name lost")
+		}
+	}
+}
+
+// Old journals have no refusal; hostile diagnostic tokens/times cannot block
+// loading or survive as screen text. A valid closed token and time round-trip.
+func TestTerminalSendRefusalDecode(t *testing.T) {
+	for _, raw := range []string{``, `,"send_refusal":{"reason":"key_width_changed","at":"2026-10-26T00:00:00Z"}`, `,"send_refusal":{"reason":"PRIVATE_SCREEN\nSECRET","at":"bad"}`, `,"send_refusal":42`} {
+		var b TerminalBinding
+		if err := json.Unmarshal([]byte(`{"generation":"g","attempt_ids":["mail"]`+raw+`}`), &b); err != nil {
+			t.Fatal(err)
+		}
+		if b.Generation != "g" || len(b.AttemptIDs) != 1 {
+			t.Fatal("journal changed")
+		}
+		if raw == "" {
+			if b.SendRefusal != nil {
+				t.Fatal("old state gained refusal")
+			}
+			continue
+		}
+		if b.SendRefusal == nil || b.SendRefusal.Reason != tmuxwake.SafeSendReason(b.SendRefusal.Reason) {
+			t.Fatal("unsafe reason")
+		}
+		if strings.Contains(raw, "key_width_changed") && (b.SendRefusal.Reason != tmuxwake.ReasonKeyWidthChanged || b.SendRefusal.At.IsZero()) {
+			t.Fatal("valid refusal lost")
+		}
+		data, _ := json.Marshal(b.SendRefusal)
+		if strings.Contains(string(data), "PRIVATE") || strings.Contains(string(data), "SECRET") {
+			t.Fatal("screen content persisted")
 		}
 	}
 }

@@ -171,7 +171,13 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	}
 	noticeError := ""
 	var readiness *terminalReadinessStatus
+	var sendRefusal *config.TerminalSendRefusal
 	if b := st.Terminal; b != nil {
+		if b.SendRefusal != nil {
+			copy := *b.SendRefusal
+			copy.Reason = tmuxwake.SafeSendReason(copy.Reason)
+			sendRefusal = &copy
+		}
 		live := tmuxwake.RuntimeAssessment{State: tmuxwake.RuntimeUnavailable, Reason: tmuxwake.RuntimeTargetUnavailable}
 		if !b.Stopped && ownTerminalTarget(b, b.Target) {
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
@@ -189,12 +195,16 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
-			Publication  string                   `json:"publication"`
-			Report       string                   `json:"system_report"`
-			NoticeError  string                   `json:"notice_error,omitempty"`
-			Notification notificationStatus       `json:"notification"`
-			Readiness    *terminalReadinessStatus `json:"readiness,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness})
+			Publication  string                      `json:"publication"`
+			Report       string                      `json:"system_report"`
+			NoticeError  string                      `json:"notice_error,omitempty"`
+			Notification notificationStatus          `json:"notification"`
+			Readiness    *terminalReadinessStatus    `json:"readiness,omitempty"`
+			SendRefusal  *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, sendRefusal})
+	}
+	if sendRefusal != nil {
+		a.printf("send_refusal=%s at=%s\n", sendRefusal.Reason, sendRefusal.At.Format(time.RFC3339Nano))
 	}
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if readiness != nil {

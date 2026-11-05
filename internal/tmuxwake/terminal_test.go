@@ -22,25 +22,35 @@ tty.setraw(0)
 text=''; submitted=[]; path=sys.argv[1]; runtime=sys.argv[2]
 def draw():
     global text
+    options={}
+    try:
+        with open(path+'.render') as f: options=json.load(f)
+    except FileNotFoundError: pass
+    shown='' if options.get('empty',False) else text
+    row=options.get('row',20)
+    col=options.get('column',0)
+    cursor=options.get('cursor',0)
+    extra=options.get('extra','')
     if runtime=='claude' or runtime.startswith('claude-named'):
-        content=text+'\x1b[7m \x1b[0m' if text else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
+        content=shown+'\x1b[7m \x1b[0m' if shown else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
         top='─'*110 if runtime=='claude' else '─'*90+' synthetic-session'
         footer='  ⏵⏵ bypass permissions on'
         if runtime=='claude-named-busy': footer+=' (esc to interrupt)'
         if runtime=='claude-named-dialog': footer+=' Permission required'
         if runtime=='claude-named-unknown': top='Unrecognized layout'
-        screen='\x1b[2J\x1b[19;1H'+top+'\r\n❯\u00a0'+content+'\r\n'+'─'*110+'\r\n'+footer+'\x1b[20;'+str(3+len(text))+'H'
+        screen='\x1b[2J\x1b['+str(row-1)+';1H'+top+'\r\n'+' '*col+'❯\u00a0'+content+'\r\n'+'─'*110+'\r\n'+footer+extra+'\x1b['+str(row)+';'+str(3+col+len(shown)+cursor)+'H'
     else:
-        footer='Codex · Ready · Context 50% left' if text else '? for shortcuts'
-        screen='\x1b[2J\x1b[20;1H\x1b[1m›\x1b[0m '+text+'\x1b[22;1H  '+footer+'\x1b[20;'+str(3+len(text))+'H'
+        footer='Codex · Ready · Context 50% left' if shown else '? for shortcuts'
+        screen='\x1b[2J\x1b['+str(row)+';1H'+' '*col+'\x1b[1m›\x1b[0m '+shown+'\x1b['+str(row+2)+';1H  '+footer+extra+'\x1b['+str(row)+';'+str(3+col+len(shown)+cursor)+'H'
     os.write(1,screen.encode())
-    with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'pid':os.getpid()},f)
+    with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'pid':os.getpid(),'row':row,'render':options.get('render',0)},f)
     os.replace(path+'.next',path)
 draw()
 while True:
     pending=os.read(0,4096)
     while os.path.exists(path+'.hold'): time.sleep(0.005)
     for c in pending:
+        if c==12: continue # fixture-only redraw without input changes
         if c in (13,10): submitted.append(text);text=''
         elif c in (127,8): text=text[:-1]
         else: text+=chr(c)
@@ -51,6 +61,8 @@ type fixtureState struct {
 	Text      string
 	Submitted []string
 	PID       int
+	Row       int
+	Render    int
 }
 type terminalFixture struct {
 	target Target

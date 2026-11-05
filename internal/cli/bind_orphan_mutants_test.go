@@ -24,6 +24,8 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 	type plant struct{ name, file, old, next, killer, positive string }
 	const admission = "TestTerminalDispatchIdleQualification"
 	plants := []plant{
+		{"registry-row-exception-removed", "tmuxwake/send_result.go", `current.ComposerRow = expected.ComposerRow`, `// row normalization removed`, "TestBoundSendComposerMovement/claude-named/valid", "TestBoundSendContinuity/claude-named/valid"},
+		{"registry-row-exception-width", "tmuxwake/send_result.go", `current.ComposerRow = expected.ComposerRow`, `current.ComposerRow = expected.ComposerRow; current.PaneWidth = expected.PaneWidth`, "TestBoundSendComposerMovement/claude-named/width", "TestBoundSendComposerMovement/claude-named/valid"},
 		{"timestamp-short-hour-exemption", "cli/bind_notice.go", `if !noticeTimestampGrammar.MatchString(value) {`, `if len(value)==19 && value[10]=='T' && noticeTimestampGrammar.MatchString(value[:11]+"0"+value[11:]) {value=value[:11]+"0"+value[11:]}; if !noticeTimestampGrammar.MatchString(value) {`, "TestReviewCR4TimestampGrammar/since/one-digit-hour", "TestReviewCR4TimestampGrammar/since/valid-z"},
 		{"timestamp-short-hour-generated", "cli/bind_notice.go", `if !noticeTimestampGrammar.MatchString(value) {`, `if len(value)==19 && value[10]=='T' && noticeTimestampGrammar.MatchString(value[:11]+"0"+value[11:]) {value=value[:11]+"0"+value[11:]}; if !noticeTimestampGrammar.MatchString(value) {`, "TestNoticeTimestampGeneratedGrammar/observed/short-component-0539", "TestNoticeTimestampGeneratedGrammar/observed/valid-0000"},
 		{"timestamp-comma-fraction-exemption", "cli/bind_notice.go", `if !noticeTimestampGrammar.MatchString(value) {`, `if !noticeTimestampGrammar.MatchString(value) && !noticeTimestampGrammar.MatchString(strings.ReplaceAll(value,",",".")) {`, "TestReviewCR4LocalTimestampGrammar/observed/comma-fraction", "TestReviewCR4LocalTimestampGrammar/observed/valid-fraction-offset"},
@@ -62,7 +64,7 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"registry-status-key-omission", "cli/bind_readiness.go", `RegistryStatus: k.RegistryStatus,`, `RegistryStatus: "",`, "TestReadinessIdleContinuity/status", "TestReadinessIdleContinuity/registry"},
 		{"registry-typed-unknown-completes", "cli/bind.go", `outcome := result.Text()`, `if !result.Valid() && sendErr==nil {result=tmuxwake.SendResult{Disposition:tmuxwake.SendSubmitted,Outcome:tmuxwake.SendWakeSubmitted}}; outcome := result.Text()`, "TestReadinessTypedCompletion/unknown", "TestReadinessTypedCompletion/submitted"},
 		{"registry-pretype-key-omission", "tmuxwake/terminal.go", `if preType != nil && !preType() {`, `if preType != nil && false && !preType() {`, "TestBoundSendContinuity/claude-named/pre-key", "TestBoundSendContinuity/claude-named/valid"},
-		{"registry-posttype-key-omission", "tmuxwake/send_result.go", `r.Key == expected &&`, `(r.Key == expected || owned!="") &&`, "TestBoundSendContinuity/claude-named/post-key", "TestBoundSendContinuity/claude-named/valid"},
+		{"registry-posttype-key-omission", "tmuxwake/send_result.go", `keyMatches && r.runtimeEligible()`, `(keyMatches || owned!="") && r.runtimeEligible()`, "TestBoundSendContinuity/claude-named/post-key", "TestBoundSendContinuity/claude-named/valid"},
 		{"registry-journal-key-authority", "tmuxwake/readiness.go", `if b.Text != "" && (owned == "" || b.Text != owned || !fixedNotice.MatchString(owned)) {`, `if b.Text != "" && (owned == "" || b.Text != owned || !fixedNotice.MatchString(owned)) && diagnosticNotice=="" {`, "TestReadinessNoticeDiagnosticOnly", "TestBoundReadinessRoutes/codex"},
 		{"registry-stable-since-rewrite", "cli/bind_readiness.go", `old.Reason == projected.Reason && old.Version == projected.Version`, `old.Reason == projected.Reason && old.Version == projected.Version && false`, "TestReadinessDiagnosticPersistence", "TestReadinessStatusProjection/valid"},
 		{"registry-invalid-since-preserved", "cli/bind_readiness.go", `&& validSince(old) {`, `{`, "TestReadinessDiagnosticSinceRepair/future", "TestReadinessDiagnosticPersistence"},
@@ -237,6 +239,11 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			switch strings.Split(p.killer, "/")[0] {
 			case "TestRegistryQualifiedSchemas", "TestBoundReadinessRoutes":
 				intended = "got "
+			case "TestBoundSendComposerMovement":
+				intended = "row movement refused"
+				if strings.HasSuffix(p.killer, "/width") {
+					intended = "refusal input effects"
+				}
 			case "TestReadinessAdmissionState":
 				intended = "runtime alone admitted input state"
 			case "TestReadinessIdleContinuity":

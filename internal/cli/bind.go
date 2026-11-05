@@ -251,7 +251,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		}
 		// The daemon log contains fixed outcomes only, never screens or bodies.
 		logPath := filepath.Join(s.paths.Base, "state", s.name+".binding.log")
-		log, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		log, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0600)
 		if errors.Is(err, os.ErrExist) {
 			info, e := os.Lstat(logPath)
 			if e != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
@@ -719,6 +719,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 }
 
 func (a *App) finishTerminal(s *session, generation string, result tmuxwake.SendResult, sendErr error, recovering bool, expected config.TerminalBinding) error {
+	var refusal *config.TerminalSendRefusal
 	token := expected.NotificationToken
 	if err := s.checkConnection(); err != nil {
 		return err
@@ -740,6 +741,14 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 			outcome = string(tmuxwake.SendInterrupted)
 		}
 		b.Outcome = outcome
+		if result.Valid() && (result.Disposition == tmuxwake.SendDraft || result.Disposition == tmuxwake.SendRefused) {
+			at := result.ReasonAt
+			if at.IsZero() || at.After(a.Now()) {
+				at = a.Now()
+			}
+			refusal = &config.TerminalSendRefusal{Reason: tmuxwake.SafeSendReason(result.Reason), At: at.UTC()}
+			b.SendRefusal = refusal
+		}
 		b.Idle = nil
 		if sendErr != nil || !result.Valid() {
 			return nil
@@ -768,6 +777,11 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 		b.NotificationToken = ""
 		return a.completeNotification(s, st, token)
 	})
+	if err == nil && refusal != nil {
+		// The journal already committed delivery effects; diagnostics cannot
+		// turn this poll into a failure or mark its notice unknown.
+		_ = appendSendRefusal(s, *refusal)
+	}
 	return err
 }
 

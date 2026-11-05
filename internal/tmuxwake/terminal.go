@@ -233,31 +233,31 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 // only its observation and additional pre-type constraint differ.
 func (t Target) sendWith(ctx context.Context, count int, owned string, beforeType, afterType func(), inspect func(context.Context, string) (Box, bool), preType func() bool) (SendResult, error) {
 	if count <= 0 {
-		return SendResult{SendRefused, SendSuppressedInput}, errors.New("positive count required")
+		return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, errors.New("positive count required")
 	}
 	box, ok := inspect(ctx, owned)
 	if !ok || box.Text != "" && box.Text != owned {
-		return SendResult{SendRefused, SendSuppressedInput}, nil
+		return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, nil
 	}
 	// Resume is continuation only. If the owned text vanished after the
 	// caller's observation, a fresh type needs separate qualified admission.
 	if owned != "" && box.Text == "" {
-		return SendResult{SendRefused, SendSuppressedInput}, nil
+		return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, nil
 	}
 	notice := Notice(count)
 	_, _, width, err := t.Inspect(ctx)
 	if err != nil || len(notice)+3 >= width {
-		return SendResult{SendRefused, SendSuppressedWidth}, nil
+		return SendResult{Disposition: SendRefused, Outcome: SendSuppressedWidth}, nil
 	}
 	if box.Text == "" {
 		if beforeType != nil {
 			beforeType()
 		}
 		if preType != nil && !preType() {
-			return SendResult{SendRefused, SendSuppressedInput}, nil
+			return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, nil
 		}
 		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-l", notice); err != nil {
-			return SendResult{SendUncertain, SendTypeUncertain}, err
+			return SendResult{Disposition: SendUncertain, Outcome: SendTypeUncertain}, err
 		}
 		if afterType != nil {
 			afterType()
@@ -279,9 +279,9 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 	for {
 		select {
 		case <-ctx.Done():
-			return SendResult{SendUncertain, SendInterrupted}, ctx.Err()
+			return SendResult{Disposition: SendUncertain, Outcome: SendInterrupted}, ctx.Err()
 		case <-deadline.C:
-			return SendResult{SendDraft, outcome}, nil
+			return SendResult{Disposition: SendDraft, Outcome: outcome}, nil
 		case <-tick.C:
 		}
 		box, ok = inspect(ctx, notice)
@@ -291,13 +291,13 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 		}
 		if box.Text == notice {
 			if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
-				return SendResult{SendUncertain, SendEnterUncertain}, err
+				return SendResult{Disposition: SendUncertain, Outcome: SendEnterUncertain}, err
 			}
-			return SendResult{SendSubmitted, SendWakeSubmitted}, nil
+			return SendResult{Disposition: SendSubmitted, Outcome: SendWakeSubmitted}, nil
 		}
 		outcome = SendDraftChanged
 		if !strings.HasPrefix(notice, box.Text) {
-			return SendResult{SendDraft, SendDraftChanged}, nil
+			return SendResult{Disposition: SendDraft, Outcome: SendDraftChanged}, nil
 		}
 	}
 }

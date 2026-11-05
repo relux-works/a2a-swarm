@@ -456,6 +456,12 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	}
 	id7 := runtimeMail(e, room, "AFTER_TYPED_EMPTY_RATE")
 	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "suppressed: hourly rate" })
+	// An independent refusal append must survive later writes by both daemon
+	// descriptors, including the descriptor that created the log at offset zero.
+	_, logSession := notificationApp(t, e)
+	if err := appendSendRefusal(logSession, config.TerminalSendRefusal{Reason: tmuxwake.ReasonCursorMismatch, At: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
 	stop := exec.CommandContext(ctx, exe, "--as", "alice", "unbind")
 	stop.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture")
 	if out, err := stop.CombinedOutput(); err != nil {
@@ -496,6 +502,9 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	log, err := os.ReadFile(filepath.Join(e.dir, "state", "alice.binding.log"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "send_refusal=cursor_mismatch at=") {
+		t.Fatal("daemon exit overwrote refusal log")
 	}
 	if !strings.Contains(string(log), "binding exit: cancelled") || !strings.Contains(string(log), "binding exit: owner gone or replaced") {
 		t.Fatalf("fixed exit reasons missing: %s", log)

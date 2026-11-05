@@ -32,6 +32,7 @@ type TerminalBinding struct {
 	DaemonBirth        string               `json:"daemon_birth"`
 	Target             tmuxwake.Target      `json:"target"`
 	ClaudeRegistryRoot string               `json:"claude_registry_root,omitempty"`
+	SendRefusal        *TerminalSendRefusal `json:"send_refusal,omitempty"`
 	Readiness          *TerminalReadiness   `json:"readiness,omitempty"`
 	Interval           time.Duration        `json:"interval"`
 	RetryMax           time.Duration        `json:"retry_max"`
@@ -112,4 +113,23 @@ type OwnNoticeObservation struct {
 	Reason           string `json:"reason,omitempty"`
 	Since            string `json:"since,omitempty"`
 	ObservedAt       string `json:"observed_at,omitempty"`
+}
+
+// TerminalSendRefusal is the last refused Send observation, not permission.
+// Optional for old journals; invalid diagnostics never block journal loading.
+type TerminalSendRefusal struct {
+	Reason tmuxwake.SendReason `json:"reason"`
+	At     time.Time           `json:"at"`
+}
+
+func (r *TerminalSendRefusal) UnmarshalJSON(data []byte) error {
+	*r = TerminalSendRefusal{Reason: tmuxwake.ReasonUnavailable}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return nil
+	}
+	_ = json.Unmarshal(fields["reason"], &r.Reason)
+	_ = json.Unmarshal(fields["at"], &r.At)
+	r.Reason = tmuxwake.SafeSendReason(r.Reason)
+	return nil
 }
