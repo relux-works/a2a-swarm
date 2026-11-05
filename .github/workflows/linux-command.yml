@@ -52,6 +52,13 @@ jobs:
             GOCACHE="$scratch/cache" GOMODCACHE="$scratch/mod" \
             go mod vendor -o "$scratch/vendor"
           diff -r "$scratch/vendor" vendor
+          # Proves this comparison detects a vendor edit in an isolated copy.
+          cp -R vendor "$scratch/planted-vendor"
+          printf '\n// bounded vendor drift control\n' >> "$scratch/planted-vendor/github.com/coder/websocket/doc.go"
+          status=0
+          diff -r "$scratch/vendor" "$scratch/planted-vendor" > "$scratch/plant.diff" || status=$?
+          test "$status" -eq 1
+          grep -Fq '// bounded vendor drift control' "$scratch/plant.diff"
       # Proves both Linux builds and native amd64 help without a live account.
       # Fixed Curator flags fail this job if either architecture cannot link.
       # It does not qualify Matrix authentication or arm64 execution.
