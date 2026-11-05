@@ -135,13 +135,7 @@ func ownerDMContent(text string) []string {
 		omitted := len(chars) - 28000
 		chars = append(chars[:28000:28000], []rune(fmt.Sprintf("\n[omitted %d characters]\n", omitted))...)
 	}
-	var chunks []string
-	for len(chars) > 0 {
-		n := min(4000, len(chars))
-		chunks = append(chunks, string(chars[:n]))
-		chars = chars[n:]
-	}
-	return chunks
+	return mirrorChunks(string(chars))
 }
 func ownerSelectedPayload(runtime string, payload json.RawMessage) (session, turn, text string, ok bool) {
 	var values map[string]json.RawMessage
@@ -270,10 +264,20 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 		}
 	}
 	chunks := ownerDMContent(text)
+	// Prepare every chunk before sending any; HTML expansion falls back to
+	// plain text and cannot prevent delivery of an otherwise valid mirror.
+	contents := make([]map[string]any, len(chunks))
+	for i, chunk := range chunks {
+		contents[i], err = textContent(chunk, nil)
+		if err != nil {
+			finish("failed:size")
+			return
+		}
+	}
 	sent := 0
 	digest := sha256.Sum256([]byte(key))
 	prefix := "a2a-odm-" + hex.EncodeToString(digest[:])[:24]
-	for i, chunk := range chunks {
+	for i := range chunks {
 		// Recheck immediately before every chunk under the same total deadline.
 		if _, err = s.ownerAudience(ctx, c.Room, c.Owner, false); err != nil {
 			if ctx.Err() != nil {
@@ -288,7 +292,7 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 			return
 		}
 		if err = ctx.Err(); err == nil {
-			_, err = s.client.SendMessageTxn(ctx, c.Room, fmt.Sprintf("%s-%d", prefix, i), map[string]any{"msgtype": "m.text", "body": chunk})
+			_, err = s.client.SendMessageTxn(ctx, c.Room, fmt.Sprintf("%s-%d", prefix, i), contents[i])
 		}
 		if err != nil {
 			if ctx.Err() != nil {

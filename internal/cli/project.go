@@ -142,7 +142,7 @@ func pathField(v string) string {
 }
 
 // projection builds the mirrored message for ev.
-func projection(ev matrix.Event, h Header, roomID, roomLabel, server, product, productAlias string) map[string]any {
+func projection(ev matrix.Event, h Header, roomID, roomLabel, server, product, productAlias string) (map[string]any, error) {
 	from := localpartIfLocal(ev.Sender, server)
 	author := from
 	agent := from
@@ -176,17 +176,16 @@ func projection(ev matrix.Event, h Header, roomID, roomLabel, server, product, p
 	if h.Subject != "" {
 		fmt.Fprintf(&b, " · subject %s", pathField(h.Subject))
 	}
+	frame := b.String()
 	fmt.Fprintf(&b, "\n%s\n\norigin: https://matrix.to/#/%s/%s", sanitizeText(text), roomID, ev.EventID)
 	topicRoot := ev.ThreadRoot()
-	return map[string]any{
-		"msgtype": "m.text",
-		"body":    b.String(),
+	return framedTextContent(b.String(), map[string]any{
 		// Projections never ping anyone: subscribers watch the room.
 		"m.mentions": map[string]any{},
 		ContentKey: Projection{V: 1, Type: "projection", Kind: h.Kind, From: from, To: h.To, At: at, Slug: h.Slug,
 			Subtype: h.Subtype, Subject: h.Subject, OriginRoom: roomID, OriginAlias: roomLabel, OriginEvent: ev.EventID,
 			Product: product, ProductAlias: productAlias, TopicRoot: topicRoot, AuthorMXID: ev.Sender, Author: author, AuthorHost: authorHost},
-	}
+	}, frame, sanitizeText(text), fmt.Sprintf("origin: https://matrix.to/#/%s/%s", roomID, ev.EventID))
 }
 
 func validIdentityPart(part string) bool { return productNameRE.MatchString(part) }
@@ -320,7 +319,10 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 				h, _ := projectable(ev, roomID, systemRoom, me, kinds)
 				label := s.roomLabel(ctx, roomID, labels)
 				product, productAlias := s.productForOrigin(ctx, roomID, productCache, a.Now())
-				content := projection(ev, h, roomID, label, s.server, product, productAlias)
+				content, err := projection(ev, h, roomID, label, s.server, product, productAlias)
+				if err != nil {
+					return err
+				}
 				receipt, err := s.client.SendMessageTxnReceipt(ctx, systemRoom, projectionTxn(systemRoom, roomID, ev.EventID), content)
 				if err != nil {
 					// Keep the position: the next run retries with the same txn id.

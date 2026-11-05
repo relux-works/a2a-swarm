@@ -327,7 +327,11 @@ func (a *App) publishLivenessTransition(ctx context.Context, s *session, key str
 			for _, keeper := range keepers {
 				mentions = append(mentions, "@"+keeper+":"+s.server)
 			}
-			pending = &config.LivenessAlertMessage{Txn: matrix.NewTxnID(), Room: room, Content: map[string]any{"msgtype": "m.text", "body": body, "ai.relux.a2a": h, "m.mentions": map[string]any{"user_ids": mentions}, "ai.relux.a2a.liveness_observation": 1}}
+			content, err := textContent(body, map[string]any{"ai.relux.a2a": h, "m.mentions": map[string]any{"user_ids": mentions}, "ai.relux.a2a.liveness_observation": 1})
+			if err != nil {
+				return err
+			}
+			pending = &config.LivenessAlertMessage{Txn: matrix.NewTxnID(), Room: room, Content: content}
 			st.LivenessAlerts[key] = config.LivenessAlert{Value: incident.value, Pending: pending}
 			return nil
 		})

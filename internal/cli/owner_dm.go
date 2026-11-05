@@ -131,8 +131,12 @@ func (s *session) ownerSaveTransitionWithJournal(ctx, journalCtx context.Context
 			return err
 		}
 		text := fmt.Sprintf("owner-dm active: %s; tag=%t (forced off in S1), mirror=%t, render=%s; config %s; unbind: a2a owner-dm unbind %s", s.name, c.Tag, c.Mirror, c.Render, ownerFingerprint(c), s.name)
+		content, err := textContent(text, nil)
+		if err != nil {
+			return err
+		}
 		digest := sha256.Sum256([]byte(key))
-		_, err = s.client.WithoutRedirects().SendMessageTxn(ctx, c.Room, fmt.Sprintf("a2a-odm-%x-confirm", digest[:12]), map[string]any{"msgtype": "m.text", "body": text})
+		_, err = s.client.WithoutRedirects().SendMessageTxn(ctx, c.Room, fmt.Sprintf("a2a-odm-%x-confirm", digest[:12]), content)
 		entries[len(entries)-1].State = "sent:confirm"
 		if err != nil {
 			entries[len(entries)-1].State = "failed:confirm"

@@ -3,9 +3,11 @@ module github.com/relux-works/a2a-swarm
 go 1.25.5
 
 require (
-	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8
 	github.com/coder/websocket v1.8.15
+	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8
 	github.com/relux-works/skill-go-testing-tools/tuitestkit v0.1.1
+	github.com/yuin/goldmark v1.8.7
+	golang.org/x/net v0.50.0
 )
 
 require (
@@ -18,7 +20,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
@@ -26,6 +28,6 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sys v0.36.0
-	golang.org/x/text v0.3.8 // indirect
+	golang.org/x/sys v0.41.0
+	golang.org/x/text v0.34.0 // indirect
 )

@@ -301,17 +301,19 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 			return fmt.Errorf("topic %q already exists in %s (%s)", slug, label, t.EventID)
 		}
 	}
-	text := TopicPrefix + slug + ": " + title
+	frame := TopicPrefix + slug + ": " + title
+	text := frame
 	if body != "" {
 		text += "\n\n" + body
 	}
-	content := map[string]any{
-		"msgtype": "m.text",
-		"body":    text,
+	content, err := framedTextContent(text, map[string]any{
 		ContentKey: Header{
 			V: 1, Type: "topic", Slug: slug, Title: title, From: s.name,
 			At: a.Now().UTC().Format(time.RFC3339),
 		},
+	}, frame, body, "")
+	if err != nil {
+		return err
 	}
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
@@ -472,9 +474,10 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 // sendThreadMessage sends h plus text as a thread reply to h.Topic and records
 // the thread in the local state; it returns the event id.
 func (s *session) sendThreadMessage(ctx context.Context, roomID, label string, h Header, text string, mentions []string) (string, error) {
-	content := threadReply(h, mentions)
-	content["msgtype"] = "m.text"
-	content["body"] = formatHeaderBody(h, text)
+	content, err := framedTextContent(formatHeaderBody(h, text), threadReply(h, mentions), formatHeaderBody(h, ""), text, "")
+	if err != nil {
+		return "", err
+	}
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
 		return "", fmt.Errorf("post to %s: %w", label, err)

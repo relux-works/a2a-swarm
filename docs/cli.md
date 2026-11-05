@@ -328,6 +328,51 @@ a2a leave lobby --force
 a2a invite a2a-swarm reviewer-7
 ```
 
+### Text message content
+
+All outgoing `m.text` messages share one content builder: topics, thread posts
+(including commands using the thread sender), projections, owner-DM confirmation
+and mirror chunks, and liveness alerts. `body` remains the existing plaintext;
+`read`, `inbox`, hooks and agents continue to consume it. Markdown adds
+`format: "org.matrix.custom.html"` and `formatted_body` using goldmark CommonMark
+with GFM tables, strikethrough and autolinks. Task lists are not enabled. Raw HTML
+(inline, blocks and comments) renders as escaped literal text. A second
+sanitizer emits only Matrix-compatible text, code, heading, list, quote, table
+and link tags; attributes are limited to allowed link destinations, numeric ordered-list
+starts and code `language-*` classes. Images render as alt text, or their escaped
+source URL when alt is empty; no
+`img` tags are emitted. Arbitrary HTML attributes are omitted.
+Links accept only absolute `https:` (including `https://matrix.to/`) and `mxc:`
+URLs without userinfo; other destinations become label text. Escaped examples
+inside code remain inert text. Ordinary unframed plaintext receives no HTML
+fields. Thread posts always carry a Markdown protocol header and therefore
+normally receive HTML even when their user text is plain (subject to the size
+and text-retention fallbacks). Sender framing, including topic titles, thread
+headers and projection path/origin lines, is escaped and rendered separately;
+user Markdown and reference definitions cannot style it.
+
+Before attaching HTML, a final guard compares visible sanitized text with the
+semantic words of `body`: case-sensitive Unicode letter/digit/mark runs, including
+repeated occurrences. Markdown delimiters, link destinations/reference definitions
+and fence language info are syntax, not expected visible words. Link labels,
+image alt (or source URL), code and literal raw HTML are expected text. Entities
+and Markdown punctuation escapes in normal text are decoded. Empty visible HTML
+or any missing expected word sends plain content instead. Conservative fallback
+is intentional; this is a word-retention check, not a guarantee of identical
+layout or punctuation.
+Redaction, where already applied, happens before rendering. Projection uses
+only the source `body`, never source HTML. Owner-DM's untrusted inbox frame is
+applied when reading and remains unchanged.
+
+HTML is included only if the serialized content, including JSON escaping and
+all protocol metadata, fits 48 KiB, reserving 16 KiB of Matrix's 64 KiB event
+limit for the server envelope. Above that threshold, the same `body` and metadata
+are sent without `format` or `formatted_body`. This threshold does not impose a
+new limit on plain messages; the historical sender and server rules still apply.
+Mirror prepares every chunk before sending any; HTML expansion alone never
+refuses a post or mirror. The server remains authoritative for its final event
+envelope and limits.
+
 ### `a2a topic new <room> <slug> "<title>" [--body -|@file|text]`
 Sends a topic root whose body starts `[topic] <slug>: <title>` (then a blank line and the body). The content also carries
 `ai.relux.a2a: {v, type: "topic", slug, title, from, at}`. Slugs are `[a-z0-9-]`, up to 64 chars, and must be unique in the room.
@@ -1703,8 +1748,19 @@ URL userinfo credentials, and shell/JSON/YAML assignments of password, passwd,
 token, secret, api_key, access_token, refresh_token or client_secret. Matches
 become `[redacted]`; more than 20 original spans withholds the final with one
 notice. Redaction is best effort. Above 32000 characters, retain 28000 and append
-the omitted count; then split into at most eight chunks of at most 4000 Unicode
-characters.
+the omitted count; then split toward 4000 Unicode characters per chunk.
+Fenced code blocks of at most 4000 Unicode characters remain indivisible,
+including their opening/closing lines (or through end of text for an unclosed
+fence). If a target boundary would split such a block, it moves to before the
+block. Fences longer than the target split at the normal 4000-character boundary.
+For text without fences the chunks match the historical chunks byte for byte;
+with fitting fences, boundaries and chunk counts can change. A mirror still
+sends at most eight chunks: if fence preservation would exceed eight, the entire
+message falls back to the historical 4000-character boundaries. In both cases the
+concatenated bodies remain byte-identical after the existing redaction/truncation.
+Every chunk renders independently to balanced HTML, or falls back to plain text
+under the HTML threshold rule above; no synthetic fence bytes are inserted in
+`body`. Split long fences can lose code formatting in subsequent chunks.
 
 A mirror has one total 5-second deadline covering lock wait, journal I/O,
 activation, every audience check and all chunks. The final 250 ms are reserved
