@@ -450,6 +450,27 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 	return err
 }
 
+// Reset observation credit in the existing restart/interruption transaction.
+// Episode fences and pending sends survive the reset.
+func (a *App) resetTerminalObservations(s *session, generation string) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
+	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
+		if st.Terminal == nil || st.Terminal.Stopped || st.Terminal.Generation != generation {
+			return errors.New("binding retired")
+		}
+		st.Terminal.Idle = nil
+		st.MailAlarm.IdleSince = time.Time{}
+		st.MailAlarm.LastObserved = time.Time{}
+		return nil
+	})
+	return err
+}
+
 // runTerminal retains its validated policy snapshot across local read errors;
 // no delivery action runs until fresh authority and a lease are available.
 func (a *App) runTerminal(ctx context.Context, s *session, generation string, initial config.TerminalBinding) (string, error) {
@@ -458,6 +479,10 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 
 func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
 	policy := initial
+	alarmCtx, stopAlarm := context.WithCancel(ctx)
+	defer stopAlarm()
+	alarmWake := make(chan struct{}, 1)
+	go a.runMailAlarm(alarmCtx, s, generation, alarmWake)
 	delay := policy.Interval
 	qualificationInterrupted := true
 	for ctx.Err() == nil {
@@ -514,12 +539,12 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			// that interruption in RAM until a fresh successful write precedes
 			// dispatch, including the first cycle of a restarted consumer.
 			if qualificationInterrupted {
-				err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
+				err = a.resetTerminalObservations(s, generation)
 				qualificationInterrupted = err != nil
 			}
 		}
 		if err == nil {
-			err = a.dispatchTerminal(ctx, s, generation)
+			err = a.dispatchTerminal(ctx, s, generation, alarmWake)
 		}
 		if ctx.Err() != nil {
 			return "cancelled", nil
@@ -558,7 +583,12 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 	return "cancelled", nil
 }
 
-func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string) error {
+func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string, alarmWakes ...chan<- struct{}) error {
+	// Only the consumer supplies a wake channel for alarm observation.
+	var alarmWake chan<- struct{}
+	if len(alarmWakes) > 0 {
+		alarmWake = alarmWakes[0]
+	}
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -591,8 +621,10 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		// duplicates; an uncertain attempt has a separate bounded recovery path.
 		var ids []string
 		var pendingIDs []string
+		alarm := alarmSample{At: a.Now()}
 		_, err = s.lockedDeliver(ctx, time.Now().Add(nativeRPCTimeout), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
 			for _, entry := range mb.Pending() {
+				alarm.add(entry)
 				pendingIDs = append(pendingIDs, entry.ID)
 				if !slices.Contains(b.Rung, entry.ID) {
 					ids = append(ids, entry.ID)
@@ -615,6 +647,13 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		// authorizes continuation or erasure, even for an exact lookalike.
 		readiness := boundTerminal(*b).ObserveReadiness(ctx, b.Notice)
 		observation := readinessInput(readiness)
+		if alarmWake != nil {
+			a.observeMailAlarm(s, generation, alarmObservation(alarm, readiness))
+			select {
+			case alarmWake <- struct{}{}:
+			default:
+			}
+		}
 		if err := a.observeTerminalReadiness(s, *b, readiness); err != nil {
 			return err
 		}

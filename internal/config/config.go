@@ -314,6 +314,8 @@ func WriteCredentials(f *os.File, c Credentials) error {
 // State is the per-agent delivery state. The events themselves live in the
 // durable mailbox (MailboxFile), which is written before NextBatch moves.
 type State struct {
+	MailAlarmConfig *MailAlarmConfig `json:"mail_alarm_config,omitempty"`
+	MailAlarm       MailAlarm        `json:"mail_alarm,omitempty"`
 	// HostEnrollment is opt-in, source-owned custody; it does not enable delivery.
 	HostEnrollment *HostEnrollment `json:"host_enrollment,omitempty"`
 	// Notification spaces fixed doorbells; it never receipts or owns channel safety.

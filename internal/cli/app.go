@@ -120,6 +120,7 @@ func commands() []command {
 	return []command{
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
 		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
+		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},

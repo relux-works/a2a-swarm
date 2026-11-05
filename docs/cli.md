@@ -1847,3 +1847,126 @@ or manufacture receipts. Preserve the old working path until separately
 admitted migration and retirement are verified. Binary installation, profile
 activation, bindings, identity creation, federation and rollout each retain
 their existing owner/keeper admission gates.
+
+## Stale addressed-mail alarm (`a2a mail-alarm`)
+
+The terminal bind consumer observes its own durable mailbox without receipting,
+marking shown, changing the doorbell ledger, or typing into the pane. It reuses
+its existing pending-mail scan and readiness/input sample; the alarm adds no
+mailbox open or additional mailbox scan per cycle. Observer and worker still
+parse identity state, and destination policy re-reads owner configuration.
+Native consumers are outside this feature.
+
+```sh
+a2a --as lane mail-alarm set --minutes 20 --owner auto \
+  --operator operator-agent --room operations --topic lane-alarms
+a2a --as lane mail-alarm set --owner Escalations \
+  --operator '@operator:remote.example' --room operations --topic '$root'
+a2a --as lane mail-alarm status
+a2a --as lane mail-alarm status --json
+a2a --as lane mail-alarm unset
+a2a --as lane bind status --json
+```
+
+`set` replaces the complete per-identity policy. Threshold is an integer from
+1 through 1440 minutes (default 20). Operator agent name or full Matrix user,
+room and topic must be supplied together. Rooms accept local names, aliases,
+or full Matrix room IDs; topics accept a slug or root event ID. Syntax is
+validated before writing anything; membership and topic existence are resolved
+by the sender. No room is created and no operator is hardcoded.
+`--owner auto` uses the already active, non-pending owner DM, independently of
+its mirror flag, and requires the current owner pin to match. Before every
+automatic owner send,
+the current audience must pass the ordinary owner-DM gate: only identity and
+owner joined, invite-only join rules, non-world-readable history and no encryption.
+A failed check sends nothing and reports a fixed error reason in status.
+Queued automatic
+owner alerts pause if that DM is deactivated or its owner pin changes. An explicit owner room overrides that DM; `--owner off`
+disables the owner destination. `unset` restores defaults, including automatic
+owner-DM selection. With no destinations and no active owner DM, nothing is
+sent and status reports disabled. To disable all destinations explicitly, use
+`set --owner off`. Already queued jobs pause while the policy is disabled and
+resume when enabled; replacing policy does not retarget queued jobs.
+
+Only event entries classified `rel=to` by the existing mailbox classifier count:
+the structured address directly names this identity or its Matrix user ID.
+Mentions, followed threads, subscriptions, invites, gaps and broadcasts alone
+are excluded. This narrowly alarms on explicit requests without escalating
+ambient traffic. Age uses the entry's server event timestamp; missing/nonpositive
+timestamps are excluded from both count and age. Count is pending directly
+addressed event entries with positive timestamps,
+and oldest age is whole minutes. The pending stale set is nonempty when its
+oldest entry reaches the threshold.
+
+Idle uses the existing consumer observations, with these alarm-specific rules:
+
+| Observation | Alarm treatment |
+| --- | --- |
+| Runtime busy | Busy; reset continuous idle time, suppress new alerts |
+| Input busy-or-dialog | Same suppression (the observer cannot distinguish these) |
+| Empty ready composer, including wake qualification in progress | Idle |
+| Nonempty composer, including a typed stranded notice or user draft | Idle-or-unknown |
+| Unavailable, refused, unqualified readiness or unknown input | Idle-or-unknown |
+
+Unknown counts intentionally: an unqualified runtime or deaf composer is exactly
+what this alarm must expose. It cannot prove that a hidden long turn is idle;
+an explicit busy observation always wins. Both mail age and continuous observed
+idle-or-unknown duration must reach the configured threshold. The idle clock
+resets on consumer restart/re-exec, after an interrupted consumer
+cycle, and when successful observations are more than two minutes apart (or the
+clock moves backwards). No observation is inferred from a missing cycle. After
+a reset, a deaf lane requires N more minutes of continuous idle-or-unknown
+observations before alerting. New alarms wait for a successful consumer
+scan/readiness observation. Manual or native gates retain delivery precedence;
+already queued alerts progress independently through those gates, except that
+`hook pause` also pauses the alarm sender.
+
+Each stale episode queues one owner alert and one operator notice, for the
+configured destinations that exist. Busy transitions, binding replacement,
+restarts and configuration edits do not clear the episode fence. A successful
+observation with no stale directly addressed entries rearms it; a later stale
+condition can alert again. Pending jobs survive drain and remain independent
+of subsequent episodes. These optional fields live in the existing identity
+state JSON and default cleanly for old files. Malformed alarm config disables
+only alarms. Malformed alarm state holds the dedupe fence until an observed
+drain; unreadable or invalid whole identity files still obey existing delivery
+recovery behavior.
+
+Alert body contains only identity, count, oldest age in minutes, a closed
+readiness reason (plus fixed `composer-nonempty` when applicable), and host
+(an unsupported hostname becomes the fixed `unknown-host` label).
+No peer body, subject, sender text, path or token is copied or parsed for alerts.
+Operator notices use the configured thread, structured addressee and Matrix
+mention. Owner-room alerts are plain text.
+
+A separate consumer-owned worker performs network I/O with a 5-second budget
+per attempt, outside all delivery locks. A 10-second ticker runs pending retries
+even without dispatch wakes. Worker panics are contained, log only
+`mail-alarm worker panic; bounded retry`, and leave the durable outbox for retry.
+State reservations use nonblocking
+lock attempts. Failed jobs remain pending with exponential backoff bounded at
+5 minutes. Resolution failures and definite rejections (including 403/404)
+remain retryable and show `mail-alarm=error` with a fixed failure reason in
+`bind status` and `mail-alarm status`; invalid queued jobs also report error and
+never send. Diagnostics contain no server error text. A later successful send
+removes that job's failure. The same persisted Matrix transaction ID and resolved
+room/thread
+are reused after restart. A reservation is durable before sending. Explicit
+4xx rejection except timeout can retry; a transport failure, malformed ACK,
+cancellation or crash is ambiguous. An ambiguous send may be retried once;
+after two ambiguous reservations the job is held pending without further sends.
+This chooses duplicate avoidance over eventual automatic delivery when receipt
+cannot be determined. Matrix transaction dedupe normally prevents even that
+one possible duplicate. Held jobs need operator investigation; there is no
+automatic uncertainty reset. Send failure never enters delivery's retry path.
+
+`bind status` and its JSON `mail_alarm` object report disabled/armed, threshold,
+outstanding episode, pending/held job counts, and last acknowledged alert time.
+An acknowledged alert stays outstanding until stale mail drains. Zero last time
+means no send has been acknowledged. Config status additionally shows the policy.
+
+CI should run the plain Go `TestMailAlarm*` cases and the opt-in dedupe control:
+`A2A_RUN_MAIL_ALARM_MUTANTS=1 go test ./internal/cli -run '^TestMailAlarmDedupeMutation$'`.
+The control must fail on the dedupe assertion with the gate removed and pass its
+independent destination control. No test, tmux or live messaging is needed to
+configure or inspect this feature.
