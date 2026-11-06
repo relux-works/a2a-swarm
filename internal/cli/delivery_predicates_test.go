@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
@@ -104,9 +105,21 @@ func TestDeliveryPredicates(t *testing.T) {
 				var output string
 				var finish func() string
 				if command == "wait" {
-					r := e.as("alice", append([]string{"wait", "--timeout", "20ms"}, flags...)...).ok(t)
-					if r.stdout != "{\"type\":\"timeout\"}\n" {
-						t.Fatalf("rejected traffic woke wait: %q", r.stdout)
+					// A short wait can time out before its first sync on a loaded
+					// host. Repeat it until the cursor moves; every attempt must
+					// still time out without output.
+					for attempt := 1; ; attempt++ {
+						timeout := time.Duration(attempt) * 20 * time.Millisecond
+						if timeout > 500*time.Millisecond {
+							timeout = 500 * time.Millisecond
+						}
+						r := e.as("alice", append([]string{"wait", "--timeout", timeout.String()}, flags...)...).ok(t)
+						if r.stdout != "{\"type\":\"timeout\"}\n" {
+							t.Fatalf("rejected traffic woke wait: %q", r.stdout)
+						}
+						if e.state("alice").NextBatch != cursor || attempt == 40 {
+							break
+						}
 					}
 					finish = func() string {
 						return e.as("alice", append([]string{"wait", "--timeout", "2s"}, flags...)...).ok(t).stdout
@@ -293,8 +306,18 @@ func TestDeliveryPredicatesRetainSubscriptionsAndThreads(t *testing.T) {
 	beforeSubs, beforeThreads := e.serverSubs("alice"), e.state("alice").Threads
 	thread := e.hs.inject(room, "@bob:test.local", msg("skip thread", map[string]any{"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": root}}))
 	sub := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "system", "skip subscription"))
-	if out := e.as("alice", "wait", "--match-text", "ready", "--timeout", "20ms").ok(t).stdout; out != "timeout\n" {
-		t.Fatalf("subscription/thread bypassed text predicate: %q", out)
+	// Repeat the short wait until both entries are ingested (a loaded host can
+	// time out before the first sync); every attempt must still time out.
+	for attempt := 1; attempt <= 40; attempt++ {
+		timeout := min(time.Duration(attempt)*20*time.Millisecond, 500*time.Millisecond)
+		if out := e.as("alice", "wait", "--match-text", "ready", "--timeout", timeout.String()).ok(t).stdout; out != "timeout\n" {
+			t.Fatalf("subscription/thread bypassed text predicate: %q", out)
+		}
+		_, okThread := e.pendingEntry("alice", thread)
+		_, okSub := e.pendingEntry("alice", sub)
+		if okThread && okSub {
+			break
+		}
 	}
 	for id, rel := range map[string]string{thread: "thread", sub: "sub"} {
 		entry, ok := e.pendingEntry("alice", id)
