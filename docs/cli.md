@@ -1187,6 +1187,8 @@ The entries are the same as `wait`'s (`to`, `mention`, `thread`, `sub`, invites,
 - The receipt is recorded only after a successful write and flush, for exactly the printed entries (the rest stay, oldest first, so a backlog of
   any size drains with repeated calls). A crash or a broken stdout before that receipts nothing, so the next `inbox` prints the same entries again
   (at least once).
+  A short stdout write is also a failure, even when the writer returns no error;
+  incomplete output never receipts the batch.
 
 #### Saved inbox: `--out FILE [--summary [--width N]]`
 

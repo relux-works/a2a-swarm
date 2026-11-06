@@ -148,8 +148,12 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 			_, err = mb.Receive(itemIDs(shown))
 			return nil, err
 		}
-		if _, err := io.WriteString(a.Stdout, out); err != nil {
-			return nil, fmt.Errorf("write output: %w%s", err, lost)
+		n, writeErr := io.WriteString(a.Stdout, out)
+		if writeErr == nil && n != len(out) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr != nil {
+			return nil, fmt.Errorf("write output: %w%s", writeErr, lost)
 		}
 		if f, ok := a.Stdout.(interface{ Flush() error }); ok {
 			if err := f.Flush(); err != nil {

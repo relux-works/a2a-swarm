@@ -199,6 +199,22 @@ func TestInboxLegacyFrameBytesUnchanged(t *testing.T) {
 	}
 }
 
+func TestInboxLegacyShortWritePreservesPendingMail(t *testing.T) {
+	e, room := world(t)
+	e.as("alice", "inbox").ok(t)
+	id := e.hs.inject(room, "@bob:test.local", ping(8))
+	e.configure = func(a *App) { a.Stdout = shortResultWriter{} }
+	e.as("alice", "inbox").failsWith(t, ExitError, "short write")
+	e.configure = nil
+	if e.received("alice", id) {
+		t.Fatal("short legacy output receipted an incompletely printed event")
+	}
+	tuitestkit.ContainsStr(t, e.as("alice", "inbox").ok(t).stdout, "id="+id)
+	if !e.received("alice", id) {
+		t.Fatal("pending event was not recoverable after a short write")
+	}
+}
+
 func TestSavedInboxInviteAndGapStayReadableAfterReceipt(t *testing.T) {
 	e, _ := world(t)
 	e.as("alice", "inbox").ok(t)
