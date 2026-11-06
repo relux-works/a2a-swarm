@@ -220,6 +220,7 @@ func TestSavedInboxInviteAndGapStayReadableAfterReceipt(t *testing.T) {
 	e.as("alice", "inbox").ok(t)
 	entries := []config.MailEntry{
 		{ID: "invite:!synthetic:test.local", Kind: config.MailInvite, Room: "!synthetic:test.local", Label: "#synthetic", Sender: "@bob:test.local"},
+		{ID: "invite:!unaliased:test.local", Kind: config.MailInvite, Room: "!unaliased:test.local", Label: "!unaliased:test.local", Sender: "@bob:test.local"},
 		{ID: "gap:!synthetic:test.local:s1", Kind: config.MailGap, Room: "!synthetic:test.local", Label: "#synthetic", From: "s1", To: "$oldest"},
 	}
 	if _, err := config.UpdateState(e.paths(), "alice", func(_ *config.State) error {
@@ -233,13 +234,14 @@ func TestSavedInboxInviteAndGapStayReadableAfterReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(outputTestDir(t), "frame")
-	e.as("alice", "inbox", "--out", path, "--summary").ok(t)
+	summary := e.as("alice", "inbox", "--out", path, "--summary").ok(t).stdout
+	tuitestkit.ContainsStr(t, summary, "count room=\"!unaliased:test.local\" n=1\n")
 	for _, entry := range entries {
 		if !e.received("alice", entry.ID) {
 			t.Fatal("saved entry was not receipted")
 		}
 		r := e.as("alice", "inbox", "show", entry.ID).ok(t)
-		tuitestkit.ContainsStr(t, r.stdout, "#synthetic")
+		tuitestkit.ContainsStr(t, r.stdout, entry.Label)
 	}
 }
 

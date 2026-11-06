@@ -1210,6 +1210,7 @@ pending. An empty batch saves an empty frame.
 `--summary` requires `--out`: stdout contains the untrusted-frame markers,
 sorted counts by sender, kind and room, and one line per selected event with
 its 1-based index, sender, kind, room, topic, event id and body prefix.
+Rooms use their alias when available, otherwise their Matrix room id.
 `--width N` requires `--summary`, defaults to 160, and accepts 1..2000 Unicode
 characters after normalizing whitespace to one line. Summary metadata fields
 over 512 characters are refused before saving or receipting, so truncated

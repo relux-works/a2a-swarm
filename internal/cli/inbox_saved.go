@@ -89,7 +89,7 @@ func inboxSummary(records []EventRecord, width, more int) (string, error) {
 	// Refuse rather than combine distinct identities under a truncated key.
 	// This bounds every field without silently changing grouping or event ids.
 	for _, r := range records {
-		for _, value := range []string{r.Sender, r.Kind, r.Room, r.Topic, r.EventID} {
+		for _, value := range []string{r.Sender, r.Kind, firstNonEmpty(r.Room, r.RoomID), r.Topic, r.EventID} {
 			if utf8.RuneCountInString(summaryField(value)) > 512 {
 				return "", fmt.Errorf("summary field exceeds 512 characters; save with --out without --summary")
 			}
@@ -103,7 +103,7 @@ func inboxSummary(records []EventRecord, width, more int) (string, error) {
 	}{
 		{"sender", func(r EventRecord) string { return r.Sender }},
 		{"kind", func(r EventRecord) string { return r.Kind }},
-		{"room", func(r EventRecord) string { return r.Room }},
+		{"room", func(r EventRecord) string { return firstNonEmpty(r.Room, r.RoomID) }},
 	} {
 		counts := map[string]int{}
 		for _, r := range records {
@@ -116,7 +116,7 @@ func inboxSummary(records []EventRecord, width, more int) (string, error) {
 	for i, r := range records {
 		excerpt, _ := truncateRunes(sanitizeLine(r.Body), width)
 		fmt.Fprintf(&b, "event %d sender=%q kind=%q room=%q topic=%q id=%q %s\n",
-			i+1, summaryField(r.Sender), summaryField(r.Kind), summaryField(r.Room), summaryField(r.Topic), summaryField(r.EventID), excerpt)
+			i+1, summaryField(r.Sender), summaryField(r.Kind), summaryField(firstNonEmpty(r.Room, r.RoomID)), summaryField(r.Topic), summaryField(r.EventID), excerpt)
 	}
 	b.WriteString(inboxEnd + "\n")
 	if more > 0 {
