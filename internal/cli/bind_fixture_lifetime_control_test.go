@@ -23,7 +23,7 @@ type bindFixtureWitness struct {
 // Only the explicit subprocess regression uses this latch. The ordinary
 // lifecycle still executes every original assertion, including failed requests.
 func holdBindFixtureControl(t *testing.T, dir string, r bindFixtureRecord) bool {
-	control := os.Getenv("A2A_BIND_FIXTURE_CONTROL")
+	control := os.Getenv("A2A_RUN_BIND_FIXTURE_CONTROL")
 	if control == "" {
 		return false
 	}
@@ -129,7 +129,7 @@ func TestBindFixtureKilledOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.cmd = exec.Command(os.Args[0], "-test.run=^TestBindDetachedLifecycle$", "-test.v", "-test.timeout=85s")
-		c.cmd.Env = append(os.Environ(), "A2A_BIND_FIXTURE_CONTROL="+c.control)
+		c.cmd.Env = append(os.Environ(), "A2A_RUN_BIND_FIXTURE_CONTROL="+c.control)
 		c.cmd.Stdout, c.cmd.Stderr = c.log, c.log
 		if err = c.cmd.Start(); err != nil {
 			t.Fatal(err)
