@@ -198,8 +198,8 @@ func TestStateJSONKnownClearAndCaseFold(t *testing.T) {
 	}
 }
 
-// Claims every current flat exported State field's folded null spelling is
-// handled as typed JSON, including fields added later. The reference is the
+// Claims every current flat exported State field's folded spelling is handled
+// as typed JSON, including fields added later. The reference is the
 // standard typed decoder/encoder, not the opaque classifier's verdict.
 func TestStateJSONCurrentSchemaCaseVariants(t *testing.T) {
 	typ := reflect.TypeFor[State]()
@@ -217,6 +217,16 @@ func TestStateJSONCurrentSchemaCaseVariants(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			body := `{"` + strings.ToUpper(name) + `":null}`
+			if name == "host_enrollment" {
+				// Enrollment null is refused by LoadState; use a valid typed
+				// value to exercise the same alias/canonicalization contract.
+				_, attachment, _ := hostFixture()
+				raw, err := json.Marshal(HostEnrollment{Version: 1, Attachment: attachment})
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = `{"` + strings.ToUpper(name) + `":` + string(raw) + `}`
+			}
 			var reference State
 			if err := json.Unmarshal([]byte(body), &reference); err != nil {
 				t.Fatal(err)
