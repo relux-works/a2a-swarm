@@ -690,6 +690,17 @@ Readable output, oldest first (default 20, max 1000). Each message is a meta lin
 followed by the indented text; header lines are folded into the meta line. With `--topic`, the root comes first, then the last N replies.
 `--event` prints only that message event (it cannot be combined with `--topic` or `--last`). Control characters and bidi overrides are stripped.
 
+The single-event display requires the returned `event_id` to match exactly and
+the payload's `room_id` to match the resolved selected room. A foreign room is a
+usage error naming both room IDs, with no event output. Missing, malformed or
+ambiguous identity fields refuse; an alias is not a returned room ID. In
+particular, the request path never overrides a contradictory payload. The
+[Matrix ClientEvent response](https://spec.matrix.org/v1.16/client-server-api/#get_matrixclientv3roomsroomideventeventid)
+requires `room_id`; ordinary display refuses its absence rather than claiming an
+observed room. Same-room output and timeline/topic reads keep their formats.
+This display binding and strict verification below share `matrix.CheckEventRoom`;
+their content policies and explicit missing-room policies remain distinct.
+
 `--json` prints one JSON object per event instead (same selection and order):
 `{type, room, room_id, event_id, sender, at, kind, subtype, subject, topic, title, root, to, re, reply_by, trunk, sub_request, body, attachment}`. `type` is `topic` for a topic root,
 otherwise `message`; `topic` is the slug; `root` is the thread root event id; `body` is the full text without the header lines.

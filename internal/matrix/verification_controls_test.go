@@ -23,22 +23,29 @@ func TestVerificationEventInstrumentControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := filepath.Join(root, "internal/matrix/verification.go")
-	original, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatal(err)
+	originals := map[string][]byte{}
+	for _, file := range []string{"verification.go", "event_room.go"} {
+		original, err := os.ReadFile(filepath.Join(root, "internal/matrix", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		originals[file] = original
 	}
-	for _, p := range []struct{ name, old, next, mask, assertion string }{
-		{"omit-returned-id", `id != eventID`, `false`, `^TestVerificationEventRefusals$/^event-mismatch$`, `accepted invalid response (event-mismatch)`},
-		{"shorten-sender", `Sender: sender,`, `Sender: strings.SplitN(strings.TrimPrefix(sender, "@"), ":", 2)[0],`, `^TestVerificationEventExactObservation$`, `incorrect observation`},
-		{"normalize-body", `result.Content = append(json.RawMessage(nil), spans["content"]...)`, `result.Content = json.RawMessage(strings.ReplaceAll(string(spans["content"]), ` + "`\\r\\n`" + `, ` + "`\\n`" + `))`, `^TestVerificationEventExactObservation$`, `incorrect observation`},
+	for _, p := range []struct{ name, file, old, next, mask, assertion string }{
+		// Keep id referenced after bypassing equality: it is now local to the
+		// shared check. A compile failure is still not a detected violation.
+		{"omit-returned-id", "event_room.go", `id != eventID`, `false && id != eventID`, `^TestVerificationEventRefusals$/^event-mismatch$`, `accepted invalid response (event-mismatch)`},
+		{"shorten-sender", "verification.go", `Sender: sender,`, `Sender: strings.SplitN(strings.TrimPrefix(sender, "@"), ":", 2)[0],`, `^TestVerificationEventExactObservation$`, `incorrect observation`},
+		{"normalize-body", "verification.go", `result.Content = append(json.RawMessage(nil), spans["content"]...)`, `result.Content = json.RawMessage(strings.ReplaceAll(string(spans["content"]), ` + "`\\r\\n`" + `, ` + "`\\n`" + `))`, `^TestVerificationEventExactObservation$`, `incorrect observation`},
 	} {
 		t.Run(p.name, func(t *testing.T) {
+			source := filepath.Join(root, "internal/matrix", p.file)
+			original := originals[p.file]
 			if strings.Count(string(original), p.old) != 1 {
 				t.Fatal("plant anchor absent or ambiguous")
 			}
 			dir := t.TempDir()
-			replacement := filepath.Join(dir, "verification.go")
+			replacement := filepath.Join(dir, p.file)
 			if err := os.WriteFile(replacement, []byte(strings.Replace(string(original), p.old, p.next, 1)), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -86,8 +93,10 @@ func TestVerificationEventInstrumentControls(t *testing.T) {
 			t.Logf("intended FAIL observed, original source unchanged, restored positive PASS\n%s", negative)
 		})
 	}
-	after, err := os.ReadFile(source)
-	if err != nil || !bytes.Equal(original, after) {
-		t.Fatal("source changed during isolated controls")
+	for file, original := range originals {
+		after, err := os.ReadFile(filepath.Join(root, "internal/matrix", file))
+		if err != nil || !bytes.Equal(original, after) {
+			t.Fatal("source changed during isolated controls")
+		}
 	}
 }

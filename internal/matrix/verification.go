@@ -74,10 +74,11 @@ func (c *Client) GetVerificationEvent(ctx context.Context, roomID, eventID strin
 		return zero, err
 	}
 	id, idOK := v.value["event_id"].(string)
+	bindingErr := CheckEventRoom(roomID, eventID, v.value, true)
 	sender, senderOK := v.value["sender"].(string)
 	typ, typeOK := v.value["type"].(string)
 	content, contentOK := v.value["content"].(map[string]any)
-	if !idOK || id != eventID || !senderOK || !ValidVerificationID(sender, '@') || !typeOK || typ != "m.room.message" || !contentOK || len(content) == 0 {
+	if !idOK || errors.Is(bindingErr, ErrEventIdentity) || !senderOK || !ValidVerificationID(sender, '@') || !typeOK || typ != "m.room.message" || !contentOK || len(content) == 0 {
 		return zero, errors.New("matrix: invalid verification event")
 	}
 	// A redacted event is refused even when a server still returns content.
@@ -94,10 +95,10 @@ func (c *Client) GetVerificationEvent(ctx context.Context, roomID, eventID strin
 	}
 	result := VerificationEvent{EventID: id, Sender: sender, Type: typ}
 	if room, present := v.value["room_id"]; present {
-		s, ok := room.(string)
-		if !ok || s != roomID {
+		if bindingErr != nil {
 			return zero, errors.New("matrix: verification room mismatch")
 		}
+		s := room.(string) // CheckEventRoom validated the returned room.
 		result.RoomIDPresent, result.RoomID = true, s
 	}
 	// All syntax, Unicode, key uniqueness and authoritative semantics were

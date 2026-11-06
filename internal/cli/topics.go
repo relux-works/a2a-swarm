@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"regexp"
@@ -656,8 +657,12 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 	}
 	var events []matrix.Event
 	if *event != "" {
-		ev, err := s.client.GetEvent(ctx, roomID, *event)
+		ev, err := s.client.GetRoomEvent(ctx, roomID, *event)
 		if err != nil {
+			var mismatch *matrix.EventRoomMismatchError
+			if errors.As(err, &mismatch) {
+				return usagef("event %s belongs to returned room %s, not selected room %s (%s)", sanitizeLine(*event), sanitizeLine(mismatch.ReturnedRoomID), sanitizeLine(mismatch.SelectedRoomID), sanitizeLine(label))
+			}
 			if isNotFound(err) {
 				return fmt.Errorf("event %s not found in %s", sanitizeLine(*event), label)
 			}
