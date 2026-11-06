@@ -72,11 +72,11 @@ func (f *terminalFixture) render(options map[string]any) {
 }
 
 // Exact owned input submits once after row, column or cursor movement on all four routes.
-// Every neighboring refusal preserves input and sends no Enter, including row
-// movement before typing. These synthetic fixtures do not prove a live UI cause.
+// Foreign text, dialogs and width changes preserve input and send no Enter.
+// Pure captured-screen/key tables cover the remaining neighboring refusals. These synthetic fixtures do not prove a live UI cause.
 func TestBoundSendComposerMovement(t *testing.T) {
 	for _, runtime := range []string{"claude", "claude-named", "claude-fallback", "codex"} {
-		for _, mode := range []string{"valid", "valid-down", "pre-row-down", "pre-cursor", "empty", "foreign", "dialog", "rendered-busy", "registry-busy", "status", "timestamp", "width", "column", "cursor", "cursor-row", "pre-row"} {
+		for _, mode := range []string{"valid", "column", "cursor", "cursor-row", "pre-cursor", "width", "foreign", "dialog"} {
 			if (runtime == "codex" || runtime == "claude-fallback") && (mode == "registry-busy" || mode == "status" || mode == "timestamp") {
 				continue
 			}

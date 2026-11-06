@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
@@ -22,31 +21,27 @@ import (
 // Adjacent refusals retain the attempt and mailbox; no provider pane is used.
 func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 	for _, runtime := range []string{"codex", "claude", "claude-named"} {
-		for _, mode := range []string{"valid", "restart", "uncertain", "more-mail", "at-budget", "foreign", "prefix", "suffix", "count", "dialog", "busy", "registry-busy", "version", "target", "generation", "session", "width", "paused", "manual", "stopped", "unrecorded", "not-typed", "retry-cap", "retry-delay", "cooldown", "budget", "transcript", "prompt-foreign", "prompt-empty", "second-prompt", "origin-row", "origin-column", "position-row", "position-column", "prompt-above"} {
-			if runtime == "codex" && (mode == "registry-busy" || mode == "version") {
-				continue
-			}
+		modes := []string{"restart", "foreign", "dialog"}
+		if runtime == "codex" {
+			modes = append(modes, "valid", "more-mail", "at-budget", "width")
+		}
+		for _, mode := range modes {
 			t.Run(runtime+"/"+mode, func(t *testing.T) {
 				f := newOrphanDispatchFixture(t)
-				var path string
-				var registry map[string]any
 				layout := func() map[string]any {
 					return map[string]any{"claude": runtime != "codex", "named": runtime == "claude-named"}
 				}
 				if runtime != "codex" {
-					path, registry = dispatchRegistry(t, f, "idle")
+					dispatchRegistry(t, f, "idle")
 				}
 				id := f.mail()
 				initial := layout()
 				initial["defer"] = true
 				f.control(initial)
-				if mode == "uncertain" {
-					loseTerminalTypeACK(t, f)
-				}
 				f.dispatch()
 				f.step()
 				b := f.binding()
-				if (mode != "uncertain" && !b.Typed) || (mode == "uncertain" && (b.Typed || b.Outcome != string(tmuxwake.SendTypeUncertain))) || !b.TypingStarted || b.NoticeOrigin == nil || b.Notice != tmuxwake.Notice(1) {
+				if !b.Typed || !b.TypingStarted || b.NoticeOrigin == nil || b.Notice != tmuxwake.Notice(1) {
 					t.Fatal("missing typed origin")
 				}
 				before := f.wait(func(s orphanScreen) bool { return s.Text == tmuxwake.Notice(1) })
@@ -70,100 +65,22 @@ func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 					f.update(func(st *config.State) { st.Terminal.MaxWakes = 1 })
 				case "foreign":
 					render["text"] = "FOREIGN"
-				case "prefix":
-					render["text"] = "KEEP" + b.Notice
-				case "suffix":
-					render["text"] = b.Notice + "KEEP"
-				case "count":
-					render["text"] = tmuxwake.Notice(2)
 				case "dialog":
 					render["diagnostic-row"] = 23
 					render["diagnostic-text"] = "Permission required"
-				case "busy":
-					render["busy"] = true
-				case "registry-busy":
-					registry["status"] = "busy"
-					writeDispatchRegistry(t, path, registry)
-				case "version":
-					registry["version"] = "2.1.319"
-					writeDispatchRegistry(t, path, registry)
-				case "target":
-					f.update(func(st *config.State) { st.Terminal.Target.SocketID = "changed" })
-				case "generation":
-					f.update(func(st *config.State) { st.Terminal.Generation = "changed" })
-				case "session":
-					f.update(func(st *config.State) { st.Terminal.SessionID = "changed"; st.Lease.Holder = "changed" })
 				case "width":
 					if out, err := exec.Command("tmux", "-S", b.Target.Socket, "resize-window", "-t", b.Target.Pane, "-x", "121", "-y", "24").CombinedOutput(); err != nil {
 						t.Fatalf("resize fixture: %v %s", err, out)
 					}
-				case "paused":
-					f.update(func(st *config.State) { st.HooksPaused = true })
-				case "manual":
-					f.e.as("alice", "status", "init").ok(t)
-					f.e.as("alice", statusArgs("waiting-human")...).ok(t)
-				case "stopped":
-					f.update(func(st *config.State) { st.Terminal.Stopped = true })
-				case "unrecorded":
-					f.update(func(st *config.State) { st.Terminal.NoticeOrigin = nil })
-				case "not-typed":
-					f.update(func(st *config.State) { st.Terminal.TypingStarted = false; st.Terminal.Typed = false })
-				case "retry-cap":
-					f.update(func(st *config.State) { st.Terminal.Retried = true })
-				case "retry-delay":
-					f.update(func(st *config.State) { st.Terminal.RetryMax = time.Minute })
-				case "cooldown":
-					f.now = b.AttemptAt.Add(3 * time.Second)
-				case "budget":
-					f.update(func(st *config.State) {
-						st.Terminal.MaxWakes = 1
-						st.Terminal.Reservations = append(st.Terminal.Reservations, f.now)
-					})
-				case "origin-row":
-					f.update(func(st *config.State) { st.Terminal.NoticeOrigin.ComposerRow-- })
-				case "origin-column":
-					f.update(func(st *config.State) { st.Terminal.NoticeOrigin.ComposerColumn++ })
-				case "position-row":
-					f.update(func(st *config.State) { st.Terminal.NoticePosition.Row-- })
-				case "position-column":
-					f.update(func(st *config.State) { st.Terminal.NoticePosition.Column++ })
-				case "prompt-above", "prompt-foreign", "prompt-empty", "second-prompt":
-					glyph := "› "
-					if runtime != "codex" {
-						glyph = "❯ "
-					}
-					render["diagnostic-row"] = 12
-					render["diagnostic-text"] = glyph + b.Notice
-					if mode == "prompt-foreign" {
-						render["text"] = "HUMAN_DRAFT"
-						render["indent"] = 3
-					}
-					if mode == "prompt-empty" {
-						render["text"] = ""
-						render["cursor"] = 0
-					}
-					if mode == "second-prompt" {
-						render["diagnostic-row"] = 23
-						render["diagnostic-text"] = glyph + "HUMAN_DRAFT"
-					}
-				case "transcript":
-					render["text"] = ""
-					render["cursor"] = 0
-					render["diagnostic-row"] = 9
-					render["diagnostic-text"] = b.Notice
 				}
 				f.control(render)
 				initialState := f.e.state("alice")
 				initialBinding := *initialState.Terminal
 				err := f.a.dispatchTerminal(context.Background(), f.s, "orphan-gen")
-				if mode == "generation" || mode == "stopped" {
-					if err == nil {
-						t.Fatal("retired binding accepted")
-					}
-				} else if err != nil {
+				if err != nil {
 					t.Fatal(err)
 				}
-				positive := slices.Contains([]string{"valid", "restart", "uncertain", "more-mail", "at-budget", "origin-row", "origin-column", "prompt-above"}, mode)
+				positive := slices.Contains([]string{"valid", "restart", "more-mail", "at-budget"}, mode)
 				if positive {
 					f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
 				}

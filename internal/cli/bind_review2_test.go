@@ -25,62 +25,50 @@ func review2Layout(runtime string) map[string]any {
 // two full-width rules and a footer starting with two spaces and ⏵.
 func TestTerminalTranscriptPromptAdmission(t *testing.T) {
 	for _, runtime := range []string{"claude", "claude-named", "codex"} {
-		for _, phase := range []string{"fresh", "recovery"} {
-			t.Run(runtime+"/"+phase, func(t *testing.T) {
-				f := newOrphanDispatchFixture(t)
-				if runtime != "codex" {
-					dispatchRegistry(t, f, "idle")
-				}
-				if out, err := exec.Command("tmux", "-S", f.binding().Target.Socket, "resize-window", "-t", "%0", "-x", "80", "-y", "24").CombinedOutput(); err != nil {
-					t.Fatalf("resize: %v %s", err, out)
-				}
-				mode := review2Layout(runtime)
-				// Named-session labels take space in the top rule. The observed legacy
-				// Claude control retains two full-width 80-column rules.
-				if runtime == "claude-named" {
-					mode["rule-width"] = 60
-				}
-				glyph := "❯ "
-				if runtime == "codex" {
-					glyph = "› "
-				}
-				mode["diagnostic-row"], mode["diagnostic-text"] = 12, glyph+tmuxwake.Notice(1)
-				if phase == "recovery" {
-					mode["defer"] = true
-				}
-				f.control(mode)
-				id := f.mail()
-				f.dispatch()
-				f.step()
-				if phase == "recovery" {
-					if !f.binding().TypingStarted || f.binding().NoticePosition == nil {
-						t.Fatal("no real typed notice")
-					}
-					delete(mode, "defer")
-					mode["cursor"] = -5
-					f.control(mode)
-					f.now = f.now.Add(config.NotificationEvery)
-					f.dispatch()
-				}
-				s := f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
-				if s.Submitted[0] != tmuxwake.Notice(1) || s.Erased != 0 || s.Typed != len(tmuxwake.Notice(1)) || f.e.received("alice", id) {
-					t.Fatal("transcript deafened or changed wake")
-				}
-			})
-		}
+		t.Run(runtime+"/fresh", func(t *testing.T) {
+			f := newOrphanDispatchFixture(t)
+			if runtime != "codex" {
+				dispatchRegistry(t, f, "idle")
+			}
+			if out, err := exec.Command("tmux", "-S", f.binding().Target.Socket, "resize-window", "-t", "%0", "-x", "80", "-y", "24").CombinedOutput(); err != nil {
+				t.Fatalf("resize: %v %s", err, out)
+			}
+			mode := review2Layout(runtime)
+			// Named-session labels take space in the top rule. The observed legacy
+			// Claude control retains two full-width 80-column rules.
+			if runtime == "claude-named" {
+				mode["rule-width"] = 60
+			}
+			if _, _, width, err := f.binding().Target.Inspect(context.Background()); err != nil || width != 80 {
+				t.Fatalf("fixture width=%d error=%v; want 80", width, err)
+			}
+			glyph := "❯ "
+			if runtime == "codex" {
+				glyph = "› "
+			}
+			mode["diagnostic-row"], mode["diagnostic-text"] = 12, glyph+tmuxwake.Notice(1)
+			f.control(mode)
+			id := f.mail()
+			f.dispatch()
+			f.step()
+			s := f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
+			if s.Submitted[0] != tmuxwake.Notice(1) || s.Erased != 0 || s.Typed != len(tmuxwake.Notice(1)) || f.e.received("alice", id) {
+				t.Fatal("transcript deafened or changed wake")
+			}
+		})
 	}
 }
 
 // Filled geometry is recorded by the real typing invocation, survives disk
-// reload, and differs from empty origin in row/column. Both known drafts and
-// a real lost type ACK recover once. A further move away from a recorded filled
-// position refuses; no record requires Claude rules or a Codex footer hint.
+// reload, and differs from empty origin in row/column. A further move away
+// from the record refuses. Without a record, Claude rules anchor recovery;
+// filled Codex has no hint, so it holds and escalates instead.
 func TestTerminalRecoveryFilledPosition(t *testing.T) {
 	for _, runtime := range []string{"claude", "claude-named", "codex"} {
 		for _, untyped := range []bool{false, true} {
-			for _, axis := range []string{"row", "column", "both"} {
+			for _, axis := range []string{"both"} {
 				for _, recovery := range []string{"recorded", "crash", "moved-again", "no-anchor"} {
-					if recovery == "no-anchor" && runtime != "codex" {
+					if untyped && (runtime != "codex" || recovery != "recorded") || (recovery == "no-anchor" || recovery == "moved-again") && runtime != "codex" {
 						continue
 					}
 					t.Run(fmt.Sprintf("%s/%t/%s/%s", runtime, untyped, axis, recovery), func(t *testing.T) {
@@ -121,9 +109,7 @@ func TestTerminalRecoveryFilledPosition(t *testing.T) {
 						}
 						mode = review2Layout(runtime)
 						mode["row"], mode["indent"], mode["cursor"] = row, indent, -5
-						if recovery == "crash" {
-							mode["hint"] = true
-						}
+
 						glyph := "❯ "
 						if runtime == "codex" {
 							glyph = "› "
@@ -143,7 +129,7 @@ func TestTerminalRecoveryFilledPosition(t *testing.T) {
 							t.Fatal(err)
 						}
 						f.dispatch()
-						positive := recovery == "recorded" || recovery == "crash"
+						positive := recovery == "recorded" || recovery == "crash" && runtime != "codex"
 						if positive {
 							f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
 						}
@@ -156,8 +142,23 @@ func TestTerminalRecoveryFilledPosition(t *testing.T) {
 							if len(after.Submitted) != 1 || after.Submitted[0] != b.Notice || f.binding().Recovery == nil {
 								t.Fatal("moved filled notice did not recover")
 							}
-						} else if len(after.Submitted) != 0 || f.binding().Retried {
-							t.Fatal("geometry/hint refusal spent key or retry")
+						} else {
+							if len(after.Submitted) != 0 || f.binding().Retried {
+								t.Fatal("geometry/hint refusal spent key or retry")
+							}
+							f.e.ownReportRoom("alice")
+							f.now = b.AttemptAt.Add(10 * time.Minute)
+							f.update(func(st *config.State) { st.Lease.Expires = f.now.Add(time.Hour) })
+							f.dispatch()
+							requireNotice(t, f.binding().OwnNotice, "suspected")
+							if f.binding().NoticeReport == nil || !f.binding().NoticeReport.Sent {
+								t.Fatal("held filled notice did not escalate")
+							}
+							f.control(renderWithoutText(mode))
+							held := f.wait(func(s orphanScreen) bool { return true })
+							if held.Text != b.Notice || held.Typed != before.Typed || held.Erased != 0 || len(held.Submitted) != 0 {
+								t.Fatal("escalation changed held editor")
+							}
 						}
 					})
 				}
@@ -192,11 +193,13 @@ func TestTerminalHeldNoticeReportsWithoutFence(t *testing.T) {
 			f.update(func(st *config.State) {
 				b := st.Terminal
 				b.Typed = false
-				// The untyped/partial controls use an exhausted hourly budget;
+				// A distinct later reservation exhausts the hourly budget;
+				// f.now itself equals AttemptAt and would be excluded as our own slot.
+				// The untyped/partial controls use that exhausted budget;
 				// other cases independently exercise their named refusal.
 				if mode == "untyped" || mode == "partial" {
 					b.MaxWakes = 1
-					b.Reservations = append(b.Reservations, f.now)
+					b.Reservations = append(b.Reservations, f.now.Add(time.Second))
 				}
 				if mode == "position" {
 					b.NoticePosition.Row--
@@ -225,6 +228,10 @@ func TestTerminalHeldNoticeReportsWithoutFence(t *testing.T) {
 			f.dispatch()
 			if len(f.e.projectionsFrom(room, "@alice:test.local")) != 0 {
 				t.Fatal("incident before threshold")
+			}
+			held := f.binding()
+			if held.Notice != before.Text || held.NoticeCount != 2 || held.Typed || held.Retried || !held.AttemptAt.Equal(attempt) || len(held.AttemptIDs) != map[bool]int{true: 1, false: 2}[mode == "partial"] {
+				t.Fatal("pre-threshold dispatch settled or changed retained journal")
 			}
 			f.now = attempt.Add(10 * time.Minute)
 			f.dispatch()

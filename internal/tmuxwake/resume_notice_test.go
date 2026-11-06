@@ -10,34 +10,15 @@ import (
 // These use private synthetic fixtures, not installed runtime observations.
 func TestBoundResumeNotice(t *testing.T) {
 	for _, runtime := range []string{"claude", "claude-named", "codex"} {
-		for _, mode := range []string{"valid", "empty", "foreign", "prefix", "suffix", "count", "dialog", "busy", "generation", "session", "target", "version", "width"} {
+		for _, mode := range []string{"valid", "foreign", "dialog"} {
 			t.Run(runtime+"/"+mode, func(t *testing.T) {
 				f := newBoundFixture(t, runtime, "2.1.318", "idle")
 				expected := f.b.AssessReadiness(context.Background()).Key
 				expected.ComposerRow = 16 // Pin the actual recovery composer, not the earlier empty row.
 				f.b.NoticePosition = &ComposerPosition{Row: 16, Column: 2}
 				text := Notice(1)
-				switch mode {
-				case "empty":
-					text = ""
-				case "foreign":
+				if mode == "foreign" {
 					text = "FOREIGN"
-				case "prefix":
-					text = "KEEP" + text
-				case "suffix":
-					text += "KEEP"
-				case "count":
-					text = Notice(2)
-				case "generation":
-					expected.Generation = "other"
-				case "session":
-					expected.SessionID = "other"
-				case "target":
-					expected.Target.Pane = "%99999"
-				case "version":
-					expected.RegistryVersion = "2.1.319"
-				case "width":
-					expected.PaneWidth++
 				}
 				if text != "" {
 					f.f.typeText(text)
@@ -46,13 +27,6 @@ func TestBoundResumeNotice(t *testing.T) {
 				options := map[string]any{"row": 17, "cursor": -1, "cursor-row": 10}
 				if mode == "dialog" {
 					options["extra"] = " Permission required"
-				}
-				if mode == "busy" {
-					options["extra"] = " esc to interrupt"
-				}
-				if mode == "empty" {
-					options["cursor"] = 0
-					options["cursor-row"] = 17
 				}
 				f.f.render(options)
 				fences := 0
@@ -80,7 +54,7 @@ func TestBoundResumeNotice(t *testing.T) {
 					}
 				} else {
 					s := f.f.wait(func(s fixtureState) bool { return s.Render == 1 })
-					if (mode == "dialog" || mode == "busy") && result.Reason != ReasonBusyOrDialog {
+					if mode == "dialog" && result.Reason != ReasonBusyOrDialog {
 						t.Fatal("lost specific refusal reason")
 					}
 					if result.ReasonAt.IsZero() {

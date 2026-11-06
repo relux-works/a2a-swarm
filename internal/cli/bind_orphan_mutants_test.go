@@ -74,9 +74,9 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"registry-stable-since-rewrite", "cli/bind_readiness.go", `old.Reason == projected.Reason && old.Version == projected.Version`, `old.Reason == projected.Reason && old.Version == projected.Version && false`, "TestReadinessDiagnosticPersistence", "TestReadinessStatusProjection/valid"},
 		{"registry-invalid-since-preserved", "cli/bind_readiness.go", `&& validSince(old) {`, `{`, "TestReadinessDiagnosticSinceRepair/future", "TestReadinessDiagnosticPersistence"},
 		{"registry-idle-scope-cas", "cli/bind_readiness.go", `st.Terminal.Stopped || !sameTerminalScope(*st.Terminal, b) ||`, `st.Terminal.Stopped || (!sameTerminalScope(*st.Terminal, b) && false) ||`, "TestReadinessIdleCAS/root", "TestReadinessIdleCAS/valid"},
-		// Partial remains unknown, not suspected; the untyped plant below must also
-		// fail by promoting unknown to suspected. Other partial selectors are valid
-		// controls for unrelated admission plants. Source only: no campaign implied.
+		// Before ten minutes, partial/untyped journals without typing authority
+		// remain unknown; aged retained fixed notices are independently suspected.
+		// Partial selectors remain controls for unrelated admission plants. Source only: no campaign implied.
 		{"detect-partial-as-orphan", "cli/bind_notice.go", `len(b.AttemptIDs) == 0`, `len(b.AttemptIDs) <= 1`, "TestTerminalNoticeDetection/partial", admission + "/none"},
 		{"detect-unowned-draft", "cli/bind_notice.go", `b.Typed && b.NoticeCount > 0`, `(b.Typed && b.NoticeCount > 0 || !b.Typed && b.NoticeCount == 0)`, "TestTerminalNoticeDetection/no-journal", admission + "/none"},
 		{"unknown-silently-clear", "cli/bind_notice.go", `n.PossiblyOrphaned = nil`, `n.PossiblyOrphaned = nil; if n.Since!="" { v:=false; n.PossiblyOrphaned=&v }`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
@@ -98,7 +98,9 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 
 // ObserveInput`, "TestTerminalClearFreshFence/valid", "TestTerminalTwoPhaseRaceControls/codex/none"},
 		{"live-space-lookalike-recovery", "cli/bind.go", `if input != "empty" {`, `if input=="nonempty" && b.Typed && b.NoticeCount==1 { if err:=exec.CommandContext(ctx,"tmux","-S",b.Target.Socket,"send-keys","-t",b.Target.Pane,"Enter").Run();err!=nil{return err} }; if input != "empty" {`, "TestRev3PaddedDraftEffects/codex/live/space-left", admission + "/none"},
-		{"orphan-space-lookalike-erase", "cli/bind.go", `observed = true`, `if observation=="nonempty" && b.Typed && len(b.AttemptIDs)==0 && b.NoticeCount==1 { if err:=exec.CommandContext(ctx,"tmux","-S",b.Target.Socket,"send-keys","-t",b.Target.Pane,"-N",strconv.Itoa(len(b.Notice)),"BSpace").Run();err!=nil{return err} }; observed = true`, "TestRev3PaddedDraftEffects/claude/orphan/space-left", admission + "/none"},
+		{"orphan-space-lookalike-erase", "cli/bind.go", `observed = true
+		if err := a.observeTerminalNotice(s, generation, *b, observation);`, `if observation=="nonempty" && b.Typed && len(b.AttemptIDs)==0 && b.NoticeCount==1 { if err:=exec.CommandContext(ctx,"tmux","-S",b.Target.Socket,"send-keys","-t",b.Target.Pane,"-N",strconv.Itoa(len(b.Notice)),"BSpace").Run();err!=nil{return err} }; observed = true
+		if err := a.observeTerminalNotice(s, generation, *b, observation);`, "TestRev3PaddedDraftEffects/claude/orphan/space-left", admission + "/none"},
 		{"pause-owned-session-exemption", "cli/bind.go", `if st.HooksPaused || manualWakeGate(st) != "" {`, `if st.HooksPaused && b.SessionID!="owned-thread" || manualWakeGate(st) != "" {`, admission + "/paused", "TestTerminalNoticeDetection/partial"},
 		{"manual-human-exemption", "cli/bind.go", `if st.HooksPaused || manualWakeGate(st) != "" {`, `if st.HooksPaused || manualWakeGate(st) != "" && st.Liveness.State!="waiting-human" {`, admission + "/manual", "TestTerminalNoticeDetection/partial"},
 		{"native-owned-session-exemption", "cli/bind.go", `if st.Runtime != nil && !st.Runtime.Retired {`, `if st.Runtime != nil && !st.Runtime.Retired && b.SessionID!="owned-thread" {`, admission + "/native", "TestTerminalNoticeDetection/partial"},
@@ -156,6 +158,9 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			data = data[start:]
 			if !strings.Contains(string(data), p.old) {
 				t.Fatal("mutation anchor missing")
+			}
+			if p.name == "orphan-space-lookalike-erase" && strings.Count(string(data), p.old) != 1 {
+				t.Fatal("observation mutation anchor ambiguous")
 			}
 			// Narrow the same forbidden identity at both admission and locked
 			// reservation. A later authority error is not an effect-gate kill.
