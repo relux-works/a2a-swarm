@@ -61,8 +61,10 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if *product != "" && !productNameRE.MatchString(*product) {
-		return usagef("invalid product name %q: use [a-z0-9-]{1,40}", sanitizeLine(*product))
+	if *product != "" {
+		if err := validateProductSelector(*product); err != nil {
+			return err
+		}
 	}
 	for _, u := range splitList(*invite) {
 		if _, err := normalizeUser(u, "x"); err != nil {
@@ -78,8 +80,10 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 		id, _ := normalizeUser(u, s.server)
 		spec.invite = append(spec.invite, id)
 	}
+	var space string
 	if *product != "" {
-		if _, _, err := s.productSpace(ctx, *product); err != nil {
+		space, _, err = s.productSpace(ctx, *product)
+		if err != nil {
 			return err
 		}
 	}
@@ -99,7 +103,7 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 		return nil
 	}
 	// Adopt by alias, so every message names the room as the caller typed it.
-	return s.adoptProductRoom(ctx, *product, "#"+local, false)
+	return s.adoptRoomIntoSpace(ctx, space, *product, "#"+local, false)
 }
 
 // roomLocal validates a new room's alias: #alias or alias on this server.

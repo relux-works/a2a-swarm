@@ -48,8 +48,11 @@ func cmdProduct(ctx context.Context, a *App, args []string) error {
 		}
 		return s.newProduct(ctx, pos[0], *keeper, *projector)
 	case "adopt":
-		if len(args) != 3 || !productNameRE.MatchString(args[1]) {
+		if len(args) != 3 {
 			return usagef("%s", productUsage)
+		}
+		if err := validateProductSelector(args[1]); err != nil {
+			return err
 		}
 		s, err := a.session()
 		if err != nil {
@@ -100,20 +103,34 @@ func cmdProduct(ctx context.Context, a *App, args []string) error {
 	return usagef("%s", productUsage)
 }
 
-func (s *session) productSpace(ctx context.Context, name string) (string, string, error) {
-	alias := "#" + name + ":" + s.server
-	id, err := s.client.ResolveAlias(ctx, alias)
-	if err != nil {
-		if errors.Is(err, matrix.ErrUnknownAlias) {
-			return "", "", fmt.Errorf("#%s is not a space", name)
+func validateProductSelector(selector string) error {
+	if productNameRE.MatchString(selector) || matrix.ValidVerificationID(selector, '!') {
+		return nil
+	}
+	return usagef("invalid product selector %q: use [a-z0-9-]{1,40} or a Space room ID (!...)", sanitizeLine(selector))
+}
+
+func (s *session) productSpace(ctx context.Context, selector string) (string, string, error) {
+	if err := validateProductSelector(selector); err != nil {
+		return "", "", err
+	}
+	id, label := selector, selector
+	if !strings.HasPrefix(selector, "!") {
+		alias := "#" + selector + ":" + s.server
+		label = s.shortAlias(alias)
+		var err error
+		id, err = s.client.ResolveAlias(ctx, alias)
+		if err != nil {
+			if errors.Is(err, matrix.ErrUnknownAlias) {
+				return "", "", fmt.Errorf("%s is not a space", label)
+			}
+			return "", "", fmt.Errorf("product %s: %w", label, err)
 		}
-		return "", "", fmt.Errorf("product #%s: %w", name, err)
 	}
-	var c map[string]any
-	if err := s.client.GetState(ctx, id, "m.room.create", "", &c); err != nil || c["type"] != "m.space" {
-		return "", "", fmt.Errorf("#%s is not a space", name)
+	if err := s.client.RequireSpace(ctx, id); err != nil {
+		return "", "", fmt.Errorf("%s is not a space (creation state unverified): %w", label, err)
 	}
-	return id, s.shortAlias(alias), nil
+	return id, label, nil
 }
 
 func (s *session) newProduct(ctx context.Context, name, keeperArg, projectorArg string) error {
@@ -374,8 +391,15 @@ func (s *session) adoptProductRoom(ctx context.Context, name, roomArg string, kn
 	if err != nil {
 		return err
 	}
+	return s.adoptRoomIntoSpace(ctx, space, name, roomArg, knownID)
+}
+
+// space was resolved and verified once by productSpace; never resolve the
+// product selector again after room creation or other intervening work.
+func (s *session) adoptRoomIntoSpace(ctx context.Context, space, name, roomArg string, knownID bool) error {
 	room, label := roomArg, roomArg
 	if !knownID {
+		var err error
 		room, label, err = s.resolveRoom(ctx, roomArg)
 		if err != nil {
 			if errors.Is(err, matrix.ErrUnknownAlias) {
@@ -401,8 +425,12 @@ func (s *session) adoptProductRoom(ctx context.Context, name, roomArg string, kn
 	}
 	if _, err := s.client.PutState(ctx, space, "m.space.child", room, map[string]any{"via": []string{s.server}}); err != nil {
 		if matrix.IsStatus(err, 403) {
-			return fmt.Errorf("%s is NOT linked into product %s: you lack power for m.space.child in #%s; %s can link it with: a2a product adopt %s %s",
-				label, name, name, s.spaceLinkers(ctx, space), name, label)
+			spaceLabel := name
+			if !strings.HasPrefix(name, "!") {
+				spaceLabel = "#" + name
+			}
+			return fmt.Errorf("%s is NOT linked into product %s: you lack power for m.space.child in %s; %s can link it with: a2a product adopt %s %s",
+				label, name, spaceLabel, s.spaceLinkers(ctx, space), name, label)
 		}
 		return fmt.Errorf("link child %s: %w", label, err)
 	}

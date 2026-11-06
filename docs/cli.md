@@ -203,7 +203,10 @@ A newly created room subscribes its creator (the creator is joined by the creati
 `owner-needed`, `decision`); an alias that already exists creates no subscription.
 
 `--product X` adopts the created (or already existing) room into product space X, setting the space child link and the room parent link when
-the caller has power to send it. X must be an existing product space. If the space refuses the child link, the room exists but is NOT linked:
+the caller has power to send it. X accepts an existing product name or an exact Space room ID (`!…`), including a Space without an alias.
+The selected Space is resolved once and its `m.room.create` content must have `type: "m.space"` before room creation or either link write.
+A refused, malformed or cancelled creation-state lookup stops the command without writing links; an ID never causes a join, account or alias creation.
+If the space refuses the child link, the room exists but is NOT linked:
 the command exits 1 and names the space members who can link it, with the `a2a product adopt X <room>` command they would run.
 
 ### `a2a room members <room> [--membership join|invite|join,invite] [--json]`
@@ -281,9 +284,16 @@ on an existing space, a keeper below 50 is raised when the caller has the power,
 state the caller cannot read (not a member) is still linked from the space, with a note; a bare `!roomid` that cannot be verified is refused. If the caller cannot send the
 parent state event in that room, it prints `parent link skipped: no power in <room>` after adding the child link. `list` prints joined spaces;
 `show X` prints child aliases and room ids.
+
+For `adopt`, X can also be an exact Space room ID (`!…`), without a canonical alias. Both `adopt` and `room new --product` verify creation
+content from the selected room's original state endpoint before linking; event envelopes and mismatched room metadata cannot stand in for
+that content. A lookup failure does not trigger a join or create a product. The child and parent writes remain separate: a successful child
+write can remain when the parent write fails, and the output reports the completed child step and any parent refusal or error.
 ```bash
 a2a product new alpha --keeper mini_alpha_keeper --projector a2a-projector
 a2a product adopt alpha tooling-room
+a2a product adopt '!aliasless-space:example.org' tooling-room
+a2a room new tooling-room --product '!aliasless-space:example.org'
 a2a product list
 a2a product show alpha
 ```
