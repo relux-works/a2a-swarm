@@ -386,10 +386,9 @@ func TestRenderWorkerPaths(t *testing.T) {
 					t.Fatalf("ordinary/notice worker result: truncated=%v error=%v calls=%d", a.Truncated, err, len(r.inputs))
 				}
 			} else {
-				want := "voice synthesis failed or timed out; check the local engine and installed model"
-				if failAt == 2 {
-					want = "voice truncation notice synthesis failed"
-				}
+				// This fixture runner returns a raw process error, which #171 keeps
+				// unclassified. Categories have their own tests in failure_test.go.
+				want := "voice synthesis failed: unclassified failure"
 				if err == nil || err.Error() != want || len(r.inputs) != failAt || len(a.OGG) != 0 {
 					t.Fatalf("failure contract: error=%v calls=%d", err, len(r.inputs))
 				}
