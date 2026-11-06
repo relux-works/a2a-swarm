@@ -164,7 +164,14 @@ func TestBindDetachedLifecycle(t *testing.T) {
 			t.Skip(tool + " unavailable")
 		}
 	}
+	dir, owned := newBindFixtureDir(t)
 	e, room := world(t)
+	// Keep the synthetic config within the durable fixture record's namespace.
+	configDir := filepath.Join(dir, "config")
+	if err := os.Rename(e.dir, configDir); err != nil {
+		t.Fatal(err)
+	}
+	e.dir = configDir
 	t.Cleanup(func() {
 		if t.Failed() {
 			b, _ := os.ReadFile(filepath.Join(e.dir, "state", "alice.binding.log"))
@@ -173,11 +180,6 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	})
 	e.extra["CODEX_THREAD_ID"] = "bind-fixture"
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
-	dir, err := os.MkdirTemp("/tmp", "ab-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
 	exe := filepath.Join(dir, "a2a")
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -185,7 +187,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 		t.Fatalf("build CLI: %v %s", err, out)
 	}
 	script := filepath.Join(dir, "fixture.py")
-	if err = os.WriteFile(script, []byte(bindFixture), 0600); err != nil {
+	if err := os.WriteFile(script, []byte(bindFixture), 0600); err != nil {
 		t.Fatal(err)
 	}
 	socket := filepath.Join(dir, "socket")
@@ -219,19 +221,17 @@ func TestBindDetachedLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	serverPID, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	t.Cleanup(func() {
-		st, _ := config.LoadState(e.paths(), "alice")
-		if st.Terminal != nil {
-			if birth, _ := tmuxwake.Birth(context.Background(), st.Terminal.DaemonPID); birth == st.Terminal.DaemonBirth && birth != "" {
-				p, _ := os.FindProcess(st.Terminal.DaemonPID)
-				p.Signal(syscall.SIGTERM)
-			}
-		}
-		for _, pid := range []int{screen.PID, serverPID} {
-			p, _ := os.FindProcess(pid)
-			p.Signal(syscall.SIGTERM)
-		}
-	})
+	owned.Server, err = bindFixtureIdentity(serverPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned.Fixture, err = bindFixtureIdentity(screen.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = writeBindFixtureRecord(dir, owned); err != nil {
+		t.Fatal(err)
+	}
 	request := func(id int) result {
 		b, _ := json.Marshal(id)
 		if err := writeBindingFixtureCommand(dir, b); err != nil {
@@ -276,6 +276,9 @@ func TestBindDetachedLifecycle(t *testing.T) {
 		}
 	}
 	request(2).failsWith(t, ExitError, "already bound")
+	if holdBindFixtureControl(t, dir, owned) {
+		return
+	}
 	id := runtimeMail(e, room, "SYNTHETIC_PEER_BODY_MUST_NOT_BE_TYPED")
 	awaitBinding(t, e.paths(), func(st config.State) bool {
 		return st.Terminal.Outcome == "wake submitted" || len(st.Terminal.Rung) == 1
@@ -490,8 +493,7 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	if len(screen.Submitted) != 6 {
 		t.Fatal("same-session rebind replayed retained mail")
 	}
-	owner, _ := os.FindProcess(screen.PID)
-	owner.Signal(syscall.SIGTERM)
+	stopBindFixtureProcess(owned.Fixture, syscall.SIGTERM)
 	awaitBinding(t, e.paths(), func(st config.State) bool {
 		return st.Terminal.Stopped && st.Terminal.Outcome == "target exited or replaced"
 	})
