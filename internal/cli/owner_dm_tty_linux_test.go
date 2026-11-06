@@ -20,6 +20,7 @@ import (
 // Test 9: real Linux controlling-terminal children exercise /dev/tty and both
 // isatty checks without the confirmation seam. Wrong type-back refuses without
 // config changes; correct ensure/set/unset flows succeed against the fake HS.
+// The fixture reports cursor position; unsupported OSC color queries may fall back.
 func TestOwnerDMTTY(t *testing.T) {
 	if action := os.Getenv("A2A_OWNER_DM_TTY_CHILD"); action != "" {
 		a := NewApp()
@@ -73,16 +74,28 @@ func TestOwnerDMTTY(t *testing.T) {
 			var b strings.Builder
 			buf := make([]byte, 1024)
 			wrote := false
+			queries := 0
 			for {
 				n, e := master.Read(buf)
 				if n > 0 {
 					b.Write(buf[:n])
+					// A PTY alone cannot answer terminal queries. Test-only Bubble Tea
+					// initialization queries OSC 11 then DSR before this child runs.
+					// DSR alone is a valid unsupported-OSC fallback in termenv.
+					// Count the accumulated stream so split/repeated queries work.
+					for queries < strings.Count(b.String(), "\x1b[6n") {
+						queries++
+						if _, err := io.WriteString(master, "\x1b[1;1R"); err != nil {
+							t.Errorf("terminal DSR reply: %v", err)
+						}
+					}
 					if !wrote && strings.Contains(b.String(), "to confirm:") {
 						wrote = true
 						_, _ = io.WriteString(master, typed+"\n")
 					}
 				}
 				if e != nil {
+					t.Logf("terminal fixture: cursor reports=%d, type-back sent=%t", queries, wrote)
 					output <- b.String()
 					return
 				}
