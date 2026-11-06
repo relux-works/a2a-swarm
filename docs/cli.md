@@ -567,6 +567,9 @@ redaction event, where other clients may show it. Quote arguments for your shell
 A bounded direct event lookup checks only target type. The command refuses an
 `m.room.redaction` target with `REDACT_TARGET_REDACTION`: redacting a redaction
 does not restore the original event. The lookup is not an authority check.
+It caps the complete fetched client JSON, including `unsigned` bundled data, at
+64 KiB. Larger responses fail closed with `REDACT_FAILED` before any PUT, even
+when the underlying room event is valid. No automatic retry is attempted.
 Matrix [room version 11](https://spec.matrix.org/latest/rooms/v11/) moved the
 redaction target into `content.redacts`; older top-level `redacts` and redacted
 event `unsigned.redacted_because` metadata are also recognised by local sync.
@@ -593,6 +596,26 @@ request records the same tombstone immediately. Plain and JSON reads use this
 known state; JSON event records add `redacted: true`. Event-based attachment fetch
 is unavailable after known redaction. A separately known MXC URL is not revoked.
 Unsynced clients and other copies are outside this guarantee.
+
+An explicit `m.replace` edit of a known-redacted target is also suppressed
+locally, including its fallback body, `m.new_content`, HTML and attachments.
+This is local suppression: the edit remains a separate homeserver event and
+must be redacted separately to request its removal there. Other relations,
+reply quotes and arbitrary copied text do not acquire redaction authority.
+
+To retain an arrival when redaction has destroyed its addressing, sync keeps
+redacted messages from other senders in joined rooms as pending `[redacted]`
+entries even when it can no longer establish addressing or a subscription.
+This safe-side over-delivery can increase unread counts and `redacted` doorbells;
+it does not receipt the entries.
+
+Limited-sync backfill applies the same local filter as reads. The projector
+also filters its live timeline and backfill against the selected identity's
+mailbox knowledge and redactions observed during that run before selecting
+messages. It does not durably record new redaction knowledge on its own:
+a projector restart relies on prior mailbox sync or server stripping. Already
+sent projections, and earlier snapshots emitted before knowledge, remain copies
+outside this guarantee.
 
 Later `archive` exports omit known redacted bodies, attachment fields and topic
 titles, and warn that **earlier archive Git commits may still retain them**.

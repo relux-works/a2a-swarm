@@ -48,5 +48,8 @@ func (c *Client) MessagesTo(ctx context.Context, roomID, from, to string, limit 
 	}
 	var out Page
 	err := c.callBulk(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/messages", q, nil, &out)
+	if err == nil && c.FilterEvents != nil {
+		out.Chunk, err = c.FilterEvents(roomID, out.Chunk)
+	}
 	return out, err
 }

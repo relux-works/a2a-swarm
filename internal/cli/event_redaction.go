@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -95,7 +96,8 @@ func cmdRedact(ctx context.Context, a *App, args []string) error {
 	return nil
 }
 
-// eventRedactions records only server-observed targets, never payload data.
+// eventRedactions records content-suppression targets, never payload data.
+// Filtered local tombstones do not prove that each event was redacted remotely.
 func eventRedactions(room string, events []matrix.Event) []config.Redaction {
 	var targets []config.Redaction
 	for _, ev := range events {
@@ -120,6 +122,12 @@ func (s *session) installRedactionCache() {
 		defer mu.Unlock()
 		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {
+			// Preserve the existing mailbox refusal class when filtering runs before
+			// delivery opens the mailbox. Report only a fixed diagnostic, never the
+			// cache path or arbitrary file/transport data.
+			if info, statErr := os.Lstat(s.paths.MailboxFile(s.name)); statErr == nil && !info.Mode().IsRegular() {
+				return nil, errors.New("local redaction cache unavailable: mailbox is not a regular file; refusing to use it")
+			}
 			return nil, errors.New("local redaction cache unavailable")
 		}
 		for _, target := range eventRedactions(room, events) {
@@ -127,7 +135,10 @@ func (s *session) installRedactionCache() {
 		}
 		out := make([]matrix.Event, len(events))
 		for i, ev := range events {
-			if mb.IsRedacted(room, ev.EventID) || seen[config.Redaction{Room: room, EventID: ev.EventID}] {
+			known := func(id string) bool {
+				return id != "" && (mb.IsRedacted(room, id) || seen[config.Redaction{Room: room, EventID: id}])
+			}
+			if known(ev.EventID) || known(ev.ReplacementTarget()) {
 				ev = ev.WithoutContent()
 			}
 			out[i] = ev

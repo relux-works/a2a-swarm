@@ -18,7 +18,8 @@ func (c *Client) RedactionEventType(ctx context.Context, roomID, eventID string)
 	if err != nil {
 		return "", err
 	}
-	// Matrix room events are at most 64 KiB. One extra byte detects overflow;
+	// This lookup caps the complete client JSON at 64 KiB, including unsigned
+	// data (which can exceed the room-event limit). One byte detects overflow;
 	// no arbitrary fetched body is ever returned as a diagnostic.
 	v, err := readControl(ctx, resp, (64<<10)+1)
 	if err != nil {
@@ -56,6 +57,24 @@ func (e Event) IsRedacted() bool {
 	}
 	var c map[string]json.RawMessage
 	return e.Type == "m.room.message" && (json.Unmarshal(e.Content, &c) != nil || len(c) == 0)
+}
+
+// ReplacementTarget identifies only an explicit message edit. Replies, thread
+// relations and arbitrary quoted copies do not inherit their target's state.
+func (e Event) ReplacementTarget() string {
+	if e.Type != "m.room.message" {
+		return ""
+	}
+	var c struct {
+		RelatesTo struct {
+			RelType string `json:"rel_type"`
+			EventID string `json:"event_id"`
+		} `json:"m.relates_to"`
+	}
+	if json.Unmarshal(e.Content, &c) != nil || c.RelatesTo.RelType != "m.replace" {
+		return ""
+	}
+	return c.RelatesTo.EventID
 }
 
 // WithoutContent is a local tombstone, never the Matrix state-event redaction

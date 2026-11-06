@@ -29,6 +29,14 @@ type backfillGap struct {
 // set when the pages could not reach `since` (the page bound, or a server that
 // stops paging).
 func (s *session) timelineEvents(ctx context.Context, roomID, since string, events []matrix.Event, limited bool, prevBatch string, keep func(matrix.Event) bool) (out []matrix.Event, gap *backfillGap, err error) {
+	// Learn the entire live tail before paging/selection. A target redaction
+	// can follow its edit, including on a different backfill page.
+	if s.client.FilterEvents != nil {
+		events, err = s.client.FilterEvents(roomID, events)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	filter := func(evs []matrix.Event) []matrix.Event {
 		var kept []matrix.Event
 		for _, ev := range evs {
@@ -80,5 +88,12 @@ func (s *session) timelineEvents(ctx context.Context, roomID, since string, even
 	for i := len(older) - 1; i >= 0; i-- {
 		out = append(out, older[i])
 	}
-	return append(out, filter(events)...), gap, nil
+	out = append(out, events...)
+	if s.client.FilterEvents != nil {
+		out, err = s.client.FilterEvents(roomID, out)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return filter(out), gap, nil
 }

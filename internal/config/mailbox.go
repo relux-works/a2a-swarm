@@ -82,13 +82,14 @@ type Redaction struct {
 
 // Mailbox is the loaded mailbox of one agent.
 type Mailbox struct {
-	path     string
-	order    []string // ids of entries in append order (received ones are skipped)
-	live     map[string]*MailEntry
-	received []string // receipt order
-	recv     map[string]bool
-	dead     int
-	redacted map[Redaction]bool
+	path                  string
+	order                 []string // ids of entries in append order (received ones are skipped)
+	live                  map[string]*MailEntry
+	received              []string // receipt order
+	recv                  map[string]bool
+	dead                  int
+	redacted              map[Redaction]bool
+	needsRedactionRewrite bool // stale payload scrubbed while opening an older mailbox
 }
 
 // OpenMailbox loads state/<name>.mailbox.jsonl. A missing file is an empty
@@ -141,7 +142,9 @@ func (m *Mailbox) apply(l mailLine) {
 			return
 		}
 		e := *l.Entry
-		m.scrub(&e)
+		if m.scrub(&e) {
+			m.needsRedactionRewrite = true
+		}
 		m.live[e.ID] = &e
 		m.order = append(m.order, e.ID)
 	case "rcpt":
@@ -168,7 +171,9 @@ func (m *Mailbox) apply(l mailLine) {
 			m.redacted[target] = true
 		}
 		for _, e := range m.live {
-			m.scrub(e)
+			if m.scrub(e) {
+				m.needsRedactionRewrite = true
+			}
 		}
 	}
 }
@@ -178,35 +183,41 @@ func (m *Mailbox) IsRedacted(room, id string) bool {
 	return m.redacted[Redaction{room, id}]
 }
 
-func (m *Mailbox) scrub(e *MailEntry) {
+func (m *Mailbox) scrub(e *MailEntry) bool {
 	if e.Kind != MailEvent {
-		return
+		return false
 	}
 	var ev matrix.Event
 	if json.Unmarshal(e.Event, &ev) != nil {
-		return
+		return false
 	}
-	if m.IsRedacted(e.Room, e.ID) || ev.IsRedacted() {
-		e.Event, _ = json.Marshal(ev.WithoutContent())
+	if m.IsRedacted(e.Room, e.ID) || m.IsRedacted(e.Room, ev.ReplacementTarget()) || ev.IsRedacted() {
+		raw, _ := json.Marshal(ev.WithoutContent())
+		changed := !bytes.Equal(e.Event, raw)
+		e.Event = raw
+		return changed
 	}
+	return false
 }
 
 // Redact atomically rewrites this mailbox without old payload lines, retaining
 // pending entries, shown marks, receipts and permanent target tombstones. It
 // must complete before the sync cursor advances. Other copies are untouched.
 func (m *Mailbox) Redact(targets []Redaction) error {
-	changed := false
+	changed := m.needsRedactionRewrite
 	for _, target := range targets {
 		if target.Room != "" && target.EventID != "" && !m.redacted[target] {
 			m.redacted[target] = true
 			changed = true
 		}
 	}
+	for _, e := range m.live {
+		if m.scrub(e) {
+			changed = true
+		}
+	}
 	if !changed {
 		return nil
-	}
-	for _, e := range m.live {
-		m.scrub(e)
 	}
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
 		return err
@@ -219,7 +230,11 @@ func (m *Mailbox) Redact(targets []Redaction) error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	if err := dir.Sync(); err != nil {
+		return err
+	}
+	m.needsRedactionRewrite = false
+	return nil
 }
 
 // Has reports whether id is in the mailbox, unreceipted or received (within

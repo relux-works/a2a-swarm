@@ -58,3 +58,19 @@ func TestRedactionFormatsAndSafeDecode(t *testing.T) {
 		t.Fatal("raw content survived tombstone")
 	}
 }
+
+func TestRedactionReplacementTarget(t *testing.T) {
+	for _, tc := range []struct{ typ, content, want string }{
+		{"m.room.message", `{"m.relates_to":{"rel_type":"m.replace","event_id":"$gone"}}`, "$gone"},
+		{"m.room.message", `{"m.relates_to":{"rel_type":"m.thread","event_id":"$gone"}}`, ""},
+		{"m.room.message", `{"m.relates_to":{"m.in_reply_to":{"event_id":"$gone"}}}`, ""},
+		{"m.room.message", `{"m.relates_to":{"event_id":"$gone"},"body":"copy"}`, ""},
+		{"m.reaction", `{"m.relates_to":{"rel_type":"m.replace","event_id":"$gone"}}`, ""},
+		{"m.room.message", `{"m.relates_to":{"rel_type":"m.replace","event_id":42}}`, ""},
+	} {
+		e := Event{Type: tc.typ, Content: json.RawMessage(tc.content)}
+		if got := e.ReplacementTarget(); got != tc.want {
+			t.Fatalf("type=%s content=%s target=%q want=%q", tc.typ, tc.content, got, tc.want)
+		}
+	}
+}
