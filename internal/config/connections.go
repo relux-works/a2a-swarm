@@ -33,11 +33,49 @@ type SecretReference struct {
 	Account string `json:"account"`
 }
 type Connection struct {
-	ID                   string           `json:"connection_id"`
-	URL                  string           `json:"homeserver_url"`
-	ServerName           string           `json:"server_name"`
-	Store                CredentialStore  `json:"credential_store"`
-	RegistrationTokenRef *SecretReference `json:"registration_token_ref,omitempty"`
+	ID                   string             `json:"connection_id"`
+	URL                  string             `json:"homeserver_url"`
+	ServerName           string             `json:"server_name"`
+	Store                CredentialStore    `json:"credential_store"`
+	RegistrationTokenRef *SecretReference   `json:"registration_token_ref,omitempty"`
+	AdminRegistration    *AdminRegistration `json:"admin_registration,omitempty"`
+}
+
+// AdminRegistration is public, explicit admission policy for a pinned Tuwunel dialect.
+// It never contains a registration token or secret-store reference.
+type AdminRegistration struct {
+	Method               string   `json:"method"`
+	AdminUserID          string   `json:"admin_user_id"`
+	ServerBotUserID      string   `json:"server_bot_user_id"`
+	RoomID               string   `json:"room_id"`
+	ExpectedMembers      []string `json:"expected_members"`
+	ReplyDeadlineSeconds int      `json:"reply_deadline_seconds"`
+}
+
+func (r AdminRegistration) validate(server string) error {
+	localUser := func(s string) bool {
+		local, suffix, ok := strings.Cut(strings.TrimPrefix(s, "@"), ":")
+		return len(s) <= 255 && strings.HasPrefix(s, "@") && ok && local != "" && !strings.Contains(local, "@") && suffix == server && !strings.ContainsAny(s, " \t\r\n\x00")
+	}
+	if r.Method != "tuwunel-v1.9.4-admin-room" || !localUser(r.AdminUserID) || !localUser(r.ServerBotUserID) || r.AdminUserID == r.ServerBotUserID || r.ReplyDeadlineSeconds < 1 || r.ReplyDeadlineSeconds > 30 {
+		return errors.New("invalid explicit admin registration prerequisites")
+	}
+	// This pinned Tuwunel creates its admin room with a server-qualified v11 ID.
+	room, suffix, ok := strings.Cut(strings.TrimPrefix(r.RoomID, "!"), ":")
+	if len(r.RoomID) > 255 || !strings.HasPrefix(r.RoomID, "!") || !ok || room == "" || suffix != server || strings.ContainsAny(r.RoomID, " \t\r\n\x00") || len(r.ExpectedMembers) < 2 || len(r.ExpectedMembers) > 64 {
+		return errors.New("admin registration requires a local room and exact members")
+	}
+	seen := map[string]bool{}
+	for _, m := range r.ExpectedMembers {
+		if !localUser(m) || seen[m] {
+			return errors.New("invalid expected admin room membership")
+		}
+		seen[m] = true
+	}
+	if !seen[r.AdminUserID] || !seen[r.ServerBotUserID] {
+		return errors.New("expected members must include admin and server bot")
+	}
+	return nil
 }
 
 // ConnectionBinding is the complete, nonsecret operational identity snapshot.
@@ -130,6 +168,11 @@ func (c Connection) Validate() error {
 	if r := c.RegistrationTokenRef; r != nil {
 		if !serviceName.MatchString(r.Service) || r.Account == "" || len(r.Account) > 255 || strings.ContainsAny(r.Account, "\x00\r\n\t") || r.Service == c.Store.AccessTokenService || r.Service == c.Store.PasswordService {
 			return errors.New("invalid independent registration_token_ref")
+		}
+	}
+	if r := c.AdminRegistration; r != nil {
+		if e := r.validate(c.ServerName); e != nil {
+			return e
 		}
 	}
 	return nil
@@ -277,6 +320,7 @@ func (c Connection) Binding(name string, human bool) (ConnectionBinding, error) 
 func (b ConnectionBinding) Fingerprint() string {
 	// Bootstrap admission is not a consumer routing input.
 	b.Connection.RegistrationTokenRef = nil
+	b.Connection.AdminRegistration = nil
 	data, _ := json.Marshal(b)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

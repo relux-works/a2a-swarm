@@ -486,7 +486,7 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		if excluded[roomID] {
+		if excluded[roomID] || s.adminRoomExcluded(roomID) {
 			return nil
 		}
 		if strings.HasPrefix(label, "!") {
@@ -505,7 +505,7 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	for _, id := range ids {
-		if excluded[id] {
+		if excluded[id] || s.adminRoomExcluded(id) {
 			continue
 		}
 		label := s.roomLabel(ctx, id, nil)
