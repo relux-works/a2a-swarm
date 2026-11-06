@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -35,9 +34,22 @@ func (LocalRunner) Run(ctx context.Context, name string, args []string, input io
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = input, io.Discard, io.Discard
 	cmd.WaitDelay = time.Second
-	// Run waits/reaps the exact process, including cancellation; no shell or child pipeline.
-	if err := cmd.Run(); err != nil {
-		return errors.New("local voice process failed or timed out")
+	if err := cmd.Start(); err != nil {
+		if failure := contextFailure(ctx, err); failure != nil {
+			return failure
+		}
+		return NewSynthesisError(SynthesisExecutable, -1)
+	}
+	// Wait reaps the exact process, including cancellation; no shell or pipeline.
+	if err := cmd.Wait(); err != nil {
+		if failure := contextFailure(ctx, err); failure != nil {
+			return failure
+		}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return NewSynthesisError(SynthesisWorkerExit, exit.ExitCode())
+		}
+		return NewSynthesisError(SynthesisUnknown, -1)
 	}
 	return nil
 }
@@ -72,17 +84,23 @@ func (r LocalRenderer) synth(ctx context.Context, base, text, out string) error 
 		runner = LocalRunner{}
 	}
 	if err := runner.ValidateModel(ctx, base); err != nil {
-		return err
+		if failure := contextFailure(ctx, err); failure != nil {
+			return failure
+		}
+		return NewSynthesisError(SynthesisValidation, -1)
 	}
 	exe := r.Executable
 	if exe == "" {
 		var err error
 		exe, err = os.Executable()
 		if err != nil {
-			return errors.New("cannot resolve voice executable")
+			return NewSynthesisError(SynthesisExecutable, -1)
 		}
 	}
-	return r.run(ctx, 120*time.Second, exe, []string{"--voice-worker", ModelDir(base), out}, strings.NewReader(text))
+	if err := r.run(ctx, 120*time.Second, exe, []string{"--voice-worker", ModelDir(base), out}, strings.NewReader(text)); err != nil {
+		return synthesisFailure(ctx, err)
+	}
+	return nil
 }
 
 func readBounded(path string, limit int) ([]byte, error) {
@@ -101,9 +119,12 @@ func readBounded(path string, limit int) ([]byte, error) {
 func privateOutput(path string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return errors.New("cannot create private voice output")
+		return OutputFailure
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return OutputFailure
+	}
+	return nil
 }
 
 func (r LocalRenderer) pcm(ctx context.Context, source, out string) ([]byte, error) {
@@ -112,11 +133,11 @@ func (r LocalRenderer) pcm(ctx context.Context, source, out string) ([]byte, err
 	}
 	err := r.run(ctx, 30*time.Second, "ffmpeg", []string{"-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", source, "-t", "181", "-f", "s16le", "-ac", "1", "-ar", "24000", out}, nil)
 	if err != nil {
-		return nil, errors.New("voice decode failed (ffmpeg with Opus support required)")
+		return nil, DecodeFailure
 	}
 	b, err := readBounded(out, maxPCMBytes)
 	if err != nil || len(b) == 0 || len(b)%2 != 0 {
-		return nil, errors.New("invalid decoded voice audio")
+		return nil, InvalidPCMFailure
 	}
 	return b, nil
 }
@@ -133,7 +154,7 @@ func capPCM(pcm, notice []byte, cut bool) ([]byte, bool, error) {
 	keep := target - len(notice) - len(silence)
 	keep -= keep % 2
 	if keep <= 0 || len(notice) == 0 {
-		return nil, false, errors.New("invalid truncation notice audio")
+		return nil, false, InvalidNoticeFailure
 	}
 	if keep > len(pcm) {
 		keep = len(pcm)
@@ -147,7 +168,7 @@ func capPCM(pcm, notice []byte, cut bool) ([]byte, bool, error) {
 func (r LocalRenderer) Render(ctx context.Context, base string, c Config, text string) (Audio, error) {
 	var result Audio
 	if err := c.Validate(); err != nil {
-		return result, err
+		return result, NewSynthesisError(SynthesisValidation, -1)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
@@ -155,7 +176,7 @@ func (r LocalRenderer) Render(ctx context.Context, base string, c Config, text s
 	// command output, or audio logs. stdin keeps text out of process arguments.
 	dir, err := os.MkdirTemp("", "a2a-voice-*")
 	if err != nil {
-		return result, errors.New("cannot create private voice scratch")
+		return result, ScratchFailure
 	}
 	defer os.RemoveAll(dir)
 	input := []rune(text)
@@ -168,7 +189,7 @@ func (r LocalRenderer) Render(ctx context.Context, base string, c Config, text s
 		return result, err
 	}
 	if err := r.synth(ctx, base, string(input), raw); err != nil {
-		return result, errors.New("voice synthesis failed or timed out; check the local engine and installed model")
+		return result, err
 	}
 	pcm, err := r.pcm(ctx, raw, filepath.Join(dir, "source.pcm"))
 	if err != nil {
@@ -180,7 +201,7 @@ func (r LocalRenderer) Render(ctx context.Context, base string, c Config, text s
 			return result, err
 		}
 		if err := r.synth(ctx, base, TruncationNotice, noticeFile); err != nil {
-			return result, errors.New("voice truncation notice synthesis failed")
+			return result, err
 		}
 		notice, err := r.pcm(ctx, noticeFile, filepath.Join(dir, "notice.pcm"))
 		if err != nil {
@@ -193,25 +214,25 @@ func (r LocalRenderer) Render(ctx context.Context, base string, c Config, text s
 	}
 	source := filepath.Join(dir, "voice.pcm")
 	if err := os.WriteFile(source, pcm, 0600); err != nil {
-		return result, errors.New("cannot prepare voice encoding")
+		return result, PrepareEncodingFailure
 	}
 	ogg := filepath.Join(dir, "voice.ogg")
 	if err := privateOutput(ogg); err != nil {
 		return result, err
 	}
 	if err := r.run(ctx, 30*time.Second, "ffmpeg", []string{"-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", source, "-c:a", "libopus", "-application", "voip", "-b:a", "24k", "-ar", "48000", ogg}, nil); err != nil {
-		return result, errors.New("voice encode failed (ffmpeg with libopus required)")
+		return result, EncodeFailure
 	}
 	result.OGG, err = readBounded(ogg, MaxAudioBytes)
 	if err != nil || !bytes.HasPrefix(result.OGG, []byte("OggS")) || !bytes.Contains(result.OGG[:min(len(result.OGG), 256)], []byte("OpusHead")) {
-		return Audio{}, errors.New("invalid Ogg/Opus voice output")
+		return Audio{}, InvalidOGGFailure
 	}
 	decoded, err := r.pcm(ctx, ogg, filepath.Join(dir, "verify.pcm"))
 	if err != nil {
 		return Audio{}, err
 	}
 	if len(decoded) > MaxSeconds*sampleRate*2 {
-		return Audio{}, fmt.Errorf("voice exceeds %ds cap", MaxSeconds)
+		return Audio{}, AudioLimitFailure
 	}
 	result.DurationMS = len(decoded) * 1000 / (sampleRate * 2)
 	result.Waveform = waveform(decoded)

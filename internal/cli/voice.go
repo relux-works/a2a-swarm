@@ -13,6 +13,36 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/voice"
 )
 
+type voicePostFailure uint8
+
+const (
+	voiceInvalidResult voicePostFailure = iota + 1
+	voiceInvalidWaveform
+	voiceUploadFailure
+	voiceFetchFailure
+	voiceIntegrityFailure
+	voiceSendFailure
+)
+
+func (f voicePostFailure) Error() string {
+	switch f {
+	case voiceInvalidResult:
+		return "invalid rendered voice result"
+	case voiceInvalidWaveform:
+		return "invalid voice waveform"
+	case voiceUploadFailure:
+		return "voice upload failed"
+	case voiceFetchFailure:
+		return "voice fetch-back failed"
+	case voiceIntegrityFailure:
+		return "voice fetch-back sha256 mismatch"
+	case voiceSendFailure:
+		return "voice event send failed or acknowledgement unknown; do not resend text"
+	default:
+		return voice.NewSynthesisError(voice.SynthesisUnknown, -1).Error()
+	}
+}
+
 func cmdVoice(ctx context.Context, a *App, args []string) error {
 	if len(args) == 0 {
 		return usagef("usage: a2a voice config --enable | voice install")
@@ -57,7 +87,7 @@ func cmdVoice(ctx context.Context, a *App, args []string) error {
 func (s *session) postVoice(ctx context.Context, roomID, root, textID, text string) error {
 	cfg, err := voice.Load(s.paths.Base)
 	if err != nil {
-		return err
+		return voice.NewSynthesisError(voice.SynthesisValidation, -1)
 	}
 	renderer := s.app.voiceRenderer
 	if renderer == nil {
@@ -65,32 +95,32 @@ func (s *session) postVoice(ctx context.Context, roomID, root, textID, text stri
 	}
 	audio, err := renderer.Render(ctx, s.paths.Base, cfg, text)
 	if err != nil {
-		return err
+		return voice.SafeRenderError(err)
 	}
 	if len(audio.OGG) == 0 || len(audio.OGG) > voice.MaxAudioBytes || audio.DurationMS <= 0 || audio.DurationMS > voice.MaxSeconds*1000 || len(audio.Waveform) == 0 || len(audio.Waveform) > 100 {
-		return errors.New("invalid rendered voice result")
+		return voiceInvalidResult
 	}
 	for _, v := range audio.Waveform {
 		if v < 0 || v > 1024 {
-			return errors.New("invalid voice waveform")
+			return voiceInvalidWaveform
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	mxc, err := s.client.Upload(ctx, "voice.ogg", "audio/ogg", bytes.NewReader(audio.OGG), int64(len(audio.OGG)))
 	if err != nil {
-		return errors.New("voice upload failed")
+		return voiceUploadFailure
 	}
 	remote, err := s.client.Download(ctx, mxc)
 	if err != nil {
-		return errors.New("voice fetch-back failed")
+		return voiceFetchFailure
 	}
 	h := sha256.New()
 	n, readErr := io.Copy(h, io.LimitReader(remote, int64(len(audio.OGG))+1))
 	closeErr := remote.Close()
 	want := sha256.Sum256(audio.OGG)
 	if readErr != nil || closeErr != nil || n != int64(len(audio.OGG)) || !bytes.Equal(h.Sum(nil), want[:]) {
-		return errors.New("voice fetch-back sha256 mismatch")
+		return voiceIntegrityFailure
 	}
 	body := "Voice reply"
 	if audio.Truncated {
@@ -109,13 +139,18 @@ func (s *session) postVoice(ctx context.Context, roomID, root, textID, text stri
 		"m.mentions":               matrix.Mentions{},
 	}
 	if _, err = s.client.SendMessageReceipt(ctx, roomID, content); err != nil {
-		return errors.New("voice event send failed or acknowledgement unknown; do not resend text")
+		return voiceSendFailure
 	}
 	return nil
 }
 
 func (a *App) voiceWarning(err error) {
-	// Stage errors are fixed local strings; never print native stderr or server
-	// responses containing text/audio. Exactly one distinguishable warning line.
-	fmt.Fprintf(a.Stderr, "a2a: warning [VOICE_TEXT_ONLY]: %s; text retained\n", sanitizeLine(err.Error()))
+	// Admit only closed local types, including at this final output boundary.
+	// Never format an arbitrary runner/renderer error or an enclosing wrapper.
+	message := voice.SafeRenderError(err).Error()
+	var post voicePostFailure
+	if errors.As(err, &post) {
+		message = post.Error()
+	}
+	fmt.Fprintf(a.Stderr, "a2a: warning [VOICE_TEXT_ONLY]: %s; text retained\n", message)
 }

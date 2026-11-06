@@ -112,6 +112,24 @@ whole command creates another text post.
 Deadlines: synthesis120s per process, each decode/encode30s, total local
 render4min, upload/fetch/audio-send60s, explicit install5min. Native inference
 runs in a reapable subprocess because CGO Generate has no context cancellation.
+The synthesis deadline is fixed: it does not scale with host load. Neither
+`voice config --enable` nor `voice/config.json` offers a timeout setting;
+the strict config accepts only `enabled` and the fixed `max_seconds: 180`.
+These are also the affected bb71277 source's limits. A short failed attempt,
+reported load, or earlier successful synthesis does not establish its cause.
+
+Synthesis warnings carry only parent-observed categories: model/config
+validation refused; executable resolution or spawn refused; context cancelled;
+context deadline exceeded; worker exited (status 1..255, or status unavailable);
+or unclassified failure. A signal or context observation does not explain an
+engine failure. Worker exit status is not interpreted as a model/engine reason;
+there is no worker diagnostic protocol or stderr parsing. Decode, encode and
+invalid-audio failures retain their separate stages. Unknown runner/renderer
+errors and enclosing error messages contribute no diagnostic text. Every
+failure still emits only one `[VOICE_TEXT_ONLY]` line after the text receipt,
+with no automatic retry. Failed or ambiguous audio sends retain the existing
+acknowledgement limits described above.
+
 Text goes over stdin, never argv. Private0700 scratch/0600 files are deleted
 on return. Native stdout/stderr are discarded, never logged. No cloud/cloning
 or private-content diagnostic logs are supported.

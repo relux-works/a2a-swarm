@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -106,8 +105,10 @@ func TestPostVoiceFailuresPreserveText(t *testing.T) {
 				e.run("voice", "config", "--engine", "cloud").failsWith(t, ExitUsage, "flag provided but not defined") // rejected write keeps valid config
 				// Remove only this fixture's own config to exercise missing configuration.
 				removeVoiceConfig(t, e.dir)
-			case "synth", "encode":
-				f.err = errors.New("voice " + stage + " failed")
+			case "synth":
+				f.err = voice.NewSynthesisError(voice.SynthesisUnknown, -1)
+			case "encode":
+				f.err = voice.EncodeFailure
 			case "upload":
 				e.hs.fail(uploadRoute, 403, "M_FORBIDDEN", "PRIVATE TEXT")
 			case "fetch":
@@ -127,7 +128,7 @@ func TestPostVoiceFailuresPreserveText(t *testing.T) {
 			before := len(e.hs.events)
 			e.hs.mu.Unlock()
 			r := e.as("alice", "post", "proj", "--topic", "alpha", "--voice", "PRIVATE TEXT").ok(t)
-			wantWarning := map[string]string{"config": "missing voice config", "synth": "voice synth failed", "encode": "voice encode failed", "upload": "voice upload failed", "fetch": "voice fetch-back failed", "hash": "voice fetch-back sha256 mismatch", "oversize": "invalid rendered voice result", "duration": "invalid rendered voice result", "waveform": "invalid voice waveform", "audio-send": "voice event send failed"}[stage]
+			wantWarning := map[string]string{"config": "model/config validation refused", "synth": "unclassified failure", "encode": "voice encode failed", "upload": "voice upload failed", "fetch": "voice fetch-back failed", "hash": "voice fetch-back sha256 mismatch", "oversize": "invalid rendered voice result", "duration": "invalid rendered voice result", "waveform": "invalid voice waveform", "audio-send": "voice event send failed"}[stage]
 			if !strings.Contains(r.stderr, wantWarning) {
 				t.Fatalf("wrong failure stage: want %q got %q", wantWarning, r.stderr)
 			}
