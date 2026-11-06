@@ -1219,6 +1219,27 @@ a2a hook uninstall --runtime codex
 The hook kill switch: `pause` sets `hooks_paused` in `state/NAME.json`, and while it is set every hook event of that agent (both runtimes) prints
 nothing and contacts no server; `resume` clears it. `--agent` is required and must be a valid name; when `A2A_AGENT` is set it must name the same
 agent (exit 2 otherwise). No network. Pending events are untouched: `a2a inbox` still reads them.
+
+Terminal fallback checks the same pause flag at dispatch and again when reserving
+a fresh or recovery attempt. These checks and the subsequent Send run under the
+same control lock as public pause/resume. A successful pause acknowledgement
+therefore suppresses later terminal admission until resume. A Send admitted
+before a concurrent pause acquires that lock may finish while pause waits;
+requesting pause does not cancel an in-flight terminal operation. This is an
+admission-ordering guarantee, not an atomic terminal snapshot or a claim that no
+keys can arrive after the pause request starts.
+
+Pause/resume preserves pending mail, attempt fences and independent manual/native
+holds. It never submits or erases an existing draft, including an exact fixed
+notice with known-unsubmitted or uncertain attempt evidence. Resume only permits
+otherwise eligible fresh delivery into qualified empty input, or the existing
+bounded empty-input recovery; it grants no stale-draft recovery authority.
+Without historical typing evidence, when an existing notice was typed remains
+UNKNOWN. Current source checks and synthetic fixtures cannot reconstruct that
+time or establish what an older deployed executable did.
+
+Run the isolated synthetic admission, Send-boundary and draft-preservation checks
+with `go test ./internal/cli -run '^TestTerminalPause' -count=1`.
 ```bash
 a2a hook pause --agent alice     # silence alice's hooks, e.g. while a room is flooded
 a2a hook resume --agent alice
