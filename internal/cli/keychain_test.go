@@ -830,7 +830,7 @@ func TestKeychainWriteTimeoutsSuppressEveryCall(t *testing.T) {
 }
 
 func TestKeychainCooldownStateFailClosed(t *testing.T) {
-	for _, mode := range []string{"corrupt", "symlink", "public"} {
+	for _, mode := range []string{"corrupt", "symlink", "public", "private"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newEnv(t)
 			uid := e.agent("alice")
@@ -855,11 +855,43 @@ func TestKeychainCooldownStateFailClosed(t *testing.T) {
 				if err := os.WriteFile(path, []byte("0"), 0o644); err != nil {
 					t.Fatal(err)
 				}
+				// Creation honors umask; force the intended unsafe fixture mode.
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "private":
+				if err := os.WriteFile(path, []byte("0"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "public" || mode == "private" {
+				want := os.FileMode(0o600)
+				if mode == "public" {
+					want = 0o644
+				}
+				st, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !st.Mode().IsRegular() || st.Mode().Perm() != want {
+					t.Fatalf("%s fixture must be regular mode %04o; got %v", mode, want, st.Mode())
+				}
+				t.Logf("%s fixture: regular=%t mode=%04o", mode, st.Mode().IsRegular(), st.Mode().Perm())
 			}
 			count := len(records(t, dir))
-			if r := e.as("alice", "whoami"); r.code == 0 {
-				t.Fatal("unsafe cooldown state admitted")
+			// The private expired marker must permit the legitimate fake read.
+			if mode == "private" {
+				e.as("alice", "whoami").ok(t)
+				if len(records(t, dir)) != count+1 {
+					t.Fatal("private cooldown did not permit backend")
+				}
+				return
 			}
+			wantError := "cooldown state unreadable"
+			if mode == "corrupt" {
+				wantError = "cooldown state invalid"
+			}
+			e.as("alice", "whoami").failsWith(t, ExitError, wantError)
 			if len(records(t, dir)) != count {
 				t.Fatal("unsafe state launched security")
 			}
