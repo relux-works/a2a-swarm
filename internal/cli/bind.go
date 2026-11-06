@@ -685,8 +685,8 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}); err != nil {
 			return err
 		}
-		// Reconcile only rendered empty input. A nonempty renderer never
-		// authorizes continuation or erasure, even for an exact lookalike.
+		// Diagnostics never grant ownership; continuation below independently
+		// checks the persisted generation-scoped typing origin.
 		readiness := boundTerminal(*b).ObserveReadiness(ctx, b.Notice)
 		observation := readinessInput(readiness)
 		if alarmWake != nil {
@@ -709,6 +709,8 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				b.AttemptIDs = nil
 				b.Notice = ""
 				b.NoticeCount = 0
+				b.NoticeOrigin = nil
+				b.TypingStarted = false
 				b.AttemptAt = time.Time{}
 				b.Retried = false
 				b.Idle = nil
@@ -719,9 +721,11 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			b.AttemptIDs = nil
 			b.Notice = ""
 			b.NoticeCount = 0
+			b.NoticeOrigin = nil
+			b.TypingStarted = false
 			b.Idle = nil
 		}
-		if len(b.AttemptIDs) > 0 {
+		if len(b.AttemptIDs) > 0 || b.NoticeOrigin != nil && b.Notice != "" {
 			return a.recoverTerminal(ctx, s, generation, *b, readiness)
 		}
 		if len(ids) == 0 {
@@ -765,6 +769,8 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				current.Outcome = "armed: no new mail"
 				return false, nil
 			}
+			current.NoticeOrigin = current.Idle
+			current.TypingStarted = false
 			current.Idle = nil
 			current.AttemptIDs = ids
 			current.Notice = tmuxwake.Notice(len(ids))
@@ -785,7 +791,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		outcome, sendErr := boundTerminal(*b).Send(ctx, len(ids), readiness.Key, nil, nil)
+		outcome, sendErr := a.sendTerminalAttempt(ctx, s, reservedAttempt, readiness.Key)
 		return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 	})
 	if err != nil {
@@ -842,6 +848,8 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 			if !recovering {
 				b.AttemptIDs = nil
 				b.Notice = ""
+				b.NoticeOrigin = nil
+				b.TypingStarted = false
 			}
 			if r := st.Notification.Reservation; r != nil && r.Token == token {
 				return st.Notification.Cancel(token)
@@ -856,6 +864,14 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 		b.Notice = ""
 		b.Typed = false
 		b.NotificationToken = ""
+		b.NoticeOrigin = nil
+		b.TypingStarted = false
+		clear := false
+		b.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
+		b.NoticeReport = nil
+		if recovering && expected.NoticeOrigin != nil && expected.TypingStarted {
+			b.Recovery = &config.TerminalRecovery{Reason: config.TerminalRecovered, At: a.Now().UTC()}
+		}
 		return a.completeNotification(s, st, token)
 	})
 	if err == nil && refusal != nil {
@@ -871,6 +887,9 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		return err
 	}
 	input := readinessInput(readiness)
+	if input != "empty" && b.NoticeOrigin != nil && b.TypingStarted {
+		return a.resumeTerminalNotice(ctx, s, generation, b)
+	}
 	if input != "empty" {
 		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: pending attempt input" })
 	}
@@ -920,6 +939,8 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 			current.Outcome = "suppressed: hourly rate"
 			return false, nil
 		}
+		current.NoticeOrigin = current.Idle
+		current.TypingStarted = false
 		current.Retried = true
 		current.Reservations = append(reservations, now)
 		current.Idle = nil
@@ -938,7 +959,7 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		outcome, sendErr = boundTerminal(b).Send(ctx, b.NoticeCount, readiness.Key, nil, nil)
+		outcome, sendErr = a.sendTerminalAttempt(ctx, s, reservedAttempt, readiness.Key)
 
 	}
 	return a.finishTerminal(s, generation, outcome, sendErr, true, reservedAttempt)

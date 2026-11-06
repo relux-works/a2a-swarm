@@ -153,14 +153,14 @@ func (t Target) boxWithNotice(ctx context.Context, notice string) (Box, bool) {
 	if ok && b.Text != "" && !completeInput(screen, b) {
 		return Box{}, false
 	}
-	return b, ok && x == b.Column && y == b.Row
+	return b, ok && (notice != "" && b.Text == notice || x == b.Column && y == b.Row)
 }
 
 func completeInput(screen string, box Box) bool {
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 	// Captures pad with ASCII spaces only. Trimming Unicode whitespace would
 	// turn a dim NBSP suffix into apparently exact journal-owned input.
-	line := strings.TrimRight(plain(lines[box.Row]), " ")
+	line := strings.TrimLeft(strings.TrimRight(plain(lines[box.Row]), " "), " ")
 	return line == "› "+box.Text || line == "❯ "+box.Text || line == "❯\u00a0"+box.Text
 }
 
@@ -184,8 +184,8 @@ func (t Target) PendingInput(ctx context.Context, notice string) string {
 	return "blocked"
 }
 
-// Resume and ClearNotice deliberately refuse every renderer-only recovery.
-// A journal records past typing, not authority over the current editor.
+// Legacy Resume and ClearNotice refuse renderer-only recovery. The bound
+// consumer uses ResumeNotice with an independently fenced typing origin.
 func (t Target) Resume(ctx context.Context, count int, notice string) (string, error) {
 	return "suppressed: manual recovery required", nil
 }

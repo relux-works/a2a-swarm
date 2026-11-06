@@ -32,6 +32,9 @@ type TerminalBinding struct {
 	DaemonBirth        string               `json:"daemon_birth"`
 	Target             tmuxwake.Target      `json:"target"`
 	ClaudeRegistryRoot string               `json:"claude_registry_root,omitempty"`
+	NoticeOrigin       *TerminalIdle        `json:"notice_origin,omitempty"`
+	TypingStarted      bool                 `json:"typing_started,omitempty"`
+	Recovery           *TerminalRecovery    `json:"recovery,omitempty"`
 	SendRefusal        *TerminalSendRefusal `json:"send_refusal,omitempty"`
 	Readiness          *TerminalReadiness   `json:"readiness,omitempty"`
 	Interval           time.Duration        `json:"interval"`
@@ -131,5 +134,28 @@ func (r *TerminalSendRefusal) UnmarshalJSON(data []byte) error {
 	_ = json.Unmarshal(fields["reason"], &r.Reason)
 	_ = json.Unmarshal(fields["at"], &r.At)
 	r.Reason = tmuxwake.SafeSendReason(r.Reason)
+	return nil
+}
+
+// TerminalRecovery is bounded diagnostic history, never input authority.
+type TerminalRecovery struct {
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
+}
+
+const TerminalRecovered = "owned_notice_submitted"
+
+func (r *TerminalRecovery) UnmarshalJSON(data []byte) error {
+	*r = TerminalRecovery{}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return nil
+	}
+	var reason string
+	_ = json.Unmarshal(fields["reason"], &reason)
+	_ = json.Unmarshal(fields["at"], &r.At)
+	if reason == TerminalRecovered {
+		r.Reason = reason
+	}
 	return nil
 }

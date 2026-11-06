@@ -217,7 +217,7 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 		return r, Box{}
 	}
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
-	if b.Row < 0 || b.Row >= len(lines) || width <= 0 || b.Column < 0 || b.Column >= width || x != b.Column || y != b.Row || x2 != x || y2 != y || width2 != width {
+	if b.Row < 0 || b.Row >= len(lines) || width <= 0 || b.Column < 0 || b.Column >= width || width2 != width || (owned == "" || b.Text != owned) && (x != b.Column || y != b.Row || x2 != x || y2 != y) {
 		r.Input.Reason = InputReasonCursorMismatch
 		return r, Box{}
 	}
@@ -230,8 +230,8 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 	} else {
 		r.Input = InputAssessment{InputEmpty, InputReasonNone}
 	}
-	// Nonempty input gets no key, except the exact notice currently typed by
-	// this Send invocation. A journal/renderer alone never calls this path.
+	// Only an explicitly supplied exact owned notice can get a nonempty key.
+	// Consumer recovery must independently fence its generation and journal.
 	if b.Text != "" && (owned == "" || b.Text != owned || !fixedNotice.MatchString(owned)) {
 		return r, b
 	}
@@ -275,4 +275,19 @@ func (t BoundTerminal) Resume(context.Context, int, string) (string, error) {
 }
 func (t BoundTerminal) ClearNotice(context.Context, int, string, func() error) (bool, error) {
 	return false, nil
+}
+
+// AssessOwnedNotice is continuation-only evidence. It never admits fresh typing;
+// the caller must tie notice and expected identity to a durable typing attempt.
+func (t BoundTerminal) AssessOwnedNotice(ctx context.Context, notice string) ReadinessAssessment {
+	r, b := t.assess(ctx, notice)
+	if notice == "" || b.Text != notice {
+		r.Key = ReadinessKey{}
+	}
+	return r
+}
+
+// OwnedNoticeEligible requires complete exact input and current runtime readiness.
+func (r ReadinessAssessment) OwnedNoticeEligible() bool {
+	return r.Input.State == InputNonempty && r.runtimeEligible()
 }

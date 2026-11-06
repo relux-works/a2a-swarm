@@ -65,11 +65,8 @@ func TestTerminalNoticeEpisodeCarryBoundaries(t *testing.T) {
 	}
 }
 
-// The original 24 review combinations plus changed targets retain manual
-// recovery, including exact-looking drafts. Actual typing establishes journal
-// provenance; every case asserts zero Enter/erase, unread mail and one original
-// wake reservation. Exact known input is a positive detection/report control,
-// not an automatic recovery positive. Fresh Send controls are exercised nearby.
+// Actual typing fences recovery: exact complete drafts submit once; neighboring
+// changed/foreign frames retain input, unread mail and the original reservation.
 func TestTerminalNoticeManualReviewMatrix(t *testing.T) {
 	isolateBindTest(t)
 	for _, layout := range []string{"codex", "claude-legacy", "claude-named"} {
@@ -124,8 +121,12 @@ func TestTerminalNoticeManualReviewMatrix(t *testing.T) {
 					} else if err != nil {
 						t.Fatal(err)
 					}
-					state := f.wait(func(s orphanScreen) bool { return true })
-					if state.Text != mode["text"] || state.Erased != 0 || len(state.Submitted) != 0 || f.e.received("alice", id) || len(f.binding().Reservations) != 1 {
+					state := f.wait(func(s orphanScreen) bool { return variant != "exact" || len(s.Submitted) == 1 })
+					if variant == "exact" {
+						if state.Text != "" || len(state.Submitted) != 1 || state.Submitted[0] != tmuxwake.Notice(1) || state.Erased != 0 || f.e.received("alice", id) || len(f.binding().Reservations) != 1 {
+							t.Fatalf("recovered exact notice effects: %+v", state)
+						}
+					} else if state.Text != mode["text"] || state.Erased != 0 || len(state.Submitted) != 0 || f.e.received("alice", id) || len(f.binding().Reservations) != 1 {
 						t.Fatalf("forbidden effect: %+v", state)
 					}
 
@@ -135,8 +136,8 @@ func TestTerminalNoticeManualReviewMatrix(t *testing.T) {
 				if count > 1 {
 					t.Fatal("duplicate incident", count)
 				}
-				if variant == "exact" && count != 1 {
-					t.Fatal("manual recovery did not report once", count)
+				if variant == "exact" && count != 0 {
+					t.Fatal("recovered notice still reported stranded", count)
 				}
 				if variant == "foreign-generation" && count != 0 {
 					t.Fatal("retired binding reported", count)

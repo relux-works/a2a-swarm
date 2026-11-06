@@ -65,7 +65,7 @@ func TestTerminalStrandedOtherInputNeverSubmitted(t *testing.T) {
 }
 
 // No new mail or liveness record is needed: a sustained suspicion reports at
-// ten minutes exactly once. Process reload and replay of a pre-ACK local record
+// ten minutes exactly once after the Enter retry is exhausted. Process reload and replay of a pre-ACK local record
 // reuse the persisted transaction, so an ambiguous send cannot duplicate it.
 func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
 	isolateBindTest(t)
@@ -77,6 +77,7 @@ func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
 	f.step()
 	f.control(map[string]any{})
 	f.step()
+	f.update(func(st *config.State) { st.Terminal.Retried = true }) // Recovery budget exhausted; exercise escalation only.
 	since := f.now
 	count := func() int { return len(f.e.projectionsFrom(system, "@alice:test.local")) }
 	advance := func(d time.Duration) {
@@ -164,6 +165,7 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 			f.now = f.now.Add(10 * time.Minute)
 			f.update(func(st *config.State) {
 				st.Lease.Expires = f.now.Add(time.Minute)
+				st.Terminal.Retried = true // Report retries remain independent once input recovery is exhausted.
 				if mode == "partial" {
 					st.Terminal.NoticeCount = 2
 					st.Terminal.Notice = tmuxwake.Notice(2)

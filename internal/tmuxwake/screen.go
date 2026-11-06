@@ -144,7 +144,12 @@ func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 		return Box{}, InputReasonLayoutUnrecognized
 	}
 	for i := len(lines) - 1; i >= start; i-- {
-		if plain(lines[i]) != "›" && !strings.HasPrefix(plain(lines[i]), "› ") {
+		line := plain(lines[i])
+		// Indentation is admitted only for the supplied exact filled notice.
+		if fixedNotice.MatchString(owned) && strings.TrimRight(strings.TrimLeft(line, " "), " ") == "› "+owned {
+			line = strings.TrimLeft(line, " ")
+		}
+		if line != "›" && !strings.HasPrefix(line, "› ") {
 			continue
 		}
 		// The footer is separated from the prompt. An unknown intervening line
@@ -153,7 +158,7 @@ func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 			return Box{}, InputReasonLayoutUnrecognized
 		}
 		footer := plain(strings.Join(lines[i+1:], "\n"))
-		strictOwn := fixedNotice.MatchString(owned) && strings.TrimRight(plain(lines[i]), " ") == "› "+owned
+		strictOwn := fixedNotice.MatchString(owned) && strings.TrimRight(line, " ") == "› "+owned
 		if !strings.Contains(footer, "? for shortcuts") && !strictOwn {
 			return Box{}, InputReasonLayoutUnrecognized
 		}
@@ -172,6 +177,7 @@ func inputLineReason(line, glyph string, row int) (Box, InputReason) {
 
 func inputLine(line, glyph string, row int) (Box, bool) {
 	text := visible(line)
+	indent := len(text) - len(strings.TrimLeft(text, " "))
 	text = strings.TrimLeft(text, " ")
 	if text != glyph && !strings.HasPrefix(text, glyph+" ") && !strings.HasPrefix(text, glyph+"\u00a0") {
 		return Box{}, false
@@ -194,5 +200,9 @@ func inputLine(line, glyph string, row int) (Box, bool) {
 			return Box{}, false
 		}
 	}
-	return Box{Text: text, Row: row, Column: 2 + len(text)}, true
+	// Preserve strict empty-composer admission.
+	if text == "" {
+		indent = 0
+	}
+	return Box{Text: text, Row: row, Column: indent + 2 + len(text)}, true
 }

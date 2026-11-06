@@ -34,6 +34,10 @@ func (f *terminalFixture) render(options map[string]any) {
 	}
 	column, _ := options["column"].(int)
 	cursor, _ := options["cursor"].(int)
+	cursorRow, ok := options["cursor-row"].(int)
+	if !ok {
+		cursorRow = row
+	}
 	extra, _ := options["extra"].(string)
 	prompt, footer := "› "+shown, "  Codex · Ready · Context 50% left"
 	if shown == "" {
@@ -59,7 +63,7 @@ func (f *terminalFixture) render(options map[string]any) {
 		if err == nil && inspectErr == nil && footerRow < len(lines) &&
 			strings.TrimRight(lines[row-1], " ") == strings.TrimRight(prompt, " ") &&
 			strings.TrimRight(lines[footerRow], " ") == footer+extra &&
-			x == 2+column+len(shown)+cursor && y == row-1 {
+			x == 2+column+len(shown)+cursor && y == cursorRow-1 {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -67,12 +71,12 @@ func (f *terminalFixture) render(options map[string]any) {
 	f.t.Fatal("synthetic redraw did not reach tmux grid")
 }
 
-// Moving only the owned composer's row submits once upward and downward on all four routes.
+// Exact owned input submits once after row, column or cursor movement on all four routes.
 // Every neighboring refusal preserves input and sends no Enter, including row
 // movement before typing. These synthetic fixtures do not prove a live UI cause.
 func TestBoundSendComposerMovement(t *testing.T) {
 	for _, runtime := range []string{"claude", "claude-named", "claude-fallback", "codex"} {
-		for _, mode := range []string{"valid", "valid-down", "pre-row-down", "empty", "foreign", "dialog", "rendered-busy", "registry-busy", "status", "timestamp", "width", "column", "cursor", "pre-row"} {
+		for _, mode := range []string{"valid", "valid-down", "pre-row-down", "pre-cursor", "empty", "foreign", "dialog", "rendered-busy", "registry-busy", "status", "timestamp", "width", "column", "cursor", "cursor-row", "pre-row"} {
 			if (runtime == "codex" || runtime == "claude-fallback") && (mode == "registry-busy" || mode == "status" || mode == "timestamp") {
 				continue
 			}
@@ -105,8 +109,12 @@ func TestBoundSendComposerMovement(t *testing.T) {
 						options["extra"] = " (esc to interrupt)"
 					case "column":
 						options["column"] = 1
+					case "cursor-row":
+						options["cursor-row"] = 10
+					case "pre-cursor":
+						options["cursor"] = 1
 					case "cursor":
-						options["cursor"] = -1
+						options["cursor"] = -5
 					case "registry-busy":
 						f.m["status"] = "busy"
 						f.write(t)
@@ -127,7 +135,7 @@ func TestBoundSendComposerMovement(t *testing.T) {
 					f.f.render(options)
 				}
 				var before, after func()
-				if mode == "pre-row" || mode == "pre-row-down" {
+				if mode == "pre-row" || mode == "pre-row-down" || mode == "pre-cursor" {
 					before = move
 					wantText = ""
 				} else {
@@ -137,7 +145,7 @@ func TestBoundSendComposerMovement(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if mode == "valid" || mode == "valid-down" {
+				if mode == "valid" || mode == "valid-down" || mode == "column" || mode == "cursor" || mode == "cursor-row" {
 					if got.Disposition != SendSubmitted {
 						t.Fatal("row movement refused", got)
 					}
@@ -148,17 +156,16 @@ func TestBoundSendComposerMovement(t *testing.T) {
 					return
 				}
 				want := SendDraft
-				if mode == "pre-row" || mode == "pre-row-down" {
+				if mode == "pre-row" || mode == "pre-row-down" || mode == "pre-cursor" {
 					want = SendRefused
 				}
 				state := f.f.wait(func(s fixtureState) bool { return s.Render == 1 })
 				if got.Disposition != want || state.Text != wantText || len(state.Submitted) != 0 {
 					t.Fatal("refusal input effects", got)
 				}
-				reasons := map[string]SendReason{"empty": ReasonAwaitingRender, "dialog": ReasonBusyOrDialog, "rendered-busy": ReasonBusyOrDialog, "registry-busy": ReasonBusyOrDialog, "status": ReasonKeyStatusChanged, "timestamp": ReasonKeyStatusChanged, "width": ReasonKeyWidthChanged, "column": ReasonCursorMismatch, "cursor": ReasonCursorMismatch, "pre-row": ReasonKeyRowChanged, "pre-row-down": ReasonKeyRowChanged, "foreign": ReasonForeignInput}
+				reasons := map[string]SendReason{"empty": ReasonAwaitingRender, "dialog": ReasonBusyOrDialog, "rendered-busy": ReasonBusyOrDialog, "registry-busy": ReasonBusyOrDialog, "status": ReasonKeyStatusChanged, "timestamp": ReasonKeyStatusChanged, "width": ReasonKeyWidthChanged, "column": ReasonCursorMismatch, "cursor": ReasonCursorMismatch, "pre-cursor": ReasonCursorMismatch, "pre-row": ReasonKeyRowChanged, "pre-row-down": ReasonKeyRowChanged, "foreign": ReasonForeignInput}
 				expected := reasons[mode]
-				// Codex rejects both no-hint foreign text and an indented prompt
-				// during layout recognition, before it can compare the cursor.
+				// Codex rejects no-hint foreign text during layout recognition.
 				if runtime == "codex" && (mode == "foreign" || mode == "column") {
 					expected = ReasonLayoutUnrecognized
 				}
@@ -170,17 +177,18 @@ func TestBoundSendComposerMovement(t *testing.T) {
 	}
 }
 
-// The named row exception compares every other field, including future fields
-// via struct equality. Pre-type equality remains separate in Send.
+// The owned geometry exception compares every other field, including future
+// fields via struct equality. Pre-type equality remains separate in Send.
 func TestOwnedTypingKeyComparison(t *testing.T) {
 	base := ReadinessKey{ComposerRow: 20}
 	moved := base
 	moved.ComposerRow = 17
+	moved.ComposerColumn = 9
 	if !sameKeyAfterOwnedTyping(moved, base) {
 		t.Fatal("row refused")
 	}
 	for _, change := range []func(*ReadinessKey){
-		func(k *ReadinessKey) { k.PaneWidth++ }, func(k *ReadinessKey) { k.ComposerColumn++ },
+		func(k *ReadinessKey) { k.PaneWidth++ },
 		func(k *ReadinessKey) { k.Route = LegacyCodex }, func(k *ReadinessKey) { k.Target.Pane = "other" },
 		func(k *ReadinessKey) { k.Generation = "other" }, func(k *ReadinessKey) { k.SessionID = "other" },
 		func(k *ReadinessKey) { k.ClaudeRegistryRoot = "other" }, func(k *ReadinessKey) { k.RegistrySessionID = "other" },

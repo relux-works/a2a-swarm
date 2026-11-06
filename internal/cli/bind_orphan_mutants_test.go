@@ -25,6 +25,10 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 	type plant struct{ name, file, old, next, killer, positive string }
 	const admission = "TestTerminalDispatchIdleQualification"
 	plants := []plant{
+		{"owned-column-normalization-removed", "tmuxwake/send_result.go", `current.ComposerColumn = expected.ComposerColumn`, `// column normalization removed`, "TestBoundSendComposerMovement/claude-named/column", "TestBoundSendComposerMovement/claude-named/valid"},
+		{"owned-cursor-restriction-restored", "tmuxwake/readiness.go", `(owned == "" || b.Text != owned) && (x != b.Column || y != b.Row || x2 != x || y2 != y)`, `(x != b.Column || y != b.Row || x2 != x || y2 != y)`, "TestBoundSendComposerMovement/codex/cursor", "TestBoundSendComposerMovement/codex/valid"},
+		{"owned-recovery-origin-bypass", "cli/bind_resume.go", `func sameNoticeOrigin(b config.TerminalBinding, k tmuxwake.ReadinessKey) bool {`, `func sameNoticeOrigin(b config.TerminalBinding, k tmuxwake.ReadinessKey) bool { if b.NoticeCount==1 { return true };`, "TestTerminalOwnedNoticeRecovery/codex/width", "TestTerminalOwnedNoticeRecovery/codex/valid"},
+
 		{"registry-row-exception-removed", "tmuxwake/send_result.go", `current.ComposerRow = expected.ComposerRow`, `// row normalization removed`, "TestBoundSendComposerMovement/claude-named/valid", "TestBoundSendContinuity/claude-named/valid"},
 		{"registry-row-exception-width", "tmuxwake/send_result.go", `current.ComposerRow = expected.ComposerRow`, `current.ComposerRow = expected.ComposerRow; current.PaneWidth = expected.PaneWidth`, "TestBoundSendComposerMovement/claude-named/width", "TestBoundSendComposerMovement/claude-named/valid"},
 		{"timestamp-short-hour-exemption", "cli/bind_notice.go", `if !noticeTimestampGrammar.MatchString(value) {`, `if len(value)==19 && value[10]=='T' && noticeTimestampGrammar.MatchString(value[:11]+"0"+value[11:]) {value=value[:11]+"0"+value[11:]}; if !noticeTimestampGrammar.MatchString(value) {`, "TestReviewCR4TimestampGrammar/since/one-digit-hour", "TestReviewCR4TimestampGrammar/since/valid-z"},
@@ -245,6 +249,8 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 				if strings.HasSuffix(p.killer, "/width") {
 					intended = "refusal input effects"
 				}
+			case "TestTerminalOwnedNoticeRecovery":
+				intended = "recovery refusal changed input or attempt"
 			case "TestReadinessAdmissionState":
 				intended = "runtime alone admitted input state"
 			case "TestReadinessIdleContinuity":

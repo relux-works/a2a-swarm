@@ -30,6 +30,7 @@ def draw():
     row=options.get('row',20)
     col=options.get('column',0)
     cursor=options.get('cursor',0)
+    cursor_row=options.get('cursor-row',row)
     extra=options.get('extra','')
     if runtime=='claude' or runtime.startswith('claude-named'):
         content=shown+'\x1b[7m \x1b[0m' if shown else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
@@ -38,10 +39,10 @@ def draw():
         if runtime=='claude-named-busy': footer+=' (esc to interrupt)'
         if runtime=='claude-named-dialog': footer+=' Permission required'
         if runtime=='claude-named-unknown': top='Unrecognized layout'
-        screen='\x1b[2J\x1b['+str(row-1)+';1H'+top+'\r\n'+' '*col+'❯\u00a0'+content+'\r\n'+'─'*110+'\r\n'+footer+extra+'\x1b['+str(row)+';'+str(3+col+len(shown)+cursor)+'H'
+        screen='\x1b[2J\x1b['+str(row-1)+';1H'+top+'\r\n'+' '*col+'❯\u00a0'+content+'\r\n'+'─'*110+'\r\n'+footer+extra+'\x1b['+str(cursor_row)+';'+str(3+col+len(shown)+cursor)+'H'
     else:
         footer='Codex · Ready · Context 50% left' if shown else '? for shortcuts'
-        screen='\x1b[2J\x1b['+str(row)+';1H'+' '*col+'\x1b[1m›\x1b[0m '+shown+'\x1b['+str(row+2)+';1H  '+footer+extra+'\x1b['+str(row)+';'+str(3+col+len(shown)+cursor)+'H'
+        screen='\x1b[2J\x1b['+str(row)+';1H'+' '*col+'\x1b[1m›\x1b[0m '+shown+'\x1b['+str(row+2)+';1H  '+footer+extra+'\x1b['+str(cursor_row)+';'+str(3+col+len(shown)+cursor)+'H'
     os.write(1,screen.encode())
     with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'pid':os.getpid(),'row':row,'render':options.get('render',0)},f)
     os.replace(path+'.next',path)

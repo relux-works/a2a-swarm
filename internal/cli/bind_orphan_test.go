@@ -24,7 +24,7 @@ import (
 // No runtime/provider, real mailbox, credential store or live pane is used.
 const orphanFixture = `import os,sys,tty,json,select
 tty.setraw(0)
-root=sys.argv[1]; text=''; submitted=[]; erased=0; rev=0; mode={}
+root=sys.argv[1]; text=''; submitted=[]; erased=0; typed=0; rev=0; mode={}
 def draw():
     footer='Codex · Ready' if text and not mode.get('hint') else '? for shortcuts'
     if mode.get('busy') or (mode.get('defer') and text): footer='esc to interrupt'
@@ -42,7 +42,7 @@ def draw():
     if mode.get('no-composer'): layout=''
     if mode.get('diagnostic-row'): layout+='\x1b['+str(mode['diagnostic-row'])+';1H'+mode['diagnostic-text']
     os.write(1,('\x1b[2J\x1b[1;1Ha2a-fixture-frame:'+str(rev)+':end'+layout+'\x1b[20;'+str(3+len(text)+mode.get('cursor',0))+'H').encode())
-    with open(root+'/screen.next','w') as f: json.dump(dict(text=text,submitted=submitted,erased=erased,pid=os.getpid(),rev=rev),f)
+    with open(root+'/screen.next','w') as f: json.dump(dict(text=text,submitted=submitted,erased=erased,typed=typed,pid=os.getpid(),rev=rev),f)
     os.replace(root+'/screen.next',root+'/screen.json')
 draw()
 while True:
@@ -55,14 +55,14 @@ while True:
         for c in os.read(0,4096):
             if c in (13,10): submitted.append(text); text=''
             elif c in (127,8): text=text[:-1]; erased+=1
-            else: text+=chr(c)
+            else: text+=chr(c); typed+=1
         draw()
 `
 
 type orphanScreen struct {
-	Text             string
-	Submitted        []string
-	Erased, PID, Rev int
+	Text                    string
+	Submitted               []string
+	Erased, Typed, PID, Rev int
 }
 
 type orphanDispatchFixture struct {

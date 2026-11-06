@@ -85,11 +85,11 @@ func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKe
 	return result, err
 }
 
-// Filling a composer can move its row as the UI reallocates vertical space.
-// Only the row may differ, and only after this invocation's exact owned notice
-// passed complete-input and end-cursor checks. Every other key field stays pinned.
+// Exact complete owned input may move within the composer or leave the cursor
+// elsewhere. Runtime identity, registry evidence and width stay pinned.
 func sameKeyAfterOwnedTyping(current, expected ReadinessKey) bool {
 	current.ComposerRow = expected.ComposerRow
+	current.ComposerColumn = expected.ComposerColumn
 	return current == expected
 }
 
@@ -148,6 +148,9 @@ func sendRefusalReason(r ReadinessAssessment, expected ReadinessKey, b Box, owne
 		if !sameKeyAfterOwnedTyping(r.Key, expected) {
 			return ReasonKeyChanged
 		}
+		if owned == "" && r.Key.ComposerColumn != expected.ComposerColumn {
+			return ReasonKeyChanged
+		}
 		if owned == "" && r.Key.ComposerRow != expected.ComposerRow {
 			return ReasonKeyRowChanged
 		}
@@ -156,4 +159,18 @@ func sendRefusalReason(r ReadinessAssessment, expected ReadinessKey, b Box, owne
 		return ReasonAwaitingRender
 	}
 	return ReasonUnavailable
+}
+
+// ResumeNotice sends Enter only, never literal text or clearing keys. The
+// consumer supplies a journal-fenced identity; each capture rechecks readiness.
+func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice string, expected ReadinessKey) (SendResult, error) {
+	refused := SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}
+	if count <= 0 || notice != Notice(count) || !expected.valid() || expected.Target != t.Target || expected.Generation != t.Generation || expected.SessionID != t.SessionID || expected.ClaudeRegistryRoot != t.ClaudeRegistryRoot {
+		return refused, nil
+	}
+	inspect := func(ctx context.Context, owned string) (Box, bool) {
+		r, b := t.assess(ctx, owned)
+		return b, owned == notice && b.Text == notice && r.OwnedNoticeEligible() && sameKeyAfterOwnedTyping(r.Key, expected)
+	}
+	return t.Target.sendWith(ctx, count, notice, nil, nil, inspect, nil)
 }
