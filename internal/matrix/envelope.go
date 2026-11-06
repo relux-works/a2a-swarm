@@ -61,6 +61,7 @@ const (
 	RefuseBodyMissing      = "body_missing"
 	RefuseEnvelopeMissing  = "envelope_missing"
 	RefuseEnvelopeBad      = "envelope_malformed"
+	RefuseEventRedacted    = "event_redacted"
 )
 
 // EnvelopeRefusal is a deliberate refusal with a stable machine-readable code.
@@ -141,6 +142,9 @@ type EnvelopeEvent struct {
 	RoomID   string
 	Envelope []byte
 	BodyText []byte
+	// Content is the original content value bytes, kept only so a caller can
+	// consult local redaction tombstones (including explicit edit targets).
+	Content json.RawMessage
 }
 
 // GetEnvelopeEvent performs one scoped, redirect-free GET of the requested event
@@ -183,6 +187,19 @@ func (c *Client) GetEnvelopeEvent(ctx context.Context, roomID, eventID string) (
 	if s, ok := room.(string); !ok || s != roomID {
 		return zero, Refuse(RefuseRoomIDMismatch, "")
 	}
+	// A redacted event is refused even when a server still returns content,
+	// exactly as GetVerificationEvent refuses it.
+	if unsigned, present := v.value["unsigned"]; present {
+		fields, ok := unsigned.(map[string]any)
+		if !ok {
+			return zero, Refuse(RefuseResponseInvalid, "")
+		}
+		for k := range fields {
+			if verificationFold(k) == verificationFold("redacted_because") {
+				return zero, Refuse(RefuseEventRedacted, "")
+			}
+		}
+	}
 	content, ok := v.value["content"].(map[string]any)
 	if !ok || len(content) == 0 {
 		return zero, Refuse(RefuseContentInvalid, "")
@@ -221,7 +238,7 @@ func (c *Client) GetEnvelopeEvent(ctx context.Context, roomID, eventID string) (
 	if err = ctx.Err(); err != nil {
 		return zero, err
 	}
-	return EnvelopeEvent{EventID: eventID, Sender: sender, RoomID: roomID, Envelope: envelope, BodyText: []byte(body)}, nil
+	return EnvelopeEvent{EventID: eventID, Sender: sender, RoomID: roomID, Envelope: envelope, BodyText: []byte(body), Content: append(json.RawMessage(nil), spans["content"]...)}, nil
 }
 
 // classifyControl names the strict reader's refusals. Context failures stay

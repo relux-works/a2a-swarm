@@ -780,9 +780,12 @@ contains response data. Codes: `selection_invalid`, `response_invalid`, `entity_
 `invalid_utf8` (raw invalid bytes or an unpaired surrogate escape), `duplicate_key` (any depth, including escaped
 spellings), `trailing_data`, `key_case_alias` (case-fold collisions, or a case variant of `body`, `msgtype` or the
 envelope key), `event_id_mismatch`, `event_type_invalid`, `sender_invalid`, `room_id_missing`, `room_id_mismatch`,
+`event_redacted` (server redaction metadata in `unsigned`, in any key case, even with content still present),
 `content_invalid`, `msgtype_invalid`, `body_missing`, `envelope_missing`, `envelope_malformed` (not a string, empty,
 padded, wrong alphabet, whitespace, non-canonical trailing bits) and `envelope_too_large` (decoded size over
 65,536 bytes, checked before decoding). A missing key and a malformed key are different refusals, never empty output.
+Like `--verification-input`, a known-redacted original or an explicit edit of a known-redacted target is refused from
+local tombstones with `ENVELOPE_REDACTED` (exit 1, no record), before the fetch and again on the observed event.
 
 This projection only carries and observes. It does not parse or verify the envelope, does not compare the sender with
 anything and grants no authority: the consumer verifies the envelope, hashes the text and decides. As with

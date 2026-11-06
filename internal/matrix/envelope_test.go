@@ -130,6 +130,15 @@ func TestEnvelopeEventRefusals(t *testing.T) {
 		{"trailing-newline", base + "\n", ""},
 		{"foreign-sender-valid", swap("@Historical:foreign.invalid", "@Other:elsewhere.invalid"), ""},
 
+		// Server redaction metadata refuses even with content still present, as
+		// GetVerificationEvent does; an unrelated unsigned field stays valid.
+		{"unsigned-age-valid", strings.TrimSuffix(base, "}") + `,"unsigned":{"age":12}}`, ""},
+		{"redacted-with-content", strings.TrimSuffix(base, "}") + `,"unsigned":{"redacted_because":{"type":"m.room.redaction"}}}`, RefuseEventRedacted},
+		{"redacted-null-marker", strings.TrimSuffix(base, "}") + `,"unsigned":{"redacted_because":null}}`, RefuseEventRedacted},
+		{"redacted-case-variant", strings.TrimSuffix(base, "}") + `,"unsigned":{"Redacted_Because":{}}}`, RefuseEventRedacted},
+		{"unsigned-not-object", strings.TrimSuffix(base, "}") + `,"unsigned":"redacted"}`, RefuseResponseInvalid},
+		{"unsigned-case-variant", strings.TrimSuffix(base, "}") + `,"Unsigned":{"redacted_because":{}}}`, RefuseKeyCaseAlias},
+
 		// Trailing data after the one JSON document.
 		{"trailing-document", base + "{}", RefuseTrailingData},
 		{"trailing-junk", base + "x", RefuseTrailingData},

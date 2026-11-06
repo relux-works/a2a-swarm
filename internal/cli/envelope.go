@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -148,9 +149,31 @@ func readEnvelopeInput(ctx context.Context, a *App, room, event string) error {
 	if !matrix.ValidVerificationID(s.creds.UserID, '@') {
 		return usagef("invalid selected envelope receiver")
 	}
+	// Refuse a known redacted original before any server response, as
+	// --verification-input does.
+	if s.client.FilterEvents != nil {
+		events, filterErr := s.client.FilterEvents(room, []matrix.Event{{EventID: event}})
+		if filterErr != nil {
+			return filterErr
+		}
+		if len(events) != 1 || events[0].IsRedacted() {
+			return errors.New("read: ENVELOPE_REDACTED")
+		}
+	}
 	v, err := s.client.GetEnvelopeEvent(ctx, room, event)
 	if err != nil {
 		return err
+	}
+	// Consult local tombstones again with the observed event, so an edit whose
+	// explicit target is known redacted is refused too.
+	if s.client.FilterEvents != nil {
+		filtered, filterErr := s.client.FilterEvents(room, []matrix.Event{{EventID: v.EventID, Sender: v.Sender, Type: "m.room.message", Content: v.Content}})
+		if filterErr != nil {
+			return filterErr
+		}
+		if len(filtered) != 1 || filtered[0].IsRedacted() {
+			return errors.New("read: ENVELOPE_REDACTED")
+		}
 	}
 	data, err := json.Marshal(EnvelopeInput{
 		Type: "a2a.event-envelope-input/1", SenderMXID: v.Sender, ReceiverMXID: s.creds.UserID,
