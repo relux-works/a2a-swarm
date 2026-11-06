@@ -12,7 +12,7 @@ import (
 )
 
 func boundTerminal(b config.TerminalBinding) tmuxwake.BoundTerminal {
-	return tmuxwake.BoundTerminal{Target: b.Target, ClaudeRegistryRoot: b.ClaudeRegistryRoot, Generation: b.Generation, SessionID: b.SessionID}
+	return tmuxwake.BoundTerminal{Target: b.Target, ClaudeRegistryRoot: b.ClaudeRegistryRoot, Generation: b.Generation, SessionID: b.SessionID, NoticePosition: b.NoticePosition}
 }
 func sameTerminalScope(a, b config.TerminalBinding) bool {
 	return a.Generation == b.Generation && a.SessionID == b.SessionID && a.Host == b.Host && a.OwnerPID == b.OwnerPID && a.OwnerBirth == b.OwnerBirth && a.DaemonPID == b.DaemonPID && a.DaemonBirth == b.DaemonBirth && a.Target == b.Target && a.ClaudeRegistryRoot == b.ClaudeRegistryRoot

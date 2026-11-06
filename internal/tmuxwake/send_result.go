@@ -25,10 +25,11 @@ const (
 )
 
 type SendResult struct {
-	Disposition SendDisposition
-	Outcome     SendOutcome
-	Reason      SendReason
-	ReasonAt    time.Time
+	Disposition    SendDisposition
+	Outcome        SendOutcome
+	Reason         SendReason
+	ReasonAt       time.Time
+	NoticePosition *ComposerPosition
 }
 
 // Valid rejects inconsistent/unknown pairs. In particular a nil transport
@@ -60,8 +61,13 @@ func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKe
 		return refused, nil
 	}
 	lastReason, lastAt := ReasonUnavailable, time.Now().UTC()
+	var lastPosition *ComposerPosition
 	inspect := func(ctx context.Context, owned string) (Box, bool) {
 		r, b := t.assess(ctx, owned)
+		if owned != "" && b.Text == owned && r.Input.State == InputNonempty {
+			position := b.position()
+			lastPosition = &position
+		}
 		keyMatches := r.Key == expected
 		if owned != "" && b.Text == owned && r.Input.State == InputNonempty {
 			keyMatches = sameKeyAfterOwnedTyping(r.Key, expected)
@@ -76,6 +82,12 @@ func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKe
 	// a qualified key into unconditional permission. The final I/O gap remains.
 	preType := func() bool { _, ok := inspect(ctx, ""); return ok && ctx.Err() == nil }
 	result, err := t.Target.sendWith(ctx, count, "", beforeType, afterType, inspect, preType)
+	if result.Disposition == SendDraft || result.Disposition == SendUncertain {
+		result.NoticePosition = t.captureNoticePosition(ctx, Notice(count), expected.Route == RegistryNamed)
+		if result.NoticePosition == nil {
+			result.NoticePosition = lastPosition
+		}
+	}
 	if result.Disposition == SendDraft || result.Disposition == SendRefused {
 		result.Reason, result.ReasonAt = lastReason, lastAt
 		if result.Outcome == SendSuppressedWidth && err == nil {
@@ -108,11 +120,13 @@ const (
 	ReasonCursorMismatch     SendReason = "cursor_mismatch"
 	ReasonForeignInput       SendReason = "input_nonempty_foreign"
 	ReasonAwaitingRender     SendReason = "awaiting_render"
+	ReasonRecoveryHeld       SendReason = "recovery_held"
+	ReasonFenceTimeout       SendReason = "recovery_fence_timeout"
 )
 
 func SafeSendReason(r SendReason) SendReason {
 	switch r {
-	case ReasonUnavailable, ReasonKeyChanged, ReasonKeyRowChanged, ReasonKeyStatusChanged, ReasonKeyWidthChanged, ReasonTargetOrWidth, ReasonBusyOrDialog, ReasonLayoutUnrecognized, ReasonCursorMismatch, ReasonForeignInput, ReasonAwaitingRender:
+	case ReasonUnavailable, ReasonKeyChanged, ReasonKeyRowChanged, ReasonKeyStatusChanged, ReasonKeyWidthChanged, ReasonTargetOrWidth, ReasonBusyOrDialog, ReasonLayoutUnrecognized, ReasonCursorMismatch, ReasonForeignInput, ReasonAwaitingRender, ReasonRecoveryHeld, ReasonFenceTimeout:
 		return r
 	}
 	return ReasonUnavailable
@@ -170,7 +184,7 @@ func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice strin
 	}
 	lastReason, lastAt := ReasonUnavailable, time.Now().UTC()
 	inspect := func(ctx context.Context, owned string) (Box, bool) {
-		r, b := t.assess(ctx, owned)
+		r, b := t.assessRecovery(ctx, owned)
 		// Unlike fresh typing, continuation cannot normalize a changed composer.
 		ok := owned == notice && b.Text == notice && r.OwnedNoticeEligible() && r.Key == expected
 		if !ok {
@@ -186,7 +200,9 @@ func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice strin
 	}
 	result, err := t.Target.sendWith(ctx, count, notice, nil, nil, inspect, nil, beforeEnter...)
 	if result.Disposition == SendRefused || result.Disposition == SendDraft {
-		result.Reason, result.ReasonAt = lastReason, lastAt
+		if result.Reason == "" {
+			result.Reason, result.ReasonAt = lastReason, lastAt
+		}
 		if result.Outcome == SendSuppressedWidth {
 			result.Reason = ReasonTargetOrWidth
 		}

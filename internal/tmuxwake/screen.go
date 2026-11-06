@@ -15,7 +15,19 @@ var fixedNotice = regexp.MustCompile(`^a2a: [1-9][0-9]* new peer events; run a2a
 
 type Box struct {
 	Text        string
-	Row, Column int // expected cursor at the end of the single input line
+	Row, Column int  // expected cursor at the end of the single input line
+	FooterHint  bool // Codex's independent composer anchor
+}
+
+// ComposerPosition is a refusal constraint observed by the typing invocation.
+// It is neither an editor handle nor permission to send a key.
+type ComposerPosition struct {
+	Row    int `json:"row"`
+	Column int `json:"column"`
+}
+
+func (b Box) position() ComposerPosition {
+	return ComposerPosition{Row: b.Row, Column: b.Column - len(b.Text)}
 }
 
 func plain(s string) string { return sgr.ReplaceAllString(s, "") }
@@ -124,22 +136,14 @@ func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 			return Box{}, InputReasonBusyOrDialog
 		}
 	}
-	// Multiple prompt-shaped rows in the qualified tail are ambiguous: a
-	// transcript must never substitute for the current composer (either runtime).
-	glyph := "›"
-	if runtime == "claude" {
-		glyph = "❯"
-	}
-	candidates := 0
-	for _, line := range lines[start:] {
-		line = strings.TrimLeft(plain(line), " ")
-		if line == glyph || strings.HasPrefix(line, glyph+" ") || strings.HasPrefix(line, glyph+"\u00a0") {
-			candidates++
-		}
-	}
-	if candidates > 1 {
-		return Box{}, InputReasonLayoutUnrecognized
-	}
+	return inputGeometry(screen, runtime, owned)
+}
+
+// Geometry alone can record where a typed notice was seen even while busy.
+// Callers must never use this helper to bypass readiness or dialog checks.
+func inputGeometry(screen, runtime, owned string) (Box, InputReason) {
+	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+	start := max(0, len(lines)-18)
 	if runtime == "claude" {
 		var rules []int
 		for i := start; i < len(lines); i++ {
@@ -153,6 +157,14 @@ func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 		a, b := rules[len(rules)-2], rules[len(rules)-1]
 		if b != a+2 {
 			return Box{}, InputReasonLayoutUnrecognized
+		}
+		// Transcript prompts above the rules are ordinary history. A prompt in
+		// the footer instead indicates another input surface, which is unqualified.
+		for _, line := range lines[b+1:] {
+			line = strings.TrimLeft(plain(line), " ")
+			if line == "❯" || strings.HasPrefix(line, "❯ ") || strings.HasPrefix(line, "❯\u00a0") {
+				return Box{}, InputReasonLayoutUnrecognized
+			}
 		}
 		return inputLineReason(lines[a+1], "❯", a+1)
 	}
@@ -182,7 +194,9 @@ func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 		if !strings.Contains(footer, "? for shortcuts") && !strictOwn {
 			return Box{}, InputReasonLayoutUnrecognized
 		}
-		return inputLineReason(lines[i], "›", i)
+		box, reason := inputLineReason(lines[i], "›", i)
+		box.FooterHint = strings.Contains(footer, "? for shortcuts")
+		return box, reason
 	}
 	return Box{}, InputReasonLayoutUnrecognized
 }

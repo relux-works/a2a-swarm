@@ -25,19 +25,27 @@ func (a *App) observeTerminalNotice(s *session, generation string, b config.Term
 		// Count/time survive completed submits and fresh refusals. Only retained
 		// IDs/text or prior suspicion establish an unsettled attempt here; Notice
 		// remains evidence even after dispatch prunes all receipted IDs.
-		exhausted := b.Retried && b.TypingStarted && b.NoticeOrigin != nil && b.NoticeCount > 0 && b.Notice == tmuxwake.Notice(b.NoticeCount)
-		eligible := exhausted || b.Typed && b.NoticeCount > 0 && (len(b.AttemptIDs) == 0 || len(b.AttemptIDs) == b.NoticeCount)
-		if input == "unknown" || b.Typed && (b.NoticeCount <= 0 || b.Notice != tmuxwake.Notice(b.NoticeCount)) || input == "nonempty" && !eligible && (n.Since != "" || len(b.AttemptIDs) > 0 || b.Notice != "") {
+		retained := b.NoticeCount > 0 && b.Notice == tmuxwake.Notice(b.NoticeCount) && !b.AttemptAt.IsZero() && !b.AttemptAt.After(a.Now())
+		pending := retained && b.TypingStarted && b.NoticeOrigin != nil
+		// Alerting must not depend on reaching an Enter fence. An aged retained
+		// fixed-notice journal is suspicious even if a gate/unknown frame prevents a
+		// new observation. Missing typing authority cannot silence that alarm.
+		aged := retained && !a.Now().Before(b.AttemptAt.Add(strandedNoticeThreshold)) && input != "empty"
+		eligible := pending || b.Typed && b.NoticeCount > 0 && (len(b.AttemptIDs) == 0 || len(b.AttemptIDs) == b.NoticeCount)
+		if !aged && (input == "unknown" || b.Typed && (b.NoticeCount <= 0 || b.Notice != tmuxwake.Notice(b.NoticeCount)) || input == "nonempty" && !eligible && (n.Since != "" || len(b.AttemptIDs) > 0 || b.Notice != "")) {
 			n.PossiblyOrphaned = nil
 			current.Idle = nil
 		} else {
-			suspect := input == "nonempty" && eligible
+			suspect := aged || input == "nonempty" && eligible
 			n.PossiblyOrphaned = &suspect
 			n.ObservedAt = a.Now().UTC().Format(time.RFC3339Nano)
 			if suspect {
 				n.Reason = orphanReason
 				if n.Since == "" {
 					n.Since = n.ObservedAt
+				}
+				if since, err := time.Parse(time.RFC3339Nano, n.Since); aged && (err != nil || b.AttemptAt.Before(since)) {
+					n.Since = b.AttemptAt.UTC().Format(time.RFC3339Nano)
 				}
 			} else {
 				n.Reason = ""
@@ -142,7 +150,7 @@ func noticeText(n config.OwnNoticeObservation) string {
 		return "own notice unknown"
 	}
 	if *n.PossiblyOrphaned {
-		return "SUSPECTED-DEAF: own notice possibly orphaned since=" + n.Since + " last-rendered-at=" + n.ObservedAt
+		return "SUSPECTED-DEAF: own notice possibly orphaned since=" + n.Since + " last-observed-at=" + n.ObservedAt
 	}
 	return "own notice clear (last rendered observation)"
 }
@@ -346,12 +354,22 @@ func (a *App) publishTerminalNotice(ctx context.Context, s *session, generation 
 // Error/gate paths retain last evidence, but never advertise it as a current
 // observation. A failed state write cannot authorize a publication claim.
 func (a *App) unknownTerminalNotice(ctx context.Context, s *session, generation string, consumer bool) {
+	// A consumer/read failure cannot indefinitely silence an aged notice journal.
+	// This is suspicion from retained journal evidence, not a fresh screen claim.
+	if st, err := config.LoadState(s.paths, s.name); err == nil && st.Terminal != nil && st.Terminal.Generation == generation && !st.Terminal.Stopped {
+		if a.observeTerminalNotice(s, generation, *st.Terminal, "unknown") == nil {
+			if err := a.reportStrandedTerminalNotice(ctx, s, generation); err != nil {
+				fmt.Fprintln(a.Stderr, "binding incident report unavailable; local status retained")
+			}
+		}
+	}
 	err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
 		b.Idle = nil
 		if b.OwnNotice.PossiblyOrphaned != nil && b.NoticePublication == "published" {
 			b.NoticePublication = "unavailable: own notice changed"
 		}
-		b.OwnNotice.PossiblyOrphaned = nil
+		// observeTerminalNotice already classified unknown input, including the
+		// aged-intent exception. Do not overwrite its suspicion here.
 		if consumer {
 			b.Outcome = "consumer unavailable; publishing unknown"
 		}

@@ -113,7 +113,7 @@ with composer-like geometry. Real-binary probes are future work. See the
 
 Typing-time registry transitions can leave an own notice in the composer while its
 attempt remains pending. This now surfaces as SUSPECTED-DEAF, with one durable
-incident to its explicitly configured own project/lane room after ten minutes of suspicion age. Exact complete notices recorded by the same generation now get bounded Enter-only recovery on later cycles, without retyping; fresh post-type Enter permits cursor/composer movement; later-cycle recovery pins the composer to its saved origin and rejects ambiguous prompt rows. Confirmed empty input after the recovery window revokes that origin. Pre-key recovery refusal preserves the retry, while an attempted Enter exhausts it. See `bind status` recovery token/time and the detailed journal, budget and refusal contract in `docs/cli.md`. Reproduce transitions, stable named/Codex controls and incident
+incident to its explicitly configured own project/lane room after ten minutes of a retained notice journal (or first suspicion when attempt age is unavailable). Exact complete notices recorded by the same generation now get bounded Enter-only recovery on later cycles, without retyping; fresh post-type Enter permits cursor/composer movement; later-cycle recovery pins any filled position seen by the typing invocation. Claude rules anchor the composer even with transcript prompts above it; Codex requires its footer hint when no filled-position record exists. Confirmed empty input after the recovery window revokes that origin. Pre-key recovery refusal preserves the retry, while an attempted Enter exhausts it. See `bind status` recovery token/time and the detailed journal, budget and refusal contract in `docs/cli.md`. Reproduce transitions, stable named/Codex controls and incident
 retry/deduplication with `go test ./internal/tmuxwake ./internal/cli -run 'TestBoundTypingTransition|TestTerminalStranded' -count=1`.
 The replacement writer carries the current on-disk incident report under the same state lock
 that installs the binding; startup writes only consumer PID/birth metadata.
@@ -124,9 +124,10 @@ Private tmux fixtures cover exact-notice recovery and refusal of visible/styled 
 These private synthetic fixtures do not identify the unrecorded live transition.
 The incident route is opt-in through existing identity metadata; without `own_room`, the consumer reports local unavailability and sends
 no incident. Completed attempts can retain time/count history without making a later human draft uncertain; retained pending IDs or
-notice text still keep partial/untyped observations unknown. See the CLI contract for authority and verification limits.
+notice text keep unsettled attempts distinguishable from completed history. A retained notice journal alerts even when partial/untyped or recovery is held; unknown frames cannot suppress that alert past ten minutes. See the CLI contract for authority and verification limits.
 
 Run these fixtures and mutation controls only on CI runners, never on this host.
+Second-review regressions cover transcript prompts, filled geometry across recovery, held-notice escalation, Enter-fence contention, poll flicker and partial-ID exhaustion: `go test -race ./internal/tmuxwake ./internal/cli -run 'TestTerminalTranscriptPromptAdmission|TestTerminalRecoveryFilledPosition|TestTerminalHeldNoticeReportsWithoutFence|TestTerminalRecoveryPollFlicker|TestTerminalFilledPositionJournal|TestTerminalRecoveryFenceRefusals|TestTerminalRecoveryExhaustionReports|TestTerminalOwnedNoticeRecovery|TestBoundResumeNotice' -count=1`. Private fixture artifacts remain in test temporary directories.
 Run readiness fixtures with `go test -race ./internal/tmuxwake ./internal/cli ./internal/config -run 'TestRegistry|TestBound|TestReadiness|TestTerminalReadiness' -count=1`.
 Run bounded source controls with `A2A_RUN_TERMINAL_ORPHAN_MUTANTS=1 go test ./internal/cli -run '^TestTerminalOrphanNarrowingPlants/registry-' -count=1 -v`.
 Fixtures and source copies use private temporary directories; process cleanup

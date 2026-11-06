@@ -17,6 +17,8 @@ var paneRE = regexp.MustCompile(`^%[0-9]+$`)
 
 var ErrTargetGone = errors.New("pinned target exited or replaced")
 
+var ErrEnterFenceTimeout = errors.New("terminal recovery fence deadline expired")
+
 type Target struct {
 	Socket     string `json:"socket"`
 	SocketID   string `json:"socket_id"`
@@ -296,7 +298,11 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 		if box.Text == notice {
 			for _, fence := range beforeEnter {
 				if err := fence(); err != nil {
-					return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, err
+					reason := ReasonRecoveryHeld
+					if errors.Is(err, ErrEnterFenceTimeout) {
+						reason = ReasonFenceTimeout
+					}
+					return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput, Reason: reason, ReasonAt: time.Now().UTC()}, err
 				}
 			}
 			if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {

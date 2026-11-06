@@ -32,16 +32,20 @@ def draw():
     suffix='\x1b[2m'+mode.get('dim-text','KEEP')+'\x1b[0m' if mode.get('dim') else ''
     prefix='\x1b[2m'+mode.get('dim-text','KEEP')+'\x1b[0m' if mode.get('dim-prefix') else ''
     if mode.get('unknown'): suffix+='\x1b[21;1Hunknown input'
-    composer=' '*mode.get('indent',0)+'› '+prefix+text+suffix
-    layout='\x1b[20;1H'+composer+'\x1b[22;1H  '+footer
+    row=mode.get('filled-row',mode.get('row',20)) if text else mode.get('row',20)
+    indent=mode.get('filled-indent',mode.get('indent',0)) if text else mode.get('indent',0)
+    composer=' '*indent+'› '+prefix+text+suffix
+    layout='\x1b['+str(row)+';1H'+composer+'\x1b['+str(row+2)+';1H  '+footer
     if mode.get('claude'):
-        rule='─'*100
+        rule='─'*mode.get('rule-width',100)
         top=rule+(' synthetic-session' if mode.get('named') else '')
-        layout='\x1b[19;1H'+top+'\x1b[20;1H'+' '*mode.get('indent',0)+'❯ '+prefix+text+suffix+'\x1b[21;1H'+rule+'\x1b[23;1H  '+footer
+        separator='\u00a0' if mode.get('nbsp') else ' '
+        if footer in ('Codex · Ready','? for shortcuts'): footer='⏵ bypass permissions on'
+        layout='\x1b['+str(row-1)+';1H'+top+'\x1b['+str(row)+';1H'+' '*indent+'❯'+separator+prefix+text+suffix+'\x1b['+str(row+1)+';1H'+rule+'\x1b['+str(row+2)+';1H  '+footer
     if mode.get('unknown'): layout+='\x1b[21;1Hunknown input'
     if mode.get('no-composer'): layout=''
     if mode.get('diagnostic-row'): layout+='\x1b['+str(mode['diagnostic-row'])+';1H'+mode['diagnostic-text']
-    os.write(1,('\x1b[2J\x1b[1;1Ha2a-fixture-frame:'+str(rev)+':end'+layout+'\x1b[20;'+str(3+len(text)+mode.get('cursor',0))+'H').encode())
+    os.write(1,('\x1b[2J\x1b[1;1Ha2a-fixture-frame:'+str(rev)+':end'+layout+'\x1b['+str(row)+';'+str(3+indent+len(text)+mode.get('cursor',0))+'H').encode())
     with open(root+'/screen.next','w') as f: json.dump(dict(text=text,submitted=submitted,erased=erased,typed=typed,pid=os.getpid(),rev=rev),f)
     os.replace(root+'/screen.next',root+'/screen.json')
 draw()

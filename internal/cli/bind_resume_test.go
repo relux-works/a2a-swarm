@@ -22,7 +22,7 @@ import (
 // Adjacent refusals retain the attempt and mailbox; no provider pane is used.
 func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 	for _, runtime := range []string{"codex", "claude", "claude-named"} {
-		for _, mode := range []string{"valid", "restart", "uncertain", "more-mail", "at-budget", "foreign", "prefix", "suffix", "count", "dialog", "busy", "registry-busy", "version", "target", "generation", "session", "width", "paused", "manual", "stopped", "unrecorded", "not-typed", "retry-cap", "retry-delay", "cooldown", "budget", "transcript", "prompt-foreign", "prompt-empty", "second-prompt", "origin-row", "origin-column"} {
+		for _, mode := range []string{"valid", "restart", "uncertain", "more-mail", "at-budget", "foreign", "prefix", "suffix", "count", "dialog", "busy", "registry-busy", "version", "target", "generation", "session", "width", "paused", "manual", "stopped", "unrecorded", "not-typed", "retry-cap", "retry-delay", "cooldown", "budget", "transcript", "prompt-foreign", "prompt-empty", "second-prompt", "origin-row", "origin-column", "position-row", "position-column", "prompt-above"} {
 			if runtime == "codex" && (mode == "registry-busy" || mode == "version") {
 				continue
 			}
@@ -123,7 +123,11 @@ func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 					f.update(func(st *config.State) { st.Terminal.NoticeOrigin.ComposerRow-- })
 				case "origin-column":
 					f.update(func(st *config.State) { st.Terminal.NoticeOrigin.ComposerColumn++ })
-				case "prompt-foreign", "prompt-empty", "second-prompt":
+				case "position-row":
+					f.update(func(st *config.State) { st.Terminal.NoticePosition.Row-- })
+				case "position-column":
+					f.update(func(st *config.State) { st.Terminal.NoticePosition.Column++ })
+				case "prompt-above", "prompt-foreign", "prompt-empty", "second-prompt":
 					glyph := "› "
 					if runtime != "codex" {
 						glyph = "❯ "
@@ -159,7 +163,7 @@ func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 				} else if err != nil {
 					t.Fatal(err)
 				}
-				positive := slices.Contains([]string{"valid", "restart", "uncertain", "more-mail", "at-budget"}, mode)
+				positive := slices.Contains([]string{"valid", "restart", "uncertain", "more-mail", "at-budget", "origin-row", "origin-column", "prompt-above"}, mode)
 				if positive {
 					f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
 				}
@@ -276,7 +280,20 @@ func loseTerminalACK(t *testing.T, f *orphanDispatchFixture, key string) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf("#!/usr/bin/env python3\nimport os,sys,subprocess\nif %q in sys.argv:\n subprocess.run([%q]+sys.argv[1:],check=True)\n sys.exit(1)\nos.execv(%q,[%q]+sys.argv[1:])\n", key, real, real, real)
+	script := fmt.Sprintf(`#!/usr/bin/env python3
+import os,sys,subprocess,time
+if %q in sys.argv:
+ subprocess.run([%q]+sys.argv[1:],check=True)
+ if '-l' in sys.argv:
+  notice=sys.argv[sys.argv.index('-l')+1].encode()
+  deadline=time.monotonic()+3
+  while time.monotonic()<deadline:
+   shown=subprocess.check_output([%q,'-S',%q,'capture-pane','-p','-t','%%0'])
+   if notice in shown:break
+   time.sleep(0.005)
+ sys.exit(1)
+os.execv(%q,[%q]+sys.argv[1:])
+`, key, real, real, f.binding().Target.Socket, real, real)
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

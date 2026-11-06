@@ -15,6 +15,7 @@ func TestBoundResumeNotice(t *testing.T) {
 				f := newBoundFixture(t, runtime, "2.1.318", "idle")
 				expected := f.b.AssessReadiness(context.Background()).Key
 				expected.ComposerRow = 16 // Pin the actual recovery composer, not the earlier empty row.
+				f.b.NoticePosition = &ComposerPosition{Row: 16, Column: 2}
 				text := Notice(1)
 				switch mode {
 				case "empty":

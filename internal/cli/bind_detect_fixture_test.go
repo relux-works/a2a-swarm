@@ -22,10 +22,11 @@ import (
 // state to authorize production effects. No product source is edited.
 func rev3PaddedFixture(runtime string) string {
 	s := orphanFixture
-	s = strings.Replace(s, "prefix+text+suffix", "prefix+text.ljust(100)+suffix", 1)
+	s = strings.ReplaceAll(s, "prefix+text+suffix", "prefix+text.ljust(100)+suffix")
 	if runtime == "claude" {
-		s = strings.Replace(s, "› ", "❯ ", 1)
-		s = strings.Replace(s, "\\x1b[20;1H", "\\x1b[19;1H"+strings.Repeat("─", 110)+"\\x1b[21;1H"+strings.Repeat("─", 110)+"\\x1b[20;1H", 1)
+		// Reuse the renderer's rules/row controls instead of replacing a fixed
+		// ANSI row literal, which would silently miss a movable layout.
+		s = strings.Replace(s, "if mode.get('claude'):", "if True:", 1)
 	}
 	return s
 }

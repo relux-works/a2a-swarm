@@ -65,7 +65,7 @@ func TestTerminalStrandedOtherInputNeverSubmitted(t *testing.T) {
 }
 
 // No new mail or liveness record is needed: a sustained suspicion reports at
-// ten minutes exactly once after the Enter retry is exhausted. Process reload and replay of a pre-ACK local record
+// the attempt's ten-minute mark exactly once after the Enter retry is exhausted. Process reload and replay of a pre-ACK local record
 // reuse the persisted transaction, so an ambiguous send cannot duplicate it.
 func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
 	isolateBindTest(t)
@@ -79,12 +79,12 @@ func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
 	f.step()
 	exhaustRecovery(t, f)
 	since, err := time.Parse(time.RFC3339Nano, f.binding().OwnNotice.Since)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || since.Before(f.binding().AttemptAt) {
+		t.Fatal("invalid initial suspicion time", err)
 	}
 	count := func() int { return len(f.e.projectionsFrom(system, "@alice:test.local")) }
 	advance := func(d time.Duration) {
-		f.now = since.Add(d)
+		f.now = f.binding().AttemptAt.Add(d)
 		f.update(func(st *config.State) { st.Lease.Expires = f.now.Add(time.Minute) })
 		f.dispatch()
 	}
@@ -148,7 +148,8 @@ func (e *env) projectionsFrom(room, sender string) []matrix.Event {
 }
 
 // Failure never claims publication; retry obeys the configured cap and reuses
-// its transaction. Unknown/cleared observations cannot publish old suspicion.
+// its transaction. Aged retained typing intent alerts even on unknown input;
+// cleared and unrecorded observations cannot publish old suspicion.
 func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 	isolateBindTest(t)
 	for _, mode := range []string{"failed", "missing-room", "unknown", "clear", "partial", "untyped", "foreign"} {
@@ -169,7 +170,7 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 			f.update(func(st *config.State) {
 				st.Lease.Expires = f.now.Add(time.Minute)
 				if mode == "partial" {
-					st.Terminal.TypingStarted = false // Corrupt count has no continuing typing authority.
+					st.Terminal.TypingStarted = false // Count mismatch retains suspicion, never typing authority.
 					st.Terminal.NoticeCount = 2
 					st.Terminal.Notice = tmuxwake.Notice(2)
 				}
@@ -196,6 +197,12 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 				return
 			}
 			err := f.a.dispatchTerminal(context.Background(), f.s, "orphan-gen")
+			if mode == "unknown" || mode == "partial" || mode == "untyped" {
+				if err != nil || len(f.e.projectionsFrom(system, "@alice:test.local")) != 1 || f.binding().NoticeReport == nil || !f.binding().NoticeReport.Sent {
+					t.Fatal("aged retained notice failed to alert", err)
+				}
+				return
+			}
 			if len(f.e.projectionsFrom(system, "@alice:test.local")) != 0 {
 				t.Fatal("unexpected incident")
 			}

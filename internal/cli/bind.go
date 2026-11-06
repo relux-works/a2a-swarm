@@ -647,17 +647,24 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if b == nil || b.Stopped || b.Generation != generation {
 			return errors.New("binding retired")
 		}
+		heldObservation := func(outcome string) error {
+			if err := a.observeTerminalNotice(s, generation, *b, "unknown"); err != nil {
+				return err
+			}
+			observed = true
+			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = outcome })
+		}
 		if st.HooksPaused || manualWakeGate(st) != "" {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: manual gate" })
+			return heldObservation("suppressed: manual gate")
 		}
 		if st.Runtime != nil && !st.Runtime.Retired {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: native binding" })
+			return heldObservation("suppressed: native binding")
 		}
 		if !ownTerminalTarget(b, b.Target) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: binding target authority" })
+			return heldObservation("suppressed: binding target authority")
 		}
 		if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: lease authority" })
+			return heldObservation("suppressed: lease authority")
 		}
 		// Mail remains available to inbox. Attempt and rung IDs prevent normal
 		// duplicates; an uncertain attempt has a separate bounded recovery path.
@@ -708,11 +715,13 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if observation == "empty" && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) {
 			if err := a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
 				current.NoticeOrigin = nil
+				current.NoticePosition = nil
 				current.TypingStarted = false
 			}); err != nil {
 				return err
 			}
 			b.NoticeOrigin = nil
+			b.NoticePosition = nil
 			b.TypingStarted = false
 		}
 		if observation == "empty" && b.Typed && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) && len(b.AttemptIDs) < b.NoticeCount {
@@ -722,6 +731,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				b.Notice = ""
 				b.NoticeCount = 0
 				b.NoticeOrigin = nil
+				b.NoticePosition = nil
 				b.TypingStarted = false
 				b.AttemptAt = time.Time{}
 				b.Retried = false
@@ -734,6 +744,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			b.Notice = ""
 			b.NoticeCount = 0
 			b.NoticeOrigin = nil
+			b.NoticePosition = nil
 			b.TypingStarted = false
 			b.Idle = nil
 		}
@@ -782,6 +793,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				return false, nil
 			}
 			current.NoticeOrigin = current.Idle
+			current.NoticePosition = nil
 			current.TypingStarted = false
 			current.Idle = nil
 			current.AttemptIDs = ids
@@ -849,6 +861,12 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 			b.SendRefusal = refusal
 		}
 		b.Idle = nil
+		// Only the typing invocation may create this position constraint.
+		// Preserve it across later-cycle refusals; a restart cannot invent it.
+		if b.TypingStarted && result.NoticePosition != nil && result.Valid() && (result.Disposition == tmuxwake.SendDraft || result.Disposition == tmuxwake.SendUncertain) {
+			position := *result.NoticePosition
+			b.NoticePosition = &position
+		}
 		if sendErr != nil || !result.Valid() {
 			return nil
 		}
@@ -861,6 +879,7 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 				b.AttemptIDs = nil
 				b.Notice = ""
 				b.NoticeOrigin = nil
+				b.NoticePosition = nil
 				b.TypingStarted = false
 			}
 			if r := st.Notification.Reservation; r != nil && r.Token == token {
@@ -877,6 +896,7 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 		b.Typed = false
 		b.NotificationToken = ""
 		b.NoticeOrigin = nil
+		b.NoticePosition = nil
 		b.TypingStarted = false
 		clear := false
 		b.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
@@ -955,6 +975,7 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 			return false, nil
 		}
 		current.NoticeOrigin = current.Idle
+		current.NoticePosition = nil
 		current.TypingStarted = false
 		current.Retried = true
 		current.Reservations = append(reservations, now)

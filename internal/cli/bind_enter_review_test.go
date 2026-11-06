@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -175,20 +176,36 @@ func TestTerminalRecoveryAgedBudget(t *testing.T) {
 }
 
 // A real failed post-fence key with cursor off the composer remains visible in
-// status and reaches the existing incident route, without retrying the key.
+// status and reaches the existing incident route, without retrying the key,
+// including uncertain attempts with legitimately receipted partial IDs.
 func TestTerminalRecoveryExhaustionReports(t *testing.T) {
-	for _, uncertain := range []bool{false, true} {
-		t.Run(fmt.Sprint(uncertain), func(t *testing.T) {
+	for _, variant := range []string{"typed", "uncertain", "partial"} {
+		t.Run(variant, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
 			room := f.e.ownReportRoom("alice")
-			f.mail()
+			first := f.mail()
+			if variant == "partial" {
+				f.mail()
+			}
 			f.control(map[string]any{"defer": true})
 			f.dispatch()
 			f.step()
-			if uncertain {
+			if variant != "typed" {
 				f.update(func(st *config.State) { st.Terminal.Typed = false })
 			}
+			if variant == "partial" {
+				_, err := f.s.lockedDeliver(context.Background(), time.Now().Add(time.Second), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+					_, err := mb.Receive([]string{first})
+					return nil, err
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			exhaustRecovery(t, f)
+			if variant == "partial" && (len(f.binding().AttemptIDs) != 1 || f.binding().NoticeCount != 2 || !f.e.received("alice", first)) {
+				t.Fatal("partial-ID exhaustion control was not applied")
+			}
 			requireNotice(t, f.binding().OwnNotice, "suspected")
 			if !strings.Contains(f.e.as("alice", "bind", "status").ok(t).stdout, "SUSPECTED-DEAF") {
 				t.Fatal("spent fence invisible")

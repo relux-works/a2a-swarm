@@ -43,6 +43,7 @@ type BoundTerminal struct {
 	ClaudeRegistryRoot string
 	Generation         string
 	SessionID          string
+	NoticePosition     *ComposerPosition
 }
 
 func (k ReadinessKey) valid() bool {
@@ -100,7 +101,11 @@ func (t BoundTerminal) registry(ctx context.Context) registryAssessment {
 // A named top rule is input geometry only. This helper is reachable solely
 // behind a qualified registry. Busy/dialog checks still use the complete tail.
 func boundInput(screen, runtime, owned string, named bool) (Box, InputReason, bool) {
-	b, reason := inputWithNoticeReason(screen, runtime, owned)
+	return boundInputUsing(screen, runtime, owned, named, inputWithNoticeReason)
+}
+
+func boundInputUsing(screen, runtime, owned string, named bool, parse func(string, string, string) (Box, InputReason)) (Box, InputReason, bool) {
+	b, reason := parse(screen, runtime, owned)
 	if reason != InputReasonLayoutUnrecognized || runtime != "claude" || !named {
 		return b, reason, false
 	}
@@ -135,7 +140,7 @@ func boundInput(screen, runtime, owned string, named bool) (Box, InputReason, bo
 		}
 		copyLines := append([]string(nil), lines...)
 		copyLines[i-2] = "────────"
-		b, reason = inputWithNoticeReason(strings.Join(copyLines, "\n"), runtime, owned)
+		b, reason = parse(strings.Join(copyLines, "\n"), runtime, owned)
 		return b, reason, true
 	}
 	return Box{}, InputReasonLayoutUnrecognized, false
@@ -280,11 +285,43 @@ func (t BoundTerminal) ClearNotice(context.Context, int, string, func() error) (
 // AssessOwnedNotice is continuation-only evidence. It never admits fresh typing;
 // the caller must tie notice and expected identity to a durable typing attempt.
 func (t BoundTerminal) AssessOwnedNotice(ctx context.Context, notice string) ReadinessAssessment {
-	r, b := t.assess(ctx, notice)
+	r, b := t.assessRecovery(ctx, notice)
 	if notice == "" || b.Text != notice {
 		r.Key = ReadinessKey{}
 	}
 	return r
+}
+
+// The Codex no-hint exception is safe for continuation only at a position
+// actually seen by the typing invocation. Without that record the footer must
+// independently anchor the bottommost composer. Diagnostics grant no keys.
+func (t BoundTerminal) assessRecovery(ctx context.Context, notice string) (ReadinessAssessment, Box) {
+	r, b := t.assess(ctx, notice)
+	if b.Text == notice && (t.NoticePosition != nil && b.position() != *t.NoticePosition || t.Target.Runtime == "codex" && t.NoticePosition == nil && !b.FooterHint) {
+		r.Key = ReadinessKey{}
+		r.Input = InputAssessment{InputUnavailable, InputReasonLayoutUnrecognized}
+	}
+	return r, b
+}
+
+// This independent final capture is evidence for a future refusal constraint,
+// never Enter admission. Busy/registry transitions can still leave a visible
+// exact notice. No record is returned for foreign, wrapped or styled extra input.
+func (t BoundTerminal) captureNoticePosition(ctx context.Context, notice string, named bool) *ComposerPosition {
+	_, _, width, err := t.Target.Inspect(ctx)
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	screen, err := t.Target.command(ctx, "capture-pane", "-e", "-p", "-t", t.Target.Pane)
+	if err != nil {
+		return nil
+	}
+	b, reason, _ := boundInputUsing(screen, t.Target.Runtime, notice, named, inputGeometry)
+	if reason != InputReasonNone || b.Text != notice || !fixedNotice.MatchString(notice) || b.Column >= width || !completeInput(screen, b) {
+		return nil
+	}
+	p := b.position()
+	return &p
 }
 
 // OwnedNoticeEligible requires complete exact input and current runtime readiness.
