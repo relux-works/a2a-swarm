@@ -44,7 +44,7 @@ for uncertainty, clock/restart and diagnostic limits.
 ## Tools
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
-| Local voice (Go, macOS Sherpa, ffmpeg) | Optional spoken copy after unchanged text | `go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a`; `voice install` then `voice config --enable`; `post ROOM --topic TOPIC --voice TEXT`; [contract](docs/voice.md) | Candidate binary `.temp/voice/`; config/cache `<config>/voice/`; private temporary audio deleted; text ID stdout, optional warning stderr |
+| Local voice (Go, macOS Sherpa helper, ffmpeg) | Optional spoken copy after unchanged text | `go run ./cmd/a2a-voice-release -out .temp/voice/release`; configure helper/manifest pins and install the model; `post ROOM --topic TOPIC --voice TEXT`; [contract](docs/voice.md) | Native-free shared CLI; relocatable helper directory; private temporary audio deleted; text ID stdout, optional warning stderr |
 | `.scripts/post.sh` | Post one message block to a topic | `.scripts/post.sh <room> <topic> <body-file>` (room `_` = lobby) prints the assigned `MSG-NNNN` | appends to `rooms/<room>/topics/<topic>.md`, commits it and pushes to `origin/main`; lock `.git/a2a-post.lock` |
 | `lockf` (macOS base system) | File lock used by post.sh | used by post.sh | — |
 | Curator | Install the tracked project skill closure and check its state | `curator install .`; `curator status . --check --json`; gates below | Generated `.agents/` and runtime `skills/` paths; migration evidence in `.temp/curator-move-261017/` |

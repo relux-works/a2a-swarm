@@ -1,43 +1,131 @@
 # Optional local voice replies
 
-TASK-261023-m8mo6f under STORY-261023-6cr0bz. Owner request2026-10-23T12:22:54Z
-`$P5pexOsC7w_MX-qZLi8-9hpRUWoCxAOHoU09jwovqVE`, independently verified by Meta
-`$9UWwffQWwQskuxnEiusR7zY0k0a1RNFtVLnyLAQaTCU`; keeper scope
-`$ag-AJvPpWv0Bv2nL-AczgDFU-75OKTRc7S6DPWtnKzA` and adopted invariants
-`$_mvJw0mASKba6gxyTlHHgXG4KdrxL7aCFHafXCGq9K4`.
+Owner decision, 2026-10-23 (confirmed 2026-10-28): Piper ru_RU
+irina-medium is the single local voice. Pronunciation defects remain.
 
 ## Use
 
 The existing text post is authoritative and unchanged. Add `--voice` to one
 post for a local spoken copy replying to that text in the same topic. There
 is no sticky mode or implicit enablement.
-Irina is the keeper's operational interpretation of the owner's “second distinct
-Go voice”, acknowledged by Meta with the original ambiguity retained. The owner
-did not literally name a model. Stress/pronunciation defects remain. Scope narrowing: `$I17bMT13_Bm0gg0A-H-PXapr8kTnl8Se3sgrxXGE-58`, provenance `$ViV6k1qL0k04KFFBy9cs6tCkG_yqO6u5lJfDTa6Lmig`.
 
 ```sh
-go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
-.temp/voice/a2a-voice voice install
-.temp/voice/a2a-voice voice config --enable
-.temp/voice/a2a-voice post ROOM --topic TOPIC --voice 'Complete original text'
+CGO_ENABLED=0 go build -o bin/a2a ./cmd/a2a
+go run ./cmd/a2a-voice-release -out .temp/voice/release
+# Read the worker digest from release/MANIFEST.sha256 and the manifest digest
+# printed by the recipe. After copying the directory to its installation path:
+bin/a2a voice config --enable \
+  --worker /absolute/install/release/a2a-voice-worker \
+  --worker-sha256 WORKER_SHA256 --manifest-sha256 MANIFEST_SHA256
+bin/a2a voice install
+bin/a2a post ROOM --topic TOPIC --voice 'Complete original text'
 ```
 
 Config/install require no Matrix account. `<config>` means `A2A_CONFIG_DIR`,
 otherwise `~/.config/a2a-swarm`. Config is `<config>/voice/config.json`, with
-exactly `enabled: true` and `max_seconds: 180`. Enabling is explicit, and
-there is no engine/voice picker or implicit enablement. These commands change
-no binding/profile/hook or subscription. Shared-station activation requires separate admission after
-source delivery; the commands document the interface.
+`enabled: true`, `max_seconds: 180`, an absolute, clean, physically canonical `worker` path ending in
+`a2a-voice-worker`, and lowercase 64-hex `worker_sha256` and `manifest_sha256`.
+All three helper fields must be supplied together. Old configs containing only
+enablement and the cap remain readable; voice skips until a helper is pinned.
+`voice config --enable` without helper flags writes that text-only configuration.
+Enabling is explicit, with no engine/voice picker. These commands change no
+binding, profile, hook or subscription. Shared-station installation and activation
+require a separate maintenance window; this recipe never installs globally.
+
+## Helper release and installation
+
+The shared release `a2a` is built with `CGO_ENABLED=0` and has no CGO or
+Sherpa dependency, including with `-tags sherpa`. CGO-enabled contributor
+builds may use standard-library libc support for net/user on Linux; their
+dependency graph must still exclude Sherpa, onnxruntime and `voiceworker`. Native inference exists only in `cmd/a2a-voice-worker`.
+A missing or damaged helper cannot prevent the shared CLI from starting.
+The release recipe requires darwin/arm64, Go as pinned by `go.mod`, CGO,
+Xcode command-line tools (`install_name_tool`, `codesign`) and the pinned
+module below. It refuses an existing output directory and publishes only after
+auditing and signing every payload file.
+
+```text
+release/
+  a2a-voice-worker
+  lib/
+    libonnxruntime.dylib
+    libsherpa-onnx-c-api.dylib
+  MANIFEST.sha256
+```
+
+`MANIFEST.sha256` contains sorted `SHA256  relative/path` lines for every
+payload file. It excludes itself; the recipe prints its digest for the separate
+config pin. The worker has exactly one `LC_RPATH`, `@executable_path/lib`.
+Libraries have no rpaths. `otool -l` and `otool -L` must show only that relative
+rpath, the two bundled library references, and macOS system libraries/frameworks.
+No module cache, GOPATH or build-machine path is needed at runtime. The system
+libraries remain supplied by macOS. The exhaustive load-command audit admits
+only ordinary `LC_LOAD_DYLIB` dependencies. Weak, re-export, upward and lazy
+loads, unknown loader directives, foreign dylib identities and extra rpaths
+refuse. The explicit system dependency set is:
+
+- `/usr/lib/libSystem.B.dylib`, `/usr/lib/libc++.1.dylib`,
+  `/usr/lib/libiconv.2.dylib`, `/usr/lib/libresolv.9.dylib`, `/usr/lib/libobjc.A.dylib`;
+- `/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML`,
+  `/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation`,
+  `/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation`,
+  `/System/Library/Frameworks/Security.framework/Versions/A/Security`.
+
+The helper may name only `/usr/lib/dyld` as its dynamic linker. The unused C++ Sherpa API is not bundled.
+
+The recipe uses trimpath, no VCS/build ID, deterministic ad-hoc signatures and
+no signing timestamp. Repeating it with identical source, toolchain, module
+bytes and build environment must produce byte-identical manifests:
+
+```sh
+go run ./cmd/a2a-voice-release -out .temp/voice/release-1
+go run ./cmd/a2a-voice-release -out .temp/voice/release-2
+diff .temp/voice/release-1/MANIFEST.sha256 .temp/voice/release-2/MANIFEST.sha256
+otool -l .temp/voice/release-1/a2a-voice-worker
+otool -L .temp/voice/release-1/a2a-voice-worker .temp/voice/release-1/lib/*.dylib
+```
+
+The installer copies the complete directory, preserving the worker's execute
+permission, to a new versioned location. It records the previous config bytes
+and previous release directory before setting the three pins above. Verify the
+copied manifest against the recipe's printed digest and every payload hash.
+Do not mutate an installed directory in place. Rollback restores the previous
+config bytes and intact previous directory; the shared CLI does not change.
+The model and ffmpeg are separate dependencies, not redistributed in this payload.
+
+Before **every** worker invocation, including the truncation notice, `a2a`
+requires the configured worker spelling to be absolute, already clean and
+physically canonical, with no symlink in any path component. Use a physical
+installation path (for example `/private/tmp` rather than macOS's `/tmp` alias).
+The manifest, worker and both dylibs are opened without following leaf links
+or blocking on FIFOs. Opened regular-file device/inode, size and mode must match
+the pathname before and after hashing.
+
+Each invocation copies the authenticated worker and both libraries into a
+fresh 0700 private execution directory, then verifies the copied bytes. The
+worker is 0500 and libraries 0400. The exact canonical snapshot path is executed;
+its sibling libraries stay present until the subprocess exits. The worker inherits
+no environment variables, so loader overrides cannot redirect its dependencies.
+Source renames
+between verification and exec cannot replace the worker or its loaded bytes.
+Missing/changed files, links, unlisted entries, malformed manifests and
+mismatched pins refuse before exec. The truncation notice prepares a fresh
+snapshot and rechecks the source release.
+
+Residual window: a same-UID process that discovers and changes the private
+snapshot after its final verification and before exec or dyld loading can still
+interfere. Directory permissions protect against other UIDs, not the same UID.
+Config pins remain locally trusted; rewriting them is outside this guarantee.
+Installers must still publish intact versioned directories.
 
 ## Dependencies and pins
 
 The single route currently requires macOS: sherpa-onnx through the native Go
 binding `github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8`, CGO, CPU, four threads
-and the Piper ru_RU Irina model. Build with `-tags sherpa`. Normal builds retain
-text operation without inference linkage; requesting voice there retains text
-and warns. Other platforms retain normal text operation. The tagged executable
-depends on pinned native dylibs at its Go module-cache path; retain that
-dependency directory while using it. There is no say engine or voice picker.
+and the Piper ru_RU Irina model. Only the helper is built with `-tags sherpa`.
+The recipe copies the two exact libraries from that pinned module, removes
+module-cache rpaths and ad-hoc signs the result. Other platforms retain normal
+text operation. There is no say engine or voice picker.
 
 `voice install` alone downloads:
 
@@ -48,8 +136,9 @@ dependency directory while using it. There is no say engine or voice picker.
 
 Install verifies the archive before extraction, rejects unsafe paths/links
 and oversized data, checks the pinned manifest and publishes atomically.
-Existing installs are verified instead of overwritten. Every sherpa render
-verifies installed asset hashes. Posting never installs/downloads. The bundle
+Existing installs are verified instead of overwritten. Every render verifies
+installed asset hashes; direct helper invocation verifies them as well.
+Posting never installs/downloads. The model bundle
 retains its upstream model card, which marks dataset license Unknown. This
 feature asserts no model licensing clearance and does not redistribute it.
 
@@ -64,13 +153,13 @@ The CLI first uses the existing text-send path and prints its event ID.
 Failed text retains its original nonzero exit and starts no voice work.
 Without `--voice`, no renderer/encoder/installer/model download runs.
 
-A single clip is capped at **180 seconds**. Input beyond6000 Unicode runes
+A single clip is capped at **180 seconds**. Input beyond 6000 Unicode runes
 is shortened before synthesis to bound native work. If this bound or the
 measured audio limit truncates speech, the clip reserves space for the spoken
 notice: “Аудио сокращено. Полный текст сохранён в сообщении.” The caption
 also identifies truncation; the original text stays complete. Chunking is
-deferred. A50ms reserve covers Opus padding. Final decoded duration must not
-exceed180s. Duration and waveform come from decoding encoded bytes to local
+deferred. A 50 ms reserve covers Opus padding. Final decoded duration must not
+exceed 180 s. Duration and waveform come from decoding encoded bytes to local
 signed mono PCM, rather than estimating from text length.
 
 After upload, authenticated fetch-back must match the exact byte count and
@@ -79,46 +168,61 @@ and MSC1767 audio/file/text metadata, replies to the text and retains its
 `m.thread` root. No second a2a decision/request header or duplicate mentions
 are sent. See the [MSC3245 transitional format](https://github.com/matrix-org/matrix-spec-proposals/blob/83f6c5b469c1d78f714e335dcaa25354b255ffa5/proposals/3245-voice-messages.md).
 
-Missing config, synthesis/encoding/upload/fetch failure, mismatched bytes,
+Missing config/helper, changed helper/dylib/manifest, synthesis/encoding/upload/fetch failure, mismatched bytes,
 or failed/ambiguous audio-send acknowledgement emit one stderr line marked
-`[VOICE_TEXT_ONLY]` and exit0: the text already succeeded. An ambiguous audio
+`[VOICE_TEXT_ONLY]` and exit 0: the text already succeeded. Helper verification,
+model and synthesis failures share the fixed warning:
+
+```text
+a2a: warning [VOICE_TEXT_ONLY]: voice synthesis failed or timed out; check the local engine and installed model; text retained
+```
+
+An ambiguous audio
 acknowledgement may mean audio reached Matrix; the CLI never retries text or
 promises audio absence. Stdout remains only the text event ID. Retrying the
 whole command creates another text post.
 
-Deadlines: synthesis120s per process, each decode/encode30s, total local
-render4min, upload/fetch/audio-send60s, explicit install5min. Native inference
+Deadlines: synthesis 120 s per process, each decode/encode 30 s, total local
+render 4 min, upload/fetch/audio-send 60 s, explicit install 5 min. Native inference
 runs in a reapable subprocess because CGO Generate has no context cancellation.
-Text goes over stdin, never argv. Private0700 scratch/0600 files are deleted
+Text goes over stdin, never argv. Private 0700 scratch/0600 files are deleted
 on return. Native stdout/stderr are discarded, never logged. No cloud/cloning
 or private-content diagnostic logs are supported.
 
 ## Verification and delivery
 
 ```sh
-go test ./internal/voice ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict'
+gofmt -l .
 go vet ./...
-go test -race ./...
+go test -count=1 ./...
+go test -race -count=1 ./internal/voice/... ./internal/cli/...
 go vet -tags sherpa ./...
-go test -tags sherpa -race ./...
-# Actual local synthesis/encode/decode; explicitly prepared isolated base:
-A2A_VOICE_IT=1 A2A_VOICE_IT_BASE=/absolute/isolated/config \
- A2A_VOICE_IT_EXECUTABLE=/absolute/candidate/a2a-voice \
- go test -tags sherpa ./internal/voice -run '^TestVoiceReal$' -v
-# Add A2A_VOICE_IT_LONG=1 for the actual long/capped synthesis witness.
+go test -tags sherpa -count=1 ./internal/voice ./internal/voiceworker ./internal/voicerelease ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict|TestModelCache|TestLocalRunner|TestVerifyWorker|TestWorker|TestAllowedLibrary|TestBuildPreserves'
+# Explicitly install the pinned model under an isolated A2A_CONFIG_DIR first.
+# Render, ffprobe, relocation and real damaged-library controls; never posts:
+A2A_VOICE_IT_BASE=/absolute/isolated/config \
+ A2A_VOICE_RELEASE_DIR=/absolute/release-1 \
+ go test ./internal/voicerelease -run '^TestNativeRelease' -count=1 -v
+# Existing optional long/capped witness now also requires both release pins:
+A2A_VOICE_IT=1 A2A_VOICE_IT_LONG=1 \
+ A2A_VOICE_IT_BASE=/absolute/isolated/config \
+ A2A_VOICE_IT_EXECUTABLE=/absolute/release-1/a2a-voice-worker \
+ A2A_VOICE_IT_WORKER_SHA256=WORKER_SHA256 \
+ A2A_VOICE_IT_MANIFEST_SHA256=MANIFEST_SHA256 \
+ go test ./internal/voice -run '^TestVoiceReal$' -count=1 -v
 ```
 
-The gated witness synthesizes and encodes Irina, renders Opus back to
-PCM and checks non-silence/duration/waveform. It does not publish to Matrix,
+The gated witness copies the release to fresh temporary directories, points
+GOMODCACHE at an empty directory, synthesizes and encodes Irina, renders Opus
+back to PCM and checks non-silence/duration/waveform plus ffprobe's mono Opus
+48 kHz result. Missing and single-byte-modified native libraries must fail both
+direct execution and the parent's pre-exec hash check. It does not publish to Matrix,
 play on the user's speakers or establish client UI acceptance. Missing tools
 are failures, never passing Opus results. Unit tests cover text identity and
 failure verdicts, event/reply/metadata and integrity ordering, cap/notice,
 foreign/cloud option rejection, private scratch cleanup, wrong pins and unsafe archives.
 
-Source delivery requires own complete and keeper exact-head review, real
-hosted CI for normal/native variants, landing window and signed plain FF.
-Then prepare activation for keeper review and Meta admission: exact landed
-head; separate pinned executable/path/SHA/invocation; module/native dylib,
-model and encoder hashes/paths; config/prior state; rollback restoring prior
-invocation/config and deleting only task-owned artifacts. Never replace
-shared `~/.local/bin/a2a` or change profiles/bindings/fleet for this slice.
+Source delivery requires independent review of the exact signed candidate,
+green CI for normal/native variants and a signed landing. Installation in a
+shared location follows separately with the release digest, model/encoder
+versions, prior config and byte-copy rollback recorded for the maintenance window.

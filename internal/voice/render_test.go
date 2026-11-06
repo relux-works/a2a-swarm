@@ -25,6 +25,9 @@ type renderRunner struct {
 }
 
 func (r *renderRunner) ValidateModel(context.Context, string) error { return nil }
+func (r *renderRunner) PrepareWorker(context.Context, Config) (PreparedWorker, error) {
+	return PreparedWorker{Path: "fixture-worker"}, nil
+}
 
 func (r *renderRunner) Run(ctx context.Context, name string, args []string, input io.Reader) error {
 	r.calls++
@@ -69,7 +72,7 @@ func (r *renderRunner) Run(ctx context.Context, name string, args []string, inpu
 // This tests the cap algorithm, not a real engine's pronunciation or encoding.
 func TestRenderCapNoticeAndPrivacy(t *testing.T) {
 	runner := &renderRunner{t: t, source: bytes.Repeat([]byte{1, 0}, 181*sampleRate)}
-	result, err := (LocalRenderer{Runner: runner}).Render(context.Background(), t.TempDir(), Config{true, 180}, "complete text")
+	result, err := (LocalRenderer{Runner: runner}).Render(context.Background(), t.TempDir(), Config{Enabled: true, MaxSeconds: 180}, "complete text")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +99,7 @@ func TestRenderFailuresAndShortControl(t *testing.T) {
 	for fail := 0; fail <= 4; fail++ {
 		t.Run(string(rune('0'+fail)), func(t *testing.T) {
 			runner := &renderRunner{t: t, fail: fail, source: bytes.Repeat([]byte{0, 1}, sampleRate)}
-			a, err := (LocalRenderer{Runner: runner}).Render(context.Background(), t.TempDir(), Config{true, 180}, "PRIVATE TEXT")
+			a, err := (LocalRenderer{Runner: runner}).Render(context.Background(), t.TempDir(), Config{Enabled: true, MaxSeconds: 180}, "PRIVATE TEXT")
 			if fail == 0 {
 				if err != nil || a.Truncated || a.DurationMS != 1000 {
 					t.Fatalf("short control: %+v %v", a, err)
@@ -153,9 +156,9 @@ func TestVoiceReal(t *testing.T) {
 	if base == "" || !filepath.IsAbs(exe) {
 		t.Fatal("explicit isolated base and executable required")
 	}
-	c := Config{true, 180}
+	c := Config{Enabled: true, MaxSeconds: 180, Worker: exe, WorkerSHA256: os.Getenv("A2A_VOICE_IT_WORKER_SHA256"), ManifestSHA256: os.Getenv("A2A_VOICE_IT_MANIFEST_SHA256")}
 	t.Run("sherpa", func(t *testing.T) {
-		audio, err := (LocalRenderer{Executable: exe}).Render(context.Background(), base, c, "Проверка голосового ответа. Полный текст сохраняется в сообщении.")
+		audio, err := (LocalRenderer{}).Render(context.Background(), base, c, "Проверка голосового ответа. Полный текст сохраняется в сообщении.")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +178,7 @@ func TestVoiceReal(t *testing.T) {
 		}
 		t.Logf("engine=%s duration_ms=%d ogg_bytes=%d waveform_bins=%d", "sherpa", audio.DurationMS, len(audio.OGG), len(audio.Waveform))
 		if os.Getenv("A2A_VOICE_IT_LONG") == "1" {
-			long, err := (LocalRenderer{Executable: exe}).Render(context.Background(), base, c, strings.Repeat("Это проверка ограничения длительности голосового ответа. ", 160))
+			long, err := (LocalRenderer{}).Render(context.Background(), base, c, strings.Repeat("Это проверка ограничения длительности голосового ответа. ", 160))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -205,7 +208,7 @@ func TestWaveformSignedBoundary(t *testing.T) {
 // waveform receives the spoken notice when the input itself was shortened.
 func TestRenderInputBound(t *testing.T) {
 	runner := &renderRunner{t: t, source: bytes.Repeat([]byte{1, 0}, sampleRate)}
-	a, err := (LocalRenderer{Runner: runner}).Render(context.Background(), t.TempDir(), Config{true, 180}, strings.Repeat("Я", 6001))
+	a, err := (LocalRenderer{Runner: runner}).Render(context.Background(), t.TempDir(), Config{Enabled: true, MaxSeconds: 180}, strings.Repeat("Я", 6001))
 	if err != nil || !a.Truncated || len([]rune(runner.inputs[0])) != 6000 || runner.inputs[1] != TruncationNotice {
 		t.Fatalf("input bound failed: truncated=%v err=%v", a.Truncated, err)
 	}
