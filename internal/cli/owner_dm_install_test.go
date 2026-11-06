@@ -9,7 +9,8 @@ import (
 )
 
 // Test 17: hook wiring and denials depend only on runtime/binary/identity,
-// never feature flags. Fresh and configured installations match; malformed
+// never feature flags; principal-dm ensure/unset are denied like owner-dm
+// terminal verbs while status/say stay allowed. Fresh and configured installations match; malformed
 // permissions or a foreign rules file refuse without overwriting user bytes.
 func TestOwnerDMInstallDenials(t *testing.T) {
 	for _, runtime := range []string{"claude", "codex"} {
@@ -36,13 +37,21 @@ func TestOwnerDMInstallDenials(t *testing.T) {
 						Deny []string `json:"deny"`
 					} `json:"permissions"`
 				}
-				if json.Unmarshal([]byte(fresh), &data) != nil || len(data.Permissions.Deny) != 6 {
+				if json.Unmarshal([]byte(fresh), &data) != nil || len(data.Permissions.Deny) != 10 {
 					t.Fatal("missing deny rules")
 				}
 				for _, verb := range []string{"ensure", "set", "unset"} {
 					if !contains(data.Permissions.Deny, "Bash(*owner-dm "+verb+")") || !contains(data.Permissions.Deny, "Bash(*owner-dm "+verb+" *)") {
 						t.Fatal("terminal verb not denied", verb)
 					}
+				}
+				for _, verb := range []string{"ensure", "unset"} {
+					if !contains(data.Permissions.Deny, "Bash(*principal-dm "+verb+")") || !contains(data.Permissions.Deny, "Bash(*principal-dm "+verb+" *)") {
+						t.Fatal("principal terminal verb not denied", verb)
+					}
+				}
+				if contains(data.Permissions.Deny, "Bash(*principal-dm say *)") || contains(data.Permissions.Deny, "Bash(*principal-dm status)") {
+					t.Fatal("agent verbs denied")
 				}
 				bad := filepath.Join(root, "bad.json")
 				original := `{"permissions":{"deny":7}}`
@@ -59,7 +68,12 @@ func TestOwnerDMInstallDenials(t *testing.T) {
 						t.Fatal("terminal rule missing", verb)
 					}
 				}
-				if strings.Count(text, `decision = "forbidden"`) != 6 || strings.Contains(text, `"status"`) || strings.Contains(text, `"bind"`) {
+				for _, verb := range []string{"ensure", "unset"} {
+					if !strings.Contains(text, `"principal-dm", "`+verb+`"`) {
+						t.Fatal("principal terminal rule missing", verb)
+					}
+				}
+				if strings.Count(text, `decision = "forbidden"`) != 10 || strings.Contains(text, `"status"`) || strings.Contains(text, `"bind"`) || strings.Contains(text, `"say"`) {
 					t.Fatal("wrong deny scope")
 				}
 				e.run("hook", "install", "--agent", "bob", "--runtime", runtime, "--settings", file).ok(t)

@@ -78,7 +78,7 @@ Onboards a new orchestrator in one command (owner requirement, 2026-09-29): it p
 summary. Every step is printed; nothing is a hidden default; a re-run changes nothing and says `already` / `unchanged`.
 
 **Current onboarding policy:** the owner authorizes the identity; missing rooms are provisioned through the meta-keeper, with the product
-keeper coordinating product scope. Continue only when the required rooms and membership are ready. The sole agent room-creation exception is an admitted, verified owner-channel `owner-dm bind`: it creates only the pinned owner’s unencrypted private room (see Owner DM S1 below). Do not use `identity ensure` to create
+keeper coordinating product scope. Continue only when the required rooms and membership are ready. The sole agent room-creation exception is an admitted, verified owner-channel `owner-dm bind`: it creates only the pinned owner’s unencrypted private room (see Owner DM S1 below). The host terminal, not the agent, may also run `principal-dm ensure` for a host-pinned non-owner principal (Principal DM S1 below). Do not use `identity ensure` to create
 a missing room. The implementation still has that capability (step 2 below); it does not enforce keeper approval or a readiness gate.
 
 1. **Identity.**
@@ -1954,6 +1954,54 @@ file edits, and first replay of a still-fresh genuine owner request are outside
 F1’s protection. Fingerprint/mtime are observations; render is presentation.
 Protected authority requires separately owned B4, outside S1. S2 and live
 activation require their own admission.
+
+## Principal DM S1 (default off)
+
+A private, unencrypted direct room between this identity and a host-pinned
+human principal other than the owner (protocol: Principal DM S1, issue #173).
+
+```text
+a2a principal-dm ensure @user:server        # host terminal: MXID typed back
+a2a principal-dm status [@user:server]      # read-only
+a2a principal-dm say @user:server <text|@file|->
+a2a principal-dm unset @user:server         # host terminal: MXID typed back
+```
+
+Storage under the config base, all regular 0600 files:
+
+- `principal-dm/<name>.pin`, written by the host: `{"principals":["@user:server"]}`.
+  A missing pin pins nobody. Any other shape, a bad MXID or a duplicate makes
+  every principal-dm mutation refuse; status reports it.
+- `principal-dm/<name>.json`: `{"v":1,"dms":{"@user:server":{generation, active,
+  pending_join, room, sub_id, created_at}}}`, written only under
+  `principal-dm/<name>.lock`.
+- Rooms are added to the identity's `owner-dm/<name>.archive-exclude`, which
+  archive already honours.
+
+Host setup, once per principal:
+
+```bash
+# <base> is ~/.config/a2a-swarm unless A2A_CONFIG_DIR says otherwise
+mkdir -p -m 700 <base>/principal-dm
+(umask 077; printf '{"principals":["@user:server"]}\n' > <base>/principal-dm/<name>.pin)
+a2a --as <name> principal-dm ensure @user:server
+```
+
+Ensure prints `active=false pending_join=true` when it creates the room. While
+the principal has not joined, re-running ensure refuses with "already has a
+pending claim"; after the join it activates, and so does the first `say` that
+passes the audience check. If a step after room creation fails, ensure says the
+room was created but not recorded: the room is already archive-excluded, a
+subscription it just added is removed, and the next ensure creates a fresh
+room. `hook install` denies `principal-dm ensure` and `principal-dm unset` to
+agent runtimes, like the owner-dm terminal verbs; the TTY check alone is
+friction, not consent. A present but invalid owner-dm pin refuses every
+principal-dm mutation. Say refuses while pending, after expiry or unset, for an
+unpinned principal, and whenever the audience check fails; it never repairs the
+room. Status prints, per principal, `pinned`, the state (active, pending with
+expiry, expired, inactive, never-configured), generation, room and the audience
+result, and writes nothing. Incoming messages arrive through the room's
+all-events subscription and `a2a inbox` like any other room.
 
 ## Named Matrix connections
 
