@@ -133,7 +133,10 @@ func (f *prejoinFixture) seedPreservedState() map[string]string {
 	if err := config.SaveState(f.paths, "alice", config.State{NextBatch: "unchanged-cursor", Threads: []string{"$already-followed"}, Muted: []string{prejoinRoot}}); err != nil {
 		f.t.Fatal(err)
 	}
-	for name, content := range map[string]string{"alice.lock": "", "alice.mailbox.jsonl": "synthetic-pending-preserved\n"} {
+	// The mailbox holds one well-formed pending entry in another room: the
+	// local redaction cache must be able to open it, and any write by the
+	// command would still change these exact bytes.
+	for name, content := range map[string]string{"alice.lock": "", "alice.mailbox.jsonl": `{"op":"add","entry":{"id":"synthetic-pending-preserved","kind":"gap","room":"!elsewhere:fixture"}}` + "\n"} {
 		if err := os.WriteFile(filepath.Join(f.paths.Base, "state", name), []byte(content), 0600); err != nil {
 			f.t.Fatal(err)
 		}
