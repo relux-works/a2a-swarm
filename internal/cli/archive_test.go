@@ -61,7 +61,7 @@ func TestArchiveFormat(t *testing.T) {
 		"- root: " + root + "\n" +
 		"- archived-by: a2a archive\n" +
 		"\n## $ev001\n" +
-		"- 2026-09-29T10:00:01Z alice\n" +
+		"- 2026-09-29T10:00:01Z alice kind=notice to=all\n" +
 		"\n    [topic] alpha: Alpha plan\n\n    root text\n" +
 		"\n## $ev002\n" +
 		"- 2026-09-29T10:00:02Z bob kind=proposal to=alice reply-by=2026-10-01T12:00:00Z\n" +

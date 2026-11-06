@@ -269,20 +269,26 @@ func (s *session) rememberThread(root string) error {
 	return err
 }
 
-// cmdTopic: a2a topic new <room> <slug> "<title>" [--body -|@file|text]
+// cmdTopic: a2a topic new <room> <slug> "<title>" [--body -|@file|text] [--to a,b] [--kind K]
 func cmdTopic(ctx context.Context, a *App, args []string) error {
-	const use = `usage: a2a topic new <room> <slug> "<title>" [--body -|@file|text]`
+	const use = `usage: a2a topic new <room> <slug> "<title>" [--body -|@file|text] [--to a,b] [--kind K]`
 	if len(args) == 0 || args[0] != "new" {
 		return usagef(use)
 	}
 	fs := newFlagSet("topic new")
 	bodyArg := fs.String("body", "", "topic body: - (stdin), @file, or text")
+	kind := fs.String("kind", "notice", "message kind")
+	var to stringList
+	fs.Var(&to, "to", "comma-separated addressees (repeatable)")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
 	}
 	if len(pos) < 3 {
 		return usagef(use)
+	}
+	if err := validateMessageKind(*kind); err != nil {
+		return err
 	}
 	slug, title := pos[1], sanitizeLine(strings.Join(pos[2:], " "))
 	if !slugRE.MatchString(slug) {
@@ -301,6 +307,11 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	toNames, mentions, err := addressees(to.String(), s.server)
+	if err != nil {
+		return err
+	}
+	now := a.Now().UTC()
 	roomID, label, err := s.resolveRoom(ctx, pos[0])
 	if err != nil {
 		return err
@@ -322,8 +333,9 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	content, err := framedTextContent(text, map[string]any{
 		ContentKey: Header{
 			V: 1, Type: "topic", Slug: slug, Title: title, From: s.name,
-			At: a.Now().UTC().Format(time.RFC3339),
+			At: now.Format(time.RFC3339), To: toNames, Kind: *kind, ReplyBy: defaultReplyBy(*kind, now),
 		},
+		"m.mentions": matrix.Mentions{UserIDs: mentions},
 	}, frame, body, "")
 	if err != nil {
 		return err
@@ -386,9 +398,9 @@ func validKind(k string) bool {
 	return false
 }
 
-// cmdPost: a2a post <room> --topic <slug|$event> [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
+// cmdPost: a2a post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
 func cmdPost(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
+	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
 	fs := newFlagSet("post")
 	withVoice := fs.Bool("voice", false, "add a local voice reply after the unchanged text post")
 	topic := fs.String("topic", "", "topic slug or root event id")
@@ -418,13 +430,13 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
-	if *topic == "" {
-		return usagef("--topic is required (%s)", use)
+	if *topic == "" && *re == "" {
+		return usagef("--topic is required unless --re selects a topic (%s)", use)
 	}
-	if !validKind(*kind) {
-		return usagef("invalid --kind %q (one of: %s)", *kind, strings.Join(Kinds, ", "))
+	if err := validateMessageKind(*kind); err != nil {
+		return err
 	}
-	if *re != "" && !strings.HasPrefix(*re, "$") {
+	if *re != "" && !matrix.ValidVerificationID(*re, '$') {
 		return usagef("invalid --re %q: must be an event id ($...)", *re)
 	}
 	if *trunk != "" && !trunkRE.MatchString(*trunk) {
@@ -440,15 +452,13 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		return usagef("invalid --subject %q: 1-128 chars of A-Z a-z 0-9 # . _ / : @ -", sanitizeLine(*subject))
 	}
 	now := a.Now().UTC()
-	rb := ""
+	rb := defaultReplyBy(*kind, now)
 	if *replyBy != "" {
 		t, err := time.Parse(time.RFC3339, *replyBy)
 		if err != nil {
 			return usagef("invalid --reply-by %q: use RFC3339, for example 2026-09-29T12:00:00Z", *replyBy)
 		}
 		rb = t.UTC().Format(time.RFC3339)
-	} else if *kind == "question" {
-		rb = now.Add(DefaultReplyBy).Format(time.RFC3339)
 	}
 	bodyArg := strings.Join(pos[1:], " ")
 	if len(pos) > 2 && (pos[1] == "-" || strings.HasPrefix(pos[1], "@")) {
@@ -480,7 +490,19 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	root, slug, err := s.resolveTopic(ctx, roomID, label, *topic)
+	var root, slug string
+	if *re != "" {
+		root, slug, err = s.resolveReplyTopic(ctx, roomID, label, *re)
+		if err == nil && *topic != "" && *topic != root {
+			var selected string
+			selected, _, err = s.resolveTopic(ctx, roomID, label, *topic)
+			if err == nil && selected != root {
+				err = fmt.Errorf("--re target does not belong to --topic in %s", label)
+			}
+		}
+	} else {
+		root, slug, err = s.resolveTopic(ctx, roomID, label, *topic)
+	}
 	if err != nil {
 		return err
 	}
