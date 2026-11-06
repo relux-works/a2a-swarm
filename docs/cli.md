@@ -314,11 +314,22 @@ session is really gone.
 ### One live session per identity: the lease
 The state file holds `lease: {holder, pid, expires}`. `wait`, `watch`, `inbox` and every hook event take the lease or refresh it for
 **10 minutes** (`config.LeaseTTL`, a named constant, not a flag); `wait` and `watch` refresh it again before every `/sync`. The holder is the
-session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise a valid native `CODEX_THREAD_ID`, otherwise `pid:<pid>@<host>` (the host slug, or the OS
-hostname when none is set: here it is only a label).
+session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise a valid native `CODEX_THREAD_ID`, otherwise `pid:<pid>@<host>` (the OS
+hostname, independent of the identity naming slug).
 - Another holder while the lease is unexpired is refused: `wait`, `watch` and `inbox` exit 1 with
   `identity <name> is held by <holder> until <time>` before any sync; a hook prints nothing, writes that line to stderr and exits 0.
 - An expired lease is taken over. A `pid:` holder on this host whose process has exited counts as expired.
+  On macOS a `pid:` holder also records its own process start time (`pid:<pid>@<host>#<unix-seconds>`, read with
+  `TZ=UTC LC_ALL=C ps -o lstart=`; Darwin records it at fork, so later clock steps do not move it); when that PID is alive with a
+  different start time, the PID was reused and the holder counts as expired too. On other platforms (Linux `ps` derives
+  `lstart` from the boot time when read, so a clock step would move it) no start time is recorded and reuse is never inferred. A holder without a start
+  time (older builds), or a start time that cannot be read before the caller's deadline (at most 500ms, inside the state lock),
+  is never treated as reused. Session-id holders keep the TTL rule. A confirmed reuse is reported with both start times:
+  `identity release` prints `released <name>: pid holder <holder> was reused (recorded start R, observed start O)`, and a
+  command acquiring through `acquireLease` writes one stderr line on takeover (hook stdout is unchanged). Unchanged compatibility: on this
+  host, any session or process may still replace a live `pid:` lease when it acquires, whatever its start time. During a
+  mixed-version rollout an older build cannot recognise a new-format holder as a local dead or reused PID; ordinary TTL
+  expiry and the same-host acquisition compatibility above still apply to it.
 - The Claude Code `SessionStart` hook appends `export A2A_SESSION_ID=<session_id>` to `CLAUDE_ENV_FILE` (which Claude Code sets for that hook;
   an id that is not a plain `[A-Za-z0-9._-]` token is skipped), so the session's own `a2a inbox` and `wait` hold the same lease as its hooks.
   Codex commands use the native `CODEX_THREAD_ID` automatically; no per-command `A2A_SESSION_ID` export is needed. An explicit export retains priority.

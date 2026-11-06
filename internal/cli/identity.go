@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -286,14 +287,17 @@ func cmdIdentityRelease(a *App, args []string) error {
 		return err
 	}
 	cleared := false
+	a.leaseReuse = nil
 	if _, err := config.UpdateState(p, name, func(cur *config.State) error {
 		var err error
-		cleared, err = cur.Release(name, a.leaseHolder(p, ""), *force, a.Now(), a.leaseDead(p))
+		cleared, err = cur.Release(name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
 		return err
 	}); err != nil {
 		return err
 	}
-	if cleared {
+	if cleared && a.leaseReuse != nil {
+		a.printf("released %s: %s\n", name, a.leaseReuse.note())
+	} else if cleared {
 		a.printf("released %s\n", name)
 	} else {
 		a.printf("%s has no lease\n", name)
@@ -303,7 +307,9 @@ func cmdIdentityRelease(a *App, args []string) error {
 
 // leaseHolder names this session: hook id, explicit A2A_SESSION_ID, native
 // CODEX_THREAD_ID, then the PID fallback. Codex commands need no manual export.
-func (a *App) leaseHolder(p config.Paths, sessionID string) string {
+// A zero deadline means none (as in config.UpdateStateUntil); the start-time
+// read is still capped at pidBirthTimeout.
+func (a *App) leaseHolder(p config.Paths, sessionID string, deadline time.Time) string {
 	if id := hookSessionKey(sessionID); sessionID != "" && id != "-" {
 		return id
 	}
@@ -313,7 +319,79 @@ func (a *App) leaseHolder(p config.Paths, sessionID string) string {
 	if id := a.Getenv("CODEX_THREAD_ID"); claudeSessionRE.MatchString(id) {
 		return id
 	}
-	return "pid:" + strconv.Itoa(os.Getpid()) + "@" + machineLabel()
+	pid := os.Getpid()
+	holder := "pid:" + strconv.Itoa(pid) + "@" + machineLabel()
+	// The holder carries its own start time, so a later reuse of the PID is
+	// recognised. Without a readable start time it stays in the legacy form.
+	ctx, cancel := probeContext(deadline)
+	defer cancel()
+	if birth, err := a.pidBirth(ctx, pid); err == nil {
+		holder += "#" + strconv.FormatInt(birth, 10)
+	}
+	return holder
+}
+
+// pidBirthTimeout caps one start-time read; callers may shorten it further.
+const pidBirthTimeout = 500 * time.Millisecond
+
+// probeContext bounds a start-time read by the caller's deadline. A zero
+// deadline means "no deadline" (the inbox/wait/watch convention), never an
+// already expired one; pidBirth applies its own cap either way.
+func probeContext(deadline time.Time) (context.Context, context.CancelFunc) {
+	if deadline.IsZero() {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithDeadline(context.Background(), deadline)
+}
+
+// leaseReuse records the evidence for releasing a pid: holder whose PID now
+// belongs to another process: the recorded and the observed start time.
+type leaseReuse struct {
+	Holder             string
+	Recorded, Observed int64
+}
+
+func (r *leaseReuse) note() string {
+	return fmt.Sprintf("pid holder %s was reused (recorded start %d, observed start %d)", r.Holder, r.Recorded, r.Observed)
+}
+
+// errPIDBirthUnsupported marks platforms where the reported start time is not
+// a stable process identity.
+var errPIDBirthUnsupported = errors.New("process start time is not a stable identity on this platform")
+
+// pidBirth returns a process start time as Unix seconds. Only on Darwin is
+// that value recorded at fork and left alone by later clock steps; ps runs with
+// TZ=UTC and LC_ALL=C so readers with different environments agree. On Linux
+// ps derives lstart from the boot time when it is read, so a clock step would
+// make a live holder look reused: there the start time is reported unknown and
+// pid holders keep the legacy behaviour.
+func (a *App) pidBirth(ctx context.Context, pid int) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, pidBirthTimeout)
+	defer cancel()
+	if a.leaseBirth != nil {
+		return a.leaseBirth(ctx, pid)
+	}
+	goos := a.leaseGOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos != "darwin" {
+		return 0, errPIDBirthUnsupported
+	}
+	if pid <= 0 {
+		return 0, errors.New("invalid process")
+	}
+	cmd := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	t, err := time.Parse("Mon Jan _2 15:04:05 2006", strings.Join(strings.Fields(string(out)), " "))
+	if err != nil {
+		return 0, err
+	}
+	return t.Unix(), nil
 }
 
 // machineLabel names this machine for the lease: the OS hostname, which does
@@ -327,9 +405,18 @@ func machineLabel() string {
 	return h
 }
 
-// leaseDead reports whether a "pid:<pid>@<host>" holder on this host has
-// exited; every other holder counts as live until its lease expires.
+// leaseDead reports whether a "pid:<pid>@<host>[#<birth>]" holder on this
+// host has exited, or whether its PID now belongs to a process with another
+// start time. A holder without a start time, or a start time that cannot be
+// read before the deadline, is never treated as reused. Every other holder
+// counts as live until its lease expires.
 func (a *App) leaseDead(p config.Paths) func(string) bool {
+	return a.leaseDeadBy(p, time.Time{})
+}
+
+// leaseDeadBy is leaseDead bounded by the caller's deadline, because the
+// check runs inside the state lock. A confirmed reuse is kept in a.leaseReuse.
+func (a *App) leaseDeadBy(p config.Paths, deadline time.Time) func(string) bool {
 	return func(holder string) bool {
 		rest, ok := strings.CutPrefix(holder, "pid:")
 		if !ok {
@@ -337,10 +424,31 @@ func (a *App) leaseDead(p config.Paths) func(string) bool {
 		}
 		pidText, host, ok := strings.Cut(rest, "@")
 		pid, err := strconv.Atoi(pidText)
-		if !ok || err != nil || pid <= 0 || host != machineLabel() {
+		if !ok || err != nil || pid <= 0 {
 			return false
 		}
-		return processGone(pid)
+		host, birthText, hasBirth := strings.Cut(host, "#")
+		if host != machineLabel() {
+			return false
+		}
+		if processGone(pid) {
+			return true
+		}
+		if !hasBirth {
+			return false
+		}
+		want, err := strconv.ParseInt(birthText, 10, 64)
+		if err != nil {
+			return false
+		}
+		ctx, cancel := probeContext(deadline)
+		defer cancel()
+		got, err := a.pidBirth(ctx, pid)
+		if err != nil || got == want {
+			return false
+		}
+		a.leaseReuse = &leaseReuse{Holder: holder, Recorded: want, Observed: got}
+		return true
 	}
 }
 
@@ -361,17 +469,22 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	holder := a.leaseHolder(s.paths, sessionID)
+	holder := a.leaseHolder(s.paths, sessionID, deadline)
 	ttl := config.LeaseTTL
 	if a.leaseTTL != 0 {
 		ttl = a.leaseTTL
 	}
+	a.leaseReuse = nil
 	_, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDead(s.paths))
+		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
 	})
+	if err == nil && a.leaseReuse != nil {
+		// stderr only: hook stdout carries the doorbell and must stay unchanged.
+		fmt.Fprintf(a.Stderr, "a2a: lease of %s taken over: %s\n", s.name, a.leaseReuse.note())
+	}
 	return err
 }
 

@@ -83,6 +83,12 @@ type App struct {
 	backfillPages int
 	// leaseTTL, when set (tests only), replaces config.LeaseTTL.
 	leaseTTL time.Duration
+	// leaseBirth reads a process start time for pid: lease holders; tests only replace it.
+	leaseBirth func(ctx context.Context, pid int) (int64, error)
+	// leaseReuse is the last pid: holder released because its PID was reused.
+	leaseReuse *leaseReuse
+	// leaseGOOS overrides runtime.GOOS for the start-time reader; tests only.
+	leaseGOOS string
 	// Owner terminal/deadline seams are tests only; production uses /dev/tty.
 	ownerConfirm      func(string) error
 	ownerMirrorBudget time.Duration
