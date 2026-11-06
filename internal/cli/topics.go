@@ -654,6 +654,10 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
+	events, err = s.client.FilterEvents(roomID, events)
+	if err != nil {
+		return err
+	}
 	for _, ev := range events {
 		if !*asJSON {
 			a.printEvent(ev, s.server)

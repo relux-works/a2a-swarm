@@ -11,22 +11,23 @@ import (
 // object per line by `read --json` and `wait --json`. Text fields are
 // sanitized exactly like the human-readable output.
 type EventRecord struct {
-	Type    string   `json:"type"` // read: "topic" or "message"; wait/watch/inbox: "to", "mention", "sub", "thread", "all", "invite" or "gap"
-	Room    string   `json:"room,omitempty"`
-	RoomID  string   `json:"room_id"`
-	EventID string   `json:"event_id,omitempty"`
-	Sender  string   `json:"sender,omitempty"`
-	At      string   `json:"at,omitempty"`
-	Kind    string   `json:"kind,omitempty"`
-	Topic   string   `json:"topic,omitempty"` // topic slug
-	Title   string   `json:"title,omitempty"` // topic roots only
-	Root    string   `json:"root,omitempty"`  // thread root event id
-	To      []string `json:"to,omitempty"`
-	Re      string   `json:"re,omitempty"`
-	ReplyBy string   `json:"reply_by,omitempty"`
-	Trunk   string   `json:"trunk,omitempty"`
-	Subtype string   `json:"subtype,omitempty"`
-	Subject string   `json:"subject,omitempty"`
+	Redacted bool     `json:"redacted,omitempty"`
+	Type     string   `json:"type"` // read: "topic" or "message"; wait/watch/inbox: "to", "mention", "sub", "thread", "all", "invite" or "gap"
+	Room     string   `json:"room,omitempty"`
+	RoomID   string   `json:"room_id"`
+	EventID  string   `json:"event_id,omitempty"`
+	Sender   string   `json:"sender,omitempty"`
+	At       string   `json:"at,omitempty"`
+	Kind     string   `json:"kind,omitempty"`
+	Topic    string   `json:"topic,omitempty"` // topic slug
+	Title    string   `json:"title,omitempty"` // topic roots only
+	Root     string   `json:"root,omitempty"`  // thread root event id
+	To       []string `json:"to,omitempty"`
+	Re       string   `json:"re,omitempty"`
+	ReplyBy  string   `json:"reply_by,omitempty"`
+	Trunk    string   `json:"trunk,omitempty"`
+	Subtype  string   `json:"subtype,omitempty"`
+	Subject  string   `json:"subject,omitempty"`
 	// Sub names the subscription that delivered the event (wait/watch type "sub").
 	Sub string `json:"sub,omitempty"`
 	// SubRequest is the requested selector of a kind=subscribe request.
@@ -42,13 +43,14 @@ type EventRecord struct {
 func eventRecord(typ, room, roomID string, ev matrix.Event, server string, excerpt bool) EventRecord {
 	m := ev.Message()
 	r := EventRecord{
-		Type:    typ,
-		Room:    room,
-		RoomID:  roomID,
-		EventID: ev.EventID,
-		Sender:  localpartIfLocal(ev.Sender, server),
-		At:      time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339),
-		Root:    ev.ThreadRoot(),
+		Redacted: ev.IsRedacted(),
+		Type:     typ,
+		Room:     room,
+		RoomID:   roomID,
+		EventID:  ev.EventID,
+		Sender:   localpartIfLocal(ev.Sender, server),
+		At:       time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339),
+		Root:     ev.ThreadRoot(),
 	}
 	text := m.Body
 	if h, ok := decodeHeader(m.A2A); ok {

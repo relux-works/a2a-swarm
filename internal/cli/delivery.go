@@ -113,9 +113,10 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 
 // batch is what one sync response adds to the mailbox.
 type batch struct {
-	entries []config.MailEntry
-	learned []string // thread roots learned from my own events
-	close   []string // --until-kind subscriptions closed by a persisted event
+	entries    []config.MailEntry
+	redactions []config.Redaction
+	learned    []string // thread roots learned from my own events
+	close      []string // --until-kind subscriptions closed by a persisted event
 }
 
 // deliveryFilter is the --room/--all selection of wait and watch.
@@ -182,6 +183,9 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 	for _, roomID := range sortedKeys(resp.Rooms.Join) {
 		jr := resp.Rooms.Join[roomID]
 		keep := func(ev matrix.Event) bool {
+			if ev.Type == "m.room.redaction" || ev.IsRedacted() {
+				return true
+			}
 			if ev.Type != "m.room.message" {
 				return false
 			}
@@ -199,6 +203,7 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			b.entries = append(b.entries, config.MailEntry{ID: "gap:" + roomID + ":" + since, Kind: config.MailGap, Room: roomID,
 				Label: s.roomLabel(ctx, roomID, labels), From: gap.From, To: gap.To})
 		}
+		b.redactions = append(b.redactions, eventRedactions(roomID, events)...)
 		for _, ev := range events {
 			active := subs
 			if len(closed) > 0 {
@@ -216,6 +221,9 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			}
 			if rel == "" && all[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
 				rel = relAll
+			}
+			if rel == "" && ev.Type == "m.room.message" && ev.IsRedacted() && ev.Sender != me {
+				rel = relevance("redacted")
 			}
 			if rel == "" || seen[ev.EventID] {
 				continue
@@ -304,6 +312,9 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 				return nil, err
 			}
 		}
+		if err := mb.Redact(b.redactions); err != nil {
+			return nil, err
+		}
 		if _, err := mb.Append(b.entries); err != nil {
 			return nil, err
 		}
@@ -346,6 +357,9 @@ func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.
 		return config.State{}, err
 	}
 	var b batch
+	for roomID, jr := range resp.Rooms.Join {
+		b.redactions = append(b.redactions, eventRedactions(roomID, jr.Timeline.Events)...)
+	}
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		b.entries = append(b.entries, inviteEntry(roomID, "", resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
 	}

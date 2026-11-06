@@ -580,7 +580,7 @@ type doorbell struct {
 }
 
 // doorbellTypes is the fixed order of the relevance types in the template.
-var doorbellTypes = []string{string(relTo), string(relMention), string(relThread), string(relSub), string(relAll), "invite"}
+var doorbellTypes = []string{string(relTo), string(relMention), string(relThread), string(relSub), string(relAll), "redacted", "invite"}
 
 // doorbellOf summarizes the pending items; members is verifySenders' result.
 func doorbellOf(items []waitItem, server string, members map[string]bool) doorbell {

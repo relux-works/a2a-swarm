@@ -562,7 +562,14 @@ func cmdFiles(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
+	events, err = s.client.FilterEvents(roomID, events)
+	if err != nil {
+		return err
+	}
 	for _, ev := range events {
+		if ev.IsRedacted() {
+			continue
+		}
 		if *asJSON {
 			if err := a.printJSON(eventRecord("message", label, roomID, ev, s.server, false)); err != nil {
 				return err

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -121,18 +123,8 @@ func isEdit(ev matrix.Event) (string, bool) {
 	return "", false
 }
 
-// isRedacted reports a redacted event: unsigned.redacted_because is set, or the
-// content is empty.
-func isRedacted(ev matrix.Event) bool {
-	var u struct {
-		RedactedBecause json.RawMessage `json:"redacted_because"`
-	}
-	if json.Unmarshal(ev.Unsigned, &u) == nil && len(u.RedactedBecause) > 0 && string(u.RedactedBecause) != "null" {
-		return true
-	}
-	var c map[string]json.RawMessage
-	return json.Unmarshal(ev.Content, &c) != nil || len(c) == 0
-}
+// isRedacted is shared with all message renderers and the local mailbox.
+func isRedacted(ev matrix.Event) bool { return ev.IsRedacted() }
 
 // collectArchive reads the whole history of a room: every thread (root plus
 // all replies, plus edits of its events) and the room-level messages. Nothing
@@ -143,7 +135,7 @@ func (s *session) collectArchive(ctx context.Context, roomID string) ([]archiveT
 		return nil, nil, err
 	}
 	scan, err := pageAllEvents("room "+roomID, func(from string) (matrix.Page, error) {
-		return s.client.Messages(ctx, roomID, from, "b", 100)
+		return s.client.MessagesWithRedactions(ctx, roomID, from, "b", 100)
 	})
 	if err != nil {
 		return nil, nil, err
@@ -194,6 +186,9 @@ func (s *session) collectArchive(ctx context.Context, roomID string) ([]archiveT
 		if err != nil {
 			return nil, nil, err
 		}
+		if rootEv.IsRedacted() {
+			t.Slug, t.Title = "", "[redacted]"
+		}
 		i := len(threads)
 		evs := []matrix.Event{rootEv}
 		threadOf[rootEv.EventID] = i
@@ -243,8 +238,11 @@ func renderArchive(title string, header []string, events []matrix.Event, server 
 
 // writeArchiveBlock renders "## <event id>", the meta lines, and the indented body.
 func writeArchiveBlock(b *strings.Builder, ev matrix.Event, server string) {
-	m := ev.Message()
 	redacted := isRedacted(ev)
+	if redacted {
+		ev = ev.WithoutContent()
+	}
+	m := ev.Message()
 	b.WriteString("\n## " + sanitizeLine(ev.EventID) + "\n")
 	meta := []string{time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339), localpartIfLocal(ev.Sender, server)}
 	h, hok := decodeHeader(m.A2A)
@@ -443,8 +441,26 @@ func (s *session) archiveRoom(ctx context.Context, roomID, label, roomDir, dir s
 	if err != nil {
 		return err
 	}
+	// Reapply after all pages: a redaction may arrive on a later page than
+	// its original. Topic metadata is derived again from the filtered root.
+	for i := range threads {
+		threads[i].events, err = s.client.FilterEvents(roomID, threads[i].events)
+		if err != nil {
+			return err
+		}
+		if threads[i].events[0].IsRedacted() {
+			threads[i].topic.Slug, threads[i].topic.Title = "", "[redacted]"
+		}
+	}
+	room, err = s.client.FilterEvents(roomID, room)
+	if err != nil {
+		return err
+	}
 	files, err := renderRoomArchive(label, roomID, threads, room, s.server, withIndex)
 	if err != nil {
+		return err
+	}
+	if err := scrubPriorRedactedTopics(dir, roomDir, roomID, threads, room, files); err != nil {
 		return err
 	}
 	return s.app.writeRoomArchive(dir, roomDir, files)
@@ -466,6 +482,7 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 	if *dir == "" {
 		return usagef("--dir must not be empty")
 	}
+	fmt.Fprintln(a.Stderr, archiveRedactionWarning)
 	all := pos[0] == "all"
 	if !all && !strings.HasPrefix(pos[0], "!") {
 		local, _, _ := strings.Cut(strings.TrimPrefix(pos[0], "#"), ":")
@@ -520,6 +537,77 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 		}
 		if err := s.archiveRoom(ctx, id, label, local, *dir, *withIndex); err != nil {
 			return fmt.Errorf("archive %s: %w", label, err)
+		}
+	}
+	return nil
+}
+
+// A redacted topic no longer has its content-derived slug. Replace earlier
+// a2a-generated files for that root as well as writing its new stable filename;
+// otherwise the old slug file would keep exporting the removed root. Only
+// bounded generated headers in the explicitly selected export directory are
+// read; no git history or unrelated file is changed or printed.
+func scrubPriorRedactedTopics(dir, roomDir, roomID string, threads []archiveThread, room []matrix.Event, current []archiveFile) error {
+	currentNames := map[string]bool{}
+	for _, f := range current {
+		currentNames[f.name] = true
+	}
+	roots := map[string]bool{}
+	for _, ev := range room {
+		if ev.IsRedacted() {
+			roots[ev.EventID] = true
+		}
+	}
+	for _, th := range threads {
+		if len(th.events) > 0 && th.events[0].IsRedacted() {
+			roots[th.topic.EventID] = true
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	if err := checkNoSymlink(dir, true); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, roomDir)
+	if err := checkNoSymlink(path, true); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return errors.New("archive: cannot inspect previous exports")
+	}
+	for _, entry := range entries {
+		if currentNames[entry.Name()] || !strings.HasSuffix(entry.Name(), ".md") || !entry.Type().IsRegular() {
+			continue
+		}
+		p := filepath.Join(path, entry.Name())
+		f, err := os.Open(p)
+		if err != nil {
+			return errors.New("archive: cannot inspect previous export header")
+		}
+		// A valid Matrix event can contribute a long topic title to the
+		// first header line. Bound the header scan above the event size,
+		// rather than truncating a valid title before its root marker.
+		scanner := bufio.NewScanner(io.LimitReader(f, 128<<10))
+		scanner.Buffer(make([]byte, 4096), 128<<10)
+		var header []string
+		for len(header) < 4 && scanner.Scan() {
+			header = append(header, scanner.Text())
+		}
+		f.Close()
+		if len(header) != 4 || !strings.HasPrefix(header[0], "# ") || header[1] != "- room: "+roomID || header[3] != "- archived-by: a2a archive" {
+			continue
+		}
+		root := strings.TrimPrefix(header[2], "- root: ")
+		if roots[root] {
+			data := renderArchive("[redacted topic]", []string{"room: " + roomID, "root: " + root, "archived-by: a2a archive"}, nil, "")
+			if err := writeAtomic(p, data); err != nil {
+				return errors.New("archive: cannot replace previous redacted topic export")
+			}
 		}
 	}
 	return nil

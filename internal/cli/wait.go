@@ -14,16 +14,16 @@ const DefaultWaitTimeout = 25 * time.Minute
 // maxPoll bounds one /sync long-poll so a dead connection is noticed.
 const maxPoll = 60 * time.Second
 
-// syncFilter keeps /sync small: only messages in timelines, no presence,
+// syncFilter keeps /sync small: messages and redactions in timelines, no presence,
 // account data, or ephemeral events. Invites arrive regardless of the filter.
 const syncFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
-	`"state":{"lazy_load_members":true,"types":[]},"timeline":{"limit":100,"types":["m.room.message"]}}}`
+	`"state":{"lazy_load_members":true,"types":[]},"timeline":{"limit":100,"types":["m.room.message","m.room.redaction"]}}}`
 
 // initialFilter is used for the very first sync: we only need a next_batch.
 const initialFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
-	`"state":{"types":[]},"timeline":{"limit":1,"types":["m.room.message"]}}}`
+	`"state":{"types":[]},"timeline":{"limit":1,"types":["m.room.message","m.room.redaction"]}}}`
 
 // relevance explains why an event is relevant to me; "" means not relevant.
 type relevance string

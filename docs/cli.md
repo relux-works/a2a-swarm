@@ -543,6 +543,70 @@ pinned succeeds with a note. Both print the event id. Sending the state event ne
 a2a pin a2a-swarm '$F1...'
 ```
 
+### `a2a redact <room> <event> --reason TEXT [--txn-id ID]`
+
+Requests event redaction using the selected caller's own account. The homeserver
+alone decides authority: the sender can request redaction of its own event, and
+moderators can request redaction of another sender's event when the server allows
+it. There is no local power-level precheck. This command does not grant permission
+to act outside the operator's scope or change the protocol's moderation policy.
+
+Event redaction is **best effort on homeservers and across federation**. It does
+not recall already copied mailbox versions, archive Git commits, owner-DM mirrors,
+projections, downloads or media. Matrix redaction does not guarantee media
+deletion. **Rotate leaked secrets.** The command states these limits on stderr.
+It prints only the redaction event ID on successful completion; it never prints
+or quotes the removed content or the supplied reason, and posts no notice.
+
+`--reason` is required literal, nonempty UTF-8 text, at most **1,024 bytes**
+(inclusive, before encoding), with no control or bidi characters. It is not a
+file reference, stdin selector, shell command or formatting template. Never
+repeat leaked material in the reason: the server stores the reason on the
+redaction event, where other clients may show it. Quote arguments for your shell.
+
+A bounded direct event lookup checks only target type. The command refuses an
+`m.room.redaction` target with `REDACT_TARGET_REDACTION`: redacting a redaction
+does not restore the original event. The lookup is not an authority check.
+Matrix [room version 11](https://spec.matrix.org/latest/rooms/v11/) moved the
+redaction target into `content.redacts`; older top-level `redacts` and redacted
+event `unsigned.redacted_because` metadata are also recognised by local sync.
+
+Each invocation makes at most one redaction PUT with the transaction ID printed
+on stderr **before the attempt**. There are no automatic retries or redirects.
+After a timeout, lost response, interrupted output or ambiguous failure, keep
+that ID and explicitly repeat the same room, event and reason with
+`--txn-id ID` to replay the original transaction within the server's deduplication
+window. Starting again without it creates a new transaction. IDs accept 1..128
+ASCII letters, digits, dots, underscores or hyphens. Server refusals use fixed
+`M_FORBIDDEN`, `M_NOT_FOUND`, or `M_LIMIT_EXCEEDED` diagnostics (exit 1); authentication
+uses `REDACT_AUTH`, other failures `REDACT_FAILED`. Invalid arguments exit 2.
+Server and transport error text is suppressed. `REDACT_LOCAL_CACHE_FAILED` means
+the server accepted the redaction but local persistence failed; no resend occurs.
+
+When sync observes a redaction, the selected identity's mailbox atomically drops
+body, HTML, attachment and envelope content before advancing its cursor. Pending
+entries stay pending in their arrival order and show `[redacted]`; redaction does
+not receipt them. Durable room/event tombstones survive restart, replay, receipt
+and compaction, including a target observed before its original. They are retained
+indefinitely to prevent old history resurrecting content. A successful redact
+request records the same tombstone immediately. Plain and JSON reads use this
+known state; JSON event records add `redacted: true`. Event-based attachment fetch
+is unavailable after known redaction. A separately known MXC URL is not revoked.
+Unsynced clients and other copies are outside this guarantee.
+
+Later `archive` exports omit known redacted bodies, attachment fields and topic
+titles, and warn that **earlier archive Git commits may still retain them**.
+Previously generated topic files whose slug came from a now-redacted root are
+replaced with a tombstone in the selected export directory; unrelated files and
+Git history are untouched. Tombstones cannot erase content already copied or
+printed by a concurrent reader before the redaction became known to it.
+
+Media observation: a paired automated test fetches the same bytes before and
+after event redaction on its **local HTTP fixture**, whose media store deliberately
+retains them. This is a scoped fixture observation, not evidence about any live
+MXC URL. Live homeserver/media fetchability has **not been run**; deployments need
+a separately authorised observation before reporting actual media retention.
+
 ### `a2a read <room> [--topic X] [--last N] [--event $ev] [--json]`
 Readable output, oldest first (default 20, max 1000). Each message is a meta line (`[time] sender event_id kind=… to=… re=… subtype=… subject=… thread=…`)
 followed by the indented text; header lines are folded into the meta line. With `--topic`, the root comes first, then the last N replies.

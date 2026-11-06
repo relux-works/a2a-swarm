@@ -10,6 +10,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+
+	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
 // The durable mailbox (state/<name>.mailbox.jsonl, mode 0600) is the delivery
@@ -17,12 +20,14 @@ import (
 // and fsynced BEFORE the cursor (State.NextBatch) moves past it, and an entry
 // leaves only by an explicit receipt (`a2a inbox` after printing, `a2a ack`).
 // Irrelevant events never enter it. The file is an append-only log of JSON
-// lines (add, rcpt, shown), rewritten atomically only by compaction, which
+// lines (add, rcpt, shown, redact), rewritten atomically by redaction or
+// compaction. Redaction removes old payload lines without receiving entries. Compaction
 // drops received entries and keeps the last ReceiptIndexMax received ids for
 // deduplicating events a later sync covers again. No bound ever drops an
 // unreceipted entry.
 //
-// Every Mailbox method must run under the state lock (UpdateState).
+// Mailbox mutations run under the state lock (UpdateState). Read-only snapshots
+// may open the file without that lock; redaction rewrites use atomic rename.
 
 // MailboxFile is the durable mailbox of name.
 func (p Paths) MailboxFile(name string) string {
@@ -62,9 +67,17 @@ type MailEntry struct {
 }
 
 type mailLine struct {
-	Op    string     `json:"op"` // add, rcpt, shown
-	Entry *MailEntry `json:"entry,omitempty"`
-	IDs   []string   `json:"ids,omitempty"`
+	Op      string      `json:"op"` // add, rcpt, shown
+	Entry   *MailEntry  `json:"entry,omitempty"`
+	IDs     []string    `json:"ids,omitempty"`
+	Targets []Redaction `json:"targets,omitempty"`
+}
+
+// Redaction is scoped to a room, independently of delivery receipts. Keep it
+// indefinitely: pruning by the receipt window would resurrect replayed content.
+type Redaction struct {
+	Room    string `json:"room"`
+	EventID string `json:"event_id"`
 }
 
 // Mailbox is the loaded mailbox of one agent.
@@ -75,6 +88,7 @@ type Mailbox struct {
 	received []string // receipt order
 	recv     map[string]bool
 	dead     int
+	redacted map[Redaction]bool
 }
 
 // OpenMailbox loads state/<name>.mailbox.jsonl. A missing file is an empty
@@ -83,7 +97,7 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
-	m := &Mailbox{path: p.MailboxFile(name), live: map[string]*MailEntry{}, recv: map[string]bool{}}
+	m := &Mailbox{path: p.MailboxFile(name), live: map[string]*MailEntry{}, recv: map[string]bool{}, redacted: map[Redaction]bool{}}
 	if err := checkSecretFile(m.path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return m, nil
@@ -127,6 +141,7 @@ func (m *Mailbox) apply(l mailLine) {
 			return
 		}
 		e := *l.Entry
+		m.scrub(&e)
 		m.live[e.ID] = &e
 		m.order = append(m.order, e.ID)
 	case "rcpt":
@@ -148,7 +163,63 @@ func (m *Mailbox) apply(l mailLine) {
 				e.Shown = true
 			}
 		}
+	case "redact":
+		for _, target := range l.Targets {
+			m.redacted[target] = true
+		}
+		for _, e := range m.live {
+			m.scrub(e)
+		}
 	}
+}
+
+// IsRedacted checks durable local knowledge, including targets not yet received.
+func (m *Mailbox) IsRedacted(room, id string) bool {
+	return m.redacted[Redaction{room, id}]
+}
+
+func (m *Mailbox) scrub(e *MailEntry) {
+	if e.Kind != MailEvent {
+		return
+	}
+	var ev matrix.Event
+	if json.Unmarshal(e.Event, &ev) != nil {
+		return
+	}
+	if m.IsRedacted(e.Room, e.ID) || ev.IsRedacted() {
+		e.Event, _ = json.Marshal(ev.WithoutContent())
+	}
+}
+
+// Redact atomically rewrites this mailbox without old payload lines, retaining
+// pending entries, shown marks, receipts and permanent target tombstones. It
+// must complete before the sync cursor advances. Other copies are untouched.
+func (m *Mailbox) Redact(targets []Redaction) error {
+	changed := false
+	for _, target := range targets {
+		if target.Room != "" && target.EventID != "" && !m.redacted[target] {
+			m.redacted[target] = true
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	for _, e := range m.live {
+		m.scrub(e)
+	}
+	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
+		return err
+	}
+	if err := m.compact(); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(m.path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // Has reports whether id is in the mailbox, unreceipted or received (within
@@ -184,6 +255,7 @@ func (m *Mailbox) Append(entries []MailEntry) (int, error) {
 		}
 		seen[e.ID] = true
 		e.Shown = false
+		m.scrub(&e)
 		if err := writeLine(&buf, mailLine{Op: "add", Entry: &e}); err != nil {
 			return 0, err
 		}
@@ -277,6 +349,21 @@ func (m *Mailbox) compact() error {
 		m.received = append([]string(nil), m.received[len(m.received)-ReceiptIndexMax:]...)
 	}
 	var buf bytes.Buffer
+	var targets []Redaction
+	for target := range m.redacted {
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].Room != targets[j].Room {
+			return targets[i].Room < targets[j].Room
+		}
+		return targets[i].EventID < targets[j].EventID
+	})
+	if len(targets) > 0 {
+		if err := writeLine(&buf, mailLine{Op: "redact", Targets: targets}); err != nil {
+			return err
+		}
+	}
 	for i := 0; i < len(m.received); i += 1000 {
 		end := min(i+1000, len(m.received))
 		if err := writeLine(&buf, mailLine{Op: "rcpt", IDs: m.received[i:end]}); err != nil {

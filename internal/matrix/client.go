@@ -30,7 +30,8 @@ type Client struct {
 	BaseURL       string
 	Token         string
 	HTTP          *http.Client
-	BeforeRequest func() error // Optional immutable connection binding guard.
+	BeforeRequest func() error                           // Optional immutable connection binding guard.
+	FilterEvents  func(string, []Event) ([]Event, error) // Optional local redaction cache, before consumers decode content.
 	directOnly    bool
 }
 
@@ -651,6 +652,9 @@ type Mentions struct {
 
 // Message decodes the event content as a message.
 func (e Event) Message() MessageContent {
+	if e.IsRedacted() {
+		return MessageContent{Body: "[redacted]"}
+	}
 	var m MessageContent
 	_ = json.Unmarshal(e.Content, &m)
 	return m
@@ -706,6 +710,9 @@ func (c *Client) messages(ctx context.Context, roomID, from, dir string, limit i
 	q.Set("filter", filter)
 	var out Page
 	err := c.callBulk(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/messages", q, nil, &out)
+	if err == nil && c.FilterEvents != nil {
+		out.Chunk, err = c.FilterEvents(roomID, out.Chunk)
+	}
 	return out, err
 }
 
@@ -717,6 +724,9 @@ func (c *Client) Threads(ctx context.Context, roomID, from string, limit int) (P
 	}
 	var out Page
 	err := c.callBulk(ctx, http.MethodGet, v1+"/rooms/"+seg(roomID)+"/threads", q, nil, &out)
+	if err == nil && c.FilterEvents != nil {
+		out.Chunk, err = c.FilterEvents(roomID, out.Chunk)
+	}
 	return out, err
 }
 
@@ -728,6 +738,9 @@ func (c *Client) ThreadReplies(ctx context.Context, roomID, root, from, dir stri
 	}
 	var out Page
 	err := c.callBulk(ctx, http.MethodGet, v1+"/rooms/"+seg(roomID)+"/relations/"+seg(root)+"/m.thread", q, nil, &out)
+	if err == nil && c.FilterEvents != nil {
+		out.Chunk, err = c.FilterEvents(roomID, out.Chunk)
+	}
 	return out, err
 }
 
@@ -735,6 +748,13 @@ func (c *Client) ThreadReplies(ctx context.Context, roomID, root, from, dir stri
 func (c *Client) GetEvent(ctx context.Context, roomID, eventID string) (Event, error) {
 	var out Event
 	err := c.callBulk(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/event/"+seg(eventID), nil, nil, &out)
+	if err == nil && c.FilterEvents != nil {
+		var events []Event
+		events, err = c.FilterEvents(roomID, []Event{out})
+		if err == nil {
+			out = events[0]
+		}
+	}
 	return out, err
 }
 

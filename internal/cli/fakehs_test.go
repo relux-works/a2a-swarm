@@ -30,26 +30,27 @@ type fakeHS struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu         sync.Mutex
-	server     string
-	regToken   string
-	tokens     map[string]string // token -> user id
-	users      map[string]bool
-	passwords  map[string]string // user id -> password (for login and deactivation UIA)
-	logins     []string          // device ids requested by successful logins
-	aliases    map[string]string
-	rooms      map[string]*fakeRoom
-	events     []matrix.Event // stream position = index + 1
-	invites    []fakeInvite
-	presence   map[string]matrix.Presence
-	forbidden  map[string]bool // state event types that are forbidden
-	threadsAPI bool
-	failures   map[string]fakeFailure // route -> forced failure
-	rawURLs    []string
-	wake       chan struct{}
-	seq        int
-	txns       map[string]string // user|room|txn -> event id (send idempotency)
-	syncLimit  int               // per-room timeline limit in /sync (0 = 100, like the real filter)
+	mu                sync.Mutex
+	server            string
+	regToken          string
+	tokens            map[string]string // token -> user id
+	users             map[string]bool
+	passwords         map[string]string // user id -> password (for login and deactivation UIA)
+	logins            []string          // device ids requested by successful logins
+	aliases           map[string]string
+	rooms             map[string]*fakeRoom
+	events            []matrix.Event // stream position = index + 1
+	invites           []fakeInvite
+	presence          map[string]matrix.Presence
+	forbidden         map[string]bool // state event types that are forbidden
+	threadsAPI        bool
+	failures          map[string]fakeFailure // route -> forced failure
+	rawURLs           []string
+	wake              chan struct{}
+	seq               int
+	redactionRequests []fakeRedactionRequest
+	txns              map[string]string // user|room|txn -> event id (send idempotency)
+	syncLimit         int               // per-room timeline limit in /sync (0 = 100, like the real filter)
 	// historyFloor, when > 0, is the index (in a room's messages) below which
 	// /messages cannot page (a purged history): it keeps returning an empty
 	// chunk with the same end token.
@@ -190,6 +191,7 @@ func newFakeHS(t *testing.T) *fakeHS {
 	route("POST "+v3+"/rooms/{room}/leave", true, hs.leave)
 	route("POST "+v3+"/rooms/{room}/invite", true, hs.invite)
 	route("PUT "+v3+"/rooms/{room}/send/{type}/{txn}", true, hs.send)
+	route("PUT "+v3+"/rooms/{room}/redact/{event}/{txn}", true, hs.redactHTTP)
 	route("GET "+v3+"/rooms/{room}/state/{type}/{key...}", true, hs.getState)
 	route("GET "+v3+"/rooms/{room}/state/{type}", true, hs.getState) // state key "", as on a real server
 	route("GET "+v3+"/rooms/{room}/state", true, hs.getStateEvents)
@@ -866,6 +868,14 @@ func (hs *fakeHS) messages(w http.ResponseWriter, r *http.Request, u string) {
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	evs := hs.roomMessages(room.id)
+	if strings.Contains(r.URL.Query().Get("filter"), "m.room.redaction") {
+		evs = nil
+		for _, ev := range hs.events {
+			if ev.RoomID == room.id && (ev.Type == "m.room.message" || ev.Type == "m.room.redaction") {
+				evs = append(evs, ev)
+			}
+		}
+	}
 	end := len(evs)
 	if from := r.URL.Query().Get("from"); from != "" {
 		end, _ = strconv.Atoi(strings.TrimPrefix(from, "m"))
