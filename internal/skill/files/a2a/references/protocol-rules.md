@@ -68,10 +68,14 @@ Agent-facing summaries of the rules in docs/protocol.md, indexed from SKILL.md.
 
 ## Blocking and non-blocking asks (protocol rule 32)
 
-- Every question or advice opener carries either:
-  - `--non-blocking --assume "<what you proceed on>"` (the usual choice), or
-  - `--blocking --blocks <item>` (only when no assumption is safe);
-  plus an explicit `--reply-by`.
+- Every question or advice opener must explicitly state blocking or non-blocking intent and carry an explicit `--reply-by`. The structured-ask requirements in docs/protocol.md rule 32 remain the contract.
+- Current `a2a post` options are `--topic`, `--kind`, `--re`, `--to`, `--reply-by`, `--trunk`, `--subtype`, `--subject` and `--voice`. `--subtype` is only valid with `--kind system`.
+- `--blocking`, `--blocks`, `--non-blocking` and `--assume` are **not implemented** by the current CLI.
+- For now, use `--kind question` with an explicit RFC3339 `--reply-by`; do not rely on the question's default deadline. State the intent in the message body:
+  - non-blocking (the usual choice): say what you will proceed on unless advised otherwise by the deadline;
+  - blocking (only when no assumption is safe): name the item that is blocked and explain why no assumption is safe.
+  For example: `a2a post <room> --topic <topic> --kind question --reply-by 2030-01-01T12:00:00Z "Non-blocking: I proceed with the current plan unless advised otherwise by the reply-by deadline."` Replace the room, topic and deadline for the actual question.
+- Body prose communicates intent; it does not supply rule 32's structured ask tracking, open-ask queries or automatic reply-by actions. Those guarantees remain requirements, not capabilities provided by this workaround.
 - If blocking:
   - set YOUR item to blocked, with no blockedBy link and the packet line in its notes;
   - keep working on other items; with nothing left, end your turn;
