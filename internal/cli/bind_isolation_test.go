@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,9 +30,44 @@ func isolateBindTest(t *testing.T) {
 			}
 		}
 	}
+	// Pin the Go caches before HOME moves: a nested go build would otherwise
+	// fill a read-only module cache under the temporary HOME (which
+	// t.TempDir cleanup cannot remove) and could fetch modules again.
+	for key, value := range goCacheEnv(t) {
+		t.Setenv(key, value)
+	}
 	for _, key := range []string{"HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "A2A_CONFIG_DIR"} {
 		t.Setenv(key, t.TempDir())
 	}
+}
+
+var (
+	goCacheOnce   sync.Once
+	goCacheValues map[string]string
+	goCacheErr    error
+)
+
+// goCacheEnv resolves GOMODCACHE, GOCACHE and GOPATH once, from the
+// environment the test binary started with.
+func goCacheEnv(t *testing.T) map[string]string {
+	t.Helper()
+	goCacheOnce.Do(func() {
+		out, err := exec.Command("go", "env", "-json", "GOMODCACHE", "GOCACHE", "GOPATH").Output()
+		if err != nil {
+			goCacheErr = err
+			return
+		}
+		goCacheErr = json.Unmarshal(out, &goCacheValues)
+	})
+	if goCacheErr != nil {
+		t.Fatalf("resolve Go caches before isolating HOME: %v", goCacheErr)
+	}
+	for key, value := range goCacheValues {
+		if value == "" {
+			t.Fatalf("resolve Go caches before isolating HOME: %s is empty", key)
+		}
+	}
+	return goCacheValues
 }
 
 // A subprocess starts with control-owned stores and terminal state, so this
