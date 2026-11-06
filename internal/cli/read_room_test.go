@@ -86,7 +86,16 @@ func TestReadRoomBindingConsumers(t *testing.T) {
 					if err := json.Unmarshal(f.out.Bytes(), &record); err != nil {
 						t.Fatal(err)
 					}
-					if record["event_id"] != "$selected" || record["room_id"] != "!selected:fixture" || !strings.Contains(f.out.String(), "same room") {
+					if record["event_id"] != "$selected" || record["room_id"] != "!selected:fixture" {
+						t.Fatalf("selection lost: %s", f.out.String())
+					}
+					// A server-redacted event keeps its room binding but is shown
+					// as redacted, never with its original content.
+					if tc.name == "redacted-content" {
+						if record["redacted"] != true || strings.Contains(f.out.String(), "same room") {
+							t.Fatalf("redacted event shown with content: %s", f.out.String())
+						}
+					} else if !strings.Contains(f.out.String(), "same room") {
 						t.Fatalf("selection lost: %s", f.out.String())
 					}
 				}
