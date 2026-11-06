@@ -95,7 +95,8 @@ func TestOwnerDMPinnedPayloads(t *testing.T) {
 // chunk boundaries, thresholds count original spans, and Unicode character
 // caps/chunks preserve clean content and state the exact omitted count.
 func TestOwnerDMContent(t *testing.T) {
-	secrets := []string{"-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----", "Authorization: Bearer fixture-bearer", "syt_fixture", "mat_fixture", "ghp_fixture", "gho_fixture", "ghs_fixture", "ghu_fixture", "github_pat_fixture", "xoxa-fixture", "xoxb-fixture", "xoxp-fixture", "xoxr-fixture", "AIzaFixture", "sk-fixture", "AKIAABCDEFGHIJKLMNOP", "ASIAABCDEFGHIJKLMNOP", "https://user:fixture@example.invalid/path", `password=fixture`, `"passwd":"fixture"`, `token: fixture`, `secret='fixture'`, `api_key="fixture"`, `access_token: fixture`, `refresh_token=fixture`, `client_secret: fixture`}
+	// Synthetic EXAMPLE suffixes retain both AWS prefixes and redaction across a chunk boundary.
+	secrets := []string{"-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----", "Authorization: Bearer fixture-bearer", "syt_fixture", "mat_fixture", "ghp_fixture", "gho_fixture", "ghs_fixture", "ghu_fixture", "github_pat_fixture", "xoxa-fixture", "xoxb-fixture", "xoxp-fixture", "xoxr-fixture", "AIzaFixture", "sk-fixture", "AKIA" + "IOSFODNN7EXAMPLE", "ASIA" + "IOSFODNN7EXAMPLE", "https://user:fixture@example.invalid/path", `password=fixture`, `"passwd":"fixture"`, `token: fixture`, `secret='fixture'`, `api_key="fixture"`, `access_token: fixture`, `refresh_token=fixture`, `client_secret: fixture`}
 	for _, secret := range secrets {
 		t.Run(strings.Split(secret, "\n")[0], func(t *testing.T) {
 			input := strings.Repeat("x", 3998) + " " + secret
