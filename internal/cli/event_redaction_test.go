@@ -237,7 +237,11 @@ func TestRedactSafeFailuresAndOneAttempt(t *testing.T) {
 			}
 			r := e.as("bob", "redact", room, id, "--reason", "cleanup")
 			noRemoved(t, r)
-			if r.code != ExitError || put > 1 || get != 1 {
+			wantGet := 1
+			if mode == "local-cache" {
+				wantGet = 2
+			}
+			if r.code != ExitError || put > 1 || get != wantGet {
 				t.Fatalf("exit=%d get=%d put=%d", r.code, get, put)
 			}
 			if !strings.Contains(r.stderr, "redact transaction:") {
@@ -343,6 +347,9 @@ func syncRedactionFixture(t *testing.T, e *env, name string) {
 		}
 		return ""
 	}, HTTP: e.hs.srv.Client(), Now: time.Now, as: name}
+	if e.configure != nil {
+		e.configure(a)
+	}
 	s, err := a.session()
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +370,19 @@ func TestRedactionBeforeOriginalReplayRestart(t *testing.T) {
 	e.hs.mu.Lock()
 	e.hs.appendLocked(room, "@bob:test.local", "m.room.redaction", map[string]string{"redacts": "$future", "reason": removedFixture})
 	e.hs.mu.Unlock()
+	// The original is not in sync yet, but the authenticated original
+	// endpoint confirms that the server has stripped it. A peer claim alone
+	// cannot establish an unknown original's sender or authority.
+	e.configure = func(a *App) {
+		a.HTTP = &http.Client{Transport: ownerRoundTrip(func(r *http.Request) (*http.Response, error) {
+			if strings.HasSuffix(r.URL.Path, "/event/$future") {
+				return syntheticEventResponse(r, matrix.Event{RoomID: room, EventID: "$future", Sender: "@bob:test.local", Type: "m.room.message", Content: json.RawMessage(`{}`), Unsigned: json.RawMessage(`{"redacted_because":{}}`)}), nil
+			}
+			return http.DefaultTransport.RoundTrip(r)
+		})}
+	}
 	syncRedactionFixture(t, e, "alice")
+	e.configure = nil
 	mb, err := config.OpenMailbox(e.paths(), "alice")
 	if err != nil {
 		t.Fatal(err)

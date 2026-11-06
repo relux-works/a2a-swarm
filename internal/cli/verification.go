@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 
@@ -89,9 +90,31 @@ func readVerificationInput(ctx context.Context, a *App, room, event string) erro
 	if !matrix.ValidVerificationID(s.creds.UserID, '@') {
 		return usagef("invalid selected verification receiver")
 	}
+	// Refuse a known original before any server response can override local
+	// knowledge or choose a different refusal diagnostic.
+	if s.client.FilterEvents != nil {
+		events, filterErr := s.client.FilterEvents(room, []matrix.Event{{EventID: event}})
+		if filterErr != nil {
+			return filterErr
+		}
+		if len(events) != 1 || events[0].IsRedacted() {
+			return errors.New("read: VERIFICATION_REDACTED")
+		}
+	}
 	v, err := s.client.GetVerificationEvent(ctx, room, event)
 	if err != nil {
 		return err
+	}
+	// Consult local tombstones (including explicit edit targets) without
+	// changing the strict observation's original raw content bytes.
+	if s.client.FilterEvents != nil {
+		filtered, filterErr := s.client.FilterEvents(room, []matrix.Event{{EventID: v.EventID, Sender: v.Sender, Type: v.Type, Content: v.Content}})
+		if filterErr != nil {
+			return filterErr
+		}
+		if len(filtered) != 1 || filtered[0].IsRedacted() {
+			return errors.New("read: VERIFICATION_REDACTED")
+		}
 	}
 	result := VerificationInput{
 		Type: "a2a.event-verification-input/1", ObservationStatus: "observed", RequestedRoomID: room, RequestedEventID: event,

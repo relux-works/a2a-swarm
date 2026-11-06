@@ -358,6 +358,12 @@ func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.
 	}
 	var b batch
 	for roomID, jr := range resp.Rooms.Join {
+		if s.client.FilterEvents != nil {
+			jr.Timeline.Events, err = s.client.FilterEvents(roomID, jr.Timeline.Events)
+			if err != nil {
+				return config.State{}, err
+			}
+		}
 		b.redactions = append(b.redactions, eventRedactions(roomID, jr.Timeline.Events)...)
 	}
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {

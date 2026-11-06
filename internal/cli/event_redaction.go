@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -67,6 +68,9 @@ func cmdRedact(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return redactionFailure(err)
 	}
+	if _, err := normalizeRoom(pos[0], s.server); err != nil {
+		return usagef("redact: REDACT_INVALID_ROOM")
+	}
 	room, _, err := s.resolveRoom(ctx, pos[0])
 	if err != nil {
 		return redactionFailure(err)
@@ -83,6 +87,13 @@ func cmdRedact(ctx context.Context, a *App, args []string) error {
 	id, err := s.client.RedactEventTxn(ctx, room, pos[1], *txn, *reason)
 	if err != nil {
 		return redactionFailure(err)
+	}
+	// An idempotent PUT can return an earlier transaction's event id even
+	// when the new URL names a different target. Verify the actual redaction
+	// before mutating local state; a failed observation never causes a resend.
+	observed, err := s.client.ObserveRedactionTarget(ctx, room, id)
+	if err != nil || observed.RedactionTarget() != pos[1] {
+		return errors.New("redact: REDACT_UNCONFIRMED (no local tombstone; replay only with the same transaction id and arguments)")
 	}
 	// Store the authorised target immediately as well as on later sync. A local
 	// failure never resends the successful server request.
@@ -101,7 +112,7 @@ func cmdRedact(ctx context.Context, a *App, args []string) error {
 func eventRedactions(room string, events []matrix.Event) []config.Redaction {
 	var targets []config.Redaction
 	for _, ev := range events {
-		if id := ev.RedactionTarget(); id != "" {
+		if id := ev.RedactionTarget(); id != "" && ev.RedactionVerified {
 			targets = append(targets, config.Redaction{Room: room, EventID: id})
 		}
 		if ev.IsRedacted() && ev.EventID != "" {
@@ -129,6 +140,38 @@ func (s *session) installRedactionCache() {
 				return nil, errors.New("local redaction cache unavailable: mailbox is not a regular file; refusing to use it")
 			}
 			return nil, errors.New("local redaction cache unavailable")
+		}
+		// A peer's claim alone is not evidence that the server applied it.
+		// Exact sender equality requires a real target observation, either in
+		// this response, pending mail, or an unfiltered room-scoped refetch.
+		senders := map[string]string{}
+		for _, entry := range mb.Pending() {
+			if entry.Room == room && entry.Kind == config.MailEvent {
+				var original matrix.Event
+				if json.Unmarshal(entry.Event, &original) == nil && original.EventID == entry.ID {
+					senders[entry.ID] = original.Sender
+				}
+			}
+		}
+		for _, original := range events {
+			if original.EventID != "" {
+				senders[original.EventID] = original.Sender
+			}
+		}
+		events = append([]matrix.Event(nil), events...)
+		for i, ev := range events {
+			target := ev.RedactionTarget()
+			if target == "" {
+				continue
+			}
+			same := matrix.ValidVerificationID(ev.Sender, '@') && senders[target] == ev.Sender
+			if !same {
+				original, fetchErr := s.client.ObserveRedactionTarget(context.Background(), room, target)
+				if fetchErr == nil {
+					same = original.IsRedacted() || (matrix.ValidVerificationID(ev.Sender, '@') && original.Sender == ev.Sender)
+				}
+			}
+			events[i].RedactionVerified = same
 		}
 		for _, target := range eventRedactions(room, events) {
 			seen[target] = true

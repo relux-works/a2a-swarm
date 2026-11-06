@@ -609,15 +609,17 @@ func (c *Client) SendMessageReceipt(ctx context.Context, roomID string, content 
 
 // Event is a client-format room event.
 type Event struct {
-	EventID        string          `json:"event_id"`
-	Type           string          `json:"type"`
-	Sender         string          `json:"sender"`
-	RoomID         string          `json:"room_id,omitempty"`
-	OriginServerTS int64           `json:"origin_server_ts"`
-	StateKey       *string         `json:"state_key,omitempty"`
-	Content        json.RawMessage `json:"content"`
-	Redacts        string          `json:"redacts,omitempty"`
-	Unsigned       json.RawMessage `json:"unsigned,omitempty"`
+	// RedactionVerified is local evidence, never accepted from wire JSON.
+	RedactionVerified bool            `json:"-"`
+	EventID           string          `json:"event_id"`
+	Type              string          `json:"type"`
+	Sender            string          `json:"sender"`
+	RoomID            string          `json:"room_id,omitempty"`
+	OriginServerTS    int64           `json:"origin_server_ts"`
+	StateKey          *string         `json:"state_key,omitempty"`
+	Content           json.RawMessage `json:"content"`
+	Redacts           string          `json:"redacts,omitempty"`
+	Unsigned          json.RawMessage `json:"unsigned,omitempty"`
 }
 
 // MessageContent is the subset of m.room.message content the CLI reads.

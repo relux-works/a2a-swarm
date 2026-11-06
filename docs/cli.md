@@ -556,7 +556,10 @@ not recall already copied mailbox versions, archive Git commits, owner-DM mirror
 projections, downloads or media. Matrix redaction does not guarantee media
 deletion. **Rotate leaked secrets.** The command states these limits on stderr.
 It prints only the redaction event ID on successful completion; it never prints
-or quotes the removed content or the supplied reason, and posts no notice.
+or quotes the removed content or the supplied reason. The server-side
+`m.room.redaction` event carries the redactor in `sender`, the target event ID
+in `redacts` (or `content.redacts` for room v11+), and the supplied
+`content.reason`; no separate message notice is sent.
 
 `--reason` is required literal, nonempty UTF-8 text, at most **1,024 bytes**
 (inclusive, before encoding), with no control or bidi characters. It is not a
@@ -583,17 +586,33 @@ window. Starting again without it creates a new transaction. IDs accept 1..128
 ASCII letters, digits, dots, underscores or hyphens. Server refusals use fixed
 `M_FORBIDDEN`, `M_NOT_FOUND`, or `M_LIMIT_EXCEEDED` diagnostics (exit 1); authentication
 uses `REDACT_AUTH`, other failures `REDACT_FAILED`. Invalid arguments exit 2.
-Server and transport error text is suppressed. `REDACT_LOCAL_CACHE_FAILED` means
+Invalid local room syntax uses `REDACT_INVALID_ROOM` (exit 2).
+Server and transport error text is suppressed. After a successful PUT, a bounded
+original-endpoint lookup checks the returned redaction event's actual room-scoped
+target. This prevents a reused transaction ID from tombstoning a different target
+when the server returns the earlier result. An unavailable or mismatched result
+uses `REDACT_UNCONFIRMED` (exit 1), records no local tombstone and never resends.
+`REDACT_LOCAL_CACHE_FAILED` means
 the server accepted the redaction but local persistence failed; no resend occurs.
 
-When sync observes a redaction, the selected identity's mailbox atomically drops
+When sync corroborates a redaction, the selected identity's mailbox atomically drops
 body, HTML, attachment and envelope content before advancing its cursor. Pending
 entries stay pending in their arrival order and show `[redacted]`; redaction does
 not receipt them. Durable room/event tombstones survive restart, replay, receipt
 and compaction, including a target observed before its original. They are retained
-indefinitely to prevent old history resurrecting content. A successful redact
+indefinitely to prevent old history resurrecting content. A peer's redaction
+claim alone is insufficient. A redaction by another sender requires an
+authenticated, unfiltered target refetch with server redaction metadata; a failed,
+unstripped or mismatched refetch retains mail. Exact same-sender handling requires
+the target's actual sender in the current response, pending mailbox or target
+refetch. An unavailable, previously unseen target supplies no sender evidence,
+including across restart. Empty `{}` timeline content alone supplies no redaction
+evidence and follows ordinary relevance rules. A successful redact
 request records the same tombstone immediately. Plain and JSON reads use this
-known state; JSON event records add `redacted: true`. Event-based attachment fetch
+known state; JSON event records add `redacted: true`.
+`read --verification-input` refuses known-redacted originals and explicit edits
+with `VERIFICATION_REDACTED` (exit 1) and no output record. Valid observations
+retain their original raw content bytes. Event-based attachment fetch
 is unavailable after known redaction. A separately known MXC URL is not revoked.
 Unsynced clients and other copies are outside this guarantee.
 
@@ -620,7 +639,9 @@ outside this guarantee.
 Later `archive` exports omit known redacted bodies, attachment fields and topic
 titles, and warn that **earlier archive Git commits may still retain them**.
 Previously generated topic files whose slug came from a now-redacted root are
-replaced with a tombstone in the selected export directory; unrelated files and
+replaced with a tombstone in the selected export directory. An existing
+`index.json` is also refreshed from the filtered snapshot when a redaction is
+present, even if this run omits `--json-index`; unrelated files and
 Git history are untouched. Tombstones cannot erase content already copied or
 printed by a concurrent reader before the redaction became known to it.
 

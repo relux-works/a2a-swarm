@@ -460,7 +460,7 @@ func (s *session) archiveRoom(ctx context.Context, roomID, label, roomDir, dir s
 	if err != nil {
 		return err
 	}
-	if err := scrubPriorRedactedTopics(dir, roomDir, roomID, threads, room, files); err != nil {
+	if err := scrubPriorRedactedTopics(dir, roomDir, roomID, label, s.server, threads, room, files); err != nil {
 		return err
 	}
 	return s.app.writeRoomArchive(dir, roomDir, files)
@@ -547,7 +547,7 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 // otherwise the old slug file would keep exporting the removed root. Only
 // bounded generated headers in the explicitly selected export directory are
 // read; no git history or unrelated file is changed or printed.
-func scrubPriorRedactedTopics(dir, roomDir, roomID string, threads []archiveThread, room []matrix.Event, current []archiveFile) error {
+func scrubPriorRedactedTopics(dir, roomDir, roomID, label, server string, threads []archiveThread, room []matrix.Event, current []archiveFile) error {
 	currentNames := map[string]bool{}
 	for _, f := range current {
 		currentNames[f.name] = true
@@ -579,6 +579,30 @@ func scrubPriorRedactedTopics(dir, roomDir, roomID string, threads []archiveThre
 	}
 	if err != nil {
 		return errors.New("archive: cannot inspect previous exports")
+	}
+	// A previous index is still a published export when this run omits
+	// --json-index. Replace it from this run's filtered snapshot as well.
+	if !currentNames[IndexFileName] {
+		indexPath := filepath.Join(path, IndexFileName)
+		if err := checkNoSymlink(indexPath, false); err != nil {
+			return err
+		}
+		if _, err := os.Stat(indexPath); err == nil {
+			files, err := renderRoomArchive(label, roomID, threads, room, server, true)
+			if err != nil {
+				return err
+			}
+			// Re-rendering needs no payload from the old index.
+			for _, file := range files {
+				if file.name == IndexFileName {
+					if err := writeAtomic(indexPath, file.content); err != nil {
+						return errors.New("archive: cannot replace previous redacted topic index")
+					}
+				}
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return errors.New("archive: cannot inspect previous index")
+		}
 	}
 	for _, entry := range entries {
 		if currentNames[entry.Name()] || !strings.HasSuffix(entry.Name(), ".md") || !entry.Type().IsRegular() {

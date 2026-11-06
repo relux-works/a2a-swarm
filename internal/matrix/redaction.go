@@ -3,6 +3,7 @@ package matrix
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
@@ -55,8 +56,7 @@ func (e Event) IsRedacted() bool {
 			return true
 		}
 	}
-	var c map[string]json.RawMessage
-	return e.Type == "m.room.message" && (json.Unmarshal(e.Content, &c) != nil || len(c) == 0)
+	return false
 }
 
 // ReplacementTarget identifies only an explicit message edit. Replies, thread
@@ -96,4 +96,54 @@ func (c *Client) RedactEventTxn(ctx context.Context, roomID, eventID, txnID, rea
 		Reason string `json:"reason"`
 	}{reason})
 	return ack.EventID(), err
+}
+
+// ObserveRedactionTarget bypasses local content filters: only the authenticated
+// original endpoint can corroborate a peer redaction. Failures prove nothing.
+func (c *Client) ObserveRedactionTarget(ctx context.Context, roomID, eventID string) (Event, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+	var out Event
+	resp, err := c.WithoutRedirects().send(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/event/"+seg(eventID), nil, nil, "", -1)
+	if err != nil {
+		return out, err
+	}
+	v, err := readControl(ctx, resp, (64<<10)+1)
+	if err != nil {
+		return out, err
+	}
+	if err = verificationKeys(v.value); err != nil {
+		return Event{}, err
+	}
+	id, idOK := v.value["event_id"].(string)
+	typ, typeOK := v.value["type"].(string)
+	sender, senderOK := v.value["sender"].(string)
+	content, contentOK := v.value["content"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || !idOK || id != eventID || !typeOK || typ == "" || !senderOK || !ValidVerificationID(sender, '@') || !contentOK {
+		return Event{}, errors.New("matrix: invalid redaction observation")
+	}
+	out.EventID, out.Type, out.Sender = id, typ, sender
+	out.Content, _ = json.Marshal(content)
+	if room, present := v.value["room_id"]; present {
+		returned, ok := room.(string)
+		if !ok || returned != roomID {
+			return Event{}, errors.New("matrix: invalid redaction observation")
+		}
+		out.RoomID = returned
+	}
+	if unsigned, present := v.value["unsigned"]; present {
+		fields, ok := unsigned.(map[string]any)
+		if !ok {
+			return Event{}, errors.New("matrix: invalid redaction observation")
+		}
+		out.Unsigned, _ = json.Marshal(fields)
+	}
+	if redacts, present := v.value["redacts"]; present {
+		target, ok := redacts.(string)
+		if !ok {
+			return Event{}, errors.New("matrix: invalid redaction observation")
+		}
+		out.Redacts = target
+	}
+	return out, ctx.Err()
 }
