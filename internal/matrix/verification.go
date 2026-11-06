@@ -125,7 +125,7 @@ func verificationKeys(object map[string]any) error {
 			return errors.New("matrix: ambiguous verification keys")
 		}
 		seen[fold] = true
-		for _, name := range []string{"event_id", "room_id", "sender", "type", "content"} {
+		for _, name := range []string{"event_id", "room_id", "sender", "type", "content", "unsigned"} {
 			if k != name && strings.EqualFold(k, name) {
 				return errors.New("matrix: ambiguous verification field")
 			}

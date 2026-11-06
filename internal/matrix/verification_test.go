@@ -87,6 +87,8 @@ func TestVerificationEventRefusals(t *testing.T) {
 		"redacted-null-marker":   strings.TrimSuffix(base, "}") + `,"unsigned":{"redacted_because":null}}`,
 		"redacted-case-variant":  strings.TrimSuffix(base, "}") + `,"unsigned":{"Redacted_Because":{}}}`,
 		"unsigned-not-object":    strings.TrimSuffix(base, "}") + `,"unsigned":"redacted"}`,
+		"unsigned-case-variant":  strings.TrimSuffix(base, "}") + `,"Unsigned":{"redacted_because":{}}}`,
+		"unsigned-case-only-age": strings.TrimSuffix(base, "}") + `,"UNSIGNED":{"age":1}}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
