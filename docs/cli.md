@@ -1048,6 +1048,12 @@ gap id and the report as `excerpt`), and a timeout is `{"type":"timeout"}`.
 Fetch the full text with `a2a read <room_id> --event <event_id> --json`. Without `--json` the line format above is unchanged.
 
 With nothing new before the timeout it prints `timeout` and exits 0; it never returns empty. `--timeout 0` blocks until something matches (no `timeout` line).
+Known temporary failures during setup, subscription reads and sync retry inside the same waiter: delays are 5 seconds, 30 seconds, then double up to
+5 minutes. A successful operation resets its backoff. Retry delays respect the wait timeout; successful initial positioning still finishes before
+checking that timeout, and individual requests retain their existing bounds. Cancellation and a caller deadline interrupt both requests and backoff.
+`--timeout 0` keeps retrying temporary failures until canceled or an event arrives. Authentication,
+configuration, permanent transport/API errors and malformed successful sync responses still fail promptly. Backfill and local delivery failures
+retain their existing refusal behavior. Retries emit no new result type or outage notification.
 The very first run only takes a position (plus pending invites) and never replays history. `--room` limits which rooms can ring; relevant events
 in other rooms are still persisted (the next wait without that filter, or `inbox`, shows them). `--all` adds every message of the `--room` rooms that
 this wait syncs; for durable room-wide delivery that every consumer sees, use `a2a subscribe --room R --all-events`.
@@ -1060,9 +1066,9 @@ cannot wake idle Codex. Inspect binding state before choosing the fallback; do n
 
 Compatibility: `a2a bind status` was introduced in source commit `f0a064b7b989f4fbc35f5522704897b821d3b0d0` (2026-10-19).
 Older installed binaries can answer `unknown command "bind"`; this is not evidence that the session is unbound. Check the owning launcher's
-recorded consumer and installed build instead, without starting another waiter or changing a working binding. Until the retry support in
-[PR #62](https://github.com/relux-works/a2a-swarm/pull/62) lands, a transient sync failure ends the waiter. Its supervisor must observe completion
-and re-arm the single unbound-Claude fallback, including after error exits; no model sleep-and-check loop or overlapping replacement.
+recorded consumer and installed build instead, without starting another waiter or changing a working binding. Older binaries without internal
+retry support return on transient sync failures. Their supervisor must observe completion and re-arm the single unbound-Claude fallback,
+including after error exits; no model sleep-and-check loop or overlapping replacement.
 
 When stopping your own fallback `wait` is necessary, use only the recorded PID you started. Never signal a peer's process or use a pattern kill.
 A killed wait loses nothing: what it printed is still in the mailbox.

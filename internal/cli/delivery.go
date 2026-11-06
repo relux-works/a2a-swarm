@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -356,13 +357,18 @@ func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.
 	if err != nil {
 		return config.State{}, err
 	}
+	return s.savePosition(ctx, resp, deadline)
+}
+
+func (s *session) savePosition(ctx context.Context, resp matrix.SyncResponse, deadline time.Time) (config.State, error) {
 	var b batch
 	for roomID, jr := range resp.Rooms.Join {
 		if s.client.FilterEvents != nil {
-			jr.Timeline.Events, err = s.client.FilterEvents(roomID, jr.Timeline.Events)
+			events, err := s.client.FilterEvents(roomID, jr.Timeline.Events)
 			if err != nil {
 				return config.State{}, err
 			}
+			jr.Timeline.Events = events
 		}
 		b.redactions = append(b.redactions, eventRedactions(roomID, jr.Timeline.Events)...)
 	}
@@ -430,7 +436,7 @@ func (a *App) showNew(ctx context.Context, s *session, f deliveryFilter, asJSON 
 }
 
 // cmdWait: a2a wait [--room R ...] [--all] [--timeout 25m|0] [--json]
-func cmdWait(ctx context.Context, a *App, args []string) error {
+func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	fs := newFlagSet("wait")
 	var rooms stringList
 	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
@@ -473,6 +479,26 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
+	var deadline time.Time
+	if *timeout > 0 {
+		deadline = a.Now().Add(*timeout)
+	}
+	printTimeout := func() error {
+		if *asJSON {
+			return a.printJSON(map[string]string{"type": "timeout"})
+		}
+		a.printf("timeout\n")
+		return nil
+	}
+	defer func() {
+		if errors.Is(result, errWaitTimeout) {
+			if ctx.Err() != nil {
+				result = ctx.Err()
+			} else {
+				result = printTimeout()
+			}
+		}
+	}()
 	var lastHeartbeat time.Time
 	if *status != "" {
 		if err := s.writeLivenessSource(ctx, profile, "wait"); err != nil {
@@ -488,20 +514,27 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 			}
 		}()
 	}
-	filter, err := s.resolveFilter(ctx, rooms, *all)
+	filter, err := waitRetry(ctx, s, deadline, func() (deliveryFilter, error) {
+		return s.resolveFilter(ctx, rooms, *all)
+	})
 	if err != nil {
 		return err
 	}
-	var deadline time.Time
-	if *timeout > 0 {
-		deadline = a.Now().Add(*timeout)
-	}
-	st, _, err := s.startDelivery(ctx, a.Now())
+	st, err := waitRetry(ctx, s, deadline, func() (config.State, error) {
+		st, _, err := s.startDelivery(ctx, a.Now())
+		return st, err
+	})
 	if err != nil {
 		return err
 	}
 	if st.NextBatch == "" {
-		if st, err = s.takePosition(ctx, time.Time{}); err != nil {
+		if st, err = waitRetry(ctx, s, deadline, func() (config.State, error) {
+			resp, err := s.waitSync(ctx, "", 0, initialFilter)
+			if err != nil {
+				return config.State{}, err
+			}
+			return s.savePosition(ctx, resp, time.Time{})
+		}); err != nil {
 			return err
 		}
 	}
@@ -527,27 +560,22 @@ func cmdWait(ctx context.Context, a *App, args []string) error {
 		if !deadline.IsZero() {
 			remaining := deadline.Sub(a.Now())
 			if remaining <= 0 {
-				if *asJSON {
-					return a.printJSON(map[string]string{"type": "timeout"})
-				}
-				a.printf("timeout\n")
-				return nil
+				return printTimeout()
 			}
 			if remaining < poll {
 				poll = remaining
 			}
 		}
-		if err := a.acquireLease(s, "", time.Time{}); err != nil {
-			return err
-		}
-		resp, err := s.client.Sync(ctx, st.NextBatch, poll, syncFilter)
+		resp, err := waitRetry(ctx, s, deadline, func() (matrix.SyncResponse, error) {
+			return s.waitSync(ctx, st.NextBatch, poll, syncFilter)
+		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return err
 		}
-		subs, err := s.getSubs(ctx)
+		subs, err := waitRetry(ctx, s, deadline, func() (SubList, error) { return s.getSubs(ctx) })
 		if err != nil {
 			return err
 		}
