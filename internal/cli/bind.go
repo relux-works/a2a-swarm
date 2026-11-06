@@ -169,7 +169,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 			}
 			live, ownerErr := bindingProcessBirth(ctx, b.OwnerPID)
 			if ownerErr != nil && !processGone(b.OwnerPID) {
-				return ErrBindingProcessUnknown
+				return bindingInspectionFailure("prior-owner-birth", ownerErr)
 			}
 			ownerGone := ownerErr == nil && live != b.OwnerBirth || processGone(b.OwnerPID)
 			if !ownerGone {
@@ -186,7 +186,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 					return a.acquireLease(s, *sessionID, time.Now().Add(nativeRPCTimeout))
 				}
 				if daemonErr != nil && b.DaemonPID > 1 && !processGone(b.DaemonPID) {
-					return ErrBindingProcessUnknown
+					return bindingInspectionFailure("current-consumer-birth", daemonErr)
 				}
 				// No live consumer remains: SessionStart recovers automatically,
 				// carrying the same-session attempt fence and hourly ledger.
@@ -211,7 +211,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		if b := st.Terminal; b != nil && b.DaemonPID > 0 {
 			live, err := bindingProcessBirth(ctx, b.DaemonPID)
 			if err != nil && !processGone(b.DaemonPID) {
-				return ErrBindingProcessUnknown
+				return bindingInspectionFailure("retiring-consumer-birth", err)
 			}
 			if live != "" && live == b.DaemonBirth {
 				return errors.New("prior bound consumer still stopping")

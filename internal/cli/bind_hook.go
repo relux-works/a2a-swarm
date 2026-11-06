@@ -130,7 +130,11 @@ func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBindi
 func bindingProcessBirth(ctx context.Context, pid int) (string, error) {
 	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 	defer cancel()
-	return tmuxwake.Birth(probe, pid)
+	birth, err := tmuxwake.Birth(probe, pid)
+	if err != nil {
+		return "", bindingInspectionFailure("birth", err)
+	}
+	return birth, nil
 }
 
 // Never signal a prior consumer. A confirmed-dead/replaced owner permits only
@@ -147,7 +151,7 @@ func waitPriorBindingConsumer(ctx context.Context, b *config.TerminalBinding) er
 			return nil
 		}
 		if err != nil {
-			return ErrBindingProcessUnknown
+			return bindingInspectionFailure("prior-consumer-birth", err)
 		}
 		remaining := time.Until(until)
 		if remaining <= 0 {
@@ -183,7 +187,7 @@ func refuseBoundWait(ctx context.Context, s *session) error {
 			return ErrWaitWhileBound
 		}
 		if !processGone(b.DaemonPID) {
-			return ErrBindingProcessUnknown
+			return bindingInspectionFailure("bound-wait-birth", err)
 		}
 		return nil
 	})

@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -20,26 +19,26 @@ import (
 func bindingArguments(pid int) ([]string, []string, error) {
 	raw, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, bindingInspectionFailure("darwin-sysctl-arguments", err)
 	}
 	if len(raw) < 4 {
-		return nil, nil, errors.New("process args unavailable")
+		return nil, nil, bindingInspectionFailure("darwin-arguments-length", nil)
 	}
 	argc := int(binary.NativeEndian.Uint32(raw[:4]))
 	raw = raw[4:]
 	if argc < 1 || argc > 65536 {
-		return nil, nil, errors.New("process args unavailable")
+		return nil, nil, bindingInspectionFailure("darwin-arguments-count", nil)
 	}
 	end := bytes.IndexByte(raw, 0)
 	if end < 0 {
-		return nil, nil, errors.New("process args unavailable")
+		return nil, nil, bindingInspectionFailure("darwin-arguments-executable", nil)
 	}
 	raw = bytes.TrimLeft(raw[end+1:], "\x00")
 	var args []string
 	for i := 0; i < argc; i++ {
 		end = bytes.IndexByte(raw, 0)
 		if end < 0 {
-			return nil, nil, errors.New("process args unavailable")
+			return nil, nil, bindingInspectionFailure("darwin-arguments-record", nil)
 		}
 		args = append(args, string(raw[:end]))
 		raw = raw[end+1:]
@@ -58,7 +57,7 @@ func bindingArguments(pid int) ([]string, []string, error) {
 func bindingImage(ctx context.Context, pid int) (string, error) {
 	raw, err := exec.CommandContext(ctx, "/usr/sbin/lsof", "-a", "-p", strconv.Itoa(pid), "-d", "txt", "-F", "finD").Output()
 	if err != nil {
-		return "", errors.New("process image unavailable")
+		return "", bindingInspectionFailure("darwin-image-lsof", err)
 	}
 	return parseBindingImage(string(raw))
 }
@@ -75,7 +74,7 @@ func parseBindingImage(raw string) (string, error) {
 				if dev != "" && ino != "" {
 					return fmt.Sprintf("%s:%s", dev, ino), nil
 				}
-				return "", errors.New("process image unavailable")
+				return "", bindingInspectionFailure("darwin-image-record", nil)
 			}
 			text = line == "ftxt"
 		case 'D':
@@ -91,5 +90,8 @@ func parseBindingImage(raw string) (string, error) {
 	if text && dev != "" && ino != "" {
 		return dev + ":" + ino, nil
 	}
-	return "", errors.New("process image unavailable")
+	return "", bindingInspectionFailure("darwin-image-record", nil)
 }
+
+// No Darwin exit-state proof is established here. Keep its existing ESRCH gate.
+func bindingCandidateExited(int) bool { return false }

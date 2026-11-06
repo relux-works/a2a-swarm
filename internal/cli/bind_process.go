@@ -9,12 +9,59 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 var ErrBindingOldImage = errors.New("binding refused: same identity has a different executable image; stop own old process first")
 var ErrBindingParallelWait = errors.New("binding refused: same identity has a live wait/watch; stop own waiter first")
 var ErrWaitWhileBound = errors.New("wait/watch refused: same identity has a live binding; inspect own binding with a2a bind status; read messages with a2a inbox")
 var ErrBindingProcessUnknown = errors.New("binding refused: process inspection unavailable")
+
+// Retain only closed diagnostic metadata, never argv, environment, paths,
+// subprocess output or the original error (which may contain private values).
+// Error remains the public sentinel text; internal callers/tests can use As.
+type bindingInspectionError struct {
+	phase, operation, class string
+	errno                   syscall.Errno
+	exitCode                int
+}
+
+func (e *bindingInspectionError) Error() string        { return ErrBindingProcessUnknown.Error() }
+func (e *bindingInspectionError) Unwrap() error        { return ErrBindingProcessUnknown }
+func (e *bindingInspectionError) Is(target error) bool { return e.errno != 0 && target == e.errno }
+
+func bindingInspectionFailure(phase string, cause error) error {
+	e := &bindingInspectionError{phase: phase, operation: phase, class: "unavailable", exitCode: -1}
+	var prior *bindingInspectionError
+	if errors.As(cause, &prior) {
+		*e = *prior
+		e.phase = phase
+		return e
+	}
+	var exit *exec.ExitError
+	switch {
+	case cause == nil:
+		e.class = "invalid"
+	case errors.Is(cause, context.DeadlineExceeded):
+		e.class = "deadline"
+	case errors.Is(cause, context.Canceled):
+		e.class = "canceled"
+	case errors.As(cause, &e.errno):
+		switch e.errno {
+		case syscall.EACCES, syscall.EPERM:
+			e.class = "permission"
+		case syscall.ENOENT, syscall.ESRCH:
+			e.class = "missing"
+		default:
+			e.class = "system"
+		}
+	case errors.As(cause, &exit):
+		e.class, e.exitCode = "exit", exit.ExitCode()
+	case errors.Is(cause, exec.ErrNotFound):
+		e.class = "not-found"
+	}
+	return e
+}
 
 type bindingProcess struct {
 	PID, PPID, UID int
@@ -26,7 +73,7 @@ type bindingProcess struct {
 func bindingProcesses(ctx context.Context) ([]bindingProcess, error) {
 	raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,uid=,comm=").Output()
 	if err != nil {
-		return nil, ErrBindingProcessUnknown
+		return nil, bindingInspectionFailure("enumerate", err)
 	}
 	var rows []bindingProcess
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -38,7 +85,7 @@ func bindingProcesses(ctx context.Context) ([]bindingProcess, error) {
 		ppid, e2 := strconv.Atoi(f[1])
 		uid, e3 := strconv.Atoi(f[2])
 		if e1 != nil || e2 != nil || e3 != nil {
-			return nil, ErrBindingProcessUnknown
+			return nil, bindingInspectionFailure("enumerate-record", nil)
 		}
 		rows = append(rows, bindingProcess{pid, ppid, uid, strings.Join(f[3:], " ")})
 	}
@@ -99,7 +146,7 @@ func (a *App) guardBindingProcesses(ctx context.Context, name, root string) erro
 	}
 	own, err := bindingImage(ctx, os.Getpid())
 	if err != nil {
-		return ErrBindingProcessUnknown
+		return bindingInspectionFailure("own-image", err)
 	}
 	for _, p := range rows {
 		if p.PID == os.Getpid() || p.UID != os.Getuid() || !strings.HasPrefix(filepath.Base(p.Name), "a2a") {
@@ -107,17 +154,17 @@ func (a *App) guardBindingProcesses(ctx context.Context, name, root string) erro
 		}
 		args, env, err := bindingArguments(p.PID)
 		if err != nil {
-			if processGone(p.PID) {
+			if processGone(p.PID) || bindingCandidateExited(p.PID) {
 				continue
 			}
-			return ErrBindingProcessUnknown
+			return bindingInspectionFailure("candidate-arguments", err)
 		}
 		id, base, cmd := bindingSelectors(args, env)
 		if id != name {
 			continue
 		}
 		if !filepath.IsAbs(base) {
-			return ErrBindingProcessUnknown
+			return bindingInspectionFailure("candidate-root", nil)
 		}
 		currentRoot, _ := filepath.Abs(root)
 		canonical := func(v string) string {
@@ -131,10 +178,10 @@ func (a *App) guardBindingProcesses(ctx context.Context, name, root string) erro
 		}
 		image, err := bindingImage(ctx, p.PID)
 		if err != nil {
-			if processGone(p.PID) {
+			if processGone(p.PID) || bindingCandidateExited(p.PID) {
 				continue
 			}
-			return ErrBindingProcessUnknown
+			return bindingInspectionFailure("candidate-image", err)
 		}
 		if err := bindingProcessConflict(own, image, cmd, p.PID); err != nil {
 			return err

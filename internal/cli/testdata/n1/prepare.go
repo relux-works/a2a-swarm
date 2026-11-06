@@ -79,9 +79,8 @@ func main() {
 		panic("enumerator end missing")
 	}
 	s = s[:start] + "\treturn n1Rows(ctx)" + s[end:]
-	for _, line := range []string{"\t\"os/exec\"\n", "\t\"strconv\"\n"} {
-		s = strings.Replace(s, line, "", 1)
-	}
+	// Inspection diagnostics still classify exec failures after enumeration is replaced.
+	s = strings.Replace(s, "\t\"strconv\"\n", "", 1)
 	changes[p] = s
 	freeze := func(label string, content map[string]string) {
 		mapping := map[string]string{}
