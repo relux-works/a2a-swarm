@@ -173,7 +173,7 @@ func TestVoiceReal(t *testing.T) {
 		if !bytes.HasPrefix(audio.OGG, []byte("OggS")) || !bytes.Contains(audio.OGG, []byte("OpusHead")) {
 			t.Fatal("not Ogg Opus")
 		}
-		t.Logf("engine=%s duration_ms=%d ogg_bytes=%d waveform_bins=%d", "sherpa", audio.DurationMS, len(audio.OGG), len(audio.Waveform))
+		t.Logf("engine=%s original_data_dir_bytes=%d duration_ms=%d ogg_bytes=%d waveform_bins=%d", "sherpa", len(filepath.Join(ModelDir(base), "espeak-ng-data")), audio.DurationMS, len(audio.OGG), len(audio.Waveform))
 		if os.Getenv("A2A_VOICE_IT_LONG") == "1" {
 			long, err := (LocalRenderer{Executable: exe}).Render(context.Background(), base, c, strings.Repeat("Это проверка ограничения длительности голосового ответа. ", 160))
 			if err != nil {

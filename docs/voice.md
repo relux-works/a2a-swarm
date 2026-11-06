@@ -39,6 +39,10 @@ and warns. Other platforms retain normal text operation. The tagged executable
 depends on pinned native dylibs at its Go module-cache path; retain that
 dependency directory while using it. There is no say engine or voice picker.
 
+The `go 1.25.5` directive in `go.mod` is a minimum Go version, not an exact
+toolchain pin. Reproducing a worker binary's digest requires the same exact
+toolchain and build inputs; the #185 Linux qualification uses Go 1.25.5.
+
 `voice install` alone downloads:
 
 - URL: `https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-irina-medium.tar.bz2`
@@ -52,6 +56,25 @@ Existing installs are verified instead of overwritten. Every sherpa render
 verifies installed asset hashes. Posting never installs/downloads. The bundle
 retains its upstream model card, which marks dataset license Unknown. This
 feature asserts no model licensing clearance and does not redistribute it.
+
+For #185, only the dedicated `--voice-worker` process opens the installed model
+directory, checks its identity against the non-symlink directory it inspected,
+and enters it through that held descriptor. It revalidates the pinned manifest
+and every asset through cwd before constructing the native engine. Model and
+token filenames and the 14-byte `espeak-ng-data` are relative to that directory,
+independent of config-root length. The output filename becomes absolute before
+chdir. The worker holds cwd through generation, saving and native destruction;
+the parent CLI never changes cwd. Concurrent renders and truncation notices
+use separate reapable workers. No model alias, copy, cache migration or new
+temporary artifact is needed.
+
+Descriptor binding survives rename/replacement of the source directory pathname;
+it does not make contents immutable against a same-UID writer after validation.
+Model-root symlinks and symlinked asset components are rejected; parent-path
+symlinks may resolve to an authenticated model. The existing parent deadlines
+bound validation/native failure. Public failure text and `[VOICE_TEXT_ONLY]`
+remain unchanged. A future dedicated-helper release must preserve this path
+preparation alongside its separate executable/library authentication.
 
 `ffmpeg` must be on PATH with libopus encode and Opus decode support. Output
 is mono Ogg/Opus,48kHz,24kbps, voice application. There is no qualified
@@ -106,6 +129,10 @@ A2A_VOICE_IT=1 A2A_VOICE_IT_BASE=/absolute/isolated/config \
  A2A_VOICE_IT_EXECUTABLE=/absolute/candidate/a2a-voice \
  go test -tags sherpa ./internal/voice -run '^TestVoiceReal$' -v
 # Add A2A_VOICE_IT_LONG=1 for the actual long/capped synthesis witness.
+# For #185, the authorized Mac operator runs this existing witness twice on
+# the exact candidate: separately prepared short and long absolute bases with
+# original DataDir lengths <257 and >=257 bytes, and A2A_VOICE_IT_LONG=1 in both.
+# The witness logs original_data_dir_bytes; it never installs/copies a model.
 ```
 
 The gated witness synthesizes and encodes Irina, renders Opus back to
@@ -114,6 +141,16 @@ play on the user's speakers or establish client UI acceptance. Missing tools
 are failures, never passing Opus results. Unit tests cover text identity and
 failure verdicts, event/reply/metadata and integrity ordering, cap/notice,
 foreign/cloud option rejection, private scratch cleanup, wrong pins and unsafe archives.
+
+The #185 Linux tests use tiny synthetic pinned fixtures and actual inert child
+processes at the production path boundary. They establish relative spellings,
+asset validation, output placement, rename isolation, cancellation and concurrent
+worker lifetimes. They do not establish Sherpa/espeak accepting relative paths
+or whether the native library canonicalizes them back to a long physical path.
+Real macOS synthesis and decoded non-silent bounded Opus, including cap/notice,
+remain an external exact-candidate delivery gate. Darwin compilation without
+Sherpa is not native synthesis. No new live opt-in or workflow change is needed:
+the existing full-package CI suites already include the path controls.
 
 Source delivery requires own complete and keeper exact-head review, real
 hosted CI for normal/native variants, landing window and signed plain FF.
