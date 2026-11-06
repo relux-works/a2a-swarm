@@ -539,8 +539,12 @@ func LoadState(p Paths, name string) (State, error) {
 	}
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(data, &envelope) == nil {
-		if raw, present := envelope["host_enrollment"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			return State{}, ErrHostEnrollment
+		// Match every spelling accepted by the typed JSON decoder. A later
+		// non-null alias must not hide a null under another matching key.
+		for key, raw := range envelope {
+			if strings.EqualFold(key, "host_enrollment") && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return State{}, ErrHostEnrollment
+			}
 		}
 	}
 	var s State
