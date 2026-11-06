@@ -306,7 +306,8 @@ func cmdIdentityRelease(a *App, args []string) error {
 }
 
 // leaseHolder names this session: hook id, explicit A2A_SESSION_ID, native
-// CODEX_THREAD_ID, then the PID fallback. Codex commands need no manual export.
+// CODEX_THREAD_ID, CLAUDE_CODE_SESSION_ID, then the PID fallback. Native
+// session commands can share their hooks' lease without a manual export.
 // A zero deadline means none (as in config.UpdateStateUntil); the start-time
 // read is still capped at pidBirthTimeout.
 func (a *App) leaseHolder(p config.Paths, sessionID string, deadline time.Time) string {
@@ -318,6 +319,11 @@ func (a *App) leaseHolder(p config.Paths, sessionID string, deadline time.Time) 
 	}
 	if id := a.Getenv("CODEX_THREAD_ID"); claudeSessionRE.MatchString(id) {
 		return id
+	}
+	if a.Getenv(EnvSessionID) == "" && a.Getenv("CODEX_THREAD_ID") == "" {
+		if id := a.Getenv("CLAUDE_CODE_SESSION_ID"); claudeSessionRE.MatchString(id) {
+			return id
+		}
 	}
 	pid := os.Getpid()
 	holder := "pid:" + strconv.Itoa(pid) + "@" + machineLabel()

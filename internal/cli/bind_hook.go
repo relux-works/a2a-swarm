@@ -51,7 +51,7 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 			return a.Getenv(k)
 		}
 	}
-	return clone.bindTerminal(ctx, []string{"--runtime", runtime, "--owner-pid", strconv.Itoa(owner), "--session-id", in.SessionID, "--interval", "2s", "--retry-max", "30s", "--max-wakes-per-hour", "30"}, mode)
+	return clone.bindTerminal(ctx, []string{"--runtime", runtime, "--owner-pid", strconv.Itoa(owner), "--session-id", in.SessionID, "--interval", defaultBindInterval.String(), "--retry-max", defaultBindRetryMax.String(), "--max-wakes-per-hour", strconv.Itoa(defaultBindMaxWakes)}, mode)
 }
 
 // Prompt/Stop take only state and birth observations for a healthy consumer.

@@ -1458,12 +1458,17 @@ native version, attach a second app-server, resume a thread, or change hooks/tru
 # Replace 12345 with this session's own runtime/launcher PID (an ancestor of this command, inside this pane).
 a2a bind --runtime codex --owner-pid 12345 --session-id "$CODEX_THREAD_ID" \
   --interval 2s --retry-max 30s --max-wakes-per-hour 30
-# Claude: --runtime claude, and its own A2A_SESSION_ID or explicit --session-id.
+# Claude: --runtime claude, and its own A2A_SESSION_ID, CLAUDE_CODE_SESSION_ID, or explicit --session-id.
 a2a bind status
 a2a unbind
 ```
 
 If `bind status` shows `unbound` in your tmux session before another hook runs, use the explicit bind above once from that session.
+
+Session selection keeps explicit `--session-id`, then `A2A_SESSION_ID`, then `CODEX_THREAD_ID`; a Claude bind/unbind can also use
+`CLAUDE_CODE_SESSION_ID` when those environment selectors are absent. A conflicting current selector still refuses an explicit foreign ID.
+Malformed values do not enable a lower-priority bind selector. Native Claude commands use that same valid session ID for the lease,
+so a hook-owned lease is shared rather than stolen; foreign live lease holders still refuse. No environment value bypasses target/ancestry checks.
 
 `TMUX` and `TMUX_PANE` select this invocation's own absolute socket and exact `%N` pane. Explicit `--socket` / `--pane` must match those values.
 The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
@@ -1482,12 +1487,16 @@ subsequent commands; unrelated old waiters still need to be stopped by their own
 Current CLI identity selection requires `--as` or `A2A_AGENT`; there is no third implicit identity fallback for the scanner to infer.
 macOS inspection uses `/usr/sbin/lsof` executable vnode metadata; Linux uses `/proc/PID/exe`. Other platforms refuse unavailable inspection.
 
-Timing and spend flags are required once: `--interval` 1s..60s, `--retry-max` interval..5m, `--max-wakes-per-hour` 1..3600. The process syncs and
+Timing and spend flags default to the same policy as SessionStart: `--interval 2s`, `--retry-max 30s`, `--max-wakes-per-hour 30`.
+Explicit flags still accept `--interval` 1s..60s, `--retry-max` interval..5m and `--max-wakes-per-hour` 1..3600. The process syncs and
 observes idle input at that interval, refreshes its own identity lease, and exponentially backs off sync errors to the chosen maximum. Hook pause,
 manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
 `state/NAME.binding.log` contains fixed errors and a `binding exit: REASON` line on each handled consumer exit, including vanished/replaced/stopped
 bindings, owner/target exit, cancellation and startup failure; it never contains captured screens or peer bodies. SIGKILL, a crash or host loss cannot
 run exit logging and remain distinguishable from a handled exit by missing evidence. Binding, reservations and event-ID fences live in `state/NAME.json`.
+The retry line is `binding consumer unavailable; bounded retry cause=CAUSE`, where CAUSE is exactly one of
+`sync`, `state`, `lock`, `lease`, `connection` or `dispatch`. It identifies the failed cycle boundary (including ingest/persistence for `sync`),
+with recognized lock contention reported as `lock`; it never includes underlying error text.
 Local lease/state/dispatch failures also back off and retry; a conflicting lease is never stolen. Only unbind, retirement, or a confirmed dead/replaced
 target ends the consumer. Launchers creating a new Codex session must scrub an inherited `CODEX_THREAD_ID` along with old session variables, so the
 new runtime exports its own metadata; this command does not edit launcher configuration.
@@ -1593,7 +1602,9 @@ nonempty diagnostics when a filled Codex composer hides its hint. A saved fixed 
 no key, never becomes empty/eligible, and cannot reuse a prior empty key to submit the draft. `AssessReadiness(ctx)` remains the strict
 no-journal observation; Send separately recognizes only text typed by its current invocation. No second capture is taken for notice telemetry.
 
-Status also prints `input=STATE reason=REASON` immediately after readiness; JSON adds a sibling `input: {"state": STATE, "reason": REASON}`. States are `empty`, `nonempty`, `unavailable`; reasons are `none`, `input_nonempty`, `busy_or_dialog`, `layout_unrecognized`, `cursor_mismatch`, `target_unavailable`, `capture_unavailable`. These fixed tokens carry no screen text. Stopped/uninspectable bindings report `unavailable` / `target_unavailable`; unbound status omits input. The same fresh assessment supplies readiness and input, with the saved fixed notice used only for nonempty diagnostics. No new persisted fields or older-reader changes are required.
+Status also prints `input=STATE reason=REASON` immediately after readiness; JSON adds a sibling `input: {"state": STATE, "reason": REASON}`. States are `empty`, `nonempty`, `unavailable`; reasons are `none`, `input_nonempty`, `busy_or_dialog`, `layout_unrecognized`, `cursor_mismatch`, `target_unavailable`, `capture_unavailable`, `not_observed`. When registry refusal short-circuits input assessment, status projects
+`unavailable` / `not_observed`, rather than attributing a parser diagnosis to unassessed input. This is presentation only; it changes no admission.
+These fixed tokens carry no screen text. Stopped/uninspectable bindings report `unavailable` / `target_unavailable`; unbound status omits input. The same fresh assessment supplies readiness and input, with the saved fixed notice used only for nonempty diagnostics. No new persisted fields or older-reader changes are required.
 
 `busy_or_dialog` can also come from transcript text in the bottom 18 rows, as a known limitation; it is not proof that the lane is busy.
 When that reason is reported, status adds `busy_match_location` in text and JSON: `above_composer`, `at_or_below_composer`, or `no_composer`. This separate read-only capture locates matches relative to the composer's top rule (Claude) or prompt line (Codex); matches on both sides report `at_or_below_composer`. `unavailable` means the extra read failed or the match disappeared between observations. These fixed tokens disclose neither matched phrases nor screen text, and never affect admission. Composer geometry here is only a location hint, not proof that a dialog is absent.

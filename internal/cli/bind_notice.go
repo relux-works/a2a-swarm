@@ -192,6 +192,11 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			}
 			cancel()
 		}
+		// Registry refusal short-circuits input assessment; the default layout
+		// reason is not a parser diagnosis. Project only, never change admission.
+		if live.Runtime.State == tmuxwake.RuntimeRefused && live.Input.State == tmuxwake.InputUnavailable && live.Input.Reason == tmuxwake.InputReasonLayoutUnrecognized {
+			live.Input.Reason = tmuxwake.InputReason("not_observed")
+		}
 		projected := readinessStatus(live.Runtime, b.Readiness, a.Now())
 		input = &live.Input
 		readiness = &projected

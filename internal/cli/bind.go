@@ -43,6 +43,42 @@ func descendant(ctx context.Context, pid, ancestor int) bool {
 // protocol or the persisted consumer state contract.
 const consumerProtocol = "a2a-bind-consumer/1\n"
 
+// Manual bind and SessionStart share one bounded wake policy.
+const (
+	defaultBindInterval = 2 * time.Second
+	defaultBindRetryMax = 30 * time.Second
+	defaultBindMaxWakes = 30
+)
+
+// Native session metadata is a selector, never binding/lease authority. Keep
+// explicit A2A and Codex precedence, and never fall through a malformed value.
+func (a *App) terminalSessionID(runtime string) string {
+	if id := a.Getenv(EnvSessionID); id != "" {
+		return id
+	}
+	if id := a.Getenv("CODEX_THREAD_ID"); id != "" {
+		return id
+	}
+	if runtime == "claude" {
+		return a.Getenv("CLAUDE_CODE_SESSION_ID")
+	}
+	return ""
+}
+
+// The stage is a closed diagnostic token, not an error rendering. Lock
+// contention can be recognized through wrapping at any of these boundaries.
+func bindingRetryCause(stage string, err error) string {
+	if errors.Is(err, config.ErrLockTimeout) {
+		return "lock"
+	}
+	switch stage {
+	case "sync", "state", "lease", "connection", "dispatch":
+		return stage
+	default:
+		return "state"
+	}
+}
+
 func cmdBind(ctx context.Context, a *App, args []string) error {
 	return a.bindTerminal(ctx, args, bindingManual)
 }
@@ -69,12 +105,12 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	fs := newFlagSet("bind")
 	runtime := fs.String("runtime", "", "claude or codex")
 	owner := fs.Int("owner-pid", 0, "own live runtime PID")
-	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID or CODEX_THREAD_ID)")
+	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID, CODEX_THREAD_ID, or native Claude session)")
 	pane := fs.String("pane", a.Getenv("TMUX_PANE"), "own exact tmux pane")
 	socket := fs.String("socket", strings.Split(a.Getenv("TMUX"), ",")[0], "own tmux socket")
-	interval := fs.Duration("interval", 0, "explicit idle observation and sync interval (1s..60s)")
-	retryMax := fs.Duration("retry-max", 0, "explicit maximum sync-error backoff (at most 5m)")
-	rate := fs.Int("max-wakes-per-hour", 0, "explicit maximum wake attempts per hour")
+	interval := fs.Duration("interval", defaultBindInterval, "idle observation and sync interval (1s..60s)")
+	retryMax := fs.Duration("retry-max", defaultBindRetryMax, "maximum sync-error backoff (at most 5m)")
+	rate := fs.Int("max-wakes-per-hour", defaultBindMaxWakes, "maximum wake attempts per hour")
 	run := fs.String("run-generation", "", "internal detached consumer generation")
 	lockFD := fs.Int("consumer-lock-fd", 0, "internal inherited consumer lock")
 	pos, err := parseInterspersed(fs, args)
@@ -98,15 +134,16 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		return usagef("consumer lock requires detached generation")
 	}
 	if *sessionID == "" {
-		*sessionID = a.Getenv(EnvSessionID)
-		if *sessionID == "" {
-			*sessionID = a.Getenv("CODEX_THREAD_ID")
-		}
+		*sessionID = a.terminalSessionID(*runtime)
 	}
 	if *owner <= 1 || *interval < time.Second || *interval > maxPoll || *retryMax < *interval || *retryMax > 5*time.Minute || *rate < 1 || *rate > 3600 || !claudeSessionRE.MatchString(*sessionID) {
 		return usagef("bind requires --runtime, own --owner-pid, --session-id (or session env), --interval 1s..60s, --retry-max interval..5m and --max-wakes-per-hour 1..3600")
 	}
-	if current := a.Getenv(EnvSessionID); current != "" && current != *sessionID {
+	current := a.Getenv(EnvSessionID)
+	if current == "" && *runtime == "claude" && a.Getenv("CODEX_THREAD_ID") == "" {
+		current = a.Getenv("CLAUDE_CODE_SESSION_ID")
+	}
+	if current != "" && current != *sessionID {
 		return usagef("bind refuses another live session")
 	}
 	if current := a.Getenv("CODEX_THREAD_ID"); current != "" && (*runtime != "codex" || current != *sessionID) {
@@ -386,11 +423,8 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 			if b == nil || b.Stopped {
 				return nil
 			}
-			sessionID := a.Getenv(EnvSessionID)
-			if sessionID == "" {
-				sessionID = a.Getenv("CODEX_THREAD_ID")
-			}
-			if sessionID != b.SessionID || b.Host != machineLabel() {
+			sessionID := a.terminalSessionID(b.Target.Runtime)
+			if !claudeSessionRE.MatchString(sessionID) || sessionID != b.SessionID || b.Host != machineLabel() {
 				return errors.New("unbind refuses another session's binding")
 			}
 			pid, birth = b.DaemonPID, b.DaemonBirth
@@ -489,6 +523,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 		if err := s.checkConnection(); err != nil {
 			return "selected connection unavailable", err
 		}
+		stage := "state"
 		st, err := config.LoadState(s.paths, s.name)
 		if err == nil {
 			b := st.Terminal
@@ -514,18 +549,23 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 				return "target gone or replaced", nil
 			}
 			if ownerErr != nil {
+				stage = "connection"
 				err = ownerErr
 			} else if targetErr != nil {
+				stage = "connection"
 				err = targetErr
 			} else {
+				stage = "lease"
 				err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout))
 			}
 		}
 		if err == nil {
 			syncCtx, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 			var subs SubList
+			stage = "state"
 			st, subs, err = s.startDelivery(syncCtx, a.Now())
 			if err == nil {
+				stage = "sync"
 				if st.NextBatch == "" {
 					_, err = s.takePosition(syncCtx, time.Now().Add(nativeRPCTimeout))
 				} else {
@@ -539,11 +579,13 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			// that interruption in RAM until a fresh successful write precedes
 			// dispatch, including the first cycle of a restarted consumer.
 			if qualificationInterrupted {
+				stage = "state"
 				err = a.resetTerminalObservations(s, generation)
 				qualificationInterrupted = err != nil
 			}
 		}
 		if err == nil {
+			stage = "dispatch"
 			err = a.dispatchTerminal(ctx, s, generation, alarmWake)
 		}
 		if ctx.Err() != nil {
@@ -558,7 +600,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			// A failed write is not a reason to terminate. The next cycle must load
 			// fresh state and reacquire its lease before it may touch the terminal.
 			a.unknownTerminalNotice(ctx, s, generation, true)
-			fmt.Fprintln(a.Stderr, "binding consumer unavailable; bounded retry")
+			fmt.Fprintf(a.Stderr, "binding consumer unavailable; bounded retry cause=%s\n", bindingRetryCause(stage, err))
 		} else {
 			delay = policy.Interval
 			if fresh, readErr := config.LoadState(s.paths, s.name); readErr == nil {
