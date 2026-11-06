@@ -276,6 +276,7 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 		return usagef(use)
 	}
 	fs := newFlagSet("topic new")
+	result := addResultFlags(fs)
 	bodyArg := fs.String("body", "", "topic body: - (stdin), @file, or text")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
@@ -291,6 +292,11 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	if title == "" {
 		return usagef("empty topic title refused")
 	}
+	resultFile, err := result.prepare(fs)
+	if err != nil {
+		return err
+	}
+	defer resultFile.close()
 	var body string
 	if *bodyArg != "" {
 		if body, err = a.readBody(*bodyArg); err != nil {
@@ -336,8 +342,7 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	if err := s.rememberThread(id); err != nil {
 		fmt.Fprintf(a.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}
-	a.printf("%s\n", id)
-	return nil
+	return result.emit(a, resultFile, PublishResult{id, roomID, id, ""})
 }
 
 // cmdTopics: a2a topics <room>
@@ -390,6 +395,7 @@ func validKind(k string) bool {
 func cmdPost(ctx context.Context, a *App, args []string) error {
 	const use = "usage: a2a post <room> --topic <slug|$event_id> [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
 	fs := newFlagSet("post")
+	result := addResultFlags(fs)
 	withVoice := fs.Bool("voice", false, "add a local voice reply after the unchanged text post")
 	topic := fs.String("topic", "", "topic slug or root event id")
 	kind := fs.String("kind", "notice", "message kind")
@@ -411,6 +417,11 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		}
 		return usagef(use)
 	}
+	resultFile, err := result.prepare(fs)
+	if err != nil {
+		return err
+	}
+	defer resultFile.close()
 	envelopeMode := false
 	fs.Visit(func(f *flag.Flag) { envelopeMode = envelopeMode || f.Name == "envelope" })
 	if envelopeMode {
@@ -497,13 +508,13 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	a.printf("%s\n", id)
+	resultErr := result.emit(a, resultFile, PublishResult{id, roomID, root, firstNonEmpty(*re, root)})
 	if *withVoice {
 		if err := s.postVoice(ctx, roomID, root, id, text); err != nil {
 			a.voiceWarning(err)
 		}
 	}
-	return nil
+	return resultErr
 }
 
 // sendThreadMessage sends h plus text as a thread reply to h.Topic and records

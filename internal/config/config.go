@@ -343,6 +343,8 @@ type State struct {
 	// NextBatch is the sync cursor: every relevant event before it is in the
 	// mailbox (appended and fsynced before the cursor was saved).
 	NextBatch string `json:"next_batch,omitempty"`
+	// LastInbox names the last explicitly saved inbox frame; it grants no delivery authority.
+	LastInbox string `json:"last_inbox,omitempty"`
 	// LegacyPending is the pre-mailbox pending wait batch. It is dropped at the
 	// first sync: the cursor never moved past it, so its events are synced
 	// into the mailbox again.
