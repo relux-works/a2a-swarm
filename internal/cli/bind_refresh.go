@@ -134,8 +134,12 @@ func (r *terminalRefresh) observeExecutable(path string) (terminalExecutable, er
 }
 
 func newTerminalRefresh(context.Context) *terminalRefresh {
-	// No filesystem or process observation until poll, after ready and a cycle.
-	return &terminalRefresh{exec: syscall.Exec}
+	// Pin the launch alias before ready: an installer may retarget it as soon
+	// as startup is acknowledged. Loaded-image inspection and hashing still
+	// wait until poll, after ready and a complete delivery cycle.
+	r := &terminalRefresh{exec: syscall.Exec}
+	r.initializePath()
+	return r
 }
 
 func (r *terminalRefresh) initializePath() {

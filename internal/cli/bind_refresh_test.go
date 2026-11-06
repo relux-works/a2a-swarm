@@ -346,12 +346,12 @@ func TestTerminalRefreshFailureAndStability(t *testing.T) {
 	}
 }
 
-// Construction does no observation; the first poll compares the loaded image
-// to its path, and subsequent unchanged polls cannot form an exec loop.
+// Construction pins only the launch path; the first poll compares the loaded
+// image to it, and subsequent unchanged polls cannot form an exec loop.
 func TestTerminalRefreshCurrentImage(t *testing.T) {
 	r := newTerminalRefresh(context.Background())
-	if r.path != "" || r.current != (terminalExecutable{}) {
-		t.Fatal("eager refresh setup")
+	if r.path == "" || r.current != (terminalExecutable{}) {
+		t.Fatal("launch path missing or eager image inspection")
 	}
 	r.poll(context.Background(), nil, nil, "", nil)
 	if r.path == "" {
@@ -417,6 +417,78 @@ func TestTerminalRefreshMetadataShortcut(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// A launch symlink retargeted between construction (before ready) and the first
+// poll still reaches the exec spy (protocol success is stubbed). An unrelated
+// argv[0] must not become an upgrade path.
+func TestTerminalRefreshEarlyRetarget(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, foreign := range []bool{false, true} {
+		name := "launch-alias"
+		if foreign {
+			name = "unrelated-argv"
+		}
+		t.Run(name, func(t *testing.T) {
+			a, s, _ := refreshApp(t)
+			next, _ := refreshExecutable(t)
+			launch := filepath.Join(t.TempDir(), "a2a")
+			target := self
+			if foreign {
+				target = next
+			}
+			if err := os.Symlink(target, launch); err != nil {
+				t.Fatal(err)
+			}
+			args := os.Args
+			os.Args = append([]string{launch}, args[1:]...)
+			t.Cleanup(func() { os.Args = args })
+			r := newTerminalRefresh(context.Background())
+			// No poll has run yet. Linux's os.Executable still names the old
+			// resolved image, so discovering the alias now would be too late.
+			link := launch + ".next"
+			if err := os.Symlink(next, link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(link, launch); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			r.now = func() time.Time { return now }
+			r.probe = func(context.Context, string, []string) error { return nil }
+			calls := 0
+			r.exec = func(path string, argv, _ []string) error {
+				calls++
+				if path != resolved || argv[0] != launch {
+					t.Fatal("retarget lost resolved image or launch alias")
+				}
+				return syscall.ENOEXEC
+			}
+			err = config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
+				r.poll(context.Background(), a, s, "refresh-gen", lock)
+				now = now.Add(time.Second)
+				r.poll(context.Background(), a, s, "refresh-gen", lock)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if foreign {
+				want = 0
+			}
+			if calls != want {
+				t.Fatalf("early retarget execs=%d, want %d", calls, want)
 			}
 		})
 	}

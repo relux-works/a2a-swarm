@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -25,6 +26,8 @@ import (
 // image, and delivers retained mail afterwards. Lock exclusion is sampled
 // across exec; the adoption unit test checks the inherited file description.
 // Uses only a private terminal and fake homeserver on CI, no provider session.
+// The child advances only the refresh throttle clock; real safety, probing,
+// exec and delivery clocks remain intact. PendingCost checks the 30s boundary.
 func TestTerminalRefreshDetachedLifecycle(t *testing.T) {
 	testTerminalRefreshDetachedLifecycle(t, "direct")
 }
@@ -37,6 +40,66 @@ func TestTerminalRefreshSymlinkLifecycle(t *testing.T) {
 	}
 }
 
+// Wire the existing private clock/safety seams into the real child through a
+// build overlay, never a production flag or environment override. Each poll
+// advances past the safety throttle (and eventually the probe retry cooldown).
+// The safety wrapper records an actual rejection, not a guessed cycle count.
+func buildRefreshLifecycleCLI(t *testing.T, exe string) {
+	t.Helper()
+	source, err := filepath.Abs("bind_refresh.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const anchor = "r.initializePath()\n\treturn r"
+	const replacement = `r.initializePath()
+	clock := time.Now()
+	safeVerdict := false
+	r.now = func() time.Time {
+		clock = clock.Add(31 * time.Second)
+		return clock
+	}
+	r.safety = func(ctx context.Context, a *App, s *session, generation string) (string, bool, error) {
+		id, safe, err := terminalRefreshAuthority(ctx, a, s, generation)
+		safeVerdict = err == nil && safe
+		if err == nil && !safe {
+			fmt.Fprintln(a.Stderr, "test refresh: unsafe candidate deferred")
+		}
+		return id, safe, err
+	}
+	r.exec = func(path string, args, env []string) error {
+		if !safeVerdict {
+			fmt.Fprintln(os.Stderr, "test refresh: unsafe exec")
+		}
+		return syscall.Exec(path, args, env)
+	}
+	return r`
+	if strings.Count(string(raw), anchor) != 1 {
+		t.Fatal("setup: nonunique refresh clock overlay anchor")
+	}
+	dir := t.TempDir()
+	patched := filepath.Join(dir, "bind_refresh.go")
+	if err := os.WriteFile(patched, []byte(strings.Replace(string(raw), anchor, replacement, 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{source: patched}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "overlay.json")
+	if err := os.WriteFile(path, overlay, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "go", "build", "-overlay", path, "-o", exe, "../../cmd/a2a").CombinedOutput(); err != nil {
+		t.Fatalf("setup: build CLI: %v %s", err, out)
+	}
+}
+
 func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	t.Helper()
 	if testing.Short() {
@@ -45,11 +108,10 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	f := newOrphanDispatchFixture(t)
 	f.a.Now = time.Now
 	exe := filepath.Join(f.dir, "a2a")
+	buildRefreshLifecycleCLI(t, exe)
+	// A cold build must not spend the consumer's lifecycle deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, "go", "build", "-o", exe, "../../cmd/a2a").CombinedOutput(); err != nil {
-		t.Fatalf("setup: build CLI: %v %s", err, out)
-	}
 	launch := exe
 	if mode != "direct" {
 		launch = filepath.Join(t.TempDir(), "a2a")
@@ -141,15 +203,14 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	count := f.e.hs.SyncCount("@alice:" + testServer)
-	until := time.Now().Add(8 * time.Second)
-	for f.e.hs.SyncCount("@alice:"+testServer) < count+3 && time.Now().Before(until) {
+	until := time.Now().Add(testDeadline)
+	for !strings.Contains(readFile(t, logPath), "test refresh: unsafe candidate deferred\n") && time.Now().Before(until) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if f.e.hs.SyncCount("@alice:"+testServer) < count+3 {
-		t.Fatal("setup: consumer did not complete unsafe cycles")
-	}
 	logs := readFile(t, logPath)
+	if !strings.Contains(logs, "test refresh: unsafe candidate deferred\n") {
+		t.Fatalf("candidate never reached unsafe refresh gate: context=%v log=%s", ctx.Err(), logs)
+	}
 	if strings.Contains(logs, "binding re-exec:") {
 		t.Fatal("unsafe journal crossed exec")
 	}
@@ -173,7 +234,12 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if strings.Count(readFile(t, logPath), "binding re-exec: executable changed\n") != 1 {
-		t.Fatal("replacement did not produce one exec")
+		t.Fatalf("replacement did not produce one exec: context=%v log=%s", ctx.Err(), readFile(t, logPath))
+	}
+	// The unsafe acknowledgement precedes poll's return. Retain an exec-boundary
+	// witness too, so clearing the journal cannot hide an in-flight unsafe exec.
+	if strings.Contains(readFile(t, logPath), "test refresh: unsafe exec\n") {
+		t.Fatal("unsafe journal crossed exec")
 	}
 	current, err := bindingImage(ctx, child.Process.Pid)
 	if err != nil || current != candidate.Image {
@@ -211,10 +277,13 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	if screen.Submitted[0] != tmuxwake.Notice(1) || f.e.received("alice", id) {
 		t.Fatal("post-exec consumer failed delivery contract")
 	}
-	count = f.e.hs.SyncCount("@alice:" + testServer)
-	until = time.Now().Add(8 * time.Second)
+	count := f.e.hs.SyncCount("@alice:" + testServer)
+	until = time.Now().Add(testDeadline)
 	for f.e.hs.SyncCount("@alice:"+testServer) < count+3 && time.Now().Before(until) {
 		time.Sleep(10 * time.Millisecond)
+	}
+	if f.e.hs.SyncCount("@alice:"+testServer) < count+3 {
+		t.Fatalf("replacement consumer stopped cycling: context=%v log=%s", ctx.Err(), readFile(t, logPath))
 	}
 	if strings.Count(readFile(t, logPath), "binding re-exec: executable changed\n") != 1 {
 		t.Fatal("replacement image entered exec loop")

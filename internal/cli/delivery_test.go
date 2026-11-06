@@ -213,23 +213,33 @@ func TestWatch(t *testing.T) {
 	calls := e.hs.CallCount("GET /_matrix/client/v3/sync")
 	done := make(chan result, 1)
 	go func() { done <- e.runCtx(ctx, "--as", "alice", "watch") }()
+	// Output precedes MarkShown. Wait for that durable effect, not another
+	// sync: watch may already be parked in its next 60-second long-poll.
+	waitShown := func(id string) {
+		t.Helper()
+		deadline := time.Now().Add(testDeadline)
+		for {
+			if en, ok := e.pendingEntry("alice", id); ok && en.Shown {
+				return
+			}
+			select {
+			case r := <-done:
+				t.Fatalf("watch exited before marking %s shown: %+v", id, r)
+			default:
+			}
+			if time.Now().After(deadline) {
+				text, _ := out.snapshot()
+				t.Fatalf("watch never marked %s shown: %q", id, text)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	e.syncCalls(t, calls+1)
 	e.hs.inject(room, "@bob:test.local", msg("noise", nil))
 	a := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local first", nil))
-	e.syncCalls(t, calls+2)
+	waitShown(a)
 	b := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local second", nil))
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		text, _ := out.snapshot()
-		if strings.Contains(text, b) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("watch never printed %s: %q", b, text)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	e.syncCalls(t, e.hs.CallCount("GET /_matrix/client/v3/sync")+1) // the batch of b was committed
+	waitShown(b)
 	select {
 	case r := <-done:
 		t.Fatalf("watch exited on its own: %+v", r)

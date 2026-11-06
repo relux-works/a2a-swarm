@@ -277,14 +277,14 @@ func TestTerminalRefreshPendingCost(t *testing.T) {
 }
 
 // Even a deliberately failing observation seam is reached only after the first
-// delivery cycle has synced and dispatched; construction itself does no work.
+// delivery cycle has synced and dispatched; construction only pins the path.
 func TestTerminalRefreshLazyObservation(t *testing.T) {
 	f := newOrphanDispatchFixture(t)
 	f.a.Now = time.Now
 	f.update(func(st *config.State) { st.HooksPaused = true })
 	r := newTerminalRefresh(context.Background())
-	if r.path != "" || r.current != (terminalExecutable{}) {
-		t.Fatal("refresh initialized before readiness")
+	if r.path == "" || r.current != (terminalExecutable{}) {
+		t.Fatal("launch path missing or eager image inspection")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
