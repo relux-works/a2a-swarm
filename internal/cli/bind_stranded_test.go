@@ -77,8 +77,11 @@ func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
 	f.step()
 	f.control(map[string]any{})
 	f.step()
-	f.update(func(st *config.State) { st.Terminal.Retried = true }) // Recovery budget exhausted; exercise escalation only.
-	since := f.now
+	exhaustRecovery(t, f)
+	since, err := time.Parse(time.RFC3339Nano, f.binding().OwnNotice.Since)
+	if err != nil {
+		t.Fatal(err)
+	}
 	count := func() int { return len(f.e.projectionsFrom(system, "@alice:test.local")) }
 	advance := func(d time.Duration) {
 		f.now = since.Add(d)
@@ -106,7 +109,6 @@ func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
 	})
 	clone := *f.a
 	f.a = &clone
-	var err error
 	f.s, err = f.a.session()
 	if err != nil {
 		t.Fatal(err)
@@ -162,15 +164,17 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 			f.step()
 			f.control(map[string]any{})
 			f.step()
+			exhaustRecovery(t, f)
 			f.now = f.now.Add(10 * time.Minute)
 			f.update(func(st *config.State) {
 				st.Lease.Expires = f.now.Add(time.Minute)
-				st.Terminal.Retried = true // Report retries remain independent once input recovery is exhausted.
 				if mode == "partial" {
+					st.Terminal.TypingStarted = false // Corrupt count has no continuing typing authority.
 					st.Terminal.NoticeCount = 2
 					st.Terminal.Notice = tmuxwake.Notice(2)
 				}
 				if mode == "untyped" {
+					st.Terminal.TypingStarted = false
 					st.Terminal.Typed = false
 				}
 			})

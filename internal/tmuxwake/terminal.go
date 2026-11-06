@@ -235,7 +235,7 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 
 // The bound adapter shares the established two-phase effect implementation;
 // only its observation and additional pre-type constraint differ.
-func (t Target) sendWith(ctx context.Context, count int, owned string, beforeType, afterType func(), inspect func(context.Context, string) (Box, bool), preType func() bool) (SendResult, error) {
+func (t Target) sendWith(ctx context.Context, count int, owned string, beforeType, afterType func(), inspect func(context.Context, string) (Box, bool), preType func() bool, beforeEnter ...func() error) (SendResult, error) {
 	if count <= 0 {
 		return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, errors.New("positive count required")
 	}
@@ -294,6 +294,11 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 			continue
 		}
 		if box.Text == notice {
+			for _, fence := range beforeEnter {
+				if err := fence(); err != nil {
+					return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, err
+				}
+			}
 			if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
 				return SendResult{Disposition: SendUncertain, Outcome: SendEnterUncertain}, err
 			}

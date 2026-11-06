@@ -20,11 +20,13 @@ func (a *App) observeTerminalNotice(s *session, generation string, b config.Term
 	return a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
 		n := current.OwnNotice
 		// A known-unsubmitted pending attempt is just as capable of blocking
-		// later mail as a fully receipted orphan. Partial attempts stay uncertain.
+		// later mail as a fully receipted orphan. A spent journal-fenced Enter
+		// also surfaces lost-ACK/partial attempts; reporting grants no input authority.
 		// Count/time survive completed submits and fresh refusals. Only retained
 		// IDs/text or prior suspicion establish an unsettled attempt here; Notice
 		// remains evidence even after dispatch prunes all receipted IDs.
-		eligible := b.Typed && b.NoticeCount > 0 && (len(b.AttemptIDs) == 0 || len(b.AttemptIDs) == b.NoticeCount)
+		exhausted := b.Retried && b.TypingStarted && b.NoticeOrigin != nil && b.NoticeCount > 0 && b.Notice == tmuxwake.Notice(b.NoticeCount)
+		eligible := exhausted || b.Typed && b.NoticeCount > 0 && (len(b.AttemptIDs) == 0 || len(b.AttemptIDs) == b.NoticeCount)
 		if input == "unknown" || b.Typed && (b.NoticeCount <= 0 || b.Notice != tmuxwake.Notice(b.NoticeCount)) || input == "nonempty" && !eligible && (n.Since != "" || len(b.AttemptIDs) > 0 || b.Notice != "") {
 			n.PossiblyOrphaned = nil
 			current.Idle = nil

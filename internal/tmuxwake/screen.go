@@ -124,6 +124,22 @@ func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 			return Box{}, InputReasonBusyOrDialog
 		}
 	}
+	// Multiple prompt-shaped rows in the qualified tail are ambiguous: a
+	// transcript must never substitute for the current composer (either runtime).
+	glyph := "›"
+	if runtime == "claude" {
+		glyph = "❯"
+	}
+	candidates := 0
+	for _, line := range lines[start:] {
+		line = strings.TrimLeft(plain(line), " ")
+		if line == glyph || strings.HasPrefix(line, glyph+" ") || strings.HasPrefix(line, glyph+"\u00a0") {
+			candidates++
+		}
+	}
+	if candidates > 1 {
+		return Box{}, InputReasonLayoutUnrecognized
+	}
 	if runtime == "claude" {
 		var rules []int
 		for i := start; i < len(lines); i++ {
@@ -145,6 +161,10 @@ func inputWithNoticeReason(screen, runtime, owned string) (Box, InputReason) {
 	}
 	for i := len(lines) - 1; i >= start; i-- {
 		line := plain(lines[i])
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed != line && (trimmed == "›" || strings.HasPrefix(trimmed, "› ") || strings.HasPrefix(trimmed, "›\u00a0")) && !(fixedNotice.MatchString(owned) && strings.TrimRight(trimmed, " ") == "› "+owned) {
+			return Box{}, InputReasonLayoutUnrecognized
+		}
 		// Indentation is admitted only for the supplied exact filled notice.
 		if fixedNotice.MatchString(owned) && strings.TrimRight(strings.TrimLeft(line, " "), " ") == "› "+owned {
 			line = strings.TrimLeft(line, " ")

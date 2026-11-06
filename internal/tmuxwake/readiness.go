@@ -217,7 +217,7 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 		return r, Box{}
 	}
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
-	if b.Row < 0 || b.Row >= len(lines) || width <= 0 || b.Column < 0 || b.Column >= width || width2 != width || (owned == "" || b.Text != owned) && (x != b.Column || y != b.Row || x2 != x || y2 != y) {
+	if b.Row < 0 || b.Row >= len(lines) || width <= 0 || b.Column < 0 || b.Column >= width || width2 != width || (parserNotice == "" || b.Text != parserNotice) && (x != b.Column || y != b.Row || x2 != x || y2 != y) {
 		r.Input.Reason = InputReasonCursorMismatch
 		return r, Box{}
 	}

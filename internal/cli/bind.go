@@ -703,7 +703,19 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if err := a.observeTerminalNotice(s, generation, *b, observation); err != nil {
 			return err
 		}
-		if observation == "empty" && b.Typed && len(b.AttemptIDs) < b.NoticeCount {
+		// Only an aged empty observation disproves continuous presence. A redraw
+		// inside the recovery window must retain lost-ACK typing authority.
+		if observation == "empty" && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) {
+			if err := a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
+				current.NoticeOrigin = nil
+				current.TypingStarted = false
+			}); err != nil {
+				return err
+			}
+			b.NoticeOrigin = nil
+			b.TypingStarted = false
+		}
+		if observation == "empty" && b.Typed && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) && len(b.AttemptIDs) < b.NoticeCount {
 			if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
 				b.Typed = false
 				b.AttemptIDs = nil
@@ -903,6 +915,9 @@ func (a *App) recoverTerminal(ctx context.Context, s *session, generation string
 		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "uncertain partial attempt; mail retained" })
 	}
 	now := a.Now()
+	if b.NoticeOrigin != nil && b.TypingStarted && now.Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) {
+		return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: awaiting notice render" })
+	}
 	if input == "empty" {
 		if qualified, err := a.qualifyTerminalIdle(s, generation, b, readiness); err != nil || !qualified {
 			return err

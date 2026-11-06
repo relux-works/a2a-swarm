@@ -113,7 +113,7 @@ with composer-like geometry. Real-binary probes are future work. See the
 
 Typing-time registry transitions can leave an own notice in the composer while its
 attempt remains pending. This now surfaces as SUSPECTED-DEAF, with one durable
-incident to its explicitly configured own project/lane room after ten minutes of suspicion age. Exact complete notices recorded by the same generation now get bounded Enter-only recovery on later cycles, without retyping; cursor/composer movement does not refuse post-type Enter. See `bind status` recovery token/time and the detailed journal, budget and refusal contract in `docs/cli.md`. Reproduce transitions, stable named/Codex controls and incident
+incident to its explicitly configured own project/lane room after ten minutes of suspicion age. Exact complete notices recorded by the same generation now get bounded Enter-only recovery on later cycles, without retyping; fresh post-type Enter permits cursor/composer movement; later-cycle recovery pins the composer to its saved origin and rejects ambiguous prompt rows. Confirmed empty input after the recovery window revokes that origin. Pre-key recovery refusal preserves the retry, while an attempted Enter exhausts it. See `bind status` recovery token/time and the detailed journal, budget and refusal contract in `docs/cli.md`. Reproduce transitions, stable named/Codex controls and incident
 retry/deduplication with `go test ./internal/tmuxwake ./internal/cli -run 'TestBoundTypingTransition|TestTerminalStranded' -count=1`.
 The replacement writer carries the current on-disk incident report under the same state lock
 that installs the binding; startup writes only consumer PID/birth metadata.

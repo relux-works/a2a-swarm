@@ -22,7 +22,7 @@ import (
 // Adjacent refusals retain the attempt and mailbox; no provider pane is used.
 func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 	for _, runtime := range []string{"codex", "claude", "claude-named"} {
-		for _, mode := range []string{"valid", "restart", "uncertain", "more-mail", "at-budget", "foreign", "prefix", "suffix", "count", "dialog", "busy", "registry-busy", "version", "target", "generation", "session", "width", "paused", "manual", "stopped", "unrecorded", "not-typed", "retry-cap", "retry-delay", "cooldown", "budget", "transcript"} {
+		for _, mode := range []string{"valid", "restart", "uncertain", "more-mail", "at-budget", "foreign", "prefix", "suffix", "count", "dialog", "busy", "registry-busy", "version", "target", "generation", "session", "width", "paused", "manual", "stopped", "unrecorded", "not-typed", "retry-cap", "retry-delay", "cooldown", "budget", "transcript", "prompt-foreign", "prompt-empty", "second-prompt", "origin-row", "origin-column"} {
 			if runtime == "codex" && (mode == "registry-busy" || mode == "version") {
 				continue
 			}
@@ -119,6 +119,29 @@ func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 						st.Terminal.MaxWakes = 1
 						st.Terminal.Reservations = append(st.Terminal.Reservations, f.now)
 					})
+				case "origin-row":
+					f.update(func(st *config.State) { st.Terminal.NoticeOrigin.ComposerRow-- })
+				case "origin-column":
+					f.update(func(st *config.State) { st.Terminal.NoticeOrigin.ComposerColumn++ })
+				case "prompt-foreign", "prompt-empty", "second-prompt":
+					glyph := "› "
+					if runtime != "codex" {
+						glyph = "❯ "
+					}
+					render["diagnostic-row"] = 12
+					render["diagnostic-text"] = glyph + b.Notice
+					if mode == "prompt-foreign" {
+						render["text"] = "HUMAN_DRAFT"
+						render["indent"] = 3
+					}
+					if mode == "prompt-empty" {
+						render["text"] = ""
+						render["cursor"] = 0
+					}
+					if mode == "second-prompt" {
+						render["diagnostic-row"] = 23
+						render["diagnostic-text"] = glyph + "HUMAN_DRAFT"
+					}
 				case "transcript":
 					render["text"] = ""
 					render["cursor"] = 0

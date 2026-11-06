@@ -6,7 +6,7 @@ import (
 )
 
 // Continuation submits only exact complete owned input, never types into an
-// empty/transcript-only box, and retains every non-geometry identity constraint.
+// empty box, and pins the supplied composer and runtime key.
 // These use private synthetic fixtures, not installed runtime observations.
 func TestBoundResumeNotice(t *testing.T) {
 	for _, runtime := range []string{"claude", "claude-named", "codex"} {
@@ -14,6 +14,7 @@ func TestBoundResumeNotice(t *testing.T) {
 			t.Run(runtime+"/"+mode, func(t *testing.T) {
 				f := newBoundFixture(t, runtime, "2.1.318", "idle")
 				expected := f.b.AssessReadiness(context.Background()).Key
+				expected.ComposerRow = 16 // Pin the actual recovery composer, not the earlier empty row.
 				text := Notice(1)
 				switch mode {
 				case "empty":
@@ -53,9 +54,13 @@ func TestBoundResumeNotice(t *testing.T) {
 					options["cursor-row"] = 17
 				}
 				f.f.render(options)
-				result, err := f.b.ResumeNotice(context.Background(), 1, Notice(1), expected)
+				fences := 0
+				result, err := f.b.ResumeNotice(context.Background(), 1, Notice(1), expected, func() error { fences++; return nil })
 				if err != nil {
 					t.Fatal(err)
+				}
+				if (mode == "valid" && fences != 1) || (mode != "valid" && fences != 0) {
+					t.Fatal("Enter fence spent before a key attempt")
 				}
 				if mode == "valid" {
 					s := f.f.wait(func(s fixtureState) bool { return len(s.Submitted) == 1 })
@@ -74,6 +79,12 @@ func TestBoundResumeNotice(t *testing.T) {
 					}
 				} else {
 					s := f.f.wait(func(s fixtureState) bool { return s.Render == 1 })
+					if (mode == "dialog" || mode == "busy") && result.Reason != ReasonBusyOrDialog {
+						t.Fatal("lost specific refusal reason")
+					}
+					if result.ReasonAt.IsZero() {
+						t.Fatal("missing refusal timestamp")
+					}
 					if result.Disposition == SendSubmitted || s.Text != text || len(s.Submitted) != 0 {
 						t.Fatal("continuation refusal had effects")
 					}

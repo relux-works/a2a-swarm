@@ -1413,10 +1413,10 @@ admission-ordering guarantee, not an atomic terminal snapshot or a claim that no
 keys can arrive after the pause request starts.
 
 Pause/resume preserves pending mail, attempt fences and independent manual/native
-holds. It never submits or erases an existing draft, including an exact fixed
-notice with known-unsubmitted or uncertain attempt evidence. Resume only permits
-otherwise eligible fresh delivery into qualified empty input, or the existing
-bounded empty-input recovery; it grants no stale-draft recovery authority.
+holds. The pause/resume command itself never submits or erases a draft. After resume,
+the consumer may perform otherwise eligible fresh empty-input delivery, bounded
+empty-input retry, or Enter-only continuation of an exact notice with the
+same-generation origin and typing fence described below.
 Without historical typing evidence, when an existing notice was typed remains
 UNKNOWN. Current source checks and synthetic fixtures cannot reconstruct that
 time or establish what an older deployed executable did.
@@ -1634,18 +1634,18 @@ when the complete recognized composer contains exactly the notice; the cursor ma
 check is **not editor authority or atomic**: invisible bytes and edits between verification and the final key can still affect fresh delivery.
 Do not claim a hard human-draft guarantee. Quiet/atomic delivery and an agent host remain separate work; verified native transport is preferred.
 
-Recovery on later cycles is **Enter only** for an exact notice recorded by this binding generation. Before the literal type, the consumer persists a typing-start fence and the qualified empty observation as `notice_origin`. A draft or uncertain type/Enter ACK retains that origin. A restart with the same generation/journal may continue it, including when the saved count is smaller than the current pending count or some attempt IDs were legitimately receipted. Replacement generations do not inherit this authority. Old journals load, but without the origin/typing fence they cannot authorize automatic Enter.
+Recovery on later cycles is **Enter only** for an exact notice recorded by this binding generation. Before the literal type, the consumer persists a typing-start fence and the qualified empty observation as `notice_origin`. A draft or uncertain type/Enter ACK retains that origin until a confirmed empty observation at or after `AttemptAt + max(2*interval, retry-max)`. That observation clears origin and typing-start authority even for partial or untyped attempts; an earlier empty redraw does not. A restart with the same generation/journal may continue it, including when the saved count is smaller than the current pending count or some attempt IDs were legitimately receipted. Replacement generations do not inherit this authority. Old journals load, but without the origin/typing fence they cannot authorize automatic Enter.
 
-Recovery requires a fresh complete exact composer, no deny-list dialog or rendered/registry busy signal, and unchanged target, root, session, route, registry session/version and pane width. Cursor, composer row/column and past registry status timestamps do not pin later-cycle recovery; the fresh recovery key pins runtime status and timestamp throughout its final reads. Foreign text, prefixes/suffixes, unrecorded counts and transcript-only matches cannot authorize continuation. Stopped, paused (including hook pause), manual, native-binding and lease gates still apply. Neither recovery API clears input or types a notice into an empty composer; an empty composer follows the existing separately qualified fresh retry path.
+Recovery requires a fresh complete exact composer, no deny-list dialog or rendered/registry busy signal, and unchanged target, root, session, route, registry session/version and pane width. Cursor position and past registry status timestamps do not pin later-cycle recovery. Composer row/column must match the saved empty origin, and the fresh recovery key pins composer position, runtime status and timestamp throughout its final reads. Multiple prompt-shaped rows in the bottom parser window are ambiguous and refuse on both layouts; an indented foreign Codex prompt terminates the search. Foreign text, prefixes/suffixes, unrecorded counts and transcript-only matches cannot authorize continuation. Stopped, paused (including hook pause), manual, native-binding and lease gates still apply. Neither recovery API clears input or types a notice into an empty composer; an empty composer follows the existing separately qualified fresh retry path.
 
-The existing one-retry fence is saved before recovery Enter. Its earliest attempt is after both `max(2*interval, retry-max)` from the original attempt and the shared notification cooldown. Unavailable/busy/foreign observations spend no retry. The current hourly budget must permit the original reserved wake; no new hourly reservation or notification token is created when no new text is typed. A refused/uncertain recovery consumes that one retry, so repeated cycles/restarts cannot hammer Enter. A successful continuation uses normal submission settlement, preserves unread mail, clears the orphan suspicion/report, and records optional `terminal.recovery: {"reason":"owned_notice_submitted","at":UTC_TIME}`. Text status prints `recovery=owned_notice_submitted at=TIME`; JSON includes the same token and time. This history contains no screen content, persists until rebind, and never grants authority. Malformed diagnostics cannot break old-state loading or project arbitrary text.
+The existing one-retry fence is saved before recovery Enter. Its earliest attempt is after both `max(2*interval, retry-max)` from the original attempt and the shared notification cooldown. Pre-key refusals, including capture, width or busy flicker, spend no retry. The fence is saved only after the final input check immediately before attempting Enter; a crash after that fence conservatively exhausts recovery. The current hourly budget must permit submission. An original reservation still within the hour covers recovery; an aged recovery records a reservation in the current hour at the same fence. No new notification token is created. An attempted Enter consumes the retry even on an uncertain transport ACK, so repeated cycles/restarts cannot hammer Enter. A successful continuation uses normal submission settlement, preserves unread mail, clears the orphan suspicion/report, and records optional `terminal.recovery: {"reason":"owned_notice_submitted","at":UTC_TIME}`. Text status prints `recovery=owned_notice_submitted at=TIME`; JSON includes the same token and time. This history contains no screen content, persists until rebind, and never grants authority. Malformed diagnostics cannot break old-state loading or project arbitrary text.
 
 The final capture-to-key gap and invisible editor content remain limitations of tmux rendering. `completeInput` still trims terminal ASCII padding; equal captures cannot distinguish hidden/padded editor bytes. This contract concerns exact rendered content, not atomic editor ownership. NBSP and visible/dim extra text remain refused. Legacy `Target.Resume`, `BoundTerminal.Resume` and clearing helpers remain renderer-only refusals; the consumer uses the typed, identity-constrained `ResumeNotice` path.
 
 A known-unsubmitted typed journal with either its full attempt still pending or all announced events legitimately receipted/pruned,
-together with a nonempty rendered composer, reports `SUSPECTED-DEAF: own notice possibly orphaned`. Partial attempts remain uncertain.
+together with a nonempty rendered composer (including an exact saved notice with the cursor elsewhere), reports `SUSPECTED-DEAF: own notice possibly orphaned`. A journal-fenced attempted recovery Enter also makes a remaining nonempty notice suspected, including uncertain/untyped partial attempts.
 This is a factual suspicion, not proven deafness or proof of current editor contents.
-A nonempty observation with a retained partial or untyped attempt is unknown. Retained evidence includes pending IDs or saved notice text,
+A nonempty observation with a retained partial or untyped attempt is unknown until a journal-fenced recovery Enter is attempted. Retained evidence includes pending IDs or saved notice text,
 including saved text after all IDs were receipted; an earlier suspicion also remains evidence until a fresh clear. Historical attempt time
 and count alone do not mean an attempt is pending: completed sends and fresh refusals clear the pending IDs/text while keeping that history.
 With no retained evidence, a legitimate draft reports clear/not applicable. Classification grants no Enter or erase authority.
@@ -1680,13 +1680,13 @@ target carries the report destination, transaction, immutable content, ACK and r
 a different session/target/owner, explicit unbind, and cleared/new episodes cannot inherit the report. Unknown, cleared or retired observations cannot send
 a pending report; a fresh suspicion after a clear starts a new episode. Status exposes `system-report` in text and `system_report` in JSON
 (`not due`, `pending`, `published`, or a fixed unavailable reason), independently of own-liveness publication. Report failures remain report-local,
-never degrading a healthy consumer's suspicion signal. A nonempty composer with a retained partial or untyped attempt is unknown even before
+never degrading a healthy consumer's suspicion signal. Without an exhausted journal-fenced recovery, a nonempty composer with a retained partial or untyped attempt is unknown even before
 its first suspicion or after session handover/rebinding; an empty rendered composer can still report clear.
 Reports contain the stable own identity and suspicion time, never composer contents, registry paths, targets, peer text or event IDs.
 Header `at` records content preparation time and stays immutable on retry. This escalation remains available when the bounded exact-notice recovery is ineligible or exhausted; reporting itself never submits or clears a notice.
 
 New pending mail remains unreceipted; reporting never clears the mailbox or reservation ledger. After an actual rendered-empty observation,
-the typed journal reconciles and ordinary delivery can resume exactly once through the full qualified-idle admission. Empty rendering does
+origin authority is revoked once the recovery window has elapsed, regardless of Typed or partial IDs. Typed-journal reconciliation and ordinary delivery still require full qualified-idle admission. Empty rendering does
 not prove invisible editor bytes are absent. A still-uncertain untyped attempt retains its bounded one-retry/count/hourly fences; a fresh retry
 also needs qualified empty observations. A second uncertain retry waits for legitimate receipts; new mail alone cannot release it.
 

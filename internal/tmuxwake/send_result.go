@@ -163,14 +163,33 @@ func sendRefusalReason(r ReadinessAssessment, expected ReadinessKey, b Box, owne
 
 // ResumeNotice sends Enter only, never literal text or clearing keys. The
 // consumer supplies a journal-fenced identity; each capture rechecks readiness.
-func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice string, expected ReadinessKey) (SendResult, error) {
-	refused := SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}
+func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice string, expected ReadinessKey, beforeEnter ...func() error) (SendResult, error) {
+	refused := SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput, Reason: ReasonUnavailable, ReasonAt: time.Now().UTC()}
 	if count <= 0 || notice != Notice(count) || !expected.valid() || expected.Target != t.Target || expected.Generation != t.Generation || expected.SessionID != t.SessionID || expected.ClaudeRegistryRoot != t.ClaudeRegistryRoot {
 		return refused, nil
 	}
+	lastReason, lastAt := ReasonUnavailable, time.Now().UTC()
 	inspect := func(ctx context.Context, owned string) (Box, bool) {
 		r, b := t.assess(ctx, owned)
-		return b, owned == notice && b.Text == notice && r.OwnedNoticeEligible() && sameKeyAfterOwnedTyping(r.Key, expected)
+		// Unlike fresh typing, continuation cannot normalize a changed composer.
+		ok := owned == notice && b.Text == notice && r.OwnedNoticeEligible() && r.Key == expected
+		if !ok {
+			lastReason, lastAt = sendRefusalReason(r, expected, b, owned), time.Now().UTC()
+			if r.OwnedNoticeEligible() && sameKeyAfterOwnedTyping(r.Key, expected) && r.Key != expected {
+				lastReason = ReasonKeyChanged
+				if r.Key.ComposerRow != expected.ComposerRow {
+					lastReason = ReasonKeyRowChanged
+				}
+			}
+		}
+		return b, ok
 	}
-	return t.Target.sendWith(ctx, count, notice, nil, nil, inspect, nil)
+	result, err := t.Target.sendWith(ctx, count, notice, nil, nil, inspect, nil, beforeEnter...)
+	if result.Disposition == SendRefused || result.Disposition == SendDraft {
+		result.Reason, result.ReasonAt = lastReason, lastAt
+		if result.Outcome == SendSuppressedWidth {
+			result.Reason = ReasonTargetOrWidth
+		}
+	}
+	return result, err
 }

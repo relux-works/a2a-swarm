@@ -36,16 +36,17 @@ func (a *App) sendTerminalAttempt(ctx context.Context, s *session, expected conf
 }
 
 // The saved empty observation is an identity constraint, never permission.
-// Daemon identity may change on same-generation restart; geometry and registry
-// status timestamps may change. Target, session, route, version and width may not.
+// Daemon identity and registry timestamps may change on same-generation
+// restart. Composer position must match the saved empty origin; cursor position
+// itself is not authority. Target, session, route, version and width stay pinned.
 func sameNoticeOrigin(b config.TerminalBinding, k tmuxwake.ReadinessKey) bool {
 	o := b.NoticeOrigin
 	return o != nil && o.Generation == b.Generation && o.SessionID == b.SessionID && o.Host == b.Host && o.Target == b.Target && o.ClaudeRegistryRoot == b.ClaudeRegistryRoot &&
-		k.Generation == o.Generation && k.SessionID == o.SessionID && k.Target == o.Target && k.ClaudeRegistryRoot == o.ClaudeRegistryRoot && k.Route == o.ReadinessRoute && k.RegistrySessionID == o.RegistrySessionID && k.RegistryVersion == o.RegistryVersion && k.PaneWidth == o.PaneWidth
+		k.Generation == o.Generation && k.SessionID == o.SessionID && k.Target == o.Target && k.ClaudeRegistryRoot == o.ClaudeRegistryRoot && k.Route == o.ReadinessRoute && k.RegistrySessionID == o.RegistrySessionID && k.RegistryVersion == o.RegistryVersion && k.PaneWidth == o.PaneWidth && k.ComposerRow == o.ComposerRow && k.ComposerColumn == o.ComposerColumn
 }
 
-// Continuing an already reserved wake needs no new hourly reservation. Other
-// wakes must still leave room under the current policy for this submission.
+// An in-window reservation covers continuation. Aged recovery must reserve
+// its actual submission hour at the Enter fence.
 func noticeRecoveryBudget(b config.TerminalBinding, now time.Time) bool {
 	others := 0
 	for _, at := range b.Reservations {
@@ -71,40 +72,50 @@ func (a *App) resumeTerminalNotice(ctx context.Context, s *session, generation s
 	if !r.OwnedNoticeEligible() || !sameNoticeOrigin(b, r.Key) {
 		return held()
 	}
-	var expected config.TerminalBinding
-	reserved := false
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
-		current := st.Terminal
-		if current == nil || current.Stopped || !sameTerminalScope(*current, b) || current.Generation != generation || !current.AttemptAt.Equal(b.AttemptAt) || current.NotificationToken != b.NotificationToken || !slices.Equal(current.AttemptIDs, b.AttemptIDs) || current.Notice != b.Notice || current.NoticeCount != b.NoticeCount || current.Interval != b.Interval || current.RetryMax != b.RetryMax || current.MaxWakes != b.MaxWakes || !current.TypingStarted || !sameNoticeOrigin(*current, r.Key) {
-			return errors.New("terminal recovery attempt changed")
-		}
-		if err := s.checkConnection(); err != nil {
+	expected := b
+	beforeEnter := func() error {
+		now = a.Now()
+		reserved := false
+		_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+			current := st.Terminal
+			if current == nil || current.Stopped || !sameTerminalScope(*current, b) || current.Generation != generation || !current.AttemptAt.Equal(b.AttemptAt) || current.NotificationToken != b.NotificationToken || !slices.Equal(current.AttemptIDs, b.AttemptIDs) || current.Notice != b.Notice || current.NoticeCount != b.NoticeCount || current.Interval != b.Interval || current.RetryMax != b.RetryMax || current.MaxWakes != b.MaxWakes || !current.TypingStarted || !sameNoticeOrigin(*current, r.Key) {
+				return errors.New("terminal recovery attempt changed")
+			}
+			if err := s.checkConnection(); err != nil {
+				return err
+			}
+			if st.HooksPaused || manualWakeGate(*st) != "" || st.Runtime != nil && !st.Runtime.Retired || current.Retried || !ownTerminalTarget(current, b.Target) || !noticeRecoveryBudget(*current, now) {
+				return nil
+			}
+			if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(now) {
+				return nil
+			}
+			// Honor common spacing as well as the binding retry delay, without minting
+			// a new notification token. Invalid notification state fails closed.
+			if err := st.Notification.Prepare(now, notificationLegacy(st)); err != nil {
+				return err
+			}
+			if !a.notificationReady(s, st.Notification, now) {
+				return nil
+			}
+			current.Retried = true // Durable fence runs only after the final Enter check.
+			if now.Sub(current.AttemptAt) >= time.Hour {
+				current.Reservations = append(current.Reservations, now)
+			}
+			current.Idle = nil
+			expected = *current
+			expected.AttemptIDs = slices.Clone(current.AttemptIDs)
+			reserved = true
+			return nil
+		})
+		if err != nil {
 			return err
 		}
-		if st.HooksPaused || manualWakeGate(*st) != "" || st.Runtime != nil && !st.Runtime.Retired || current.Retried || !ownTerminalTarget(current, b.Target) || !noticeRecoveryBudget(*current, now) {
-			return nil
+		if !reserved {
+			return errors.New("terminal recovery held")
 		}
-		if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(now) {
-			return nil
-		}
-		// Honor common spacing as well as the binding retry delay, without minting
-		// a new notification token. Invalid notification state fails closed.
-		if err := st.Notification.Prepare(now, notificationLegacy(st)); err != nil {
-			return err
-		}
-		if !a.notificationReady(s, st.Notification, now) {
-			return nil
-		}
-		current.Retried = true // Durable one-retry fence precedes any Enter.
-		current.Idle = nil
-		expected = *current
-		expected.AttemptIDs = slices.Clone(current.AttemptIDs)
-		reserved = true
 		return nil
-	})
-	if err != nil || !reserved {
-		return err
 	}
-	result, sendErr := boundTerminal(expected).ResumeNotice(ctx, expected.NoticeCount, expected.Notice, r.Key)
+	result, sendErr := boundTerminal(expected).ResumeNotice(ctx, expected.NoticeCount, expected.Notice, r.Key, beforeEnter)
 	return a.finishTerminal(s, generation, result, sendErr, true, expected)
 }

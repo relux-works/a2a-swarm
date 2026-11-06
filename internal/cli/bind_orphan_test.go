@@ -32,12 +32,12 @@ def draw():
     suffix='\x1b[2m'+mode.get('dim-text','KEEP')+'\x1b[0m' if mode.get('dim') else ''
     prefix='\x1b[2m'+mode.get('dim-text','KEEP')+'\x1b[0m' if mode.get('dim-prefix') else ''
     if mode.get('unknown'): suffix+='\x1b[21;1Hunknown input'
-    composer='› '+prefix+text+suffix
+    composer=' '*mode.get('indent',0)+'› '+prefix+text+suffix
     layout='\x1b[20;1H'+composer+'\x1b[22;1H  '+footer
     if mode.get('claude'):
         rule='─'*100
         top=rule+(' synthetic-session' if mode.get('named') else '')
-        layout='\x1b[19;1H'+top+'\x1b[20;1H❯ '+prefix+text+suffix+'\x1b[21;1H'+rule+'\x1b[23;1H  '+footer
+        layout='\x1b[19;1H'+top+'\x1b[20;1H'+' '*mode.get('indent',0)+'❯ '+prefix+text+suffix+'\x1b[21;1H'+rule+'\x1b[23;1H  '+footer
     if mode.get('unknown'): layout+='\x1b[21;1Hunknown input'
     if mode.get('no-composer'): layout=''
     if mode.get('diagnostic-row'): layout+='\x1b['+str(mode['diagnostic-row'])+';1H'+mode['diagnostic-text']
