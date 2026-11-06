@@ -155,8 +155,10 @@ func TestDeltaUnknownTargetAuthority(t *testing.T) {
 			}
 			e.hs.appendLocked(room, redactor, "m.room.redaction", map[string]string{"redacts": "$future"})
 			e.hs.mu.Unlock()
-			// The helper must use the same configured HTTP observation as real commands.
-			e.as("alice", "wait", "--timeout", "10ms").ok(t)
+			// One deterministic sync with the configured HTTP observation, so the
+			// redaction is judged before the original exists (a short wait timeout
+			// can expire first on slower hosts and merge both into one batch).
+			syncRedactionFixture(t, e, "alice")
 			mb, err := config.OpenMailbox(e.paths(), "alice")
 			if err != nil {
 				t.Fatal(err)
