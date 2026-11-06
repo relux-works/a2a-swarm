@@ -220,11 +220,14 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
-			if err := a.connectionPreflight(c.name, rest[1:]); err != nil {
-				return a.fail(err)
-			}
-			if c.name != "owner-dm" {
-				a.warnOwnerDM()
+			// Fetch parses usage/help before consulting connection or identity state.
+			if c.name != "fetch" {
+				if err := a.connectionPreflight(c.name, rest[1:]); err != nil {
+					return a.fail(err)
+				}
+				if c.name != "owner-dm" {
+					a.warnOwnerDM()
+				}
 			}
 			return a.fail(c.run(ctx, a, rest[1:]))
 		}

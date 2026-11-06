@@ -298,6 +298,12 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	fset := newFlagSet("fetch")
 	out := fset.String("o", "", "output path (never overwritten)")
 	want := fset.String("sha256", "", "expected sha256 (bare mxc only)")
+	fset.Usage = func() {
+		fmt.Fprintln(a.Stderr, use)
+		fset.SetOutput(a.Stderr)
+		fset.PrintDefaults()
+		fset.SetOutput(io.Discard)
+	}
 	pos, err := parseInterspersed(fset, args)
 	if err != nil {
 		return err
@@ -324,6 +330,11 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	default:
 		return usagef(use)
 	}
+
+	if err := a.connectionPreflight("fetch", args); err != nil {
+		return err
+	}
+	a.warnOwnerDM()
 
 	s, err := a.session()
 	if err != nil {
