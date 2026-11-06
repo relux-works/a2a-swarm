@@ -220,17 +220,29 @@ func (s *session) listTopics(ctx context.Context, roomID string) ([]topicInfo, e
 // resolveTopic maps --topic (slug or $event_id) to the root event id and slug.
 func (s *session) resolveTopic(ctx context.Context, roomID, roomLabel, topic string) (string, string, error) {
 	if strings.HasPrefix(topic, "$") {
-		ev, err := s.client.GetEvent(ctx, roomID, topic)
+		// An exact ID needs no local history or discovery scan. Reuse the
+		// original, authenticated selected-room reader's strict event binding;
+		// a missing room_id is scoped by that endpoint, never inferred locally.
+		ev, err := s.client.GetVerificationEvent(ctx, roomID, topic)
 		if err != nil {
 			if isNotFound(err) {
-				return "", "", fmt.Errorf("topic event %s not found in %s", topic, roomLabel)
+				return "", "", fmt.Errorf("topic event %s not found in %s (server did not return it; history access unchanged)", sanitizeLine(topic), roomLabel)
 			}
-			return "", "", err
+			return "", "", fmt.Errorf("cannot resolve topic event %s in %s: server did not return a usable root (history access unchanged): %w", sanitizeLine(topic), roomLabel, err)
 		}
-		if ev.ThreadRoot() != "" {
-			return "", "", fmt.Errorf("%s is a thread reply, not a topic root (use the root: %s)", topic, ev.ThreadRoot())
+		var message matrix.MessageContent
+		if err := json.Unmarshal(ev.Content, &message); err != nil || message.MsgType == "" {
+			return "", "", fmt.Errorf("topic event %s in %s has invalid message content", sanitizeLine(topic), roomLabel)
 		}
-		slug, _, _ := parseTopicBody(ev.Message().Body)
+		if relation := message.RelatesTo; relation != nil && relation.RelType == "m.thread" {
+			if !matrix.ValidVerificationID(relation.EventID, '$') || relation.EventID == topic {
+				return "", "", fmt.Errorf("topic event %s in %s has an invalid thread root", sanitizeLine(topic), roomLabel)
+			}
+			// Preserve reply-ID refusal and expose only this one declared root.
+			// Do not walk it or an m.in_reply_to chain automatically.
+			return "", "", fmt.Errorf("%s is a thread reply, not a topic root (use the root: %s)", sanitizeLine(topic), sanitizeLine(relation.EventID))
+		}
+		slug, _, _ := parseTopicBody(message.Body)
 		return topic, slug, nil
 	}
 	if !slugRE.MatchString(topic) {
@@ -245,7 +257,7 @@ func (s *session) resolveTopic(ctx context.Context, roomID, roomLabel, topic str
 			return t.EventID, t.Slug, nil
 		}
 	}
-	return "", "", fmt.Errorf("topic %q not found in %s (see: a2a topics %s)", topic, roomLabel, roomLabel)
+	return "", "", fmt.Errorf("topic %q not found in %s (see: a2a topics %s; if outside discoverable history, supply the exact root event ID; a slug alone cannot recover an unknown root)", topic, roomLabel, roomLabel)
 }
 
 // rememberThread records a thread this agent takes part in, so `a2a wait` rings on replies.

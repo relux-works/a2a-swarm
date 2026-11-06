@@ -394,6 +394,32 @@ A thread reply (`m.relates_to {rel_type: m.thread, event_id: <root>}`). The body
 stored structured under `ai.relux.a2a` (`v, type: "message", slug, topic, from, to, at, re, kind, reply_by, trunk, subtype, subject`). Named addressees are
 also listed in `m.mentions.user_ids`. Prints the event id.
 
+An exact `--topic '$root'` is read once through the authenticated selected-room
+`/rooms/{room}/event/{event}` endpoint, without scanning local/room history.
+A root outside the discoverable history window (including one from before a
+member joined) is usable only if the selected server returns that exact message
+event. Server refusal, a malformed/redacted response, or a mismatched event/room
+is an error; no join, permission, history-visibility or read-access change is
+attempted. When `room_id` is omitted, context comes from the original room-scoped
+endpoint, not a simulated membership/history check. Redirects are refused.
+
+A slug resolves only among roots returned by the existing bounded topic
+listing. It cannot reveal an unknown event ID. If a known reply ID is supplied,
+a valid `m.thread` relation can expose one root ID in the existing refusal
+message; retry with that root ID to ask the server for it. This does not prove
+that the root is readable. No root/reply recursion, native `m.in_reply_to` chain
+traversal, or extra broad-room fallback scan is performed. An ordinary message
+without an `m.thread` relation remains a possible root in its own right; a
+native reply target is never substituted for it. `--re` remains independent.
+
+This root-resolution boundary does not change thread-follow state, eligibility,
+subscriptions, delivery or inbox state, and does not implement #118's
+explicit-only follows or migration. On this base, the existing post recorder
+still learns unmuted roots into legacy `Threads`; a muted root stays muted.
+No additional follow/subscription operation is introduced by resolution. The
+#118 no-implicit-follow guarantee is therefore not established here. This also
+does not repair #169's thread-read completeness or relations pagination.
+
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--topic` | required | topic slug or root event id |
