@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,16 +44,26 @@ func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r conf
 // RegistrationJournal is private recovery evidence, without secret values.
 // A retained journal always blocks a fresh attempt. Recovery is an explicit
 // owner operation; source onboarding never retries an ambiguous remote creation.
+type registrationEvent struct {
+	Stage   string          `json:"stage"`
+	Failure *secretEvidence `json:"failure,omitempty"`
+}
 type registrationJournal struct {
-	Binding config.ConnectionBinding `json:"binding"`
-	Stage   string                   `json:"stage"`
+	Binding      config.ConnectionBinding `json:"binding"`
+	Stage        string                   `json:"stage"`
+	Version      int                      `json:"version,omitempty"`
+	Attempt      string                   `json:"attempt,omitempty"`
+	History      []registrationEvent      `json:"history,omitempty"`
+	LegacySHA256 string                   `json:"legacy_sha256,omitempty"`
+	sourceSHA256 string                   // Digest of the exact bytes read; never serialized as history.
 }
 
-func updateRegistrationJournal(path string, b config.ConnectionBinding, stage string) error {
-	data, e := json.Marshal(registrationJournal{b, stage})
+func updateRegistrationJournal(path string, j registrationJournal) error {
+	data, e := json.Marshal(j)
 	if e != nil {
 		return e
 	}
+
 	f, e := os.CreateTemp(filepath.Dir(path), ".registration-*")
 	if e != nil {
 		return e
@@ -72,7 +83,15 @@ func updateRegistrationJournal(path string, b config.ConnectionBinding, stage st
 	if e = f.Close(); e != nil {
 		return e
 	}
-	return os.Rename(tmp, path)
+	if e = os.Rename(tmp, path); e != nil {
+		return e
+	}
+	d, e := os.Open(filepath.Dir(path))
+	if e != nil {
+		return e
+	}
+	defer d.Close()
+	return d.Sync()
 }
 func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Credentials, string, error) {
 	empty := config.Credentials{}
@@ -120,25 +139,63 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 		return empty, "", errors.New("registration already pending; owner recovery required")
 	}
 	f.Close()
-	stage := func(s string) error { return updateRegistrationJournal(journal, b, s) }
-	if e = stage("preflight"); e != nil {
+	unlock, e := lockRegistration(filepath.Join(p.Base, "registration.lock"), true)
+	if e != nil {
+		return empty, "", errors.New("registration ownership unavailable")
+	}
+	defer unlock()
+	var id [16]byte
+	if _, e = rand.Read(id[:]); e != nil {
 		return empty, "", e
 	}
+	j := registrationJournal{Binding: b, Version: 1, Attempt: hex.EncodeToString(id[:])}
+	if e = j.record(journal, "preflight", nil); e != nil {
+		return empty, "", e
+	}
+	return a.finishNamedRegistration(ctx, name, p, c, &j, journal)
+}
+
+func (j *registrationJournal) record(path, stage string, failure *secretEvidence) error {
+	j.Stage = stage
+	j.History = append(j.History, registrationEvent{Stage: stage, Failure: failure})
+	return updateRegistrationJournal(path, *j)
+}
+
+func (a *App) finishNamedRegistration(ctx context.Context, name string, p config.Paths, c *config.Connection, j *registrationJournal, journal string) (config.Credentials, string, error) {
+	empty := config.Credentials{}
+	var e error
+	b := j.Binding
+	stage := func(s string) error { return j.record(journal, s, nil) }
+
 	// Conflicting pre-existing items are never updated, even if their names match.
 	tokenRef := config.SecretReference{Service: c.Store.AccessTokenService, Account: b.UserID}
 	passwordRef := config.SecretReference{Service: c.Store.PasswordService, Account: b.UserID}
 	for _, r := range []config.SecretReference{tokenRef, passwordRef} {
 		if _, e = a.readConnectionSecret(ctx, p, r); !errors.Is(e, errKeychainMissing) {
+			failure := registrationFailureEvidence(e, false)
+			if (j.Stage == "continuation-admitted" || j.Stage == "legacy-continuation-admitted") && registrationCooldownEvidence(&failure) {
+				if se := j.record(journal, "secret-preflight-cooldown", &failure); se != nil {
+					return empty, "", errors.New("credential cooldown active; recovery journal update failed")
+				}
+				return empty, "", errors.New("selected credential cooldown active; no registration attempted")
+			}
 			_ = stage("secret-preflight-refused")
 			return empty, "", errors.New("selected credential item exists or is unavailable; no registration attempted")
 		}
 	}
 	bootstrap, e := a.readConnectionSecret(ctx, p, *c.RegistrationTokenRef)
 	if e != nil || bootstrap == "" {
-		_ = stage("bootstrap-unavailable")
+		failure := registrationFailureEvidence(e, bootstrap == "")
+		if se := j.record(journal, "bootstrap-unavailable", &failure); se != nil {
+			return empty, "", errors.New("bootstrap unavailable; recovery journal update failed")
+		}
 		return empty, "", errors.New("selected bootstrap item unavailable; no registration attempted")
 	}
 	a.secrets.Add(bootstrap)
+	// This durable boundary precedes every password/HTTP effect, including interruption.
+	if e = stage("password-storage-pending"); e != nil {
+		return empty, "", e
+	}
 	var raw [32]byte
 	if _, e = rand.Read(raw[:]); e != nil {
 		return empty, "", e

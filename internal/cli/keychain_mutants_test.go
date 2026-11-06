@@ -20,6 +20,7 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 	}
 	type mutant struct{ name, file, old, next, test string }
 	mutants := []mutant{
+		{"registration-classification-collapse", "keychain_evidence.go", `return failure.evidence`, `return secretEvidence{Instrument:"unknown",Codes:[]string{"unavailable"}}`, "TestNamedRegistrationBootstrapEvidence/interaction"},
 		{"nonzero-pipe-failure-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletion/security/inherited/exit44"},
 		{"nonzero-pipe-duplicate-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletionMigrationStages/security/create/exit45"},
 		{"nonzero-pipe-generic-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletion/security/inherited/exit1"},

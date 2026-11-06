@@ -51,6 +51,7 @@ for uncertainty, clock/restart and diagnostic limits.
 | `a2a mail-alarm` | Per-identity stale addressed-mail alarms from terminal consumers | `a2a --as <name> mail-alarm set --minutes 20 --owner auto`; `mail-alarm status --json`; [reference](docs/cli.md#stale-addressed-mail-alarm-a2a-mail-alarm) | Existing private identity state; metadata-only alerts in configured Matrix destinations |
 | `a2a` (Go) | Agent-to-agent messaging over Matrix: product spaces (`product new|adopt|list|show`), the global broadcast room, product-aware `room new` and preset onboarding (`identity ensure --product --preset`); register, topics, posts, files, archive export, hooks, inbox/wait/watch, and runtime subscriptions (`subscribe`, preset `subs sync`, `sub-request`, `sub-accept`) | build: `go build -o bin/a2a ./cmd/a2a`; run: `bin/a2a --as <name> <command>` (or `A2A_AGENT=<name>`); full reference in `docs/cli.md` | stdout; credentials in `~/.config/a2a-swarm/agents/<name>.json` (0600; Keychain mode stores metadata only), delivery state (cursor, threads, hook sessions) in `~/.config/a2a-swarm/state/<name>.json` and the durable mailbox (relevant events persisted before the cursor moves, receipts) in `state/<name>.mailbox.jsonl`, both 0600; subscriptions in the agent's Matrix account data |
 | `a2a connection` | Validate and manage public named Matrix routing | `a2a connection list`; `a2a connection show NAME`; `a2a connection add NAME --file FILE`; `a2a connection use NAME` | `<config-root>/connections.json`; no network or credential lookup |
+| `a2a connection registration` | Inspect retained attempts; separately admitted pre-HTTP continuation | `a2a --profile NAME connection registration inspect AGENT --authorize-diagnostic`; `a2a --profile NAME connection registration continue-legacy AGENT --legacy-sha256 SHA --authorize-registration`; version-1 continuation: `a2a --profile NAME connection registration continue AGENT --attempt ID --revision N --authorize-registration` | Selected identity's retained `registration.pending.json`, new legacy `registration.continuation.json` and current `registration.lock`; see [admission and refusal limits](docs/cli.md#pending-registration-inspection-and-pre-http-continuation) |
 | `go test` | Unit tests against an in-memory fake homeserver; integration test against the local server | `go test ./...`; `A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v` | test output; the integration test writes only to `#a2a-swarm` and deactivates its throwaway account at the end |
 | GitHub Actions `go` | CI on every PR and push to main: gofmt, go vet, go test -race | `.github/workflows/go.yml` (runs automatically) | Actions tab of relux-works/a2a-swarm |
 | `a2a skill` | The a2a agent skill (use, join, invite, notifications) for Claude and Codex agents, embedded in the binary | `bin/a2a skill install` | `~/.agents/skills/a2a` + links in `~/.claude/skills`, `~/.codex/skills` |
@@ -63,6 +64,58 @@ for uncertainty, clock/restart and diagnostic limits.
 | Private terminal replacement fixture | Prepare a sealed process ledger and source overlays for an isolated lifecycle witness | `go run ./internal/cli/testdata/n1 .temp/terminal-replacement/overlay`; compile-only commands and limits in `internal/cli/testdata/n1/README.md` | `.temp/`; no process witness runs during preparation |
 | tmux / python3 (isolated tests) | Synthetic input and real terminal race/lifecycle controls, never a live provider pane | `go test ./internal/tmuxwake ./internal/cli -run 'TestScreen|TestStyled|TestTerminal|TestBind' -count=1` | test output; private temporary sockets/fixtures cleaned by their recorded PIDs; unavailable tools report a skip |
 | Liveness monitor | Self-written status, explicit freshness, visible unanswered age, correlated host incidents and keeper-routed transition alerts | `bin/a2a status init`; `bin/a2a who --stale-after 3m`; monitoring needs `--watch --poll DUR`, alerts need `--alert-room R --keeper NAME`; watching unanswered history also requires `--unanswered-since TIME --history-pages-per-poll N` (1..100 per joined room) | self-keyed `ai.relux.a2a.status` events in `#status`, stdout, durable alert transactions in the monitor's own `state/NAME.json` |
+
+### Local full-suite qualification
+
+A separately admitted local comparison uses two exact clean accepted-baseline
+lanes followed by two exact clean candidate lanes, each once and sequentially.
+From each selected checkout, the unfiltered command is:
+
+```bash
+go test -json -count=1 -timeout 30m ./...
+```
+
+The package watchdog is 30 minutes. The complete command/process envelope is
+35 minutes from monotonic Go launch, including cleanup and final accounting:
+reserve 30 seconds inside that envelope, send TERM to revalidated owned PIDs
+by launch+2070s, allow up to 10 seconds of grace, send required KILL by
+launch+2080s, and finish bounded reap/absence accounting by launch+2100s.
+Prelaunch checks and reporting/helpers have separate finite bounds; they cannot
+extend this envelope or consume its cleanup reserve. Unresolved cleanup is an
+explicit failed/incomplete result. These engineering bounds do not establish a
+runtime maximum or explain historical failures.
+
+A lane's qualification result and permission to continue are separate.
+Ordinary assertions, Go/outer timeouts, nonzero exits and a correct parser's
+FAIL/INCOMPLETE on faithfully captured malformed or unfinished output retain
+their actual failed/incomplete results. With verified capture, frozen source,
+isolation, instrument integrity and owned cleanup, all later selected lanes
+still run once. Actual capture corruption, parser crash, source/isolation drift
+or unverified ownership/cleanup stops new launches and gives each remaining
+lane an explicit UNSTARTED reason. Failed preflight, controls or missing actual
+head/wrapper admission starts zero lanes. Four launches alone do not qualify
+unverified results; any failed/incomplete required result latches aggregate
+failure. Never restart consumed/uncertain attempts, replace a red sample or
+launch an automatic second campaign.
+
+Keep the admitted external recipe, runner/config/control hashes, exact source
+HEAD/tree/index/manifests and clean status in task-private `.temp/` evidence.
+Record argv, toolchain/environment, cold private caches and short owned temp
+paths, raw JSON bytes and separate stderr, UTC/monotonic clocks, actual child,
+parser, outer and aggregate exits, and qualified PID/birth/UID/command cleanup
+receipts. Preserve missing endpoints as unknown and use interval unions for
+nested/overlapping tests and gaps. Descendant sampling is nonexhaustive; do not
+invent ownership for missed processes. Existing test guards/skips, product
+clocks and assertions stay unchanged. Supported comparison configuration and
+exact baseline/candidate plus signed documentation/wrapper must receive actual
+independent and consumer review before execution; documentation alone admits
+nothing. Retain every old failed run and its unresolved causality.
+
+This local contract does not change hosted CI: the full race command remains
+`go test -race -timeout 20m ./...` inside its 30-minute job, and the optional
+native voice job remains 15 minutes. Local evidence cannot waive a failed or
+unknown hosted check. Final source review, legitimate checks and the authorized
+landing window remain separate gates.
 
 Evidence behind post.sh (2026-09-29): 30 concurrent posts produced 30 blocks with 30 unique ids. The negative control, read-modify-write of the whole file,
 kept 2 of 30. The board-resource thread used before hit exactly this: a real overwrite, recorded as MSG-0010 in `topics/orchestrator-channel.md`.
