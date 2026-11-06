@@ -987,11 +987,61 @@ Reading status does not migrate, clamp or repair the record. There is no interva
 flag; 30s is the fixed protocol constant. Source delivery does not activate
 already installed consumers; their custodian coordinates adoption separately.
 
-#### `a2a hook install --agent NAME --runtime claude|codex [--settings PATH]` / `a2a hook uninstall --runtime claude|codex [--settings PATH]`
+#### `a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH]` / `a2a hook uninstall --runtime claude|codex|muse [--settings PATH]`
 `--runtime` is required; a missing or unknown runtime, like an invalid agent name, is a usage error (exit 2) and writes nothing.
 
+Executable selection is local and explicit. Choose one of these modes:
+
+| Selection | Recorded executable | Upgrade behavior |
+| --- | --- | --- |
+| Neither path flag | The running image's absolute, symlink-resolved path | Fixed image path, including when launched through a symlink |
+| `--executable /absolute/path/a2a` | The selected path after symlink resolution | Fixed image path; a launch alias changing later does not change it |
+| `--installed-command /absolute/installed/a2a` | The selected symlink's absolute spelling, shell-quoted when needed | Subsequent hook invocations follow that link after the install custodian upgrades it |
+
+Path flags are mutually exclusive, require non-empty absolute paths and are accepted
+only by `hook install`. A relative path, empty path or both flags is a usage error
+(exit 2). Installation never searches PATH to choose an executable. To select a
+different binary, invoke that binary first: the selected target must match the
+currently loaded executable image, not merely a file with the same bytes or name.
+For example:
+
+```sh
+/opt/a2a/images/release-1/a2a hook install --agent alice --runtime muse --executable /opt/a2a/images/release-1/a2a
+/opt/a2a/current hook install --agent alice --runtime muse --installed-command /opt/a2a/current
+```
+
+The second command explicitly chooses the install custodian's upgrade route.
+`--installed-command` requires a symlink owned by the current UID or root, pointing
+directly to the canonical native image (a relative link to that canonical location
+is also accepted). Chains of symlinks refuse. A symlink alone does not establish
+trust, and being outside a Git checkout does not establish trust. The operator
+must select a route whose future targets remain under the install custodian's
+control. No automatic installed-path discovery or migration of existing hooks occurs.
+
+On macOS and Linux, the target must be a complete native image owned by the current
+UID, with owner execute permission, no group/world write and no set-ID bits. Both
+the selected and resolved paths' ancestor directories must be owned by the current
+UID or root and have no group/world write permission. A `.git` directory or gitdir
+file anywhere in either ancestry refuses installation from a mutable source
+checkout. Missing or unreadable custody information refuses too. There is no
+checkout override. Build and install a separate complete image, then invoke it
+before installing hooks. A missing checkout build output is never recorded for
+a future build to fill. Other platforms refuse unavailable validation.
+
+The installer validates the loaded image identity, native image ranges, metadata
+and SHA-256 content, and repeats the path/image observation before settings or
+companion rules are written. A missing, non-executable, mismatched, truncated,
+unsafe or replaced target is an error (exit 1) with no configuration write. Invalid
+or foreign configuration keeps its existing refusal/preservation behavior. These
+observations do not lock the filesystem against a concurrent custodian or same-UID
+writer; pathname validation and publication remain separate operations. A fixed
+image path stays fixed only while the custodian preserves that image at that path;
+the hook command does not enforce content immutability at runtime. An installed
+link intentionally delegates future selection to its custodian. Runtime fail-open
+behavior, identity ownership and native runtime trust steps remain unchanged.
+
 `--runtime claude` merges the three hooks and `env.A2A_AGENT` into a Claude Code settings file (default `./.claude/settings.local.json`, the project's
-local, uncommitted settings). The command is this binary's absolute path (symlinks resolved, shell-quoted when needed). In a new file (created with mode
+local, uncommitted settings). The executable uses the selection above. In a new file (created with mode
 `0600`) the result is exactly:
 ```json
 {

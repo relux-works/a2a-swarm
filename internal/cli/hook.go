@@ -173,7 +173,7 @@ func lookupRuntime(name string) (hookRuntime, error) {
 }
 
 const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex|muse  (reads the hook JSON on stdin) | " +
-	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
+	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
 	"a2a hook pause|resume --agent NAME"
 
 // cmdHook: a2a hook stop|session-start|prompt|install|uninstall
