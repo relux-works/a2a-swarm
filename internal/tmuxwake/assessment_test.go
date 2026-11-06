@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Existing recognized layouts get closed observations; adjacent drafts,
@@ -110,29 +111,57 @@ func TestTargetAssessmentReadOnly(t *testing.T) {
 	}
 }
 
-// A capture failure is distinct from a bad target, with no raw error leakage.
-// The adjacent real-target check proves the wrapper does not reject all reads.
+// Delayed target reads still reach the planted capture refusal without raw errors.
 func TestTargetAssessmentCaptureFailure(t *testing.T) {
-	f := newTerminalFixture(t, "claude")
-	if got := f.target.AssessInput(context.Background()); got.State != InputEmpty {
-		t.Fatalf("positive control: %+v", got)
+	if tmuxCommandTimeout != 3*time.Second {
+		t.Fatalf("initial tmux command timeout = %v, want 3s", tmuxCommandTimeout)
 	}
-	real, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Fatal(err)
+	t.Run("capture", func(t *testing.T) {
+		f := newTerminalFixture(t, "claude")
+		if got := f.target.AssessInput(context.Background()); got != (InputAssessment{InputEmpty, InputReasonNone}) {
+			t.Fatalf("real tmux positive control: %+v", got)
+		}
+		real, err := exec.LookPath("tmux")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+		reached := filepath.Join(dir, "capture.reached")
+		// Only the wrapper's Inspect passthrough exceeds the production 3s
+		// bound. The real tmux positive control above uses that default.
+		script := "#!/bin/sh\ncase \" $* \" in\n" +
+			"*' capture-pane '*) printf 'capture\\n' >> " + quote(reached) + "; echo PRIVATE_CAPTURE_ERROR >&2; exit 1;;\n" +
+			"*' display-message '*) sleep 3.2;;\nesac\nexec " + quote(real) + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		// These tests are serial, like t.Setenv requires. Subtest cleanup
+		// finishes before the parent checks restoration, in every test order.
+		saved := tmuxCommandTimeout
+		tmuxCommandTimeout = 30 * time.Second
+		t.Cleanup(func() { tmuxCommandTimeout = saved })
+		got := f.target.AssessInput(context.Background())
+		if got != (InputAssessment{InputUnavailable, InputReasonCaptureUnavailable}) {
+			t.Fatalf("capture failure: %+v", got)
+		}
+		if raw, err := os.ReadFile(reached); err != nil || string(raw) != "capture\n" {
+			t.Fatalf("capture wrapper not reached exactly once: %q %v", raw, err)
+		}
+		raw, err := json.Marshal(got)
+		if err != nil || string(raw) != `{"state":"unavailable","reason":"capture_unavailable"}` {
+			t.Fatalf("unsafe projection: %s %v", raw, err)
+		}
+	})
+	if tmuxCommandTimeout != 3*time.Second {
+		t.Fatalf("restored tmux command timeout = %v, want 3s", tmuxCommandTimeout)
 	}
-	dir := t.TempDir()
-	script := "#!/bin/sh\ncase \" $* \" in *' capture-pane '*) echo PRIVATE_CAPTURE_ERROR >&2; exit 1;; esac\nexec '" + strings.ReplaceAll(real, "'", "'\\''") + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	got := f.target.AssessInput(context.Background())
-	if got != (InputAssessment{InputUnavailable, InputReasonCaptureUnavailable}) {
-		t.Fatalf("capture failure: %+v", got)
-	}
-	raw, err := json.Marshal(got)
-	if err != nil || string(raw) != `{"state":"unavailable","reason":"capture_unavailable"}` {
-		t.Fatalf("unsafe projection: %s %v", raw, err)
+}
+
+// The production command budget remains three seconds.
+func TestTmuxCommandTimeoutDefault(t *testing.T) {
+	if tmuxCommandTimeout != 3*time.Second {
+		t.Fatalf("tmux command timeout = %v, want 3s", tmuxCommandTimeout)
 	}
 }
