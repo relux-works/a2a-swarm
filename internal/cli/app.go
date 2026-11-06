@@ -70,8 +70,8 @@ type App struct {
 	beforeDeliver func()
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
-	// exe resolves this binary's path for `hook install` (nil: os.Executable).
-	exe func() (string, error)
+	// hookSelection replaces executable selection in installer merge tests only.
+	hookSelection func(hookExecutableChoice) (hookExecutableSelection, error)
 	// stdinTTY reports whether stdin is an interactive terminal, which --human
 	// requires (nil: stdinIsTerminal on os.Stdin; tests override it).
 	stdinTTY func() bool
