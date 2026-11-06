@@ -585,9 +585,11 @@ The receiver is not freshly verified by an additional whoami request.
 
 `content_base64` is unpadded base64url of the exact returned content JSON value
 bytes, including internal whitespace/escapes. The HTTP entity cap is 1MiB and the
-content cap is 64KiB, both inclusive. Empty/redacted content, ambiguous keys,
-invalid Unicode, trailing documents, malformed responses and context failures
-refuse with nonzero exit and no success record or fallback fetch. A consumer must
+content cap is 64KiB, both inclusive. The fetch carries the default request
+deadline unless the caller set one, and only a 200 response is accepted. Empty or
+redacted content (including any content returned with `unsigned.redacted_because`),
+ambiguous keys, invalid Unicode, trailing documents, malformed responses and context
+failures refuse with nonzero exit and no success record or fallback fetch. A consumer must
 require successful exit and exactly one complete record; a broken stdout writer
 can leave incomplete bytes. Base64 is not redaction. This read mode exports only
 the selected content, not unsigned metadata, credentials or the full response.

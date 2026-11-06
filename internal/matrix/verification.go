@@ -52,9 +52,17 @@ func (c *Client) GetVerificationEvent(ctx context.Context, roomID, eventID strin
 	if !ValidVerificationID(roomID, '!') || !ValidVerificationID(eventID, '$') {
 		return zero, errors.New("matrix: invalid verification selection")
 	}
+	// A slow homeserver must not hold the caller indefinitely: like other
+	// single reads, the fetch carries the default deadline unless the caller set one.
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
 	resp, err := c.WithoutRedirects().send(ctx, http.MethodGet, "/_matrix/client/v3/rooms/"+seg(roomID)+"/event/"+seg(eventID), nil, nil, "", -1)
 	if err != nil {
 		return zero, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return zero, errors.New("matrix: invalid verification response")
 	}
 	// The existing strict reader owns EOF/Close/context checks. Adding one to
 	// its exclusive read bound admits exactly the inclusive entity limit.
@@ -71,6 +79,18 @@ func (c *Client) GetVerificationEvent(ctx context.Context, roomID, eventID strin
 	content, contentOK := v.value["content"].(map[string]any)
 	if !idOK || id != eventID || !senderOK || !ValidVerificationID(sender, '@') || !typeOK || typ != "m.room.message" || !contentOK || len(content) == 0 {
 		return zero, errors.New("matrix: invalid verification event")
+	}
+	// A redacted event is refused even when a server still returns content.
+	if unsigned, present := v.value["unsigned"]; present {
+		fields, ok := unsigned.(map[string]any)
+		if !ok {
+			return zero, errors.New("matrix: invalid verification event")
+		}
+		for k := range fields {
+			if verificationFold(k) == verificationFold("redacted_because") {
+				return zero, errors.New("matrix: verification event redacted")
+			}
+		}
 	}
 	result := VerificationEvent{EventID: id, Sender: sender, Type: typ}
 	if room, present := v.value["room_id"]; present {

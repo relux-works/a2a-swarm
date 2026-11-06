@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type verificationTransport func(*http.Request) (*http.Response, error)
@@ -82,6 +83,10 @@ func TestVerificationEventRefusals(t *testing.T) {
 		"missing-content":        strings.Replace(base, `,"content":`+verificationContent, "", 1),
 		"invalid-utf8":           verificationResponse("{\"body\":\"" + string([]byte{0xff}) + "\"}"),
 		"lone-surrogate":         verificationResponse(`{"body":"\ud800"}`),
+		"redacted-with-content":  strings.TrimSuffix(base, "}") + `,"unsigned":{"redacted_because":{"type":"m.room.redaction"}}}`,
+		"redacted-null-marker":   strings.TrimSuffix(base, "}") + `,"unsigned":{"redacted_because":null}}`,
+		"redacted-case-variant":  strings.TrimSuffix(base, "}") + `,"unsigned":{"Redacted_Because":{}}}`,
+		"unsigned-not-object":    strings.TrimSuffix(base, "}") + `,"unsigned":"redacted"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -241,5 +246,66 @@ func TestVerificationEventRedirectPolicyUnchanged(t *testing.T) {
 	}
 	if _, err := c.GetEvent(context.Background(), "!selected:fixture", "$selected"); err != nil || calls != 3 {
 		t.Fatalf("ordinary redirect behavior changed: %v calls%d", err, calls)
+	}
+}
+
+// Proves an unrelated unsigned field keeps the observation valid, so the
+// redaction refusal above is specific to the redaction marker.
+func TestVerificationEventUnsignedWithoutRedaction(t *testing.T) {
+	body := strings.TrimSuffix(verificationResponse(verificationContent), "}") + `,"unsigned":{"age":12}}`
+	c, _ := verificationClient(body)
+	v, err := c.GetVerificationEvent(context.Background(), "!selected:fixture", "$selected")
+	if err != nil || string(v.Content) != verificationContent {
+		t.Fatalf("unrelated unsigned field refused: value=%+v err=%v", v, err)
+	}
+}
+
+// Proves the fetch carries a deadline when the caller supplied none, and keeps
+// a caller deadline; it observes the request context, not wall-clock waiting.
+func TestVerificationEventDeadline(t *testing.T) {
+	for _, callerDeadline := range []bool{false, true} {
+		var sawDeadline bool
+		var got time.Time
+		body := verificationResponse(verificationContent)
+		c := New("https://fixture.invalid", "fixture-token")
+		c.HTTP = &http.Client{Transport: verificationTransport(func(r *http.Request) (*http.Response, error) {
+			got, sawDeadline = r.Context().Deadline()
+			return &http.Response{StatusCode: 200, Request: r, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		ctx := context.Background()
+		want := time.Now().Add(time.Hour)
+		if callerDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, want)
+			defer cancel()
+		}
+		if _, err := c.GetVerificationEvent(ctx, "!selected:fixture", "$selected"); err != nil {
+			t.Fatal(err)
+		}
+		if !sawDeadline {
+			t.Fatalf("verification fetch has no deadline (caller deadline %v)", callerDeadline)
+		}
+		if callerDeadline && !got.Equal(want) {
+			t.Fatalf("caller deadline replaced: got %v want %v", got, want)
+		}
+		if !callerDeadline && time.Until(got) > DefaultRequestTimeout {
+			t.Fatalf("default deadline too far: %v", time.Until(got))
+		}
+	}
+}
+
+// Proves only a 200 response is an observation; other 2xx statuses with a
+// valid-looking body are refused.
+func TestVerificationEventRequiresOK(t *testing.T) {
+	for _, status := range []int{200, 201, 203, 206} {
+		body := verificationResponse(verificationContent)
+		c := New("https://fixture.invalid", "fixture-token")
+		c.HTTP = &http.Client{Transport: verificationTransport(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Request: r, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		_, err := c.GetVerificationEvent(context.Background(), "!selected:fixture", "$selected")
+		if (err == nil) != (status == 200) {
+			t.Fatalf("status %d: err=%v", status, err)
+		}
 	}
 }
