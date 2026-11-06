@@ -106,6 +106,16 @@ type Matrix struct {
 // variables override each key. A missing file is not an error as long as the
 // required values come from the environment.
 func LoadMatrix(p Paths, getenv Getenv) (Matrix, error) {
+	return loadMatrix(p, getenv, false)
+}
+
+// LoadMatrixRouting reads only public routing keys. In particular it neither
+// retains registration-token file values nor asks getenv for any secret.
+func LoadMatrixRouting(p Paths, getenv Getenv) (Matrix, error) {
+	return loadMatrix(p, getenv, true)
+}
+
+func loadMatrix(p Paths, getenv Getenv, routingOnly bool) (Matrix, error) {
 	vals := map[string]string{}
 	f, err := os.Open(p.EnvFile())
 	switch {
@@ -120,6 +130,10 @@ func LoadMatrix(p Paths, getenv Getenv) (Matrix, error) {
 			line = strings.TrimPrefix(line, "export ")
 			k, v, ok := strings.Cut(line, "=")
 			if !ok {
+				continue
+			}
+			k = strings.TrimSpace(k)
+			if routingOnly && k != EnvMatrixURL && k != EnvServerName {
 				continue
 			}
 			v = strings.TrimSpace(v)
@@ -140,9 +154,11 @@ func LoadMatrix(p Paths, getenv Getenv) (Matrix, error) {
 		return vals[k]
 	}
 	m := Matrix{
-		URL:               strings.TrimRight(get(EnvMatrixURL), "/"),
-		ServerName:        get(EnvServerName),
-		RegistrationToken: get(EnvRegistrationToken),
+		URL:        strings.TrimRight(get(EnvMatrixURL), "/"),
+		ServerName: get(EnvServerName),
+	}
+	if !routingOnly {
+		m.RegistrationToken = get(EnvRegistrationToken)
 	}
 	return m, nil
 }

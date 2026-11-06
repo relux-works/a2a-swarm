@@ -123,6 +123,7 @@ func commands() []command {
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
+		{"availability", "availability <localpart|@localpart:server> [--json]   read selected-server registration availability (no existence guarantee)", cmdAvailability},
 		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
@@ -220,6 +221,11 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
+			// This anonymous public read has its own routing-only preflight. It
+			// must not consult credentials, secret stores or owner-DM state.
+			if c.name == "availability" {
+				return a.fail(c.run(ctx, a, rest[1:]))
+			}
 			// Fetch parses usage/help before consulting connection or identity state.
 			if c.name != "fetch" {
 				if err := a.connectionPreflight(c.name, rest[1:]); err != nil {

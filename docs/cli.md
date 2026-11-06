@@ -333,6 +333,68 @@ and a failed registration leaves no file behind.
 a2a register reviewer-7
 ```
 
+### `a2a availability <localpart|@localpart:server> [--json]`
+
+Read **registration availability** on the already configured selected server:
+
+```bash
+a2a availability worker_7 --json
+a2a --profile coordination availability '@worker_7:matrix.example' --json
+```
+
+This anonymous command sends one GET to
+`/_matrix/client/v3/register/available?username=...` at the selected configured
+homeserver URL. A named connection uses explicit `--profile` or the registry's
+`current`; without a registry it uses the existing `matrix.env` / public
+`A2A_MATRIX_URL` and `A2A_MATRIX_SERVER_NAME` settings. Conflicting public routing
+is refused. It performs no discovery, redirects, retries or registration fallback.
+The endpoint URL and Matrix server name are separate configured values: a full
+MXID's server must exactly match the selected server name, including case and port.
+
+Accepted inputs are a nonempty modern registration localpart using lowercase
+`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`, `+`, or that exact localpart in
+`@localpart:server` form. The resulting MXID must be at most 255 bytes. Uppercase
+or historical localparts, rooms, aliases, URLs, third-party IDs, partial MXIDs,
+and mismatched server spellings are refused before any HTTP request. Inputs are
+never lowercased or retargeted. These restrictions belong only to this command;
+the server may impose additional username rules. No room parameter is used.
+
+JSON contains `outcome`, `user_id`, `server_name`, `homeserver_url`, and (when
+observed) `http_status`; unknown observations also have a fixed `reason`.
+Text output is `outcome<TAB>user_id[<TAB>reason]`. Outcomes are:
+
+| Outcome | Evidence | Exit |
+| --- | --- | --- |
+| `available` | HTTP 200 and complete valid JSON with `available: true` | 0 |
+| `taken` | HTTP 400 with typed `M_USER_IN_USE` | 0 |
+| `invalid` | HTTP 400 with typed `M_INVALID_USERNAME` | 0 |
+| `application_service_reserved` | HTTP 400 with typed `M_EXCLUSIVE` | 0 |
+| `unknown` | Unsupported/disabled/403/404/429, redirect, transport failure, interruption, malformed/incomplete/contradictory or mismatched response | 1 |
+
+Local syntax errors exit 2; routing/configuration errors exit nonzero without an
+observation. Unknown never means absent or present. Raw peer error text is not
+printed. A query is bounded to 30 seconds and also respects caller cancellation.
+
+No caller login or credentials are needed. `--as` does not authenticate this
+query; `--human` and authenticated `--connection-fingerprint` are unsupported.
+Only public routing keys are loaded; registration-token environment values,
+credential metadata, secret stores, passwords, owner-DM configuration and local
+registration/delivery state are not consulted or written. Existing commands keep
+their authenticated routing paths.
+
+Availability is an observation at one instant, **not an account-existence
+guarantee or a reservation**. A registration-disabled server may not provide this
+capability. The command does not discover admin authority, register an account,
+create a device, issue a token or make a mutating fallback. Authority beyond the
+selected server's public registration-availability answer needs a separate
+capability contract. See the [Matrix v1.19 API](https://spec.matrix.org/v1.19/client-server-api/#get_matrixclientv3registeravailable)
+(verified 2026-11-06).
+
+Focused synthetic checks:
+`go test ./internal/cli ./internal/matrix -run '^TestAvailability' -count=1` and
+`go test ./internal/config -run '^TestLoadMatrixRouting' -count=1`.
+These do not qualify any live server or deployment.
+
 ### `a2a whoami`
 ```bash
 a2a --as reviewer-7 whoami

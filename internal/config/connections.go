@@ -113,16 +113,8 @@ func (c Connection) Validate() error {
 	if !connectionSlug.MatchString(c.ID) {
 		return errors.New("invalid connection_id")
 	}
-	u, e := url.Parse(c.URL)
-	if e != nil || u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.Path != "" && u.Path != "/" {
-		return errors.New("invalid homeserver_url")
-	}
-	// HTTP is supported only for explicitly configured loopback test/development servers.
-	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()).IsLoopback())) {
-		return errors.New("homeserver_url requires HTTPS (or loopback HTTP)")
-	}
-	if !validServerName(c.ServerName) {
-		return errors.New("invalid Matrix server_name")
+	if err := ValidateMatrixRouting(c.URL, c.ServerName); err != nil {
+		return err
 	}
 	if c.Store.Backend != "keychain" || !serviceName.MatchString(c.Store.AccessTokenService) || !serviceName.MatchString(c.Store.PasswordService) || c.Store.AccessTokenService == c.Store.PasswordService {
 		return errors.New("invalid or unsupported credential_store")
@@ -131,6 +123,23 @@ func (c Connection) Validate() error {
 		if !serviceName.MatchString(r.Service) || r.Account == "" || len(r.Account) > 255 || strings.ContainsAny(r.Account, "\x00\r\n\t") || r.Service == c.Store.AccessTokenService || r.Service == c.Store.PasswordService {
 			return errors.New("invalid independent registration_token_ref")
 		}
+	}
+	return nil
+}
+
+// ValidateMatrixRouting validates a configured endpoint and its separately
+// declared Matrix server name. It performs no discovery or normalization.
+func ValidateMatrixRouting(endpoint, server string) error {
+	u, e := url.Parse(endpoint)
+	if e != nil || u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.Path != "" && u.Path != "/" {
+		return errors.New("invalid homeserver_url")
+	}
+	// HTTP is supported only for explicitly configured loopback test/development servers.
+	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()).IsLoopback())) {
+		return errors.New("homeserver_url requires HTTPS (or loopback HTTP)")
+	}
+	if !validServerName(server) {
+		return errors.New("invalid Matrix server_name")
 	}
 	return nil
 }
