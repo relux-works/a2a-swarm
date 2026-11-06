@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,13 +23,14 @@ const (
 // Bound filtered history reads; reaching the cap leaves the room untouched.
 const roomRetireMaxPages = 100
 
-const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | a2a room retire <alias> | a2a room members <room> [--membership join|invite|join,invite] [--json]"
+const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] [--private] | a2a room retire <alias> | a2a room members <room> [--membership join|invite|join,invite] [--json]"
 
 // roomSpec is one room to create with the standard policy.
 type roomSpec struct {
 	local       string   // alias local part, without # and :server
 	name, topic string   // optional m.room.name / m.room.topic
 	invite      []string // explicit invitees (full user ids), without power grants
+	private     bool     // require invite-only policy readback before follow-up writes
 }
 
 // cmdRoom: a2a room new <alias> [--name N] [--topic T] [--invite a,b]
@@ -47,6 +49,7 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 	topic := fs.String("topic", "", "room topic (m.room.topic)")
 	invite := fs.String("invite", "", "comma-separated invitees (no power grants; no automatic invitees)")
 	product := fs.String("product", "", "product space to adopt the new room into")
+	private := fs.Bool("private", false, "invite-only, joined history, guests forbidden; verify server policy")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
@@ -70,7 +73,7 @@ func cmdRoom(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	spec := roomSpec{local: local, name: *name, topic: *topic}
+	spec := roomSpec{local: local, name: *name, topic: *topic, private: *private}
 	for _, u := range splitList(*invite) {
 		id, _ := normalizeUser(u, s.server)
 		spec.invite = append(spec.invite, id)
@@ -116,6 +119,11 @@ func (s *session) newRoom(ctx context.Context, spec roomSpec) (id string, create
 	full := "#" + spec.local + ":" + s.server
 	label := s.shortAlias(full)
 	if id, err := s.client.ResolveAlias(ctx, full); err == nil {
+		if spec.private {
+			if err := s.privateRoomPolicy(ctx, id); err != nil {
+				return id, false, fmt.Errorf("existing room %s %s not qualified as private; room unchanged: %w", label, id, err)
+			}
+		}
 		a.printf("exists %s %s\n", label, id)
 		return id, false, nil
 	} else if !errors.Is(err, matrix.ErrUnknownAlias) {
@@ -126,9 +134,22 @@ func (s *session) newRoom(ctx context.Context, spec roomSpec) (id string, create
 		Preset: roomPreset, Visibility: roomVisibility, RoomAliasName: spec.local, Name: spec.name, Topic: spec.topic,
 		PowerLevelContentOverride: map[string]any{"redact": 100, "users": map[string]int{}},
 	}
+	if spec.private {
+		req.Preset = "private_chat"
+		req.InitialState = []matrix.InitialStateEvent{
+			{Type: "m.room.join_rules", StateKey: "", Content: json.RawMessage(`{"join_rule":"invite"}`)},
+			{Type: "m.room.history_visibility", StateKey: "", Content: json.RawMessage(`{"history_visibility":"joined"}`)},
+			{Type: "m.room.guest_access", StateKey: "", Content: json.RawMessage(`{"guest_access":"forbidden"}`)},
+		}
+	}
 	id, err = s.client.CreateRoom(ctx, req)
 	if matrix.IsCode(err, "M_ROOM_IN_USE") {
 		if id, rerr := s.client.ResolveAlias(ctx, full); rerr == nil {
+			if spec.private {
+				if err := s.privateRoomPolicy(ctx, id); err != nil {
+					return id, false, fmt.Errorf("existing room %s %s not qualified as private; room unchanged: %w", label, id, err)
+				}
+			}
 			a.printf("exists %s %s\n", label, id)
 			return id, false, nil
 		}
@@ -136,8 +157,14 @@ func (s *session) newRoom(ctx context.Context, spec roomSpec) (id string, create
 	if err != nil {
 		return "", false, fmt.Errorf("create %s: %w", label, err)
 	}
+	if spec.private {
+		if err := s.privateRoomPolicy(ctx, id); err != nil {
+			return id, true, fmt.Errorf("created %s %s, but not qualified as private; room retained for inspection: %w", label, id, err)
+		}
+		a.printf("verified private policy %s %s (invite-only, history joined, guests forbidden, unencrypted)\n", label, id)
+	}
 	a.printf("created %s %s (preset %s, visibility %s: not in the room directory; power: redact 100, creator %s implicit)\n",
-		label, id, roomPreset, roomVisibility, sanitizeLine(s.creds.UserID))
+		label, id, req.Preset, roomVisibility, sanitizeLine(s.creds.UserID))
 	seen := map[string]bool{me: true}
 	for _, u := range spec.invite {
 		if seen[strings.ToLower(u)] {

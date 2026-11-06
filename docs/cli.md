@@ -147,7 +147,7 @@ a2a host init workstation                                  # owner-approved slug
 a2a identity ensure --role orch --runtime claude           # only after keeper provisioning (codex: --runtime codex)
 ```
 
-### `a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X]`
+### `a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] [--private]`
 Current policy routes new-room provisioning through the meta-keeper; this command reference describes the existing capability for that
 coordinated provisioning, not permission for a newly spawned agent to create a room.
 Creates a room with the standard policy and prints each step:
@@ -167,6 +167,33 @@ Creates a room with the standard policy and prints each step:
 ```bash
 a2a room new skill-foo --name "skill-foo" --invite mini_skill-foo_orch
 ```
+
+`--private` selects preset `private_chat`, the same unlisted directory visibility,
+and explicit initial state: join rule `invite`, history visibility `joined`, and
+guest access `forbidden`. It retains the standard power override and explicit
+invite handling above. Before reporting private-policy success or sending invites,
+subscribing the creator, or attaching to a product, it reads the server's complete
+current state back. It requires those exact three policies, no encryption, no
+duplicate state, and safe power levels: Matrix preset defaults (including state
+writes at 50), redact at 100, no explicit user grants, and no event override
+lowering join/history/guest/encryption/power/ACL/tombstone controls below 50.
+Malformed, incomplete, oversized (over 1 MiB), redirected or refused readback
+fails closed. This is a snapshot; later administrator/server changes are possible.
+
+On failure after creation, exit 1 names the created room ID and says
+`not qualified as private; room retained for inspection`. It sends no follow-up
+invites, subscription, product attachment or destructive cleanup. Failures before
+creation do not claim a room was created. Existing aliases and alias-race winners
+are also checked with `--private`; an unsafe or unreadable existing room is left
+unchanged and refused. Existing qualified rooms print the usual `exists` line.
+Without `--private` (or with `--private=false`), the public request, output and
+behavior above are unchanged and no private-policy readback is added.
+
+This option covers workspace room creation and policy readback only. Owner-DM
+identity pins and two-person audience checks, `product new` audience selection,
+encryption options, and Space-ID selection/reciprocal attachment verification are
+outside this change. `--product` uses the existing attachment path after policy
+qualification; it does not add stronger Space verification.
 
 The same empty automatic-identity policy applies to `product new` lobby creation and plain `identity ensure` project-room creation.
 Product `--keeper` / `--projector` roles remain explicit and use their existing power-50 policy in their designated rooms/spaces.
