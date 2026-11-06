@@ -69,6 +69,18 @@ func TestEnvelopeInstrumentControls(t *testing.T) {
 		// specific code can notice.
 		{"skip-spec-size-limit", "matrix", "envelope.go", `if len(envelope) > EnvelopeMaxBytes {`, `if false {`,
 			`^TestPostEnvelopeRefusals$/^oversize-by-one$`, `lacks "envelope refused: envelope_too_large"`},
+		// --- fetch bounds (internal/matrix) ---
+		{"skip-fetch-deadline", "matrix", "envelope.go", `ctx, cancel := withTimeout(ctx)`, `ctx, cancel := context.WithCancel(ctx)`,
+			`^TestEnvelopeEventDeadline$`, `envelope fetch has no deadline`},
+		{"accept-non-200", "matrix", "envelope.go", `if resp.StatusCode != http.StatusOK {`, `if false && resp.StatusCode != http.StatusOK {`,
+			`^TestEnvelopeEventRequiresOK$`, `status 201: want response_invalid`},
+		// --- redaction (internal/matrix, internal/cli) ---
+		{"skip-server-redaction-marker", "matrix", "envelope.go", `return zero, Refuse(RefuseEventRedacted, "")`, `_ = 0`,
+			refusals + `redacted-with-content$`, `redacted-with-content: got code "" want "event_redacted"`},
+		{"skip-pre-fetch-tombstone", "cli", "envelope.go", `if len(events) != 1 || events[0].IsRedacted() {`, `if false && (len(events) != 1 || events[0].IsRedacted()) {`,
+			`^TestEnvelopeInputLocalTombstones$`, `pre-fetch refusal lost`},
+		{"skip-post-fetch-tombstone", "cli", "envelope.go", `if len(filtered) != 1 || filtered[0].IsRedacted() {`, `if false && (len(filtered) != 1 || filtered[0].IsRedacted()) {`,
+			`^TestEnvelopeInputLocalTombstones$`, `unsynced edit of a redacted target escaped`},
 	}
 	hashes := map[string][32]byte{}
 	for _, p := range plants {
@@ -101,7 +113,7 @@ func TestEnvelopeInstrumentControls(t *testing.T) {
 			}
 			// The test package is the one that holds the asserting test.
 			target := "./internal/matrix"
-			if strings.HasPrefix(p.mask, `^TestPostEnvelope`) || strings.HasPrefix(p.mask, `^TestEnvelopeRoundTrip`) {
+			if strings.HasPrefix(p.mask, `^TestPostEnvelope`) || strings.HasPrefix(p.mask, `^TestEnvelopeRoundTrip`) || strings.HasPrefix(p.mask, `^TestEnvelopeInput`) {
 				target = "./internal/cli"
 			}
 			run := func(overlay string) ([]byte, error) {

@@ -445,6 +445,9 @@ name or anything the envelope claims. Signing, hashing and verification belong t
   Nothing is truncated, no pointer form exists and no URL is fetched. The homeserver stays authoritative.
 - **Refusals** happen before any request and print `a2a: envelope refused: <code>` (exit 1):
   `envelope_unreadable`, `envelope_empty`, `envelope_too_large`, `event_too_large`, `text_invalid`, `text_empty`.
+  Event text that cannot be read, or is over the 32 KiB body limit, is refused by the ordinary body reader
+  before any request, with its usual message (`body too large (limit 32768 bytes)` or `read body: ...`, exit 1)
+  rather than an envelope code.
   Usage errors (exit 2): `--envelope` without a `@file` operand, repeated, combined with `--voice`, or without
   exactly one text argument.
 

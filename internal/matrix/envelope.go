@@ -159,9 +159,17 @@ func (c *Client) GetEnvelopeEvent(ctx context.Context, roomID, eventID string) (
 	if !ValidVerificationID(roomID, '!') || !ValidVerificationID(eventID, '$') {
 		return zero, Refuse(RefuseSelectionInvalid, "")
 	}
+	// Like GetVerificationEvent: the fetch carries the default deadline unless
+	// the caller set one, and only an exact 200 response is an observation.
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
 	resp, err := c.WithoutRedirects().send(ctx, http.MethodGet, "/_matrix/client/v3/rooms/"+seg(roomID)+"/event/"+seg(eventID), nil, nil, "", -1)
 	if err != nil {
 		return zero, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return zero, Refuse(RefuseResponseInvalid, "")
 	}
 	v, err := readControl(ctx, resp, VerificationEntityLimit+1)
 	if err != nil {

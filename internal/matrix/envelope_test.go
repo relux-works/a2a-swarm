@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // envelopeContent builds event content JSON for the projection fixtures. The
@@ -475,5 +476,62 @@ func TestStrictReaderErrorsStayErrWireJSON(t *testing.T) {
 	}
 	if _, err := strictJSON([]byte{'"', 0xff, '"'}); err == nil || err.Error() != "matrix: response is not UTF-8" {
 		t.Fatalf("utf8 message changed: %v", err)
+	}
+}
+
+// Proves the envelope fetch always carries a deadline: the default one when the
+// caller set none, and the caller's own deadline unchanged when it did.
+func TestEnvelopeEventDeadline(t *testing.T) {
+	for _, callerDeadline := range []bool{false, true} {
+		var sawDeadline bool
+		var got time.Time
+		body := verificationResponse(envelopeBase)
+		c := New("https://fixture.invalid", "fixture-token")
+		c.HTTP = &http.Client{Transport: verificationTransport(func(r *http.Request) (*http.Response, error) {
+			got, sawDeadline = r.Context().Deadline()
+			return &http.Response{StatusCode: 200, Request: r, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		ctx := context.Background()
+		want := time.Now().Add(time.Hour)
+		if callerDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, want)
+			defer cancel()
+		}
+		if _, err := c.GetEnvelopeEvent(ctx, "!selected:fixture", "$selected"); err != nil {
+			t.Fatal(err)
+		}
+		if !sawDeadline {
+			t.Fatalf("envelope fetch has no deadline (caller deadline %v)", callerDeadline)
+		}
+		if callerDeadline && !got.Equal(want) {
+			t.Fatalf("caller deadline replaced: got %v want %v", got, want)
+		}
+		if !callerDeadline && time.Until(got) > DefaultRequestTimeout {
+			t.Fatalf("default deadline too far: %v", time.Until(got))
+		}
+	}
+}
+
+// Proves only a 200 response is an observation: 201, 203 and 206 with the same
+// strictly valid body refuse as response_invalid, while 200 projects.
+func TestEnvelopeEventRequiresOK(t *testing.T) {
+	for _, status := range []int{200, 201, 203, 206} {
+		body := verificationResponse(envelopeBase)
+		c := New("https://fixture.invalid", "fixture-token")
+		c.HTTP = &http.Client{Transport: verificationTransport(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Request: r, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		_, err := c.GetEnvelopeEvent(context.Background(), "!selected:fixture", "$selected")
+		if status == 200 {
+			if err != nil {
+				t.Fatalf("status 200 refused: %v", err)
+			}
+			continue
+		}
+		var r *EnvelopeRefusal
+		if !errors.As(err, &r) || r.Code != RefuseResponseInvalid {
+			t.Fatalf("status %d: want %s, got %v", status, RefuseResponseInvalid, err)
+		}
 	}
 }
