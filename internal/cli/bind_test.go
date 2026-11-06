@@ -21,6 +21,7 @@ import (
 // Invalid/session-mismatched bindings fail before any process or target write;
 // unbind cannot retire another session's persisted generation.
 func TestBindRefusals(t *testing.T) {
+	isolateBindTest(t)
 	e := newEnv(t)
 	e.agent("alice")
 	e.extra[EnvSessionID] = "mine"
@@ -42,6 +43,7 @@ func TestBindRefusals(t *testing.T) {
 // New mail and pause cannot blindly clear an uncertain fence. Unavailable
 // input blocks recovery; explicit inbox receipts release its IDs.
 func TestBindUncertainFenceAndPause(t *testing.T) {
+	isolateBindTest(t)
 	e, room := world(t)
 	e.extra[EnvSessionID] = "owned-thread"
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
@@ -153,6 +155,7 @@ func awaitBinding(t *testing.T, p config.Paths, test func(config.State) bool) co
 // unbind retires/stops its own PID without dropping mail. No real credentials,
 // provider sessions, hooks or Keychain commands participate.
 func TestBindDetachedLifecycle(t *testing.T) {
+	isolateBindTest(t)
 	if testing.Short() {
 		t.Skip("detached CLI integration")
 	}

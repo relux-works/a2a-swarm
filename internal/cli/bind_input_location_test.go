@@ -15,6 +15,7 @@ import (
 // preserve the assessment and stored state, and send no input. Empty controls
 // admit. These synthetic layouts do not establish real dialog geometry.
 func TestReadinessBusyMatchLocation(t *testing.T) {
+	isolateBindTest(t)
 	for _, runtime := range []string{"codex", "claude", "claude-named"} {
 		t.Run(runtime, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -98,6 +99,7 @@ func TestReadinessBusyMatchLocation(t *testing.T) {
 // the boundary or either side of it never gets described as above-only.
 // Missing matches report unavailable, not a fabricated composer location.
 func TestBusyMatchLocationBoundaries(t *testing.T) {
+	isolateBindTest(t)
 	for _, tc := range []struct{ name, screen, want string }{
 		{"styled-above", "\x1b[2mAPPROVAL REQUIRED\x1b[0m\n› \n\n? for shortcuts", "above_composer"},
 		{"prompt", "› approval required\n\n? for shortcuts", "at_or_below_composer"},

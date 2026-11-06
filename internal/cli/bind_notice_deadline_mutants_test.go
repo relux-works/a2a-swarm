@@ -20,6 +20,7 @@ import (
 // assertion plus a passing actual publication is credited, never a timeout,
 // panic, build error, skip, missing test, or cleanup failure.
 func TestNoticePublicationDeadlineNarrowingPlants(t *testing.T) {
+	isolateBindTest(t)
 	if os.Getenv("A2A_RUN_NOTICE_DEADLINE_MUTANTS") != "1" {
 		t.Skip("opt-in synthetic B1 controls")
 	}

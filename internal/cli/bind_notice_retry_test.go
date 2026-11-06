@@ -111,6 +111,7 @@ func (f *noticeRetryFixture) update(t *testing.T, fn func(*config.State)) {
 // win only at eligibility; rollback never grants an early send. No crash-atomic
 // local/remote transaction or independently racing remote writer is claimed.
 func TestNoticeRetryEarlierUncertaintyRebind(t *testing.T) {
+	isolateBindTest(t)
 	f := newNoticeRetryFixture(t)
 	ack := f.e.state("alice").Liveness
 	f.update(t, func(st *config.State) { st.Terminal.OwnNotice = schemaNotice("false") })
@@ -182,6 +183,7 @@ func TestNoticeRetryEarlierUncertaintyRebind(t *testing.T) {
 // each entry point clears obsolete retry metadata and resets the next failure
 // to Interval. Failed writers retain the fence and exact ACK instead.
 func TestNoticeRetryOwnWriterReset(t *testing.T) {
+	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait", "manual"} {
 		for _, success := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/ack-%t", writer, success), func(t *testing.T) {
@@ -243,6 +245,7 @@ func TestNoticeRetryOwnWriterReset(t *testing.T) {
 // Malformed JSON is a read failure (no mutation/HTTP), not absent metadata.
 // Internally coherent future times follow the stated rollback contract.
 func TestNoticeRetryMalformedState(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"zero", "negative", "oversize", "missing-time", "mismatch", "json", "absent"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newNoticeRetryFixture(t)
@@ -308,6 +311,7 @@ func TestNoticeRetryMalformedState(t *testing.T) {
 // Invalid explicit binding policy refuses before HTTP; a corrected policy
 // remains usable. This does not infer a new implicit interval for old metadata.
 func TestNoticeRetryPolicy(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"zero", "short", "long", "cap-small", "cap-large", "valid"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newNoticeRetryFixture(t)
@@ -351,6 +355,7 @@ func TestNoticeRetryPolicy(t *testing.T) {
 // Each refusal is zeroHTTP and preserves the entire identity state, including
 // the persisted retry fence; a restored valid caller can ACK at eligibility.
 func TestNoticeRetryPendingRefusals(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"stopped", "foreign", "stale", "cancelled"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newNoticeRetryFixture(t)
@@ -397,6 +402,7 @@ func TestNoticeRetryPendingRefusals(t *testing.T) {
 // real dispatch; repeated automatic notice work is fenced, while a later own
 // heartbeat/manual ACK remains available (covered separately by writer reset).
 func TestNoticeRetryFailedWriterDispatch(t *testing.T) {
+	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait"} {
 		for _, mode := range []int32{1, 2} {
 			t.Run(fmt.Sprintf("%s/mode-%d", writer, mode), func(t *testing.T) {
@@ -440,6 +446,7 @@ func TestNoticeRetryFailedWriterDispatch(t *testing.T) {
 // Real dispatch/notice paths must bound both definite refusals and ambiguous
 // sends. Clock steps count every resolve/PUT without sleeping or a live runtime.
 func TestNoticeRetryPersistentFailures(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"forbidden", "server", "transport", "resolve"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -537,6 +544,7 @@ func TestNoticeRetryPersistentFailures(t *testing.T) {
 // Each real writer preserves exact prior ACK and PRE-attempt uncertainty on a
 // decoded 403/M_FORBIDDEN only. Other errors cannot assert non-application.
 func TestOwnStatusDefinitiveRefusalKnowledge(t *testing.T) {
+	isolateBindTest(t)
 	cases := []struct {
 		name     string
 		status   int

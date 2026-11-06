@@ -15,6 +15,7 @@ import (
 // Retained reviewer regression through production dispatch. Keeper o-JKabzo
 // retires the exact-owned positive: both dim and exact-looking drafts refuse.
 func TestReviewerLiveJournalDimHint(t *testing.T) {
+	isolateBindTest(t)
 	for _, dim := range []bool{false, true} {
 		name := "valid"
 		if dim {
@@ -47,6 +48,7 @@ func TestReviewerLiveJournalDimHint(t *testing.T) {
 // A durable attempt can precede its first keystroke (death/failure between the
 // reservation and Send). Recovery is a second production path to initial type.
 func TestReviewerFreshRecoveryQualification(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	id := f.mail()
 
@@ -92,6 +94,7 @@ func TestReviewerFreshRecoveryQualification(t *testing.T) {
 }
 
 func TestReviewerOrphanGrammar(t *testing.T) {
+	isolateBindTest(t)
 	notice := tmuxwake.Notice(1)
 	cases := map[string]string{"valid": notice, "bom": "\ufeff" + notice, "nbsp": notice + "\u00a0", "unicode": notice + "\u200b", "quote": "\"" + notice + "\"", "control": notice + "\x01", "crlf": notice + "\r\nKEEP", "oversize": notice + string(make([]byte, 1024)), "space-prefix": " " + notice, "space-suffix": notice + " ", "zero": "a2a: 0 new peer events; run a2a inbox", "leading-zero": "a2a: 01 new peer events; run a2a inbox"}
 	for name, text := range cases {
@@ -117,6 +120,7 @@ func TestReviewerOrphanGrammar(t *testing.T) {
 }
 
 func TestReviewerStateFailureRefusals(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"malformed", "permission-read", "permission-write", "cancelled"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -172,6 +176,7 @@ func TestReviewerStateFailureRefusals(t *testing.T) {
 // Keeper o-JKabzo retires all erase commands: the old post-erase fault is
 // unreachable. Keep the original name and human/empty restart safety purposes.
 func TestReviewerCompletedEraseOwnership(t *testing.T) {
+	isolateBindTest(t)
 	for _, neighbor := range []string{"human", "empty"} {
 		t.Run(neighbor, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)

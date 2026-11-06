@@ -89,6 +89,7 @@ func grammarNotice(field, value string) config.OwnNoticeObservation {
 // Both fields traverse the shared production validator; retained-unknown uses
 // exactly the same grammar. Expected verdicts come from the generator families.
 func TestNoticeTimestampGeneratedGrammar(t *testing.T) {
+	isolateBindTest(t)
 	cases := noticeTimestampCases()
 	families := map[string]int{}
 	for _, c := range cases {
@@ -122,6 +123,7 @@ func TestNoticeTimestampGeneratedGrammar(t *testing.T) {
 // synthetic bob self-key -> alice who; local persisted bind -> both own PUT
 // routes. Malformed values must disappear, never become fresh facts or writes.
 func TestNoticeTimestampProductionFamilies(t *testing.T) {
+	isolateBindTest(t)
 	var reps []noticeTimestampCase
 	seen := map[string]bool{}
 	for _, c := range noticeTimestampCases() {
@@ -242,6 +244,7 @@ func TestNoticeTimestampProductionFamilies(t *testing.T) {
 // Arbitrary legal fraction precision stays verbatim, but must not lose order
 // below time.Time's nanoseconds. This drives publication and the public reader.
 func TestNoticeTimestampFractionOrder(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"forward", "equal", "reversed"} {
 		t.Run(kind, func(t *testing.T) {
 			e, _ := world(t)

@@ -19,6 +19,7 @@ import (
 // admission. Only the unsafe-attempt assertion kills it; crashes, skips, absent
 // tests and setup failures do not count. A settled positive must still pass.
 func TestTerminalRefreshSafePointPlant(t *testing.T) {
+	isolateBindTest(t)
 	if os.Getenv("A2A_RUN_BIND_REFRESH_MUTANTS") != "1" {
 		t.Skip("opt-in isolated re-exec safe-point control")
 	}

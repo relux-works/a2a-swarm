@@ -19,6 +19,7 @@ import (
 // Same-image one-shot commands remain valid; a different image or a parallel
 // waiter has the exact typed refusal. Selector parsing matches global --as.
 func TestBindingProcessConflict(t *testing.T) {
+	isolateBindTest(t)
 	for _, c := range []struct {
 		image, cmd string
 		want       error
@@ -39,6 +40,7 @@ func TestBindingProcessConflict(t *testing.T) {
 // The actual OS scanner catches a separately loaded old image; a different
 // identity or config root is a positive control. Only synthetic argv/env used.
 func TestBindingProcessImageWitness(t *testing.T) {
+	isolateBindTest(t)
 	dir := t.TempDir()
 	self, err := os.Executable()
 	if err != nil {
@@ -91,6 +93,7 @@ func TestBindingProcessWitnessChild(t *testing.T) {
 // A live binding refuses BOTH public wait paths without receipts or state loss;
 // retirement allows the nearby valid wait to complete normally.
 func TestBoundWaitBothDirections(t *testing.T) {
+	isolateBindTest(t)
 	e, room := world(t)
 	e.extra[EnvSessionID] = "own"
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
@@ -146,6 +149,7 @@ func TestBoundWaitBothDirections(t *testing.T) {
 // Nearest runtime ancestry, own UID and a bounded parent chain determine the
 // owner. Shell parent, another UID, sibling runtime and parent cycles refuse.
 func TestHookRuntimeAncestor(t *testing.T) {
+	isolateBindTest(t)
 	rows := []bindingProcess{{100, 1, 11, "/vendor/bin/codex"}, {101, 100, 11, "/bin/sh"}, {102, 1, 11, "/bin/claude"}}
 	if pid, err := runtimeOwnerPID(rows, 101, "codex", 11); err != nil || pid != 100 {
 		t.Fatalf("nearest runtime: %d %v", pid, err)
@@ -170,6 +174,7 @@ func TestHookRuntimeAncestor(t *testing.T) {
 // target; changed owner/pane/socket or another lease cannot partially write.
 // Runtime ancestry/UID validation is exercised by the public hook fixture.
 func TestTerminalSessionHandover(t *testing.T) {
+	isolateBindTest(t)
 	for _, name := range []string{"valid", "stopped", "owner", "pane", "socket", "foreign-lease"} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)

@@ -16,6 +16,7 @@ import (
 // must surface without inbox receipts; later mail cannot hide the suspicion.
 // These synthetic screens prove diagnostics, not provider responsiveness.
 func TestTerminalStrandedPendingNotice(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	id := f.mail()
 	f.control(map[string]any{"defer": true})
@@ -40,6 +41,7 @@ func TestTerminalStrandedPendingNotice(t *testing.T) {
 
 // An arbitrary or edited draft is never submitted, even after the alert age.
 func TestTerminalStrandedOtherInputNeverSubmitted(t *testing.T) {
+	isolateBindTest(t)
 	for _, draft := range []string{"HUMAN_DRAFT", "a2a: 1 new peer events; run a2a inbox suffix"} {
 		t.Run(draft, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -66,6 +68,7 @@ func TestTerminalStrandedOtherInputNeverSubmitted(t *testing.T) {
 // ten minutes exactly once. Process reload and replay of a pre-ACK local record
 // reuse the persisted transaction, so an ambiguous send cannot duplicate it.
 func TestTerminalStrandedThresholdReportOnce(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	system := f.e.ownReportRoom("alice")
 	id := f.mail()
@@ -144,6 +147,7 @@ func (e *env) projectionsFrom(room, sender string) []matrix.Event {
 // Failure never claims publication; retry obeys the configured cap and reuses
 // its transaction. Unknown/cleared observations cannot publish old suspicion.
 func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"failed", "missing-room", "unknown", "clear", "partial", "untyped", "foreign"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -226,6 +230,7 @@ func TestTerminalStrandedReportFailureAndUnknown(t *testing.T) {
 // real completion and dispatch paths retain mail and escalate the stranded
 // draft. This does not re-test fresh admission or observe a live provider.
 func TestTerminalStrandedTypingStatusFlipReports(t *testing.T) {
+	isolateBindTest(t)
 	for _, version := range []string{"2.1.309", "2.1.310"} {
 		t.Run(version, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)

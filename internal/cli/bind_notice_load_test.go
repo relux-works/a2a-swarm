@@ -18,6 +18,7 @@ import (
 // Counts every HTTP request on the actual dispatch -> unknown -> session route.
 // Manual gate avoids any terminal/process fixture; it does not replace publication.
 func TestNoticeDispatchLocalNoop(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"missing", "unchanged", "recovered", "changed"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -84,6 +85,7 @@ func TestNoticeDispatchLocalNoop(t *testing.T) {
 }
 
 func TestNoticePublicationLocalOwnerGates(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"stopped", "stale", "foreign", "valid"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -125,6 +127,7 @@ func TestNoticePublicationLocalOwnerGates(t *testing.T) {
 }
 
 func TestNoticePublicationCacheLifecycle(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"reuse", "M_NOT_FOUND", "M_FORBIDDEN", "rebind", "unbind", "resolve-M_NOT_FOUND", "resolve-M_FORBIDDEN"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -230,6 +233,7 @@ func TestNoticePublicationCacheLifecycle(t *testing.T) {
 // Writers queue behind the established bounded state critical section and
 // remain authoritative after release; an accepted PUT cannot be rolled back.
 func TestNoticePublicationConcurrentMutation(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"resolve-replacement", "put-replacement", "put-notice", "put-heartbeat", "put-missing"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -320,6 +324,7 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 }
 
 func TestNoticeObservationDoesNotMarkPending(t *testing.T) {
+	isolateBindTest(t)
 	_, a, s := noticeDeadlineFixture(t)
 	st, err := config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal.NoticePublication = "published"; return nil })
 	if err != nil {
@@ -366,6 +371,7 @@ func TestNoticeObservationDoesNotMarkPending(t *testing.T) {
 }
 
 func TestNoticePublicationSharedBudgetAndAppliedCancellation(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"earlier-partial-body", "later-caller-success"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -442,6 +448,7 @@ func TestNoticePublicationSharedBudgetAndAppliedCancellation(t *testing.T) {
 // fixture. Frozen observations are no-ops; a genuinely newer ObservedAt is a
 // real change and publishes once, resolving the current room for each change.
 func TestNoticeDispatchObservedNoop(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"missing", "unchanged"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)

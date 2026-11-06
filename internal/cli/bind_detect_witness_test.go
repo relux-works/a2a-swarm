@@ -14,6 +14,7 @@ import (
 // oracle only; no candidate guard reads it. Captured range excludes only the
 // setup acknowledgement in row zero, never any composer/footer cells.
 func TestRev3TransportObservations(t *testing.T) {
+	isolateBindTest(t)
 	for _, hint := range []bool{true, false} {
 		t.Run(map[bool]string{true: "hint", false: "no-hint"}[hint], func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -70,6 +71,7 @@ func TestRev3TransportObservations(t *testing.T) {
 // It establishes that the supported screen grammar admits a common cell
 // renderer with no observable editor-length information, including -T -N.
 func TestRev3PaddedRendererObservations(t *testing.T) {
+	isolateBindTest(t)
 	for _, layout := range []string{"codex-hint", "codex-no-hint", "claude"} {
 		t.Run(layout, func(t *testing.T) {
 			runtime := "codex"
@@ -145,6 +147,7 @@ func TestRev3PaddedRendererObservations(t *testing.T) {
 // Both effect paths use real dispatch, durable journal and own fake inbox.
 // The padded renderer is synthetic; it does not attest any installed runtime.
 func TestRev3PaddedDraftEffects(t *testing.T) {
+	isolateBindTest(t)
 	for _, runtime := range []string{"codex", "claude"} {
 		t.Run(runtime, func(t *testing.T) {
 			for _, path := range []string{"live", "orphan"} {

@@ -44,6 +44,7 @@ func TestAutoBindingRuntimeChild(t *testing.T) {
 // admission refuses, explicit unbind remains stopped, and no mailbox receipts
 // are invented by binding. An unsupported parent is covered by the ancestry controls.
 func TestHookAutomaticBindingLifecycle(t *testing.T) {
+	isolateBindTest(t)
 	testHookAutomaticBindingLifecycle(t, "")
 }
 
@@ -52,12 +53,15 @@ func TestHookAutomaticBindingLifecycle(t *testing.T) {
 // on Claude and Codex, without granting the new generation Enter authority.
 // A real SessionStart with a different loaded session retires the old episode.
 func TestHookStrandedReportConsumerRecovery(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"acknowledged", "lost-ack", "new-session"} {
 		t.Run(mode, func(t *testing.T) { testHookAutomaticBindingLifecycle(t, mode) })
 	}
 }
 
 func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
+	t.Helper()
+	isolateBindTest(t)
 	if testing.Short() {
 		t.Skip("private terminal integration")
 	}
@@ -82,6 +86,7 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 	}
 	for _, runtime := range []string{"claude", "codex"} {
 		t.Run(runtime, func(t *testing.T) {
+			isolateBindTest(t)
 			e, _ := world(t)
 
 			e.extra[EnvSessionID] = "auto-fixture"
@@ -463,6 +468,7 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 // Retirement and cancellation have distinct fixed reasons, with no network or
 // terminal effects. This includes loss of the field by a legacy schema writer.
 func TestBindingExitReasons(t *testing.T) {
+	isolateBindTest(t)
 	for _, c := range []struct {
 		name string
 		b    *config.TerminalBinding

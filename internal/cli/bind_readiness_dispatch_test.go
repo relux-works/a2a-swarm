@@ -56,6 +56,7 @@ func writeDispatchRegistry(t *testing.T, path string, m map[string]any) {
 // named geometry. Shell/idle changes restart even
 // when the producer's timestamp is identical. Mail is never receipted here.
 func TestReadinessDispatch(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"named-idle", "named-shell", "named-busy", "named-rootless", "named-unqualified", "named-new-version", "legacy-rootless", "status-transition"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -119,6 +120,7 @@ func TestReadinessDispatch(t *testing.T) {
 // Status projects fresh closed readiness but never saves its observation,
 // qualification, attempts, or a hostile stored diagnostic string.
 func TestReadinessStatusReadOnly(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	_, _ = dispatchRegistry(t, f, "busy")
 	f.update(func(st *config.State) {
@@ -146,6 +148,7 @@ func TestReadinessStatusReadOnly(t *testing.T) {
 // Both public status forms expose only bounded safe key names on an unknown
 // release; hostile names/values neither inject output nor change admission.
 func TestReadinessUnknownKeysStatus(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	path, m := dispatchRegistry(t, f, "idle")
 	m["version"] = "3.0.0"
@@ -194,6 +197,7 @@ func TestReadinessUnknownKeysStatus(t *testing.T) {
 // Fresh status explains rendered suppression using closed tokens in text and
 // JSON, omits a private draft, and leaves the persisted binding unchanged.
 func TestReadinessInputStatus(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	for _, mode := range []string{"busy", "draft", "empty"} {
 		control := map[string]any{"text": ""}

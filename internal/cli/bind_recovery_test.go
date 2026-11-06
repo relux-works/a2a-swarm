@@ -16,6 +16,7 @@ import (
 // o-JKabzo even exact-looking nonempty input refuses all recovery effects.
 // Empty placeholders remain a separate fresh-delivery contract.
 func TestTerminalLiveRecoveryOwnership(t *testing.T) {
+	isolateBindTest(t)
 	for _, name := range []string{"valid", "prefix", "suffix", "dim-prefix", "dim-suffix", "dim-nbsp", "dim-nbsp-prefix", "cursor", "unknown", "target", "paused"} {
 		t.Run(name, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -97,6 +98,7 @@ func failFirstTerminalType(t *testing.T, f *orphanDispatchFixture) {
 // Observe without sleeping/holding a lock between samples. Each invalidation
 // requires two NEW samples; same-time samples spend neither retry nor rate.
 func TestTerminalRecoveryIdleContinuity(t *testing.T) {
+	isolateBindTest(t)
 	for _, reset := range []string{"none", "busy", "unknown", "draft", "pause-pulse", "manual-pulse", "daemon", "session", "target", "no-mail"} {
 		t.Run(reset, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -173,7 +175,13 @@ func TestTerminalRecoveryIdleContinuity(t *testing.T) {
 // consumed journal does not block an empty composer or lose current mail.
 // Retired erase/lost-ack commands cannot execute. Retain restart and failure
 // purposes through the no-effect human/empty regression at the production entry.
-func TestTerminalOrphanEraseUncertainRestart(t *testing.T) { TestReviewerCompletedEraseOwnership(t) }
+func TestTerminalOrphanEraseUncertainRestart(t *testing.T) {
+	isolateBindTest(t)
+	TestReviewerCompletedEraseOwnership(t)
+}
 
 // A failed observation/state write authorizes neither erase nor submission.
-func TestTerminalOrphanEraseFenceFailure(t *testing.T) { TestReviewerStateFailureRefusals(t) }
+func TestTerminalOrphanEraseFenceFailure(t *testing.T) {
+	isolateBindTest(t)
+	TestReviewerStateFailureRefusals(t)
+}

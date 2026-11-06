@@ -44,6 +44,7 @@ func noticeDeadlineFixture(t *testing.T) (*env, *App, *session) {
 }
 
 func TestNoticePublicationNetworkBound(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"put-default", "resolve-default", "put-deadline", "resolve-deadline", "put-cancel", "resolve-cancel", "consumer-deadline"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -205,6 +206,7 @@ func (p *noticeContextTransport) RoundTrip(r *http.Request) (*http.Response, err
 }
 
 func TestNoticePublicationSuccessCancelsBudget(t *testing.T) {
+	isolateBindTest(t)
 	e, a, s := noticeDeadlineFixture(t)
 	before := e.state("alice")
 	mail := e.mailbox("alice").Pending()
@@ -241,6 +243,7 @@ func TestNoticePublicationSuccessCancelsBudget(t *testing.T) {
 }
 
 func TestNoticePublicationEarlierLockDeadline(t *testing.T) {
+	isolateBindTest(t)
 	_, _, s := noticeDeadlineFixture(t)
 	held, release, holderDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {

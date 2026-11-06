@@ -25,6 +25,7 @@ func readinessSample(b config.TerminalBinding) tmuxwake.ReadinessAssessment {
 // key component below independently restarts qualification, including shell
 // at the same timestamp. These are state-machine tests, not live observations.
 func TestReadinessIdleContinuity(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"codex", "registry", "status", "status-at", "route", "row", "column", "width", "version", "root", "session", "generation", "daemon", "invalid", "too-soon"} {
 		t.Run(mode, func(t *testing.T) {
 			e, _ := world(t)
@@ -103,6 +104,7 @@ func TestReadinessIdleContinuity(t *testing.T) {
 // A stale observer cannot overwrite a replacement scope or a newer idle
 // sample, including on the refusal path. The unchanged scope is its control.
 func TestReadinessIdleCAS(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"valid", "root", "sample", "invalid-root"} {
 		t.Run(mode, func(t *testing.T) {
 			e, _ := world(t)
@@ -140,6 +142,7 @@ func TestReadinessIdleCAS(t *testing.T) {
 // Only a valid submitted pair with no transport error completes the channel;
 // unknown, inconsistent, draft, uncertain and refused results never credit mail.
 func TestReadinessTypedCompletion(t *testing.T) {
+	isolateBindTest(t)
 	type sample struct {
 		name                     string
 		r                        tmuxwake.SendResult
@@ -191,6 +194,7 @@ func TestReadinessTypedCompletion(t *testing.T) {
 // replacement. A transition writes only readiness and clears qualification;
 // attempts, receipts, notification tokens and reservation history survive.
 func TestReadinessDiagnosticPersistence(t *testing.T) {
+	isolateBindTest(t)
 	e, _ := world(t)
 	a, s := notificationApp(t, e)
 	clock := e.clock()
@@ -236,6 +240,7 @@ func TestReadinessDiagnosticPersistence(t *testing.T) {
 // once. Later stable observations do no write; stale replacement scopes cannot
 // receive that repair. Malformed JSON is exercised through the real decoder.
 func TestReadinessDiagnosticSinceRepair(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"zero", "future", "malformed", "stale", "concurrent"} {
 		t.Run(mode, func(t *testing.T) {
 			e, _ := world(t)
@@ -306,6 +311,7 @@ func TestReadinessDiagnosticSinceRepair(t *testing.T) {
 // Unknown reasons and hostile version strings project to bounded enums;
 // malformed/future stored timestamps never supply a status since or permission.
 func TestReadinessStatusProjection(t *testing.T) {
+	isolateBindTest(t)
 	now := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
 	for _, mode := range []string{"valid", "unknown", "inconsistent", "version", "future", "zero", "old-shell"} {
 		t.Run(mode, func(t *testing.T) {
@@ -347,6 +353,7 @@ func TestReadinessStatusProjection(t *testing.T) {
 // Root association is scope-CAS guarded and invalidates only readiness. A
 // session handover drops the previous provider root before any trusted rebind.
 func TestReadinessRootAssociationCAS(t *testing.T) {
+	isolateBindTest(t)
 	for _, stale := range []bool{false, true} {
 		t.Run(map[bool]string{false: "valid", true: "stale"}[stale], func(t *testing.T) {
 			e, _ := world(t)
@@ -382,6 +389,7 @@ func TestReadinessRootAssociationCAS(t *testing.T) {
 // Name-only drift changes are persisted once, retain the reason/version since,
 // and leave the binding/journal intact. Repeating the observation is a no-op.
 func TestReadinessUnknownKeysPersistence(t *testing.T) {
+	isolateBindTest(t)
 	e, _ := world(t)
 	a, s := notificationApp(t, e)
 	now := a.Now()

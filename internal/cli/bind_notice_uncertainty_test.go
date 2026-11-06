@@ -20,6 +20,7 @@ import (
 // that the old observation is currently published. A frozen legitimate clock
 // reuses the exact observation; fresh timestamps remain covered separately.
 func TestNoticeReturnToAcknowledgedAfterCancellation(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"applied-cancelled", "acknowledged-control", "fresh-observation-control", "not-applied-cancelled", "not-applied-error", "reconciliation-error", "certain-equal-control"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -188,6 +189,7 @@ func TestNoticeReturnToAcknowledgedAfterCancellation(t *testing.T) {
 // acknowledgement still establishes visibility when a real observation returns
 // to it; conservative uncertainty starts only at the PUT boundary.
 func TestNoticeAcknowledgementSurvivesPrePutFailure(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"cancelled", "resolve-error"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)

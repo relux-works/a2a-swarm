@@ -34,6 +34,7 @@ func requireNotice(t *testing.T, n config.OwnNoticeObservation, want string) {
 // with Notice retained. Settled/no-journal drafts stay clear despite AttemptAt.
 // Unknown preserves the original evidence, not false or a new first-since.
 func TestTerminalNoticeDetection(t *testing.T) {
+	isolateBindTest(t)
 	for _, neighbor := range []string{"suspected", "partial", "no-journal", "ordinary-draft", "unknown", "no-new", "untyped", "count"} {
 		t.Run(neighbor, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -151,6 +152,7 @@ func TestTerminalNoticeDetection(t *testing.T) {
 // Both public command paths read the published own record. Publication does
 // not advance heartbeat, state-since, runtime, hooks, detail or product fields.
 func TestTerminalNoticePublicStatusAndWho(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.e.as("alice", "status", "init").ok(t)
 	f.e.as("alice", statusArgs("working")...).ok(t)
@@ -207,6 +209,7 @@ func TestTerminalNoticePublicStatusAndWho(t *testing.T) {
 // successful retry publishes the same first-since; forged own-key identity is
 // refused before touching a foreign key, and the server independently refuses it.
 func TestTerminalNoticePublicationRefusals(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"missing", "failed", "foreign"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -271,6 +274,7 @@ func TestTerminalNoticePublicationRefusals(t *testing.T) {
 // Gate refusal is checked on genuinely empty, interval-qualified input. Each
 // nearby restored-authority control delivers once without losing pending mail.
 func TestTerminalFreshAuthorityGates(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"foreign-lease", "missing-lease", "expired-lease", "binding-owner", "rate"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -331,6 +335,7 @@ func TestTerminalFreshAuthorityGates(t *testing.T) {
 // Partial receipt cannot reset an uncertain attempt's retry fence or reuse its
 // original count. Rendered empty input does not prove whether it was accepted.
 func TestTerminalUntypedPartialReceipt(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	old := f.mail()
 	f.mail()

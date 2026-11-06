@@ -97,6 +97,7 @@ func refreshReservation(path string) config.Notification {
 // lost-authority variant; historical completed/refused-send fields are safe.
 // The exec spy also proves both lock scopes and state/mailbox preservation.
 func TestTerminalRefreshSafePoint(t *testing.T) {
+	isolateBindTest(t)
 	cases := []struct {
 		name   string
 		change func(*config.State)
@@ -187,6 +188,7 @@ func TestTerminalRefreshSafePoint(t *testing.T) {
 // directories, symlinks, FIFOs, foreign ownership and disappearance before exec.
 // Each refusal is paired with the same complete native positive image.
 func TestTerminalRefreshFiles(t *testing.T) {
+	isolateBindTest(t)
 	path, raw := refreshExecutable(t)
 	positive, err := observeTerminalExecutable(path)
 	if err != nil {
@@ -264,6 +266,7 @@ func TestTerminalRefreshFiles(t *testing.T) {
 // Failed exec preserves old state and CLOEXEC, logs only a fixed reason, and
 // retries once only after a new fingerprint (including same-inode byte change).
 func TestTerminalRefreshFailureAndStability(t *testing.T) {
+	isolateBindTest(t)
 	a, s, e := refreshApp(t)
 	path, raw := refreshExecutable(t)
 	stamp, err := observeTerminalExecutable(path)
@@ -349,6 +352,7 @@ func TestTerminalRefreshFailureAndStability(t *testing.T) {
 // Construction pins only the launch path; the first poll compares the loaded
 // image to it, and subsequent unchanged polls cannot form an exec loop.
 func TestTerminalRefreshCurrentImage(t *testing.T) {
+	isolateBindTest(t)
 	r := newTerminalRefresh(context.Background())
 	if r.path == "" || r.current != (terminalExecutable{}) {
 		t.Fatal("launch path missing or eager image inspection")
@@ -374,6 +378,7 @@ func TestTerminalRefreshCurrentImage(t *testing.T) {
 // Unchanged current and failed images skip every full parse/hash; changing
 // valid mode metadata triggers full observations and the final pre-exec check.
 func TestTerminalRefreshMetadataShortcut(t *testing.T) {
+	isolateBindTest(t)
 	for _, baseline := range []string{"current", "failed"} {
 		t.Run(baseline, func(t *testing.T) {
 			a, s, _ := refreshApp(t)
@@ -426,6 +431,7 @@ func TestTerminalRefreshMetadataShortcut(t *testing.T) {
 // poll still reaches the exec spy (protocol success is stubbed). An unrelated
 // argv[0] must not become an upgrade path.
 func TestTerminalRefreshEarlyRetarget(t *testing.T) {
+	isolateBindTest(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -497,6 +503,7 @@ func TestTerminalRefreshEarlyRetarget(t *testing.T) {
 // Symlink target replacement and retargeting exec the resolved native image;
 // missing, truncated and nonexecutable targets never exec or change state.
 func TestTerminalRefreshSymlinkTargets(t *testing.T) {
+	isolateBindTest(t)
 	for _, change := range []string{"replace-target", "retarget", "missing", "truncated", "nonexec"} {
 		t.Run(change, func(t *testing.T) {
 			a, s, e := refreshApp(t)

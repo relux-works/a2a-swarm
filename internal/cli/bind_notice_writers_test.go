@@ -19,6 +19,7 @@ import (
 // Same-identity production hook/wait writers carry OwnNotice on the same event.
 // Their uncertain acknowledgements must not bypass publication reconciliation.
 func TestNoticeSharedWriterUncertainty(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"hook-cancelled", "wait-cancelled", "hook-acknowledged", "wait-acknowledged", "hook-not-applied", "wait-not-applied", "hook-error", "wait-error"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -155,6 +156,7 @@ func TestNoticeSharedWriterUncertainty(t *testing.T) {
 // A successful same-identity liveness PUT acknowledges OwnNotice too. Retaining
 // uncertainty after that acknowledgement must not induce a redundant notice PUT.
 func TestNoticeSharedWriterAcknowledgement(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"hook-after-cancel", "wait-after-cancel", "hook-certain-control", "wait-certain-control"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -255,6 +257,7 @@ func TestNoticeSharedWriterAcknowledgement(t *testing.T) {
 // Reload actual persisted state in a new session; refused/no-liveness paths
 // must retain unresolved knowledge, so the next eligible change reconciles once.
 func TestNoticeSharedUncertaintyPersistence(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"new-session", "missing", "stale", "stopped", "foreign"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -373,6 +376,7 @@ func (f noticeWriterTransport) RoundTrip(r *http.Request) (*http.Response, error
 // Pre-send failures preserve a real acknowledgement; a possible PUT (even a
 // rejected response) instead requires reconciliation. No static source gate.
 func TestNoticeSharedWriterPreSendFailure(t *testing.T) {
+	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait"} {
 		for _, failure := range []string{"cancelled", "resolve", "schema"} {
 			t.Run(writer+"/"+failure, func(t *testing.T) {
@@ -461,6 +465,7 @@ func TestNoticeSharedWriterPreSendFailure(t *testing.T) {
 // The identity owns uncertainty even when no terminal binding exists. A new
 // binding must reconcile once, then acknowledged equality returns to zero HTTP.
 func TestNoticeSharedKnowledgeWithoutBinding(t *testing.T) {
+	isolateBindTest(t)
 	e, a, s := noticeDeadlineFixture(t)
 	a.publishTerminalNotice(context.Background(), s, "deadline")
 	st := e.state("alice")

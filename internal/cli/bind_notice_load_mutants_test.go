@@ -17,6 +17,7 @@ import (
 // Each plant keeps its gate, admitting a narrower forbidden class. Behavioral
 // assertions, never source tokens, timeouts, setup failures or skips, earn kills.
 func TestNoticePublicationLoadNarrowingPlants(t *testing.T) {
+	isolateBindTest(t)
 	if os.Getenv("A2A_RUN_NOTICE_LOAD_MUTANTS") != "1" {
 		t.Skip("opt-in synthetic publication plants")
 	}

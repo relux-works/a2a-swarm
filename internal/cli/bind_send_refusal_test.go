@@ -18,6 +18,7 @@ import (
 // unreceived and no draft is credited as submitted. Raw state bytes also exclude
 // injected text before the sanitizing reload. No terminal is inspected.
 func TestTerminalSendRefusalDiagnostic(t *testing.T) {
+	isolateBindTest(t)
 	for _, disposition := range []tmuxwake.SendDisposition{tmuxwake.SendDraft, tmuxwake.SendRefused} {
 		for _, reason := range []tmuxwake.SendReason{tmuxwake.ReasonKeyWidthChanged, tmuxwake.ReasonBusyOrDialog, "PRIVATE_SCREEN\nSECRET"} {
 			t.Run(string(disposition)+"/"+string(reason), func(t *testing.T) {
@@ -94,6 +95,7 @@ func TestTerminalSendRefusalDiagnostic(t *testing.T) {
 // draft/refused effects. A writable log is the positive control for each result.
 // This exercises the completion boundary, not a live terminal poll.
 func TestTerminalSendRefusalLogFailureDoesNotFailCompletion(t *testing.T) {
+	isolateBindTest(t)
 	for _, disposition := range []tmuxwake.SendDisposition{tmuxwake.SendDraft, tmuxwake.SendRefused} {
 		for _, blockedLog := range []bool{false, true} {
 			t.Run(string(disposition)+map[bool]string{false: "/writable", true: "/blocked"}[blockedLog], func(t *testing.T) {

@@ -59,6 +59,7 @@ func init() {
 // The hidden protocol invocation emits only the fixed token without consulting
 // session config, state, locks, lease or network (Getenv would fail the test).
 func TestTerminalConsumerProtocol(t *testing.T) {
+	isolateBindTest(t)
 	var out bytes.Buffer
 	a := &App{Stdout: &out, Getenv: func(string) string { t.Fatal("protocol consulted environment/session"); return "" }}
 	if code := a.Run(context.Background(), []string{"bind", "--consumer-protocol"}); code != ExitOK || out.String() != consumerProtocol {
@@ -70,6 +71,7 @@ func TestTerminalConsumerProtocol(t *testing.T) {
 // reach exec and stay fenced across minutes; a good token does. Each is probed
 // once with the allowlisted environment, leaving state/lease unchanged.
 func TestTerminalRefreshProtocolCandidates(t *testing.T) {
+	isolateBindTest(t)
 	_, raw := refreshExecutable(t)
 	for _, kind := range []string{"old", "nonzero", "wrong", "extra", "stderr", "good"} {
 		t.Run(kind, func(t *testing.T) {
@@ -148,6 +150,7 @@ func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 // three attempts. The clock seam proves no retry at any poll before 60s and one
 // fixed transient log across retries; a failed Start has the same retry policy.
 func TestTerminalRefreshProtocolRetry(t *testing.T) {
+	isolateBindTest(t)
 	_, raw := refreshExecutable(t)
 	for _, kind := range []string{"slow", "hang", "start"} {
 		t.Run(kind, func(t *testing.T) {
@@ -238,6 +241,7 @@ func TestTerminalRefreshProtocolRetry(t *testing.T) {
 // An unsafe stable candidate costs two initial full observations, then neither
 // hashing nor safety checks recur within 30s. A safe state is admitted at 30s.
 func TestTerminalRefreshPendingCost(t *testing.T) {
+	isolateBindTest(t)
 	a, s, _ := refreshApp(t)
 	path, _ := refreshExecutable(t)
 	now := time.Now()
@@ -279,6 +283,7 @@ func TestTerminalRefreshPendingCost(t *testing.T) {
 // Even a deliberately failing observation seam is reached only after the first
 // delivery cycle has synced and dispatched; construction only pins the path.
 func TestTerminalRefreshLazyObservation(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.a.Now = time.Now
 	f.update(func(st *config.State) { st.HooksPaused = true })

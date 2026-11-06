@@ -59,6 +59,7 @@ func schemaNotice(kind string) config.OwnNoticeObservation {
 // consumes it. Validation, not escaping alone, must prevent malformed facts
 // from becoming fresh suspected telemetry or forged output rows.
 func TestNoticePeerReadSchema(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"true", "legacy", "false", "unknown", "offset-zero", "newline-since", "newline-observed", "control-observed", "reason", "missing-since", "missing-observed", "offset", "before-since", "false-history", "unknown-no-reason", "unknown-no-since"} {
 		t.Run(kind, func(t *testing.T) {
 			e, _ := world(t)
@@ -113,6 +114,7 @@ func TestNoticePeerReadSchema(t *testing.T) {
 // refused by both own publication routes before Matrix writes. Valid values
 // retain their exact UTC spelling and all heartbeat/other fields.
 func TestNoticeLocalSchemaBoundaries(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"true", "legacy", "false", "unknown", "offset-zero", "newline-since", "newline-observed", "reason", "false-history", "missing-observed"} {
 		t.Run(kind, func(t *testing.T) {
 			e, _ := world(t)
@@ -173,6 +175,7 @@ func TestNoticeLocalSchemaBoundaries(t *testing.T) {
 // unknown through the own publisher; remote failure remains unavailable locally.
 // Retained evidence is never given a new observation/heartbeat/first-since.
 func TestNoticeErrorPublication(t *testing.T) {
+	isolateBindTest(t)
 	for _, kind := range []string{"dispatch", "consumer", "publication-failed", "generation"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -259,6 +262,7 @@ func TestNoticeErrorPublication(t *testing.T) {
 // Generated suspicion uses one instant for first-since and observation, even
 // with a clock advancing between calls; production dispatch must publish it.
 func TestNoticeAdvancingClockPublication(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.e.as("alice", "status", "init").ok(t)
 	f.e.as("alice", statusArgs("working")...).ok(t)

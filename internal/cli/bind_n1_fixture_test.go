@@ -291,6 +291,7 @@ func n1Quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'
 // then both replacement writes and a new real consumer observation. Global ps
 // enumeration is replaced by the sealed ledger; all claimed scope is fixture-only.
 func TestTerminalNoticeReplacementInterleaving(t *testing.T) {
+	isolateBindTest(t)
 	for _, leaf := range []string{"pin-after-load", "ack-after-load", "unchanged"} {
 		t.Run(leaf, func(t *testing.T) { n1Witness(t, leaf, false) })
 	}
@@ -300,6 +301,7 @@ func TestTerminalNoticeReplacementInterleaving(t *testing.T) {
 // with zero replacement/send effects. The nearby same-image row must pass the
 // same guard and the full witness. Neither leaf has execution admission in R4.
 func TestTerminalNoticeLedgerGuard(t *testing.T) {
+	isolateBindTest(t)
 	for _, leaf := range []string{"valid", "owned-conflict"} {
 		t.Run(leaf, func(t *testing.T) { n1Witness(t, "unchanged", leaf == "owned-conflict") })
 	}

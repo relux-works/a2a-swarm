@@ -14,6 +14,7 @@ import (
 // load/guard/death/startup path: no owned consumer is stopped here. The full
 // owned-consumer interleaving and its old-snapshot plant require separate admission.
 func TestNoticeReplacementCurrentState(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"pin-after-load", "ack-after-load", "unchanged"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, room := reportFixture(t)
@@ -87,6 +88,7 @@ func TestNoticeReplacementCurrentState(t *testing.T) {
 // PID/birth; a different or absent generation refuses without writing anything.
 // This is a state-writer control, not a child-process lifecycle test.
 func TestNoticeConsumerMetadata(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"same", "different-generation", "absent"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, _ := reportFixture(t)

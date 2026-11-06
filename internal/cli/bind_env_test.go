@@ -16,6 +16,7 @@ import (
 // id replace inherited values exactly once. Pure function; the spawn path is
 // covered by TestBindDetachedLifecycle.
 func TestDetachedConsumerEnv(t *testing.T) {
+	isolateBindTest(t)
 	inherited := []string{
 		"HOME=/home/alice", "PATH=/usr/bin:/bin", "TMPDIR=/tmp/x", "USER=alice", "LANG=C.UTF-8", "LC_ALL=C", "LC_CTYPE=UTF-8", "TZ=UTC",
 		"HTTPS_PROXY=http://proxy:3128", "no_proxy=localhost", "SSL_CERT_FILE=/etc/ca.pem",
@@ -48,6 +49,7 @@ func TestDetachedConsumerEnv(t *testing.T) {
 // Proves an empty parent environment still yields the explicit selectors, so
 // the consumer never falls back to an ambient config root or session.
 func TestDetachedConsumerEnvEmpty(t *testing.T) {
+	isolateBindTest(t)
 	got := detachedConsumerEnv(nil, "/cfg", "s")
 	if want := []string{"A2A_CONFIG_DIR=/cfg", "A2A_SESSION_ID=s"}; !slices.Equal(got, want) {
 		t.Fatalf("got %q want %q", got, want)

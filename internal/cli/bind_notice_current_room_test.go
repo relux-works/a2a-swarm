@@ -23,6 +23,7 @@ import (
 // Alias replacement is local synthetic server administration. Both rooms stay
 // joined/writable. No independent remote writer races an own-status PUT.
 func TestNoticeCurrentRoomRotation(t *testing.T) {
+	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait", "notice"} {
 		for _, code := range []string{"silent", "M_NOT_FOUND", "M_FORBIDDEN", "M_UNKNOWN", "fresh-control"} {
 			t.Run(writer+"/"+code, func(t *testing.T) {
@@ -151,6 +152,7 @@ func TestNoticeCurrentRoomRotation(t *testing.T) {
 // Liveness writers must also resolve the current alias for their actual write;
 // equal notice content does not suppress a real hook/wait heartbeat.
 func TestNoticeCurrentRoomSiblingWriters(t *testing.T) {
+	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait"} {
 		t.Run(writer, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
@@ -243,6 +245,7 @@ func TestNoticeCurrentRoomSiblingWriters(t *testing.T) {
 // that error and 403/M_FORBIDDEN must remain pre-send, preserving known OR
 // uncertain prior knowledge exactly, with no same-cycle retry.
 func TestNoticeCurrentRoomPreSendKnowledge(t *testing.T) {
+	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait", "notice"} {
 		for _, uncertain := range []bool{false, true} {
 			for _, code := range []string{"M_NOT_FOUND", "M_FORBIDDEN", "M_UNKNOWN"} {
@@ -341,6 +344,7 @@ func TestNoticeCurrentRoomPreSendKnowledge(t *testing.T) {
 // Removed cache keys from a rejected candidate are harmless obsolete metadata:
 // production LoadState tolerates them, and UpdateState drops them on save.
 func TestNoticeObsoleteRoomMetadata(t *testing.T) {
+	isolateBindTest(t)
 	_, a, s := noticeDeadlineFixture(t)
 	raw, err := os.ReadFile(s.paths.StateFile(s.name))
 	if err != nil {
@@ -377,6 +381,7 @@ func TestNoticeObsoleteRoomMetadata(t *testing.T) {
 // Every sibling's resolver and PUT inherit the same capped deadline, including
 // lock wait. The original real-default10s notice stall assertions stay intact.
 func TestNoticeCurrentRoomSiblingBudget(t *testing.T) {
+	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait"} {
 		for _, kind := range []string{"earlier", "later", "lock"} {
 			t.Run(writer+"/"+kind, func(t *testing.T) {

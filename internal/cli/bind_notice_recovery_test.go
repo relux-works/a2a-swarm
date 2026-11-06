@@ -13,6 +13,7 @@ import (
 // and forbids stale reports at session/target/manual/unbind/episode boundaries.
 // This does not exercise a process, a terminal or the real replacement lifecycle.
 func TestTerminalNoticeEpisodeCarryBoundaries(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"same", "unknown", "drained", "no-prior", "foreign-host", "invalid-observation", "different-session", "different-target", "different-owner", "manual", "unbound", "cleared", "new-episode"} {
 		t.Run(mode, func(t *testing.T) {
 			target := tmuxwake.Target{Socket: "/synthetic/socket", SocketID: "pin", Pane: "%1", Runtime: "codex", OwnerPID: 123, OwnerBirth: "birth"}
@@ -70,6 +71,7 @@ func TestTerminalNoticeEpisodeCarryBoundaries(t *testing.T) {
 // wake reservation. Exact known input is a positive detection/report control,
 // not an automatic recovery positive. Fresh Send controls are exercised nearby.
 func TestTerminalNoticeManualReviewMatrix(t *testing.T) {
+	isolateBindTest(t)
 	for _, layout := range []string{"codex", "claude-legacy", "claude-named"} {
 		for _, variant := range []string{"exact", "partial", "suffix", "human", "busy", "unknown", "dim", "foreign-generation", "changed-target"} {
 			t.Run(layout+"/"+variant, func(t *testing.T) {
@@ -148,6 +150,7 @@ func TestTerminalNoticeManualReviewMatrix(t *testing.T) {
 // suspicion starts a new episode without inheriting the old transaction. This
 // is a state-writer test; terminal classification is exercised by the matrix.
 func TestTerminalNoticeReportClearedEpisode(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.mail()
 	f.control(map[string]any{"defer": true})

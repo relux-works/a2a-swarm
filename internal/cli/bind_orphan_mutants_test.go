@@ -18,6 +18,7 @@ import (
 // narrower forbidden class. Compile/setup/timeout failures are never kills;
 // the specified failing assertion and nearby valid positive must both run.
 func TestTerminalOrphanNarrowingPlants(t *testing.T) {
+	isolateBindTest(t)
 	if os.Getenv("A2A_RUN_TERMINAL_ORPHAN_MUTANTS") != "1" {
 		t.Skip("opt-in bounded source controls")
 	}

@@ -29,12 +29,14 @@ import (
 // The child advances only the refresh throttle clock; real safety, probing,
 // exec and delivery clocks remain intact. PendingCost checks the 30s boundary.
 func TestTerminalRefreshDetachedLifecycle(t *testing.T) {
+	isolateBindTest(t)
 	testTerminalRefreshDetachedLifecycle(t, "direct")
 }
 
 // Real consumers launched through a symlink refresh after atomic target
 // replacement or symlink retargeting, retaining the lifecycle guarantees above.
 func TestTerminalRefreshSymlinkLifecycle(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"replace-target", "retarget"} {
 		t.Run(mode, func(t *testing.T) { testTerminalRefreshDetachedLifecycle(t, mode) })
 	}
@@ -294,6 +296,7 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 // No refresh callback is observed while that command blocks. After release,
 // the callback observes a completed journal and the notice submits once.
 func TestTerminalRefreshWaitsForSend(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.a.Now = time.Now
 	id := f.mail()
@@ -376,6 +379,7 @@ func TestTerminalRefreshWaitsForSend(t *testing.T) {
 // A persistent Matrix sync error does not strand an otherwise safe old image;
 // the callback reaches exec only after bounded error handling releases locks.
 func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.a.Now = time.Now
 	birth, err := tmuxwake.Birth(context.Background(), os.Getpid())
@@ -412,12 +416,14 @@ func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
 // A failed exec returns to the same consumer loop: retained mail is delivered
 // afterwards, while the unchanged failed candidate is attempted only once.
 func TestTerminalRefreshExecFailureContinues(t *testing.T) {
+	isolateBindTest(t)
 	testTerminalRefreshRefusalContinues(t, false)
 }
 
 // An old native candidate rejects the hidden flag: no exec occurs, one probe
 // refusal is logged, and the same consumer delivers retained mail afterwards.
 func TestTerminalRefreshOldCandidateContinues(t *testing.T) {
+	isolateBindTest(t)
 	testTerminalRefreshRefusalContinues(t, true)
 }
 

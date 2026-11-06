@@ -12,6 +12,7 @@ import (
 // IDs/Notice. A later nonempty observation is clear, with no further journal changes.
 // SendResult is supplied: no physical submission, draft, Enter or erase is exercised.
 func TestNoticeSettledAttemptDraft(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"submitted", "fresh-refused"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, _ := reportFixture(t)

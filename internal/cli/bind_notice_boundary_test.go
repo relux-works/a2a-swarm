@@ -15,6 +15,7 @@ import (
 // rendered cells/cursors cannot authorize Enter; every draft stays unchanged.
 // The styled renderer is synthetic and does not establish a field trigger.
 func TestTerminalNoticeRenderedSpaceBoundary(t *testing.T) {
+	isolateBindTest(t)
 	for _, layout := range []string{"codex", "claude-legacy", "claude-named"} {
 		for _, variant := range []string{"exact", "space-left", "two-spaces-left", "nonspace-left", "space-end"} {
 			t.Run(layout+"/"+variant, func(t *testing.T) {

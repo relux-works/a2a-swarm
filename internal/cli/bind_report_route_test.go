@@ -52,6 +52,7 @@ func reportFixture(t *testing.T) (*env, *App, *session, string) {
 // unknown routes send nothing and remain locally explicit. Global membership
 // alone grants nothing. All services and credentials here are fixture-local.
 func TestNoticeOwnRoomRoute(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"joined", "missing", "nonmember", "denied", "unknown", "global-only", "global-config", "missing-alias", "foreign-metadata"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, room := reportFixture(t)
@@ -166,6 +167,7 @@ func TestNoticeOwnRoomRoute(t *testing.T) {
 // metadata changes or permission disappears. Restoring the original route
 // reuses its immutable pin; deduplication here has the fake server's lifetime.
 func TestNoticeOwnRoomAmbiguousPin(t *testing.T) {
+	isolateBindTest(t)
 	for _, mode := range []string{"changed", "missing", "denied"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, room := reportFixture(t)
@@ -245,6 +247,7 @@ func TestNoticeOwnRoomAmbiguousPin(t *testing.T) {
 // and return no consumer error. Dispatch/runTerminal wiring is inspected statically;
 // this test cannot detect a caller bypassing the helper. No terminal/process probe.
 func TestNoticeReportCompletionIsolation(t *testing.T) {
+	isolateBindTest(t)
 	for _, failed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "failure"}[failed], func(t *testing.T) {
 			e, a, s, _ := reportFixture(t)
@@ -267,6 +270,7 @@ func TestNoticeReportCompletionIsolation(t *testing.T) {
 // input unknown; typed and empty neighbours yield suspicion and clear. This does
 // not exercise manual bind's journal-cloning/process boundary or terminal input.
 func TestNoticeRetainedAttemptUncertainty(t *testing.T) {
+	isolateBindTest(t)
 	for _, edge := range []string{"first", "session-start"} {
 		for _, mode := range []string{"partial", "untyped", "untyped-receipted", "typed", "empty", "no-attempt"} {
 			t.Run(edge+"/"+mode, func(t *testing.T) {
@@ -337,6 +341,7 @@ func TestNoticeRetainedAttemptUncertainty(t *testing.T) {
 
 // The closed status vocabulary includes idle, pending, published and invalid.
 func TestNoticeReportStatusVocabulary(t *testing.T) {
+	isolateBindTest(t)
 	for _, status := range []string{"pending", "published", "invalid", "incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed", "unavailable: system incident report failed"} {
 		b := &config.TerminalBinding{NoticeReport: &config.NoticeReport{Outcome: status}}
 		want := status
@@ -359,6 +364,7 @@ func TestNoticeReportStatusVocabulary(t *testing.T) {
 // Exact threshold age respects the accepted lowercase/fraction grammar; a
 // just-before observation cannot send, and content preparation records now.
 func TestNoticeReportThresholdGrammar(t *testing.T) {
+	isolateBindTest(t)
 	for _, since := range []string{"2026-11-01t11:50:00z", "2026-11-01T11:50:00.0000000001Z", "2026-11-01T11:49:59.9999999999Z"} {
 		t.Run(since, func(t *testing.T) {
 			e, a, s, room := reportFixture(t)
@@ -395,6 +401,7 @@ func TestNoticeReportThresholdGrammar(t *testing.T) {
 // sends nothing. Restoring just its alias permits one fake-server-applied report.
 // This covers an empty event, independently of the missing-event error path.
 func TestNoticeOwnRoomEmptyAlias(t *testing.T) {
+	isolateBindTest(t)
 	t.Run("empty-content", func(t *testing.T) {
 		e, a, s, room := reportFixture(t)
 		e.hs.mu.Lock()

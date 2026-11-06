@@ -82,6 +82,7 @@ func newOrphanDispatchFixture(t *testing.T) *orphanDispatchFixture {
 // A caller-supplied synthetic renderer changes private fixture cells only.
 func newOrphanDispatchFixtureScript(t *testing.T, source string) *orphanDispatchFixture {
 	t.Helper()
+	isolateBindTest(t)
 	for _, tool := range []string{"tmux", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " unavailable; private dispatch lane unrun")
@@ -215,6 +216,7 @@ func (f *orphanDispatchFixture) binding() *config.TerminalBinding { return f.e.s
 // Manual fixture clearing precedes one qualified current-mail wake; the
 // nonempty orphan is never automatically cleared under keeper o-JKabzo.
 func TestTerminalDispatchReceiptedOrphan(t *testing.T) {
+	isolateBindTest(t)
 	for _, neighbor := range []string{"new-mail", "no-new-then-later", "partial-pruning"} {
 		t.Run(neighbor, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -283,6 +285,7 @@ func TestTerminalDispatchReceiptedOrphan(t *testing.T) {
 // A first idle glimpse, even repeated at the same instant, cannot type or
 // reserve an attempt. Busy/unknown observations break qualification.
 func TestTerminalDispatchIdleQualification(t *testing.T) {
+	isolateBindTest(t)
 	for _, reset := range []string{"none", "busy", "unknown", "draft", "paused", "manual", "native", "daemon", "session", "target"} {
 		t.Run(reset, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -356,6 +359,7 @@ func TestTerminalDispatchIdleQualification(t *testing.T) {
 // exact-owned positive is now a no-keystroke safety control (keeper o-JKabzo).
 // Journals never authorize erase/Enter; pending mail and reservations remain.
 func TestTerminalDispatchOrphanOwnership(t *testing.T) {
+	isolateBindTest(t)
 	for _, name := range []string{"valid", "no-journal", "untyped", "count", "notice", "prefix", "suffix", "dim", "cursor", "unknown", "busy", "owner", "owner-birth", "binding-owner", "pane", "pane-birth", "socket", "host", "stopped", "generation", "paused", "manual", "native", "rate", "missing-lease", "foreign-lease", "expired-lease"} {
 		t.Run(name, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -464,6 +468,7 @@ func TestTerminalDispatchOrphanOwnership(t *testing.T) {
 // the daemon never observes the paused screen. Public pause commands own this
 // reset; a failed authority read/interruption is likewise never an idle sample.
 func TestTerminalDispatchQualificationInterruption(t *testing.T) {
+	isolateBindTest(t)
 	for _, name := range []string{"pause-pulse", "manual-pulse", "cancelled", "generation"} {
 		t.Run(name, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
@@ -505,6 +510,7 @@ func TestTerminalDispatchQualificationInterruption(t *testing.T) {
 // was receipted. A real sync error must reset the observed idle continuity;
 // recovery uses the same fake Matrix and private tmux as the dispatch tests.
 func TestTerminalRunOrphanRestartAndSyncRetry(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.mail()
 	f.control(map[string]any{"defer": true})
@@ -552,6 +558,7 @@ func TestTerminalRunOrphanRestartAndSyncRetry(t *testing.T) {
 // journal cannot revive its pre-failure idle sample: the running consumer must
 // write a new first observation before reserving or typing anything.
 func TestTerminalRunAuthorityReadFailure(t *testing.T) {
+	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
 	f.mail()
 	f.a.Now = time.Now
