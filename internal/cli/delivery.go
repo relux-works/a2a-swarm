@@ -122,8 +122,9 @@ type batch struct {
 
 // deliveryFilter is the --room/--all selection of wait and watch.
 type deliveryFilter struct {
-	rooms map[string]bool // empty = every joined room
-	all   bool
+	rooms      map[string]bool // empty = every joined room
+	all        bool
+	predicates deliveryPredicates
 }
 
 // allRooms is the set of rooms whose every message is relevant (--all).
@@ -142,7 +143,7 @@ func (f deliveryFilter) shows(e config.MailEntry) bool {
 	if e.Rel == string(relAll) && !f.all {
 		return false
 	}
-	return len(f.rooms) == 0 || f.rooms[e.Room]
+	return (len(f.rooms) == 0 || f.rooms[e.Room]) && f.predicates.matches(e)
 }
 
 func (s *session) resolveFilter(ctx context.Context, rooms []string, all bool) (deliveryFilter, error) {
@@ -438,6 +439,7 @@ func (a *App) showNew(ctx context.Context, s *session, f deliveryFilter, asJSON 
 // cmdWait: a2a wait [--room R ...] [--all] [--timeout 25m|0] [--json]
 func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	fs := newFlagSet("wait")
+	predicateFlags := addDeliveryPredicateFlags(fs)
 	var rooms stringList
 	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
 	timeout := fs.Duration("timeout", DefaultWaitTimeout, "how long to wait (0 = until something arrives)")
@@ -460,6 +462,10 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	}
 	if *timeout < 0 {
 		return usagef("--timeout must not be negative (0 waits until something arrives)")
+	}
+	predicates, err := predicateFlags.check()
+	if err != nil {
+		return err
 	}
 	profile := config.AgentStatus{State: *status, HeartbeatEvery: heartbeat.String(), Runtime: *runtime, Hooks: *hooks, Doorbell: "armed", Product: *product}
 	if *status != "" {
@@ -520,6 +526,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	if err != nil {
 		return err
 	}
+	filter.predicates = predicates.forSession(s)
 	st, err := waitRetry(ctx, s, deadline, func() (config.State, error) {
 		st, _, err := s.startDelivery(ctx, a.Now())
 		return st, err
@@ -639,6 +646,7 @@ func cmdAck(ctx context.Context, a *App, args []string) error {
 // after the write loses nothing, `a2a inbox` still prints the entries.
 func cmdWatch(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("watch")
+	predicateFlags := addDeliveryPredicateFlags(fs)
 	var rooms stringList
 	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
 	asJSON := fs.Bool("json", false, "one JSON object per event")
@@ -652,6 +660,10 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	}
 	if *all && len(rooms) == 0 {
 		return usagef("--all needs at least one --room")
+	}
+	predicates, err := predicateFlags.check()
+	if err != nil {
+		return err
 	}
 	s, err := a.session()
 	if err != nil {
@@ -667,6 +679,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	filter.predicates = predicates.forSession(s)
 	stopped := func(err error) error {
 		if ctx.Err() != nil {
 			return nil

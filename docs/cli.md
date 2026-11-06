@@ -1084,6 +1084,48 @@ in other rooms are still persisted (the next wait without that filter, or `inbox
 this wait syncs; for durable room-wide delivery that every consumer sees, use `a2a subscribe --room R --all-events`.
 Excerpts are one line, stripped of control characters, and never longer than 200 characters.
 
+Both `wait` and `watch` accept delivery predicates. Every selected predicate must
+match (AND), in addition to the existing room/relevance selection:
+
+- `--match-text REGEX`: Go regexp search over the full message body, before
+  display sanitization or truncation and with protocol header lines stripped
+  when structured a2a metadata is present. Matching is case-sensitive; use `^`
+  and `$` for anchors, `(?i)` for case folding, `(?s)` for dot to include newlines,
+  or `(?m)` for line anchors. Structured metadata is not searched.
+- `--from A,B`: any listed actual Matrix sender (OR). Names and `@name` resolve
+  on the selected identity's server, as in subscription selectors; full Matrix
+  IDs match exactly, including their server. The peer's a2a `from` header does
+  not establish the sender, including on projection entries.
+- `--kind k1,k2`: any listed protocol kind (OR), from successfully decoded a2a
+  metadata. Messages without a kind or with malformed metadata do not match.
+- `--to-me-only`: structured `to` names this identity, or a full-ID mention
+  matches the existing `m.mentions`/body addressing rules. Subscriptions,
+  followed threads and `--all` alone do not satisfy this predicate.
+- Optional `"wait_keywords": ["LANE-7", "TASK-56"]` in the selected identity's
+  credential metadata: any listed literal, case-sensitive whole token in the
+  same message text, or an exact structured subject (OR). Token boundaries use
+  the existing subscription subject rules: `TASK-56` does not match `TASK-560`
+  or `xTASK-56`. This predicate also uses AND with all CLI predicates; it does
+  not create subscriptions or widen relevance.
+
+Omit `wait_keywords` to disable it. A present list must be nonempty and contain
+only strings of 1–128 ASCII letters, digits or `# . _ / : @ -` (without spaces).
+Null, empty lists and malformed entries refuse before delivery effects. Each
+string-valued predicate flag may appear once; empty values, empty comma-list
+entries, unknown kinds, invalid senders and invalid regexps are usage errors
+before leases, liveness writes or HTTP. Whitespace around comma-list entries
+is ignored. These settings are read at command start and apply to `wait`/`watch`
+only; hooks, bound consumers and `inbox` retain their existing behavior.
+
+Filtering does not change ingestion or receipts. Rejected message entries
+remain pending and unshown after the cursor advances; a later less restrictive
+wait/watch can show them and `inbox` can still print and receipt them. Matching
+delivery marks only its printed entries shown and introduces no ACK. Invites
+and history-gap control entries retain their existing delivery behavior,
+including the invite exception to `--room`; message predicates do not suppress
+those control entries. No wake-policy, retry/backoff or subscription-expiry
+policy is changed.
+
 For a bound session, do not start a parallel `wait` or `watch`: it uses its supervised consumer already. A live terminal binding refuses both
 with `ErrWaitWhileBound`, identifying the live binding and directing you to your own `a2a bind status` and `a2a inbox`. The refusal does not
 stop the consumer or change the binding or mailbox. Only an unbound Claude fallback uses a background waiter for idle wake; a waiter alone

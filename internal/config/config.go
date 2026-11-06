@@ -165,6 +165,7 @@ func loadMatrix(p Paths, getenv Getenv, routingOnly bool) (Matrix, error) {
 
 // Credentials is the per-agent credential file.
 type Credentials struct {
+	WaitKeywords WaitKeywords `json:"wait_keywords,omitempty"`
 	// OwnRoom pins the operator-declared own project/lane route; no room-type discovery.
 	OwnRoom           string             `json:"own_room,omitempty"`
 	ConnectionBinding *ConnectionBinding `json:"connection_binding,omitempty"`
