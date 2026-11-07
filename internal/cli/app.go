@@ -73,8 +73,8 @@ type App struct {
 	beforeDeliver func()
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
-	// exe resolves this binary's path for `hook install` (nil: os.Executable).
-	exe func() (string, error)
+	// hookSelection replaces executable selection in installer merge tests only.
+	hookSelection func(hookExecutableChoice) (hookExecutableSelection, error)
 	// stdinTTY reports whether stdin is an interactive terminal, which --human
 	// requires (nil: stdinIsTerminal on os.Stdin; tests override it).
 	stdinTTY func() bool
@@ -157,7 +157,7 @@ func commands() []command {
 		{"wait", "wait [--room R ...] [--all] [--match-text REGEX] [--from A,B] [--kind k1,k2] [--to-me-only] [--timeout 25m|0] [--json]   block for selected new mailbox entries (acknowledges nothing)", cmdWait},
 		{"watch", "watch [--room R ...] [--all] [--match-text REGEX] [--from A,B] [--kind k1,k2] [--to-me-only] [--json]   stream selected new mailbox entries (acknowledges nothing)", cmdWatch},
 		{"inbox", "inbox [--limit N] [--json]           print unreceived mailbox entries inside an untrusted-data frame, then receipt exactly them (N <= 50)", cmdInbox},
-		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude) and Codex (R=codex) hooks: a doorbell (counts only) in the session", cmdHook},
+		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] [--executable PATH | --installed-command PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude), Codex (R=codex) and Muse (R=muse) hooks: a doorbell (counts only) in the session", cmdHook},
 		{"ack", "ack <id...>|all-shown               receipt mailbox entries (all-shown: every entry wait/watch printed)", cmdAck},
 		{"mute", "mute <room> --topic X                 suppress thread replies and room subscriptions (to/mentions/from still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},

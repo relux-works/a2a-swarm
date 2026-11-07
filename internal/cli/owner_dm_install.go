@@ -53,7 +53,7 @@ func ownerMergeDenials(root *jsonObject, install bool) error {
 
 const ownerRulesHeader = "# a2a owner-dm terminal fallback: managed by a2a hook install\n"
 
-func ownerCodexRules(path, exe, name string, install bool) error {
+func ownerCodexRules(path, exe, name string, install bool, aliases ...string) error {
 	rules := filepath.Join(filepath.Dir(path), "rules", "a2a-owner-dm.rules")
 	old, mode, err := readSettings(rules)
 	if err != nil {
@@ -71,6 +71,11 @@ func ownerCodexRules(path, exe, name string, install bool) error {
 	var b strings.Builder
 	b.WriteString(ownerRulesHeader)
 	binaries := []string{exe, "a2a", "bin/a2a", "./bin/a2a"}
+	for _, alias := range aliases {
+		if alias != "" && !contains(binaries, alias) {
+			binaries = append(binaries, alias)
+		}
+	}
 	for _, action := range []string{"ensure", "set", "unset"} {
 		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"owner-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use owner-dm bind/unbind --event or status.\")\n", marshalNoEscape(binaries), action)
 		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"--as\", %q, \"owner-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use owner-dm bind/unbind --event or status.\")\n", marshalNoEscape(binaries), name, action)
