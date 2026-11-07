@@ -358,7 +358,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 
 func runBoundChild(ctx context.Context, a *App, generation string, inherited int) error {
 	reason := "startup unavailable"
-	// Ordinary credential refusals historically returned before exit logging.
+	// Ordinary startup refusals historically returned before exit logging.
 	// Re-exec owns a live binding already, so its startup always logs an exit.
 	logExit := inherited != 0
 	defer func() {
@@ -370,16 +370,16 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 	if err != nil {
 		return err
 	}
-	logExit = true
-	var ready *os.File
-	if inherited == 0 {
-		ready = os.NewFile(3, "binding-ready")
-		if ready == nil {
-			return errors.New("missing bind startup pipe")
-		}
-		defer ready.Close()
-	}
 	err = a.withBoundChildStartup(ctx, s, generation, inherited, func(s *session, initial config.TerminalBinding, lock *os.File) error {
+		logExit = true
+		var ready *os.File
+		if inherited == 0 {
+			ready = os.NewFile(3, "binding-ready")
+			if ready == nil {
+				return errors.New("missing bind startup pipe")
+			}
+			defer ready.Close()
+		}
 		refresh := newTerminalRefresh(ctx)
 		// Retain the original control transaction around final authority, lease
 		// acquisition and readiness. Credentials may have taken minutes to recover.
@@ -419,6 +419,7 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 		return runErr
 	})
 	if errors.Is(err, errBindingStaleConsumer) {
+		logExit = true
 		reason = "stale consumer"
 	} else if errors.Is(err, errStartupCredentialsUnavailable) {
 		reason = "startup credentials unavailable"

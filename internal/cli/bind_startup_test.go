@@ -262,6 +262,39 @@ func TestBoundStartupOrdinaryCredentialLog(t *testing.T) {
 	}
 }
 
+// Host enrollment preserves the ordinary child's empty log; the same refusal
+// still logs an exit on re-exec. Both leave enrolled state unchanged. The Host
+// gate precedes descriptor adoption, so the re-exec selector needs no live FD.
+func TestBoundStartupHostEnrollmentLog(t *testing.T) {
+	for _, mode := range []string{"ordinary", "re-exec"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			e.agent("alice")
+			before := enrolledHostState(t, e)
+			var log bytes.Buffer
+			a := &App{as: "alice", Getenv: func(k string) string {
+				if k == config.EnvConfigDir {
+					return e.dir
+				}
+				return e.extra[k]
+			}, Now: time.Now, Stderr: &log, Stdout: io.Discard, HTTP: e.hs.srv.Client()}
+			args := []string{"--run-generation", "refresh-gen"}
+			wantLog := ""
+			if mode == "re-exec" {
+				args = append(args, "--consumer-lock-fd", "3")
+				wantLog = "binding exit: startup unavailable\n"
+			}
+			err := a.bindTerminal(context.Background(), args, bindingManual)
+			if !errors.Is(err, config.ErrHostEnrollment) || log.String() != wantLog {
+				t.Fatalf("Host refusal err=%v log=%q want=%q", err, log.String(), wantLog)
+			}
+			if !reflect.DeepEqual(before, e.state("alice")) {
+				t.Fatal("Host refusal changed enrolled state")
+			}
+		})
+	}
+}
+
 // Both a stale generation and unavailable process birth retain the original
 // closed error and exit-log bytes, release the lock, and leave state unchanged.
 func TestBoundStartupStaleConsumerLog(t *testing.T) {
