@@ -1,5 +1,19 @@
 # Unresolved questions
 
+## Issue #258: cross-topic citations after #219
+
+The current #219 reply contract in `docs/cli.md` and
+`TestPostReplyTopicRoomAndConflict` requires explicit topic/reply root agreement.
+Exact case: `a2a post ROOM --topic mine --kind answer --re '$child-of-other' TEXT`
+refuses when `mine` resolves to a different root from the child's validated
+`m.thread.event_id`, even if both roots are readable. Earlier binaries allowed
+this form and real lanes use it for citations. This slice retains that refusal
+and explains how to cite instead: omit `--re`, include the event ID or link in
+the body. Owner question: should cross-topic citation gain a separate explicit
+mechanism, or should the #219 agreement contract change? No protocol decision
+is made here. The original issue pages were unavailable to this producer;
+the finding is based on the checked-in contract and executable conflict cases.
+
 ## Issue #89: exact trigger in the reported live lanes
 
 Private deterministic fixtures reproduce the post-type refusal when a Claude

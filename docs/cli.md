@@ -512,8 +512,8 @@ A thread reply (`m.relates_to {rel_type: m.thread, event_id: <root>}`). The body
 stored structured under `ai.relux.a2a` (`v, type: "message", slug, topic, from, to, at, re, kind, reply_by, trunk, subtype, subject`). Named addressees are
 also listed in `m.mentions.user_ids`. Prints the event id.
 
-An exact `--topic '$root'` is read once through the authenticated selected-room
-`/rooms/{room}/event/{event}` endpoint, without scanning local/room history.
+Without `--re`, an exact `--topic '$root'` is read once through the authenticated
+selected-room `/rooms/{room}/event/{event}` endpoint, without scanning local/room history.
 A root outside the discoverable history window (including one from before a
 member joined) is usable only if the selected server returns that exact message
 event. Server refusal, a malformed/redacted response, or a mismatched event/room
@@ -528,7 +528,8 @@ message; retry with that root ID to ask the server for it. This does not prove
 that the root is readable. No root/reply recursion, native `m.in_reply_to` chain
 traversal, or extra broad-room fallback scan is performed. An ordinary message
 without an `m.thread` relation remains a possible root in its own right; a
-native reply target is never substituted for it. `--re` remains independent.
+native reply target is never substituted for it. With `--re`, the reply resolver
+below selects the thread, and an explicit `--topic` must agree with that root.
 
 This root-resolution boundary does not change thread-follow state, eligibility,
 subscriptions, delivery or inbox state, and does not implement #118's
@@ -558,14 +559,32 @@ requires at most two event reads; it never follows a chain of roots. A child
 can identify an ordinary Matrix root even without an a2a topic marker.
 A standalone message without a topic marker or thread relation is refused.
 
+If that validated child's root read returns an original-endpoint
+404/`M_NOT_FOUND` or 403/`M_FORBIDDEN` (for example, pre-join history withheld by
+the server), the child's `m.thread.event_id` still identifies the thread.
+The outgoing slug comes only from the child's decodable a2a header with a valid
+slug, or is empty; its body and claimed header `topic` do not establish routing.
+An explicit `--topic '$root'` equal to that relation passes without another root
+lookup. An explicit slug must resolve through the existing bounded listing to
+the same root; a matching child header slug alone is insufficient. If the slug
+cannot be resolved, omit `--topic` or supply the exact root ID with `--re`.
+This exception neither reads withheld history nor changes permissions.
+
 Returned event IDs and any returned room IDs must match exactly. An omitted
 room ID is bound by the original authenticated room-scoped endpoint; a room
-alias or a different full room ID is refused. Missing, inaccessible, redacted,
-malformed, redirected or unbound responses, invalid relations, self-links,
+alias or a different full room ID is refused. An unreadable reply target always
+refuses. Apart from the two root-refusal pairs above, failed root reads (including
+transport errors, timeouts and server errors), redacted, malformed, ambiguous,
+redirected or unbound responses, invalid relations, self-links,
 cycles, roots that are themselves related, and conflicting explicit topics
 refuse before sending. There is no fallback to a new topic or another room.
 Body text and a message header's claimed `topic` do not establish a thread.
 These checks establish routing, not the sender's application authority.
+
+`--re` is a real reply in the selected thread. To cite an event in another
+thread while posting in your own topic, omit `--re` and put its event ID or
+link in the message body. `--topic mine --re '$other-thread-child'` refuses
+before sending, even when both threads are readable.
 
 Empty bodies (after trimming), bodies over 32 KiB, and invalid UTF-8 are refused before anything is sent.
 Repeated `--to` values are combined like one comma-separated list. Empty segments

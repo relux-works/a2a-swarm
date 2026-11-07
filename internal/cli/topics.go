@@ -497,7 +497,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 			var selected string
 			selected, _, err = s.resolveTopic(ctx, roomID, label, *topic)
 			if err == nil && selected != root {
-				err = fmt.Errorf("--re target does not belong to --topic in %s", label)
+				err = fmt.Errorf("--re target does not belong to --topic in %s; to cite an event from another thread, omit --re and include its event ID or link in the message body", label)
 			}
 		}
 	} else {
