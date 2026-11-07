@@ -2416,6 +2416,14 @@ the existing keeper/operator recovery path. Do not delete the remote account,
 overwrite an existing item or infer that an ambiguous failure created nothing.
 Registration recovery is intentionally manual in this initial command surface.
 
+For a typed Matrix 4xx response classified as `remote-rejected`, the journal
+also retains `http_status` and, when recognized, `errcode`; the command's error
+includes the same diagnostics (for example, `HTTP 403; M_FORBIDDEN`). Codes are
+limited to a closed registration vocabulary. Unknown codes and malformed error
+bodies retain only the HTTP status; arbitrary server messages and response
+bodies are never retained. Other stages omit these fields. These diagnostics
+do not change rejection classification or authorize another registration attempt.
+
 Legacy transition is likewise explicit: prepare and review a dry-run packet
 with old/new profile, MXID/class/endpoint, item references, state mapping,
 consumer handoff, verification and rollback. No CLI command copies legacy state
