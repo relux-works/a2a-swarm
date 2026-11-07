@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/inboundmedia"
 )
 
 // `a2a inbox` is where an agent reads what the hook doorbell announced. The
@@ -126,6 +127,7 @@ func inboxRecord(it waitItem, server string) (EventRecord, int) {
 		return it.rec, 0
 	}
 	rec := eventRecord(it.rec.Type, it.rec.Room, it.rec.RoomID, *it.ev, server, false)
+	rec.Media = inboundmedia.Inspect(*it.ev, it.rec.RoomID)
 	rec.Sub = it.rec.Sub
 	rec.Kind, rec.Topic, rec.Re, rec.ReplyBy, rec.Trunk = sanitizeLine(rec.Kind), sanitizeLine(rec.Topic), sanitizeLine(rec.Re), sanitizeLine(rec.ReplyBy), sanitizeLine(rec.Trunk)
 	rec.Title = sanitizeLine(rec.Title)
@@ -198,6 +200,11 @@ func inboxFrame(items []waitItem, server string, more int) string {
 			}
 		}
 		b.WriteString(strings.Join(fields, " ") + "\n")
+		if rec.Media != nil {
+			data, _ := json.Marshal(rec.Media)
+			// JSON escapes retain full opaque handles within one indented line.
+			b.WriteString(inboxIndent + "media (declared, untrusted): " + string(data) + "\n")
+		}
 		body := strings.NewReplacer(" ", "\n", " ", "\n").Replace(rec.Body)
 		for _, line := range strings.Split(body, "\n") {
 			b.WriteString(inboxIndent + line + "\n")
