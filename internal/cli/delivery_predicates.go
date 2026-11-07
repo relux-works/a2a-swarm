@@ -12,12 +12,13 @@ import (
 
 // These predicates narrow delivery, never ingestion, relevance or receipts.
 type deliveryPredicates struct {
-	text     *regexp.Regexp
-	from     []string
-	kinds    []string
-	toMe     bool
-	keywords config.WaitKeywords
-	me, name string
+	text       *regexp.Regexp
+	from       []string
+	kinds      []string
+	toMe       bool
+	keywords   config.WaitKeywords
+	me, name   string
+	principals []string // host snapshot from the start of this delivery cycle
 }
 
 type deliveryPredicateFlags struct {
@@ -91,6 +92,9 @@ func (p deliveryPredicates) forSession(s *session) deliveryPredicates {
 }
 
 func (p deliveryPredicates) matches(e config.MailEntry) bool {
+	if principalMail(e, p.principals) {
+		return true
+	}
 	// Invites and history gaps retain their existing control-entry behavior.
 	if e.Kind != config.MailEvent {
 		return true

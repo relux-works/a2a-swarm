@@ -86,6 +86,7 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 		in[id] = true
 	}
 	a.printf("rooms:\n")
+	var principalRooms []onboardRoom
 	for _, r := range rooms {
 		if in[r.id] {
 			a.printf("already in %s %s\n", r.label, r.id)
@@ -102,11 +103,24 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 			if err := s.subscribeRoom(ctx, a, r.id, r.label, a.Now()); err != nil {
 				return err
 			}
+		} else {
+			principalRooms = append(principalRooms, onboardRoom{id: r.id, label: r.label, state: "joined"})
 		}
+	}
+	if err := s.ensureOnboardingPrincipals(ctx, principalRooms, a.Now()); err != nil {
+		return err
 	}
 	for _, preset := range presets {
 		if preset == "service" {
-			a.printf("subscriptions (%s): none (service preset)\n", preset)
+			configured, err := ownerFiles(s.paths, s.name).principals()
+			if err != nil {
+				return err
+			}
+			if len(configured) > 0 {
+				a.printf("subscriptions (%s): host principals only (service preset)\n", preset)
+			} else {
+				a.printf("subscriptions (%s): none (service preset)\n", preset)
+			}
 			continue
 		}
 		tag := presetTag(preset, product, resource)
@@ -304,6 +318,14 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 	if err != nil {
 		return err
 	}
+	configured, err := ownerFiles(s.paths, s.name).principals()
+	if err != nil {
+		return err
+	}
+	principalRooms, err := s.principalRooms(ctx)
+	if err != nil {
+		return err
+	}
 	desired := make([]Sub, 0, len(sels))
 	for _, x := range sels {
 		kinds := withoutTrim(x.kinds, policy.Trims[x.room])
@@ -331,6 +353,12 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 					}
 				}
 				if match < 0 || kept[match] {
+					// Membership may have changed after principalRooms was read.
+					// Never use that snapshot to authorize principal-row deletion.
+					if protectedPrincipalSub(cur, configured) {
+						keep = append(keep, cur)
+						continue
+					}
 					messages = append(messages, "removed "+cur.ID)
 					changed = true
 					continue
@@ -349,6 +377,13 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 			list.Subs = append(list.Subs, want)
 			messages = append(messages, "added "+want.ID)
 			changed = true
+		}
+		for _, room := range sortedKeys(principalRooms) {
+			before := len(list.Subs)
+			changed = repairPrincipalSubs(list, room, principalRooms[room], now) || changed
+			for _, sub := range list.Subs[before:] {
+				messages = append(messages, "added "+sub.ID+" (host principal)")
+			}
 		}
 		return changed, nil
 	})
@@ -400,6 +435,17 @@ func cmdSubsPresetSync(ctx context.Context, a *App, args []string) error {
 	}
 	for _, p := range presets {
 		if p == "service" {
+			// Keep the sessionless no-configuration path unchanged.
+			configured, err := ownerFiles(s.paths, s.name).principals()
+			if err != nil {
+				return err
+			}
+			if len(configured) == 0 {
+				continue
+			}
+			if err := s.reconcilePresetSubs(ctx, "service", nil, a.Now()); err != nil {
+				return err
+			}
 			continue
 		}
 		_, sels, err := productPresetPlan(ctx, s, p, *product, project, *resource, false)

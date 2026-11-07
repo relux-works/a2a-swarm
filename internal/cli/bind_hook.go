@@ -116,6 +116,7 @@ func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBindi
 		// session observations and report transactions cannot cross this edge.
 		b.OwnNotice = config.OwnNoticeObservation{}
 		b.NoticeReport = nil
+		dropRetiredStrandedAlarms(st)
 		if b.NoticePublication == "published" {
 			b.NoticePublication = "unavailable: own notice changed"
 		}

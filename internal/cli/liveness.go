@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -39,6 +40,13 @@ func typedStatusArgs(args []string) bool {
 func statusValid(record config.AgentStatus) error {
 	if err := noticeValid(record.OwnNotice); err != nil {
 		return err
+	}
+	// Notice-only records intentionally carry no liveness assertions.
+	if record.State == "unknown" {
+		if !record.HeartbeatAt.IsZero() || record.HeartbeatEvery != "" || !record.Since.IsZero() || record.Runtime != "" || record.Hooks != "" || record.Doorbell != "" || record.Detail != "" || record.Wake != "" || record.Product != "" {
+			return fmt.Errorf("notice-only status cannot claim liveness")
+		}
+		return nil
 	}
 	switch record.State {
 	case "working", "idle", "waiting-human", "blocked", "stopping":
@@ -140,7 +148,7 @@ func cmdStatusRecord(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error { return s.writeLiveness(ctx, record) }); err != nil {
+	if err := s.writeLiveness(ctx, record); err != nil {
 		return err
 	}
 	a.printf("%s %s heartbeat=%s hooks=%s\n", s.name, record.State, record.HeartbeatEvery, record.Hooks)
@@ -148,26 +156,32 @@ func cmdStatusRecord(ctx context.Context, a *App, args []string) error {
 }
 
 func (s *session) writeLiveness(ctx context.Context, record config.AgentStatus) error {
-	return s.writeLivenessSource(ctx, record, "manual")
+	return s.retryLivenessSource(ctx, record, "manual")
 }
 
 func (s *session) writeLivenessSource(ctx context.Context, record config.AgentStatus, source string) error {
+	return s.writeLivenessSourceMode(ctx, record, source, false)
+}
+
+func (s *session) retryLivenessSource(ctx context.Context, record config.AgentStatus, source string) error {
+	return s.writeLivenessSourceMode(ctx, record, source, true)
+}
+
+func (s *session) writeLivenessSourceMode(ctx context.Context, record config.AgentStatus, source string, retry bool) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
 	if err := statusValid(record); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(nativeRPCTimeout)
-	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
-		deadline = callerDeadline
+	write := s.writeOwnStatus
+	if retry {
+		write = s.retryOwnStatus
 	}
-	writeCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	var publicationErr error
-	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	var pending *config.RuntimeProfilePending
+	return write(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
 		if err := s.checkConnection(); err != nil {
-			return err
+			return record, false, err
 		}
 		if (source == "wait-heartbeat" || source == "wait-disarm" || (source == "wait" && manualWakeGate(*st) != "")) && st.Liveness != nil {
 			doorbell, every := record.Doorbell, record.HeartbeatEvery
@@ -199,24 +213,28 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 			record.OwnNotice = st.Terminal.OwnNotice
 		}
 		if err := noticeValid(record.OwnNotice); err != nil {
-			return err
+			return record, false, err
 		}
-		err := s.putOwnStatus(writeCtx, st, record)
+		if p := st.RuntimeProfilePending; p != nil && st.Runtime != nil && p.Generation == st.Runtime.Generation &&
+			p.Profile.Runtime == record.Runtime && p.Profile.Hooks == record.Hooks &&
+			p.Profile.HeartbeatEvery == record.HeartbeatEvery && p.Profile.Product == record.Product {
+			pending = p
+		}
+		return record, true, nil
+	}, func(st *config.State, err error) {
 		if err != nil {
-			// Commit the shared owner's uncertainty even when the caller fails.
-			publicationErr = err
-			return nil
+			return
 		}
 		st.LivenessSource = source
+		// Only an ACK of this full profile may clear recovery. A replacement
+		// generation/profile written during HTTP retains its own marker.
+		if pending != nil && st.Runtime != nil && st.Runtime.Generation == pending.Generation && reflect.DeepEqual(st.RuntimeProfilePending, pending) {
+			st.RuntimeProfilePending = nil
+		}
 		if st.Terminal != nil && manualWakeGate(*st) != "" {
 			st.Terminal.Idle = nil
 		}
-		return nil
 	})
-	if err != nil {
-		return err
-	}
-	return publicationErr
 }
 
 type whoRow struct {
@@ -272,10 +290,14 @@ func (a *App) livenessRows(ctx context.Context, s *session, product string, stal
 		if product != "" && (!exists || record.Product != product) {
 			continue
 		}
-		row := whoRow{Name: name, State: "unknown", Health: "down", Age: "-", Unanswered: "unknown (not scanned)"}
+		row := whoRow{Name: name, State: "unknown", Health: "unknown", Age: "-", Unanswered: "unknown (not scanned)"}
 		if exists {
 			row.Record = &record
 			row.State = record.State
+			if record.State == "unknown" && statusValid(record) == nil && record.Version == 1 {
+				rows = append(rows, row)
+				continue
+			}
 			heartbeat, err := time.ParseDuration(record.HeartbeatEvery)
 			if err != nil || statusValid(record) != nil || record.Version != 1 || record.HeartbeatAt.IsZero() {
 				row.Health = "invalid"

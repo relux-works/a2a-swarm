@@ -86,6 +86,34 @@ type onboardRoom struct {
 	state     string // joined, already, created, skipped
 }
 
+// Every visited membership gets principal repair, including rooms with no
+// baseline (broadcast, projection rooms and sessionless service onboarding).
+func principalOnboardingPlan(rooms []onboardRoom) []onboardRoom {
+	var out []onboardRoom
+	seen := map[string]bool{}
+	for _, room := range rooms {
+		if room.id != "" && room.state != "skipped" && !seen[room.id] {
+			out = append(out, room)
+			seen[room.id] = true
+		}
+	}
+	return out
+}
+
+func (s *session) ensureOnboardingPrincipals(ctx context.Context, rooms []onboardRoom, now time.Time) error {
+	if len(principalOnboardingPlan(rooms)) == 0 {
+		return nil
+	}
+	return config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+		for _, room := range principalOnboardingPlan(rooms) {
+			if err := s.ensureRoomPrincipals(ctx, room.id, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // onboard runs the onboarding steps for s and prints each one, then the summary.
 func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 	joined, err := s.client.JoinedRooms(ctx)
@@ -180,6 +208,9 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 	}
 
 	a.printf("subscriptions:\n")
+	if err := s.ensureOnboardingPrincipals(ctx, rooms, a.Now()); err != nil {
+		return err
+	}
 	var subs []string
 	sels := []struct {
 		sel   SubSelector

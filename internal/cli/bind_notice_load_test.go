@@ -59,8 +59,8 @@ func TestNoticeDispatchLocalNoop(t *testing.T) {
 					t.Fatal(err)
 				}
 				b := e.state("alice").Terminal
-				if kind == "missing" && b.NoticePublication != "unavailable: no liveness record (a2a status set)" {
-					t.Errorf("missing liveness cause lost: %q", b.NoticePublication)
+				if kind == "missing" && (b.NoticePublication != "unavailable: no liveness record (a2a status set)" || e.state("alice").Liveness != nil || e.state("alice").NoticeStatus != nil) {
+					t.Errorf("missing-liveness path changed: %q", b.NoticePublication)
 				}
 				if kind == "unchanged" && b.NoticePublication != before.Terminal.NoticePublication {
 					t.Errorf("no-op publication metadata changed: %q", b.NoticePublication)
@@ -230,11 +230,13 @@ func TestNoticePublicationCacheLifecycle(t *testing.T) {
 	}
 }
 
-// Writers queue behind the established bounded state critical section and
-// remain authoritative after release; an accepted PUT cannot be rolled back.
+// State writers finish while status HTTP is in flight. Publication merges
+// only its own result, preserving replacement, notice, heartbeat and mail edits.
+// An overlapping automatic writer skips without HTTP; a superseded completion cannot
+// clear its successor fence, and expiry permits one acknowledged reconciliation.
 func TestNoticePublicationConcurrentMutation(t *testing.T) {
 	isolateBindTest(t)
-	for _, kind := range []string{"resolve-replacement", "put-replacement", "put-notice", "put-heartbeat", "put-missing"} {
+	for _, kind := range []string{"resolve-replacement", "put-replacement", "put-notice", "put-heartbeat", "put-missing", "put-fence"} {
 		t.Run(kind, func(t *testing.T) {
 			e, a, s := noticeDeadlineFixture(t)
 			mail := e.mailbox("alice").Pending()
@@ -248,6 +250,11 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 				}
 				if put == strings.HasPrefix(kind, "put-") {
 					once.Do(func() {
+						if kind == "put-fence" {
+							if err := s.publishTerminalNotice(context.Background(), "deadline"); err != nil || puts.Load() != 1 {
+								t.Errorf("overlapping status writer bypassed reservation: %v", err)
+							}
+						}
 						go func() {
 							_, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(2*time.Second), func(st *config.State) error {
 								st.HooksPaused = true
@@ -262,6 +269,8 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 									st.Liveness.Detail = "concurrent heartbeat"
 								case "put-missing":
 									st.Liveness = nil
+								case "put-fence":
+									st.OwnStatusWrite = &config.OwnStatusWrite{Token: "successor", Until: time.Now().Add(time.Minute)}
 								}
 								return nil
 							})
@@ -270,8 +279,11 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 						select {
 						case err := <-writerDone:
 							writerDone <- err
-							t.Errorf("publication released state lock during network: %v", err)
-						case <-time.After(50 * time.Millisecond):
+							if err != nil {
+								t.Errorf("state writer failed during publication: %v", err)
+							}
+						case <-time.After(time.Second):
+							t.Error("publication held state lock during network")
 						}
 					})
 				}
@@ -279,7 +291,7 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 			}))
 			defer srv.Close()
 			s.client.BaseURL = srv.URL
-			a.publishTerminalNotice(context.Background(), s, "deadline")
+			publicationErr := s.publishTerminalNotice(context.Background(), "deadline")
 			select {
 			case err := <-writerDone:
 				if err != nil {
@@ -309,14 +321,28 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 					t.Fatal("queued desired notice not retryable")
 				}
 			case "put-heartbeat":
-				if st.Liveness.Detail != "concurrent heartbeat" {
-					t.Fatal("queued heartbeat lost")
+				if publicationErr == nil || publicationErr.Error() != "own status changed during publication" || st.Liveness.Detail != "concurrent heartbeat" || !st.NoticeWriteUncertain || st.Terminal.NoticePublication == "published" {
+					t.Fatalf("concurrent heartbeat lost or stale status acknowledged: %v", publicationErr)
 				}
+			case "put-fence":
+				if publicationErr == nil || publicationErr.Error() != "own status publication superseded" || st.OwnStatusWrite == nil || st.OwnStatusWrite.Token != "successor" || !st.NoticeWriteUncertain || st.Terminal.NoticePublication == "published" {
+					t.Fatalf("stale completion changed successor publication: %v", publicationErr)
+				}
+				if _, err := config.UpdateState(s.paths, s.name, func(st *config.State) error { st.OwnStatusWrite.Until = time.Now().Add(-time.Second); return nil }); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.publishTerminalNotice(context.Background(), "deadline"); err != nil {
+					t.Fatal(err)
+				}
+				if puts.Load() != 2 || e.state("alice").OwnStatusWrite != nil || e.state("alice").Terminal.NoticePublication != "published" {
+					t.Fatal("expired reservation did not reconcile")
+				}
+
 			case "put-missing":
 				a.publishTerminalNotice(context.Background(), s, "deadline")
 				st = e.state("alice")
-				if puts.Load() != 1 || st.Liveness != nil || st.Terminal.NoticePublication != "unavailable: no liveness record (a2a status set)" {
-					t.Fatal("queued missing liveness not refused locally")
+				if puts.Load() != 1 || st.Liveness != nil || st.NoticeStatus != nil || st.Terminal.NoticePublication != "unavailable: no liveness record (a2a status set)" {
+					t.Fatal("missing liveness caused a remote write")
 				}
 			}
 		})
@@ -452,11 +478,11 @@ func TestNoticeDispatchObservedNoop(t *testing.T) {
 	for _, kind := range []string{"missing", "unchanged"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
+			f.e.as("alice", "status", "init").ok(t)
 			if kind == "unchanged" {
-				f.e.as("alice", "status", "init").ok(t)
 				f.e.as("alice", statusArgs("working")...).ok(t)
-				f.dispatch()
 			}
+			f.dispatch()
 			var requests, puts atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
@@ -469,19 +495,23 @@ func TestNoticeDispatchObservedNoop(t *testing.T) {
 			f.s.client.BaseURL = srv.URL
 			for i := 0; i < 3; i++ {
 				f.dispatch()
-				if kind == "missing" && f.binding().NoticePublication != "unavailable: no liveness record (a2a status set)" {
-					t.Fatal("observed missing cause flapped")
+				if kind == "missing" && (f.binding().NoticePublication != "unavailable: no liveness record (a2a status set)" || f.e.state("alice").Liveness != nil) {
+					t.Fatal("missing liveness changed during observation")
 				}
 			}
 			if requests.Load() != 0 {
 				t.Fatalf("observed local no-op made network requests: %d", requests.Load())
 			}
-			if kind == "missing" {
-				f.e.as("alice", "status", "init").ok(t)
-				f.e.as("alice", statusArgs("working")...).ok(t)
-			}
 			f.now = f.now.Add(time.Second)
 			f.dispatch()
+			if kind == "missing" {
+				f.now = f.now.Add(time.Second)
+				f.dispatch()
+				if requests.Load() != 0 {
+					t.Fatal("missing liveness caused recurring remote writes")
+				}
+				return
+			}
 			if requests.Load() != 2 || puts.Load() != 1 {
 				t.Fatalf("fresh ObservedAt count: requests=%d puts=%d", requests.Load(), puts.Load())
 			}

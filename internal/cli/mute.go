@@ -6,8 +6,10 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// cmdMute: a2a mute <room> --topic X. Replies in that thread stop ringing
-// (addressed messages, mentions and kind subscriptions still do). The mute is
+// cmdMute: a2a mute <room> --topic X. Thread replies and ordinary room-scoped
+// subscription matches without a sender filter stop ringing. Addresses, mentions,
+// sender-filtered and roomless subscriptions
+// and diagnostic capture retain their delivery semantics. The mute is
 // sticky: posting in the thread again does not re-follow it; only follow does.
 func cmdMute(ctx context.Context, a *App, args []string) error {
 	return followCommand(ctx, a, args, false)

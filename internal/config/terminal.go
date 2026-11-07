@@ -16,9 +16,30 @@ type NoticeRetry struct {
 	Delay    time.Duration `json:"delay"`
 }
 
+// OwnStatusWrite fences concurrent status writers without holding a file lock
+// during HTTP. Expiry permits recovery after a writer exits before completion.
+type OwnStatusWrite struct {
+	Token string    `json:"token"`
+	Until time.Time `json:"until"`
+}
+
+// A malformed optional publication fence cannot prevent loading delivery state.
+// Treat it as expired; the next publisher reserves uncertainty before HTTP.
+func (w *OwnStatusWrite) UnmarshalJSON(data []byte) error {
+	type plain OwnStatusWrite
+	var next plain
+	if json.Unmarshal(data, &next) != nil {
+		*w = OwnStatusWrite{}
+		return nil
+	}
+	*w = OwnStatusWrite(next)
+	return nil
+}
+
 // TerminalBinding contains only local process metadata and event IDs. A wake
 // reservation is independent of inbox receipts and survives an uncertain send.
 type TerminalBinding struct {
+	RefreshStatus      string                     `json:"refresh_status,omitempty"`
 	NotificationToken  string                     `json:"notification_token,omitempty"`
 	OwnNotice          OwnNoticeObservation       `json:"own_notice"`
 	NoticePublication  string                     `json:"notice_publication"`
@@ -57,11 +78,18 @@ type TerminalBinding struct {
 // NoticeReport pins an incident transaction before its network effect.
 // Retries after an ambiguous ACK or restart reuse the same room and content.
 type NoticeReport struct {
-	Since   string               `json:"since"`
-	Message LivenessAlertMessage `json:"message"`
-	Sent    bool                 `json:"sent"`
-	RetryAt time.Time            `json:"retry_at"`
-	Outcome string               `json:"outcome"`
+	Alarm             bool                 `json:"alarm,omitempty"`
+	AlarmOwner        string               `json:"alarm_owner,omitempty"`
+	AlarmLead         string               `json:"alarm_lead,omitempty"`
+	AlarmLeadRequired bool                 `json:"alarm_lead_required,omitempty"`
+	AlarmOwnerAck     string               `json:"alarm_owner_ack,omitempty"`
+	AlarmLeadAck      string               `json:"alarm_lead_ack,omitempty"`
+	LoggedOutcome     string               `json:"logged_outcome,omitempty"`
+	Since             string               `json:"since"`
+	Message           LivenessAlertMessage `json:"message"`
+	Sent              bool                 `json:"sent"`
+	RetryAt           time.Time            `json:"retry_at"`
+	Outcome           string               `json:"outcome"`
 }
 
 // Qualification is scoped to the exact consumer, policy and target. It is not

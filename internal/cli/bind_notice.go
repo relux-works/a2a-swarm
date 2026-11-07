@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -152,7 +151,7 @@ func noticeText(n config.OwnNoticeObservation) string {
 	if *n.PossiblyOrphaned {
 		return "SUSPECTED-DEAF: own notice possibly orphaned since=" + n.Since + " last-observed-at=" + n.ObservedAt
 	}
-	return "own notice clear (last rendered observation)"
+	return "own notice clear (last observation or turn)"
 }
 
 func (a *App) terminalStatus(ctx context.Context, args []string) error {
@@ -166,6 +165,9 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		return usagef("bind status takes only --json")
 	}
 	s, err := a.session()
+	if transientCredentialReason(err) != "" {
+		s, err = a.sessionMetadata()
+	}
 	if err != nil {
 		return err
 	}
@@ -221,6 +223,10 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		noticeError = "invalid own notice telemetry"
 		publication = "unavailable: invalid own notice telemetry"
 	}
+	principalError := ""
+	if _, err := ownerFiles(s.paths, s.name).principals(); err != nil {
+		principalError = principalConfigProblem
+	}
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
@@ -234,7 +240,12 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			SendRefusal       *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
 			Recovery          *config.TerminalRecovery    `json:"recovery,omitempty"`
 			MailAlarm         mailAlarmStatus             `json:"mail_alarm"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st)})
+			Refresh           string                      `json:"refresh"`
+			PrincipalError    string                      `json:"principal_error,omitempty"`
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError})
+	}
+	if principalError != "" {
+		a.printf("%s\n", principalError)
 	}
 	if recovery != nil {
 		a.printf("recovery=%s at=%s\n", recovery.Reason, recovery.At.Format(time.RFC3339Nano))
@@ -243,6 +254,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		a.printf("send_refusal=%s at=%s\n", sendRefusal.Reason, sendRefusal.At.Format(time.RFC3339Nano))
 	}
 	a.printAlarmStatus(alarmStatus(s, st))
+	a.printf("refresh=%s\n", terminalRefreshStatus(st.Terminal))
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if readiness != nil {
 		a.printf("readiness=%s reason=%s version=%s since=%s unknown_keys=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano), readiness.UnknownKeys)
@@ -269,42 +281,33 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 	if !ok || name != s.name {
 		return errors.New("notice publication refuses foreign liveness key")
 	}
-	deadline := time.Now().Add(nativeRPCTimeout)
-	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
-		deadline = callerDeadline
-	}
-	writeCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
 	var publicationErr error
-	// Preserve the existing bounded state critical section. The acknowledged
-	// snapshot and queued local writers remain serialized through resolve + PUT.
-	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	err := s.writeOwnStatus(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
 		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped {
-			return errors.New("binding retired")
+			return config.AgentStatus{}, false, errors.New("binding retired")
 		}
 		b := st.Terminal
-		if err := writeCtx.Err(); err != nil {
-			return err
-		}
 		if st.Liveness == nil {
 			b.NoticePublication = "unavailable: no liveness record (a2a status set)"
-			return nil
+			return config.AgentStatus{}, false, nil
 		}
+		ack := st.Liveness
+
 		if err := noticeValid(b.OwnNotice); err != nil {
-			return err
+			return config.AgentStatus{}, false, err
 		}
-		if reflect.DeepEqual(st.Liveness.OwnNotice, b.OwnNotice) {
+		if ack != nil && reflect.DeepEqual(ack.OwnNotice, b.OwnNotice) {
 			if !st.NoticeWriteUncertain {
 				b.NoticePublication = "published"
-				return nil
+				return config.AgentStatus{}, false, nil
 			}
 		}
-		// Explicit binding policy also bounds notice-only retries. A replacement
+		// Explicit binding policy bounds automatic notice retries. A replacement
 		// generation or fresh observation cannot bypass identity-owned eligibility.
 		if b.Interval < time.Second || b.Interval > maxPoll || b.RetryMax < b.Interval || b.RetryMax > 5*time.Minute {
 			b.NoticePublication = "unavailable: invalid notice retry policy"
 			publicationErr = errors.New(b.NoticePublication)
-			return nil
+			return config.AgentStatus{}, false, nil
 		}
 		now := s.app.Now().UTC()
 		if retry := st.NoticeRetry; retry != nil {
@@ -317,28 +320,29 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 			if now.Before(st.NoticeRetry.Next) {
 				b.NoticePublication = "unavailable: own liveness publication retry pending"
 				publicationErr = errors.New(b.NoticePublication)
-				return nil
+				return config.AgentStatus{}, false, nil
 			}
 		}
 		record := *st.Liveness
 		record.OwnNotice = b.OwnNotice
-		failed := func(err error) error {
-			delay := b.Interval
-			if st.NoticeRetry != nil {
-				delay = min(b.RetryMax, max(b.Interval, st.NoticeRetry.Delay*2))
-			}
-			failedAt := s.app.Now().UTC()
-			st.NoticeRetry = &config.NoticeRetry{FailedAt: failedAt, Next: failedAt.Add(delay), Delay: delay}
-			b.NoticePublication = "unavailable: own liveness publication failed"
-			publicationErr = fmt.Errorf("notice publication unavailable: %w", err)
-			// Save the failure without acknowledging the PUT.
-			return nil
+		return record, true, nil
+	}, func(st *config.State, err error) {
+		b := st.Terminal
+		if err == nil || st.Liveness == nil || b == nil || b.Generation != generation || b.Stopped {
+			return
 		}
-		if err := s.putOwnStatus(writeCtx, st, record); err != nil {
-			return failed(err)
+		delay := b.Interval
+		if st.NoticeRetry != nil {
+			delay = min(b.RetryMax, max(b.Interval, st.NoticeRetry.Delay*2))
 		}
-		return nil
+		failedAt := s.app.Now().UTC()
+		st.NoticeRetry = &config.NoticeRetry{FailedAt: failedAt, Next: failedAt.Add(delay), Delay: delay}
 	})
+	// Contention is not a failed publication: leave bounded retry eligibility
+	// unchanged and let the next ordinary hook/consumer cycle try again.
+	if errors.Is(err, ErrOwnStatusPending) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -358,9 +362,7 @@ func (a *App) unknownTerminalNotice(ctx context.Context, s *session, generation 
 	// This is suspicion from retained journal evidence, not a fresh screen claim.
 	if st, err := config.LoadState(s.paths, s.name); err == nil && st.Terminal != nil && st.Terminal.Generation == generation && !st.Terminal.Stopped {
 		if a.observeTerminalNotice(s, generation, *st.Terminal, "unknown") == nil {
-			if err := a.reportStrandedTerminalNotice(ctx, s, generation); err != nil {
-				fmt.Fprintln(a.Stderr, "binding incident report unavailable; local status retained")
-			}
+			a.reportTerminalIncident(ctx, s, generation)
 		}
 	}
 	err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
@@ -380,4 +382,36 @@ func (a *App) unknownTerminalNotice(ctx context.Context, s *session, generation 
 			_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "consumer unavailable; retrying" })
 		}
 	}
+}
+
+// A matching runtime hook is evidence of a turn, even without opted-in
+// liveness. Retire the old typing authority; pending mail is never receipted.
+func (a *App) clearTerminalNoticeOnTurn(ctx context.Context, s *session, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	deadline := time.Now().Add(nativeRPCTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	return config.WithRuntimeLock(s.paths, s.name, "control", deadline, func() error {
+		_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+			b := st.Terminal
+			if st.HooksPaused || b == nil || b.Stopped || b.SessionID != sessionID || b.Host != machineLabel() {
+				return nil
+			}
+			if b.OwnNotice.PossiblyOrphaned != nil && !*b.OwnNotice.PossiblyOrphaned && b.Notice == "" {
+				return nil
+			}
+			clear := false
+			b.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
+			b.NoticeReport = nil
+			dropRetiredStrandedAlarms(st)
+			b.AttemptIDs, b.Notice, b.Typed, b.TypingStarted = nil, "", false, false
+			b.NoticeOrigin, b.NoticePosition, b.Idle = nil, nil, nil
+			b.NoticePublication = "unavailable: own notice changed"
+			return nil
+		})
+		return err
+	})
 }

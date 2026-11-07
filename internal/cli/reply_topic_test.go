@@ -99,6 +99,12 @@ func TestPostReplyTopicRoomAndConflict(t *testing.T) {
 			if r.code != tc.code || r.stdout != "" || e.hs.CallCount(send) != before {
 				t.Fatalf("refusal failed: exit=%d stdout=%q", r.code, r.stdout)
 			}
+			// Readable cross-topic conflicts retain refusal and explain citation.
+			if strings.HasPrefix(tc.name, "topic-") && strings.HasSuffix(tc.name, "-conflict") &&
+				(!strings.Contains(r.stderr, "--re target does not belong to --topic") ||
+					!strings.Contains(r.stderr, "omit --re") || !strings.Contains(r.stderr, "message body")) {
+				t.Fatal("cross-topic refusal lost citation guidance")
+			}
 			if tc.code == ExitUsage && (e.hs.CallCount(get) != beforeGet ||
 				e.hs.CallCount(directory) != beforeDirectory) {
 				t.Fatal("invalid reply arguments reached HTTP")
@@ -152,7 +158,8 @@ func TestPostReplyTopicWireRefusals(t *testing.T) {
 		{"chain", childContent, `{"body":"root","m.relates_to":{"rel_type":"m.thread","event_id":"$third"}}`, "", 2},
 		{"root-wrong-room", childContent, rootContent, "root-wrong-room", 2},
 		{"root-wrong-id", childContent, rootContent, "root-wrong-id", 2},
-		{"root-missing", childContent, rootContent, "root-missing", 2},
+		// A validated child's relation identifies a root hidden by history access.
+		{"valid-root-missing", childContent, rootContent, "root-missing", 2},
 		{"unthreaded-header-claim", `{"body":"$root","ai.relux.a2a":{"type":"message","topic":"$root"}}`, rootContent, "", 1},
 	}
 	for _, tc := range cases {

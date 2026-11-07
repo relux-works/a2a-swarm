@@ -1,5 +1,19 @@
 # Unresolved questions
 
+## Issue #258: cross-topic citations after #219
+
+The current #219 reply contract in `docs/cli.md` and
+`TestPostReplyTopicRoomAndConflict` requires explicit topic/reply root agreement.
+Exact case: `a2a post ROOM --topic mine --kind answer --re '$child-of-other' TEXT`
+refuses when `mine` resolves to a different root from the child's validated
+`m.thread.event_id`, even if both roots are readable. Earlier binaries allowed
+this form and real lanes use it for citations. This slice retains that refusal
+and explains how to cite instead: omit `--re`, include the event ID or link in
+the body. Owner question: should cross-topic citation gain a separate explicit
+mechanism, or should the #219 agreement contract change? No protocol decision
+is made here. The original issue pages were unavailable to this producer;
+the finding is based on the checked-in contract and executable conflict cases.
+
 ## Issue #89: exact trigger in the reported live lanes
 
 Private deterministic fixtures reproduce the post-type refusal when a Claude
@@ -53,10 +67,84 @@ the pin; neither the source fix nor synthetic controls prove universal duplicate
 prevention or live provider behavior.
 
 Own-room configuration is opt-in. No CLI setter or live provisioning is delivered;
-unconfigured identities emit a local unavailable status and zero incident sends.
+unconfigured identities now use the existing mail-alarm owner route and optional lead target. Missing alert destinations remain locally
+unavailable; no live routes are provisioned by this producer slice.
 The operator supplies the known own project/lane route; runtime checks do not
 classify arbitrary projection, broadcast or status rooms. The explicit global
 `#system` refusal does not establish a new room-type policy. Conservative power
 checks may refuse valid room-version-12 creator/default-omission cases. Live
 membership, permission, subscriber receipt, provider behavior and transaction
 retention remain unknown. Binding-log rotation is not established here.
+
+## Stranded-notice fallback: retry lifetime
+
+The producer slice uses one durable transaction per audience/episode in the
+mail-alarm outbox, retrying failed incident sends with its bounded exponential
+backoff. Ordinary stale-mail uncertainty holds are unchanged. Matrix transaction
+retention is finite and has not been measured here: arbitrarily late retries
+cannot promise universal server-side deduplication. Owner question: should
+incidents have an explicit maximum retry age/manual hold, and what should it be?
+The current implementation keeps retrying while the episode/audience remains
+eligible, with the same transaction and destination.
+
+No tests, live panes, live delivery or process-replacement experiments were run
+on this host. Added tests use pure logic and a fake homeserver and await CI.
+The older recovery descriptions above are historical and conflict with current
+bind documentation/source; reconciling those unrelated recovery decisions is
+outside this producer slice.
+## Principal coverage: explicit subscription removal
+## Principal coverage: account-data concurrency and history limits
+
+Explicit removal is resolved: a single protected `host-principal` row refuses
+with `principal_subscription_required` and a host-list remedy; `--all` removes
+unprotected rows and reports each retained row with that remedy. Manual rows
+remain removable. No force flag exists. Host removal of an ID or departure
+from the room ends protection. Owner-DM cleanup maintains independent rows.
+
+Cross-host account-data writers still have no compare-and-swap in the existing
+client. Dedicated audit rows can be lost by a competing get/modify/put. Should
+future server support provide conditional writes, or should a single writer
+own subscription storage? Local delivery does not wait on this decision: each
+cycle snapshots the atomically replaced host list without a policy lock or
+network repair. Lists and cursors are not synchronized across hosts.
+
+The accepted coverage-start window includes all messages behind the current
+committed cursor when the cycle starts with coverage. This includes first
+positioning, configuration/upgrade, changes during an in-flight cycle, and
+cycles with unreadable metadata. These messages are not replayed. Initial
+history crawling and retroactive principal backfill are removed. Existing
+limited-sync recovery from the current cursor remains unchanged. Malformed
+metadata warns once per delivery session and is visible in `subs check` and
+`bind status`, but cannot freeze the cursor or pending-mail output.
+
+Case-sensitive historical MXIDs remain supported intentionally; a case typo
+cannot be corrected without potentially selecting a different identity. Exact
+membership is checked by `subs check`; no normalization or alias inference is
+safe. Manual projection selectors retain their explicit origin semantics;
+only dedicated principal rows and mandatory host delivery require real sender
+matching. Older binaries sharing account data/cursors retain their old behavior.
+
+The new isolated fixtures are not executed in this producer round, by explicit
+instruction. They use memory HTTP responses and private temporary stores, no
+server, tmux or a2a processes. Live wake responsiveness, crash/fsync recovery
+and multiprocess behavior remain unverified.
+
+## Hook executable custody: macOS ACL permissions
+
+The executable-selection review identified that image and ancestry permission
+checks use POSIX mode bits. They do not inspect macOS extended ACLs, which can
+permit another account to modify an otherwise mode-safe image or directory.
+This remains unresolved in hook installation and the shared terminal-refresh
+image validator; no permission gate or Git-marker refusal has been relaxed.
+
+A native ACL implementation and dedicated positive/negative platform fixtures
+are needed before claiming ACL-level exclusion. This producer was restricted to
+formatting, vetting and building, with no tests, installations or live process
+changes. Introducing an unvalidated security parser or shell-output heuristic
+would not establish the requested guarantee, so this finding is explicitly
+retained rather than presented as fixed.
+
+Codex owner-DM companion rules deny known selected, resolved and launch spellings.
+Arbitrary undiscovered aliases and later image versions remain outside these
+spelling-based rules; independent host-terminal checks still apply. No live
+Codex rule-engine or existing-hook fleet verification was performed.

@@ -1,19 +1,15 @@
 # Optional local voice replies
 
-TASK-261023-m8mo6f under STORY-261023-6cr0bz. Owner request2026-10-23T12:22:54Z
-`$P5pexOsC7w_MX-qZLi8-9hpRUWoCxAOHoU09jwovqVE`, independently verified by Meta
-`$9UWwffQWwQskuxnEiusR7zY0k0a1RNFtVLnyLAQaTCU`; keeper scope
-`$ag-AJvPpWv0Bv2nL-AczgDFU-75OKTRc7S6DPWtnKzA` and adopted invariants
-`$_mvJw0mASKba6gxyTlHHgXG4KdrxL7aCFHafXCGq9K4`.
+Local voice scope requested 2026-10-23T12:22:54Z.
 
 ## Use
 
 The existing text post is authoritative and unchanged. Add `--voice` to one
 post for a local spoken copy replying to that text in the same topic. There
 is no sticky mode or implicit enablement.
-Irina is the keeper's operational interpretation of the owner's “second distinct
-Go voice”, acknowledged by Meta with the original ambiguity retained. The owner
-did not literally name a model. Stress/pronunciation defects remain. Scope narrowing: `$I17bMT13_Bm0gg0A-H-PXapr8kTnl8Se3sgrxXGE-58`, provenance `$ViV6k1qL0k04KFFBy9cs6tCkG_yqO6u5lJfDTa6Lmig`.
+Irina is the operational interpretation of the requested “second distinct
+Go voice”, with the original ambiguity retained. The owner
+did not literally name a model. Stress/pronunciation defects remain.
 
 ```sh
 go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
@@ -28,6 +24,32 @@ exactly `enabled: true` and `max_seconds: 180`. Enabling is explicit, and
 there is no engine/voice picker or implicit enablement. These commands change
 no binding/profile/hook or subscription. Shared-station activation requires separate admission after
 source delivery; the commands document the interface.
+
+## Read-only status
+
+`a2a voice status [--json]` inspects local configuration without enabling voice,
+installing assets, running a process, looking up credentials or contacting Matrix.
+It works without an account. With named connections, public `connections.json`
+and the selected identity/profile determine the same config directory used by
+voice configuration; unrelated credential and owner-DM state is not consulted.
+
+The closed status fields are:
+
+- `config`: `enabled`, `missing`, `invalid` or `unavailable`.
+- `native`: `compiled` for a Darwin/CGO/Sherpa build, otherwise `unavailable`.
+  Compiled support does not prove a native engine will initialize successfully.
+- `model`: `missing`, `invalid`, `unavailable` or `present_unverified`.
+  A directory's presence does not authenticate its manifest or assets.
+- `encoder`: `found_unverified` or `unavailable`, from PATH lookup only.
+  This does not run ffmpeg or establish its Opus support.
+- `max_seconds`: the fixed audio cap, 180.
+- `synthesis`: always `not_checked`; `last_attempt`: always `not_recorded`.
+
+Status exits zero after reporting local observations, including missing or invalid
+voice configuration; usage and routing failures remain nonzero. It never reports
+readiness or a previous attempt's cause from these observations. Attempt failures
+remain the safe categories in the original `[VOICE_TEXT_ONLY]` warning, with the
+text retained. No history is written and no automatic retry is introduced.
 
 ## Dependencies and pins
 

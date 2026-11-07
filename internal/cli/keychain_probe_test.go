@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -66,6 +67,8 @@ func probeFixture(t *testing.T, mode, dir string) func(context.Context, ...strin
 	}
 }
 
+// Unlocked is the valid control; running probe refusals suppress security and
+// persist cooldown. Missing/nonexecutable companions refuse only that image.
 func TestKeychainProbeRefusals(t *testing.T) {
 	for _, mode := range []string{"unlocked", "locked", "missing", "nonexec", "badexit", "badtoken", "garbage", "error", "stderr", "timeout"} {
 		t.Run(mode, func(t *testing.T) {
@@ -89,6 +92,19 @@ func TestKeychainProbeRefusals(t *testing.T) {
 			r.failsWith(t, ExitError, "preflight failed")
 			if len(records(t, dir)) != 0 {
 				t.Fatal("refused probe invoked security")
+			}
+			if mode == "missing" || mode == "nonexec" {
+				k := isolatedKeychainStore(keychainStore{paths: e.paths()})
+				host, err := k.hostPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{k.identityPath(uid) + ".cooldown", host + ".cooldown"} {
+					if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("local failure persisted shared marker: %v", err)
+					}
+				}
+				return
 			}
 			before, _ := os.ReadFile(filepath.Join(dir, "probes"))
 			e.as("alice", "creds", "migrate").failsWith(t, ExitError, "cooldown active")
@@ -383,5 +399,126 @@ func TestKeychainHostMarkerFailClosed(t *testing.T) {
 				t.Fatal("unsafe host marker launched process")
 			}
 		})
+	}
+}
+
+// A missing/nonexecutable companion belongs only to the first image's location:
+// a second image of the same identity reads immediately. Real locked/error
+// preflights and security interaction failures still block that healthy image
+// until fake-clock expiry, with a closed cause and deadline and no private text.
+func TestKeychainCooldownFailureScope(t *testing.T) {
+	for _, mode := range []string{"unlocked", "missing", "nonexec", "locked", "error", "security-interaction"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			uid := e.agent("alice")
+			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "")
+			now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+			makeImage := func(probeMode string) *keychainStore {
+				location := t.TempDir()
+				return isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: probeFixture(t, probeMode, location), command: securityCommand(dir), now: func() time.Time { return now }})
+			}
+			probeMode := mode
+			if mode == "security-interaction" {
+				probeMode = "unlocked"
+				saveModel(t, dir, securityModel{Items: map[string]string{uid: e.tokens["alice"]}, Mode: "denied"})
+			}
+			first, installed := makeImage(probeMode), makeImage("unlocked")
+			_, refusal := first.read(context.Background(), uid)
+			if mode == "unlocked" {
+				if refusal != nil {
+					t.Fatal("positive preflight refused", refusal)
+				}
+			} else if refusal == nil {
+				t.Fatal("bad preflight admitted security")
+			}
+			shared := mode == "locked" || mode == "error" || mode == "security-interaction"
+			if shared {
+				cause := "preflight_" + mode
+				if mode == "security-interaction" {
+					cause = "security_interaction"
+				}
+				deadline := now.Add(securityCooldown).Format(time.RFC3339)
+				if !strings.Contains(refusal.Error(), "cause="+cause) || !strings.Contains(refusal.Error(), deadline) {
+					t.Fatalf("initial refusal lost cause/expiry: %v", refusal)
+				}
+				before := len(records(t, dir))
+				_, err := installed.read(context.Background(), uid)
+				if transientCredentialReason(err) != "keychain_cooldown" || !strings.Contains(err.Error(), "cause="+cause) || !strings.Contains(err.Error(), deadline) || len(records(t, dir)) != before {
+					t.Fatalf("healthy image bypassed cooldown: %v", err)
+				}
+				host, err := first.hostPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode != "security-interaction" {
+					if err := installed.checkMarker(host+".cooldown", uid); transientCredentialReason(err) != "keychain_cooldown" || !strings.Contains(err.Error(), "cause="+cause) {
+						t.Fatalf("host cooldown lost cause: %v", err)
+					}
+				}
+				// Restoring the fake store cannot bypass an unexpired marker.
+				saveModel(t, dir, securityModel{Items: map[string]string{uid: e.tokens["alice"]}})
+				now = now.Add(securityCooldown)
+			} else {
+				host, err := first.hostPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{first.identityPath(uid) + ".cooldown", host + ".cooldown"} {
+					if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("image-local failure wrote cooldown: %v", err)
+					}
+				}
+				if mode != "unlocked" && len(records(t, dir)) != 0 {
+					t.Fatal("local refusal invoked security")
+				}
+			}
+			got, err := installed.read(context.Background(), uid)
+			if err != nil || got != e.tokens["alice"] {
+				t.Fatalf("healthy image blocked after local refusal/expiry: %v", err)
+			}
+			if refusal != nil && (strings.Contains(refusal.Error(), dir) || strings.Contains(refusal.Error(), e.tokens["alice"]) || strings.Contains(refusal.Error(), "planted-helper-secret")) {
+				t.Fatal("refusal leaked path or secret")
+			}
+		})
+	}
+}
+
+// Timestamp-only legacy markers remain usable; an unsafe/unknown cause sidecar
+// cannot project arbitrary text or weaken the cooldown. A known cause projects.
+func TestKeychainCooldownCauseCompatibility(t *testing.T) {
+	e := newEnv(t)
+	uid := e.agent("alice")
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), now: func() time.Time { return now }})
+	if err := k.locked(uid, func() error { return k.recordCooldown(uid, "preflight_locked") }); err != nil {
+		t.Fatal(err)
+	}
+	path := k.identityPath(uid) + ".cooldown"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err != nil {
+		t.Fatal("marker no longer readable by older image", err)
+	}
+	for _, cause := range []string{"preflight_locked", "PRIVATE/path/token", "stale", ""} {
+		if cause == "" {
+			err = os.Remove(path + ".reason")
+		} else if cause == "stale" {
+			err = os.WriteFile(path+".reason", []byte("0 preflight_locked"), 0600)
+		} else {
+			err = os.WriteFile(path+".reason", []byte(strings.TrimSpace(string(data))+" "+cause), 0600)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "unknown"
+		if cause == "preflight_locked" {
+			want = cause
+		}
+		err := k.checkCooldown(uid)
+		if transientCredentialReason(err) != "keychain_cooldown" || !strings.Contains(err.Error(), "cause="+want) || strings.Contains(err.Error(), "PRIVATE") {
+			t.Fatalf("unsafe legacy projection: %v", err)
+		}
 	}
 }

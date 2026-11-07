@@ -173,7 +173,7 @@ func lookupRuntime(name string) (hookRuntime, error) {
 }
 
 const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex|muse  (reads the hook JSON on stdin) | " +
-	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
+	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
 	"a2a hook pause|resume --agent NAME"
 
 // cmdHook: a2a hook stop|session-start|prompt|install|uninstall
@@ -284,8 +284,10 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fail(err)
 		return
 	}
-	if err := a.hookLiveness(ctx, ev, in); err != nil {
-		fail(err)
+	// Mail output and its acknowledgement are already committed. Status gets
+	// only the remaining budget; its retries/failures are private diagnostics.
+	if ctx.Err() == nil {
+		_ = a.hookLiveness(ctx, ev, in)
 	}
 }
 
@@ -300,21 +302,41 @@ func (a *App) hookLiveness(ctx context.Context, ev hookEvent, in hookInput) erro
 	if err != nil {
 		return err
 	}
-	if st.Liveness == nil || st.HooksPaused {
+	if st.HooksPaused || st.Liveness == nil {
 		return nil
 	}
 	if st.Runtime != nil && st.Runtime.SessionID != in.SessionID {
 		return errors.New("liveness hook refuses a foreign runtime session")
 	}
+	if st.Terminal != nil && (ev.arg == "prompt" || ev.arg == "stop") {
+		if err := a.clearTerminalNoticeOnTurn(ctx, s, in.SessionID); err != nil {
+			return err
+		}
+		st, err = config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+	}
+	if st.Liveness == nil {
+		return nil
+	}
+
 	profile := *st.Liveness
 	if st.LivenessSource == "manual" && (profile.State == "blocked" || profile.State == "stopping" || (profile.State == "waiting-human" && ev.arg != "prompt")) {
+		if st.Terminal != nil {
+			return s.publishTerminalNotice(ctx, st.Terminal.Generation)
+		}
 		return nil
 	}
 	profile.State = "working"
 	if ev.arg == "stop" && st.HookBlocks(hookSessionKey(in.SessionID)) == 0 {
 		profile.State = "idle"
 	}
-	return s.writeLivenessSource(ctx, profile, "hook")
+	err = s.writeLivenessSource(ctx, profile, "hook")
+	if errors.Is(err, ErrOwnStatusPending) {
+		return nil
+	}
+	return err
 }
 
 // readHookInput parses the hook JSON; empty input is an empty object.
@@ -633,10 +655,14 @@ func doorbellOf(items []waitItem, server string, members map[string]bool) doorbe
 // doorbellText renders the template, dropping kinds and sender names from the
 // longer list first (counted as "more") until it fits doorbellMax characters.
 func doorbellText(d doorbell) string {
+	return doorbellTextLimit(d, doorbellMax)
+}
+
+func doorbellTextLimit(d doorbell, limit int) string {
 	names, kinds := len(d.names), len(d.kinds)
 	for {
 		t := d.render(names, kinds)
-		if len(t) <= doorbellMax || (names == 0 && kinds == 0) {
+		if len(t) <= limit || (names == 0 && kinds == 0) {
 			return t
 		}
 		if kinds > names {
@@ -701,7 +727,11 @@ func hookOutput(rt hookRuntime, ev hookEvent, d doorbell) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(rt.render(ev, doorbellText(d))); err != nil {
+	text := doorbellText(d)
+	if rt.name == "muse" {
+		text = strings.ReplaceAll(doorbellTextLimit(d, doorbellMax-len(museInboxApproval)), "`a2a inbox`", "`a2a inbox`"+museInboxApproval)
+	}
+	if err := enc.Encode(rt.render(ev, text)); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

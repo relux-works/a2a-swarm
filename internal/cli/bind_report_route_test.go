@@ -118,7 +118,7 @@ func TestNoticeOwnRoomRoute(t *testing.T) {
 			if mode == "joined" {
 				wantStatus = "published"
 			} else if mode == "missing" || mode == "global-only" {
-				wantStatus = "incident route not configured"
+				wantStatus = "unavailable: alarm destination missing"
 			}
 			err := a.reportStrandedTerminalNotice(context.Background(), s, "gen")
 			b := e.state("alice").Terminal
@@ -339,10 +339,11 @@ func TestNoticeRetainedAttemptUncertainty(t *testing.T) {
 	}
 }
 
-// The closed status vocabulary includes idle, pending, published and invalid.
+// The closed status vocabulary preserves credential unavailability, rejects
+// unknown outcomes, and hides reports from a previous notice episode.
 func TestNoticeReportStatusVocabulary(t *testing.T) {
 	isolateBindTest(t)
-	for _, status := range []string{"pending", "published", "invalid", "incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed", "unavailable: system incident report failed"} {
+	for _, status := range []string{"pending", "published", "invalid", "unavailable: credentials", "incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed", "unavailable: system incident report failed"} {
 		b := &config.TerminalBinding{NoticeReport: &config.NoticeReport{Outcome: status}}
 		want := status
 		if status == "invalid" {

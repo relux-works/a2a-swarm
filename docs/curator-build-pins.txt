@@ -1,0 +1,3 @@
+# Published pins retained by curator-build; append before a consumer refresh.
+9eb007917d7fc18e7e3f1f2c820fad6119c6b573
+69f361b6bb4684a32b5d90949cdd9606cae4bdf6

@@ -53,7 +53,7 @@ func TestCardNegative(t *testing.T) {
 }
 
 // Proves status set maps active/idle/away to Matrix presence with the a2a state
-// kept in status_msg, and status get reads it back for myself and others.
+// kept in status_msg. Presence alone cannot establish session liveness.
 func TestStatus(t *testing.T) {
 	e, _ := world(t)
 	e.as("alice", "status", "set", "idle", "waiting", "for", "review").ok(t)
@@ -64,16 +64,16 @@ func TestStatus(t *testing.T) {
 		t.Fatalf("presence = %+v", p)
 	}
 	r := e.as("bob", "status", "get", "alice").ok(t)
-	if r.stdout != "alice\tunavailable\tidle: waiting for review\n" {
+	if r.stdout != "alice\tunknown\tunknown\tage=-\town notice unknown\n" {
 		t.Fatalf("status get = %q", r.stdout)
 	}
 	e.as("alice", "status", "set", "active").ok(t)
 	r = e.as("alice", "status", "get").ok(t)
-	if r.stdout != "alice\tonline\tactive\n" {
+	if r.stdout != "alice\tunknown\tunknown\tage=-\town notice unknown\n" {
 		t.Fatalf("status get self = %q", r.stdout)
 	}
 	r = e.as("alice", "status", "get", "carol").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, "carol\tunknown\t-")
+	tuitestkit.ContainsStr(t, r.stdout, "carol\tunknown\tunknown\tage=-")
 }
 
 // Proves invalid status values and usage are refused without touching presence.
@@ -84,5 +84,6 @@ func TestStatusNegative(t *testing.T) {
 	e.as("alice", "status", "set", "idle", strings.Repeat("x", 501)).failsWith(t, ExitUsage, "too long")
 	e.as("alice", "status").failsWith(t, ExitUsage, "usage")
 	e.as("alice", "status", "get", "a", "b").failsWith(t, ExitUsage, "usage")
+	e.as("alice", "status", "get", "--stale-after", "0s").failsWith(t, ExitUsage, "usage")
 	tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, "PUT /_matrix/client/v3/presence/{user}/status")
 }

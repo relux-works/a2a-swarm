@@ -189,9 +189,15 @@ func TestIntegrationRealHomeserver(t *testing.T) {
 	e.run("--as", name, "post", itRoom, "--topic", "no-such-topic-"+slug, "x").failsWith(t, ExitError, "not found")
 	e.run("--as", name, "read", "no-such-room-"+slug).failsWith(t, ExitError, "unknown room alias")
 
-	// 10. Presence round-trips.
+	// 10. Legacy presence still round-trips through Matrix; status get now
+	// reports independently published liveness and is covered by fake-server tests.
 	e.run("--as", name, "status", "set", "idle", "integration test").ok(t)
-	tuitestkit.ContainsStr(t, e.run("--as", name, "status", "get").ok(t).stdout, "idle: integration test")
+	presenceCtx, presenceCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer presenceCancel()
+	presence, err := matrix.New(creds.Homeserver, creds.AccessToken).GetPresence(presenceCtx, creds.UserID)
+	if err != nil || presence.Presence != "unavailable" || presence.StatusMsg != "idle: integration test" {
+		t.Fatalf("legacy presence round-trip: err=%v presence=%+v", err, presence)
+	}
 }
 
 // Registration passwords survive only in this gated test's memory, so cleanup

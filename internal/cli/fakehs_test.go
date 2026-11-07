@@ -51,6 +51,9 @@ type fakeHS struct {
 	redactionRequests []fakeRedactionRequest
 	txns              map[string]string // user|room|txn -> event id (send idempotency)
 	syncLimit         int               // per-room timeline limit in /sync (0 = 100, like the real filter)
+	// initialDelivery supplies a first-sync fixture, including membership events
+	// that the legacy message-only fake timeline does not synthesize.
+	initialDelivery *matrix.SyncResponse
 	// historyFloor, when > 0, is the index (in a room's messages) below which
 	// /messages cannot page (a purged history): it keeps returning an empty
 	// chunk with the same end token.
@@ -995,6 +998,11 @@ func (hs *fakeHS) sync(w http.ResponseWriter, r *http.Request, u string) {
 		hs.syncsBy = map[string]int{}
 	}
 	hs.syncsBy[u]++
+	if r.URL.Query().Get("since") == "" && hs.initialDelivery != nil {
+		writeJSON(w, 200, hs.initialDelivery)
+		hs.mu.Unlock()
+		return
+	}
 	hs.mu.Unlock()
 	q := r.URL.Query()
 	timeout, _ := strconv.Atoi(q.Get("timeout"))

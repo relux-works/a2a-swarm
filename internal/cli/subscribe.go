@@ -78,7 +78,8 @@ type Sub struct {
 	Since     string `json:"since,omitempty"`
 	SinceTS   int64  `json:"since_ts,omitempty"`
 	CreatedAt string `json:"created_at"`
-	// Source is the accepted sub-request event id ("legacy" for migrated subscriptions).
+	// Source is the accepted sub-request event id, "legacy" for migrated rows,
+	// or principalSubSource for independent host-principal policy rows.
 	Source string `json:"source,omitempty"`
 }
 
@@ -249,7 +250,7 @@ func (sub Sub) matches(ev matrix.Event, roomID string, h Header, hasHeader bool)
 	if sub.Topic != "" && ev.ThreadRoot() != sub.Topic {
 		return false
 	}
-	if sub.From != "" && ev.Sender != sub.From && !(projected && originSender(sub.From, h.From)) {
+	if sub.From != "" && ev.Sender != sub.From && !(projected && sub.Source != principalSubSource && originSender(sub.From, h.From)) {
 		return false
 	}
 	if len(sub.subtypeList()) > 0 && !contains(sub.subtypeList(), h.Subtype) {
@@ -523,8 +524,8 @@ func addSelectorFlags(fs *flag.FlagSet, roomFlag, topicFlag, roomDefault string)
 	return &selectorFlags{
 		room:      fs.String(roomFlag, roomDefault, "room, or all"),
 		product:   fs.String("product", "", "product projections by canonical alias name"),
-		topic:     fs.String(topicFlag, "", "topic slug or root event id (needs a concrete room)"),
-		from:      fs.String("from", "", "sender (name or user id)"),
+		topic:     fs.String(topicFlag, "", "topic slug or root event id (needs a concrete room; follow first if muted)"),
+		from:      fs.String("from", "", "sender (name or user id); matching subscriptions bypass topic mute"),
 		subject:   fs.String("subject", "", "structured subject or whole token in the body"),
 		subtype:   fs.String("subtype", "", "comma-separated system subtypes"),
 		kind:      fs.String("kind", "", "comma-separated kinds"),
@@ -654,12 +655,16 @@ func cmdSubscribe(ctx context.Context, a *App, args []string) error {
 		}
 		sub.Since = *since
 	}
-	if _, _, err := s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
+	st, _, err := s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
 		sub.ID = newSubID(*list)
 		list.Subs = append(list.Subs, sub)
 		return true, nil
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if sub.Topic != "" && st.IsMuted(sub.Topic) && sub.From == "" && !sub.AllEvents {
+		fmt.Fprintln(a.Stderr, "warning: topic is muted; suppressed matches will not ring or close --until-kind. Use a2a follow before waiting; skipped events are not replayed.")
 	}
 	a.printf("%s\t%s\n", sub.ID, sub.summary(label, s.server))
 	return nil
@@ -681,19 +686,26 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	var removed []string
-	_, _, err = s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
-		if *all {
-			for _, sub := range list.Subs {
-				removed = append(removed, sub.ID)
+	var kept []Sub
+	err = config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+		configured, err := ownerFiles(s.paths, s.name).principals()
+		if err != nil {
+			return err
+		}
+		_, _, err = s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
+			var ids []string
+			if *all {
+				removed, kept = removeAllSubscriptions(list, configured)
+				return len(removed) > 0, nil
+			} else if list.find(pos[0]) < 0 {
+				return false, fmt.Errorf("no subscription %q (see: a2a subs)", sanitizeLine(pos[0]))
+			} else {
+				ids = []string{pos[0]}
 			}
-			list.Subs = []Sub{}
-			return len(removed) > 0, nil
-		}
-		if list.find(pos[0]) < 0 {
-			return false, fmt.Errorf("no subscription %q (see: a2a subs)", sanitizeLine(pos[0]))
-		}
-		removed = append(removed, pos[0])
-		return list.remove(pos[0]), nil
+			removed, err = removeSubscriptions(list, ids, configured)
+			return len(removed) > 0, err
+		})
+		return err
 	})
 	if err != nil {
 		return err
@@ -701,7 +713,10 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 	for _, id := range removed {
 		a.printf("%s\tremoved\n", sanitizeLine(id))
 	}
-	if len(removed) == 0 {
+	for _, sub := range kept {
+		a.printf("%s\tkept: %s\n", sanitizeLine(sub.ID), (&PrincipalSubscriptionError{Reason: PrincipalSubscriptionRequired, Room: sub.Room, Principal: sub.From}).Error())
+	}
+	if len(removed) == 0 && len(kept) == 0 {
 		a.printf("no subscriptions\n")
 	}
 	return nil

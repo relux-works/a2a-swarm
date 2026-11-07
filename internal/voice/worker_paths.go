@@ -12,6 +12,9 @@ type workerPaths struct {
 	model, tokens, data, output string
 }
 
+// voiceOpenModel permits deterministic directory-replacement tests in a child.
+var voiceOpenModel = os.Open
+
 // withWorkerModel is only for the dedicated --voice-worker subprocess. Chdir
 // must never run in the shared CLI/render process. A directory descriptor binds
 // cwd across source renames; revalidate through that cwd before native opens.
@@ -30,7 +33,7 @@ func withWorkerModel(dir, out, manifestPin string, infer func(workerPaths) int) 
 	if err != nil || !st.IsDir() {
 		return 1
 	}
-	f, err := os.Open(dir)
+	f, err := voiceOpenModel(dir)
 	if err != nil {
 		return 1
 	}

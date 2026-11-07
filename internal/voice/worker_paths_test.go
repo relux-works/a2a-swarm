@@ -26,6 +26,43 @@ func TestWorkerPathsProcess(t *testing.T) {
 	if len(args) != 4 {
 		os.Exit(90)
 	}
+	// Replace the actual directory after Lstat and before Open. Both trees have
+	// identical pinned bytes, so content validation cannot mask a missing
+	// directory-identity guard. This seam is confined to this fixture child.
+	if variant := os.Getenv("A2A_WORKER_PATH_OPEN"); variant != "" {
+		voiceOpenModel = func(path string) (*os.File, error) {
+			before, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path, path+".retired"); err != nil {
+				t.Fatal(err)
+			}
+			if variant == "restored" {
+				if err := os.Rename(path+".retired", path); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if pin := workerModelFixture(t, path); pin != args[3] {
+					t.Fatal("replacement must have identical pinned bytes")
+				}
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := f.Stat()
+			if err != nil {
+				f.Close()
+				t.Fatal(err)
+			}
+			if os.SameFile(before, after) != (variant == "restored") {
+				f.Close()
+				t.Fatal("directory replacement did not establish the intended inode relation")
+			}
+			return f, nil
+		}
+	}
 	code := withWorkerModel(args[1], args[2], args[3], func(p workerPaths) int {
 		if os.Getenv("A2A_WORKER_PATH_CONTROL") == "1" {
 			if _, err := os.Stderr.WriteString("inert path callback entered\n"); err != nil {
@@ -74,6 +111,50 @@ func TestWorkerPathsProcess(t *testing.T) {
 		return 0
 	})
 	os.Exit(code)
+}
+
+// A same-content directory replacement must fail before inference. Moving the
+// original directory away and back preserves its identity and remains valid.
+func TestWorkerPathsSameFile(t *testing.T) {
+	for _, variant := range []string{"unchanged", "replaced", "restored"} {
+		t.Run(variant, func(t *testing.T) {
+			parent := t.TempDir()
+			model := filepath.Join(parent, "model")
+			pin := workerModelFixture(t, model)
+			out := filepath.Join(parent, "out.wav")
+			cmd := workerFixtureCommand(t, parent, model, out, pin)
+			cmd.Env = append(cmd.Env, "A2A_WORKER_PATH_CONTROL=1")
+			if variant != "unchanged" {
+				cmd.Env = append(cmd.Env, "A2A_WORKER_PATH_OPEN="+variant)
+			}
+			b, err := cmd.CombinedOutput()
+			entered := bytes.Contains(b, []byte("inert path callback entered\n"))
+			if variant == "replaced" {
+				exit, ok := err.(*exec.ExitError)
+				if !ok || exit.ExitCode() != 1 || entered {
+					t.Fatalf("replaced directory must refuse before inference: error=%v output=%s", err, b)
+				}
+				if _, err := os.Stat(out); !os.IsNotExist(err) {
+					t.Fatal("refused worker produced output")
+				}
+			} else {
+				if err != nil || !entered {
+					t.Fatalf("valid directory failed: error=%v output=%s", err, b)
+				}
+				if b, err := os.ReadFile(out); err != nil || string(b) != "inert inference" {
+					t.Fatalf("valid output=%q error=%v", b, err)
+				}
+			}
+			for _, root := range []string{model, model + ".retired"} {
+				if root != model && variant != "replaced" {
+					continue
+				}
+				if err := validateModel(context.Background(), root, pin); err != nil {
+					t.Fatalf("fixture model changed: %v", err)
+				}
+			}
+		})
+	}
 }
 
 // Valid neighbors produce the exact inert output; refused roots, pins and assets

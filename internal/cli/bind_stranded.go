@@ -13,11 +13,17 @@ import (
 
 const strandedNoticeThreshold = 10 * time.Minute
 
+var errIncidentUnchanged = errors.New("incident report unchanged")
+
 // Reporting grants no input authority. Persist the destination, transaction and
 // immutable content before sending; Matrix deduplicates a possibly applied send.
 // Dispatch owns the control lock during observation; the state lock serializes
 // report writers and retirement during each bounded network operation.
 func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, generation string) error {
+	return a.reportStrandedTerminalNoticeMode(ctx, s, generation, true)
+}
+
+func (a *App) reportStrandedTerminalNoticeMode(ctx context.Context, s *session, generation string, credentialsReady bool) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -32,18 +38,18 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		}
 		b := st.Terminal
 		if b == nil || b.Stopped || b.Generation != generation {
-			return nil
+			return errIncidentUnchanged
 		}
 		n := b.OwnNotice
 		if noticeValid(n) != nil || n.PossiblyOrphaned == nil || !*n.PossiblyOrphaned {
-			return nil
+			return errIncidentUnchanged
 		}
 		since, ok := parseNoticeTimestamp(n.Since)
 		due := since
 		due.second = due.second.Add(strandedNoticeThreshold)
 		now, _ := parseNoticeTimestamp(a.Now().UTC().Format(time.RFC3339Nano))
 		if !ok || now.before(due) {
-			return nil
+			return errIncidentUnchanged
 		}
 		if name, ok := doorbellName(s.creds.UserID, s.server); !ok || name != s.name {
 			return errors.New("incident report refuses foreign identity")
@@ -52,11 +58,32 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		if r == nil || r.Since != n.Since {
 			r = &config.NoticeReport{Since: n.Since, Message: config.LivenessAlertMessage{Txn: matrix.NewTxnID()}}
 			b.NoticeReport = r
+			dropRetiredStrandedAlarms(st)
 		}
 		if r.Sent || a.Now().Before(r.RetryAt) {
+			return errIncidentUnchanged
+		}
+		if r.Alarm {
+			reportErr = queueStrandedAlarm(s, st, a.Now())
+			r.RetryAt = a.Now().Add(b.RetryMax)
+			return nil
+		}
+		if !credentialsReady {
+			// Persist the usual owner/lead jobs now; authenticated delivery resumes
+			// after credential recovery. Missing routes retain the own-room fallback.
+			reportErr = queueStrandedAlarm(s, st, a.Now())
+			if !r.Alarm {
+				r.Outcome = "unavailable: credentials"
+			}
+			r.RetryAt = a.Now().Add(b.RetryMax)
 			return nil
 		}
 		room, routeErr := s.strandedOwnRoom(reportCtx, r.Message.Room)
+		if routeErr != nil && routeErr.Error() == "incident route not configured" && r.Message.Room == "" {
+			reportErr = queueStrandedAlarm(s, st, a.Now())
+			r.RetryAt = a.Now().Add(b.RetryMax)
+			return nil
+		}
 		if routeErr != nil {
 			r.Outcome = routeErr.Error()
 			r.RetryAt = a.Now().Add(b.RetryMax)
@@ -76,6 +103,9 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		pending = &snapshot
 		return nil
 	})
+	if errors.Is(err, errIncidentUnchanged) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -125,8 +155,8 @@ func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 		return "not due"
 	}
 	switch b.NoticeReport.Outcome {
-	case "pending", "published", "unavailable: system incident report failed",
-		"incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed":
+	case "unavailable: alarm acknowledgement missing", "unavailable: invalid alarm state", "queued via mail-alarm", "published via mail-alarm", "unavailable: alarm destination missing", "unavailable: invalid alarm config", "pending", "published", "unavailable: system incident report failed",
+		"incident route not configured", "unavailable: credentials", "unavailable: incident route", "unavailable: pinned incident route changed":
 		return b.NoticeReport.Outcome
 	default:
 		return "unavailable: invalid report state"
@@ -137,9 +167,7 @@ func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 // dispatch completion path used by runTerminal after a healthy observation.
 func (a *App) completeTerminalObservation(ctx context.Context, s *session, generation string) error {
 	a.publishTerminalNotice(ctx, s, generation)
-	if err := a.reportStrandedTerminalNotice(ctx, s, generation); err != nil {
-		fmt.Fprintln(a.Stderr, "binding incident report unavailable; local status retained")
-	}
+	a.reportTerminalIncident(ctx, s, generation)
 	return nil
 }
 
@@ -207,4 +235,35 @@ func (s *session) strandedOwnRoom(ctx context.Context, pinned string) (string, e
 		return "", unavailable
 	}
 	return room, nil
+}
+
+// Persist diagnostic transitions, so repeated retries and consumer restarts do
+// not fill the binding log. Only closed status codes enter the log.
+func (a *App) reportTerminalIncident(ctx context.Context, s *session, generation string) {
+	_ = a.reportStrandedTerminalNotice(ctx, s, generation)
+	st, err := config.LoadState(s.paths, s.name)
+	if err != nil || st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.NoticeReport == nil {
+		return
+	}
+	status := terminalNoticeReportStatus(st.Terminal)
+	if status == "not due" || status == st.Terminal.NoticeReport.LoggedOutcome {
+		return
+	}
+	outcome := ""
+	_, err = config.UpdateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
+		b := st.Terminal
+		if b == nil || b.Generation != generation || b.NoticeReport == nil {
+			return errors.New("incident report changed before logging")
+		}
+		status := terminalNoticeReportStatus(b)
+		if status != "not due" && status != b.NoticeReport.LoggedOutcome {
+			b.NoticeReport.LoggedOutcome = status
+			outcome = status
+			return nil
+		}
+		return errors.New("incident report already logged")
+	})
+	if err == nil && outcome != "" {
+		fmt.Fprintf(a.Stderr, "binding incident report: %s\n", outcome)
+	}
 }

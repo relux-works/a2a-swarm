@@ -52,6 +52,13 @@ func (k *keychainStore) hostPath() (string, error) {
 	return filepath.Join(k.paths.Base, "keychain-state", "host-"+hex.EncodeToString(sum[:])), nil
 }
 
+type keychainPreflightError struct {
+	cause string
+	local bool // No companion ran: this image's installation/launch is unavailable.
+}
+
+func (e *keychainPreflightError) Error() string { return "keychain preflight refused: " + e.cause }
+
 func (k *keychainStore) preflight(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, k.timeoutDuration())
 	defer cancel()
@@ -64,15 +71,15 @@ func (k *keychainStore) preflight(ctx context.Context) error {
 		cmd = k.probeCommand(ctx, args...)
 	} else {
 		if runtime.GOOS != "darwin" {
-			return errors.New("probe requires macOS")
+			return &keychainPreflightError{cause: "companion_unavailable", local: true}
 		}
 		executable, err := os.Executable()
 		if err != nil {
-			return errors.New("probe unavailable")
+			return &keychainPreflightError{cause: "companion_unavailable", local: true}
 		}
 		path, err := resolvedProbePath(executable)
 		if err != nil {
-			return errors.New("probe unavailable")
+			return &keychainPreflightError{cause: "companion_unavailable", local: true}
 		}
 		cmd = exec.CommandContext(ctx, path, args...)
 	}
@@ -80,12 +87,29 @@ func (k *keychainStore) preflight(ctx context.Context) error {
 	var out, stderr limitedSecretBuffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := boundSecurityProcess(cmd); err != nil {
-		return errors.New("probe unavailable")
+		return &keychainPreflightError{cause: "companion_unavailable", local: true}
 	}
 	err := runBoundSecurityProcess(cmd)
-	// Exact token/status pair only. Helper text never escapes into CLI errors.
-	if ctx.Err() != nil || err != nil || out.overflow || stderr.overflow || stderr.Len() != 0 || out.String() != "unlocked\n" {
-		return errors.New("keychain status unavailable or locked")
+	// A process that never started cannot establish a Keychain failure. This
+	// covers missing/nonexecutable companions without relying on error text.
+	if cmd.Process == nil {
+		return &keychainPreflightError{cause: "companion_unavailable", local: true}
+	}
+	cause := ""
+	switch {
+	case ctx.Err() != nil:
+		cause = "preflight_timeout"
+	case errors.Is(err, exec.ErrWaitDelay), errors.Is(err, errSecurityProcessIO), errors.Is(err, errSecurityProcessCleanup):
+		cause = "preflight_io"
+	case !out.overflow && !stderr.overflow && stderr.Len() == 0 && out.String() == "locked\n" && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 3:
+		cause = "preflight_locked"
+	case !out.overflow && !stderr.overflow && stderr.Len() == 0 && out.String() == "error\n" && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 2:
+		cause = "preflight_error"
+	case err != nil || out.overflow || stderr.overflow || stderr.Len() != 0 || out.String() != "unlocked\n":
+		cause = "preflight_refused"
+	}
+	if cause != "" {
+		return &keychainPreflightError{cause: cause}
 	}
 	return nil
 }

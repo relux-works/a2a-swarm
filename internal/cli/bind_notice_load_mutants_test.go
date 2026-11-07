@@ -37,16 +37,18 @@ func TestNoticePublicationLoadNarrowingPlants(t *testing.T) {
 		{"retry-known-no-doubling", `delay = min(b.RetryMax, max(b.Interval, st.NoticeRetry.Delay*2))`, `if !st.NoticeWriteUncertain { delay = min(b.RetryMax, b.Interval) } else { delay = min(b.RetryMax, max(b.Interval, st.NoticeRetry.Delay*2)) }`, "TestNoticeRetryPersistentFailures/forbidden", "cooldown traffic"},
 		{"retry-forbidden-prior-clear", `st.NoticeWriteUncertain = priorUncertain`, `st.NoticeWriteUncertain = priorUncertain && st.Terminal == nil`, "TestNoticeRetryEarlierUncertaintyRebind", "later forbidden erased earlier uncertainty"},
 		{"retry-status-500-exemption", `refusal.Status == http.StatusForbidden`, `(refusal.Status == http.StatusForbidden || refusal.Status == 500)`, "TestOwnStatusDefinitiveRefusalKnowledge/notice/prior-false/server-code", "per-attempt knowledge"},
-		{"retry-hook-ack-reset-exemption", `st.NoticeRetry = nil`, `if record.State != "idle" { st.NoticeRetry = nil }`, "TestNoticeRetryOwnWriterReset/hook/ack-true", "actual ACK did not clear retry state"},
+		{"retry-hook-ack-reset-exemption", `st.NoticeRetry = nil
+		} else if`, `if record.State != "idle" { st.NoticeRetry = nil }
+		} else if`, "TestNoticeRetryOwnWriterReset/hook/ack-true", "actual ACK did not clear retry state"},
 		{"retry-partial-error-decode", `if readErr == nil && len(data) < maxErrorBody && ctx.Err() == nil && json.Unmarshal(data, &decoded) == nil {`, `if readErr == nil && len(data) < maxErrorBody && ctx.Err() == nil && (json.Unmarshal(data, &decoded) == nil || decoded.ErrCode == "M_FORBIDDEN") {`, "TestOwnStatusDefinitiveRefusalKnowledge/notice/prior-false/partial-decode", "per-attempt knowledge"},
 		{"retry-put-body-error-exemption", `if readErr == nil && len(data) < maxErrorBody && ctx.Err() == nil && json.Unmarshal(data, &decoded) == nil {`, `if (readErr == nil || method == http.MethodPut) && len(data) < maxErrorBody && ctx.Err() == nil && json.Unmarshal(data, &decoded) == nil {`, "TestOwnStatusDefinitiveRefusalKnowledge/notice/prior-false/body-read-error", "per-attempt knowledge"},
 		{"retry-zero-policy-exemption", `b.Interval < time.Second`, `b.Interval < time.Second && b.Interval != 0`, "TestNoticeRetryPolicy/zero", "invalid retry policy made HTTP or mutated knowledge"},
 		{"retry-zero-delay-exemption", `retry.Delay <= 0`, `retry.Delay < 0`, "TestNoticeRetryMalformedState/zero", "invalid retry did not report pending"},
-		{"shared-writer-helper-bypass", `err := s.putOwnStatus(writeCtx, st, record)`, `room, _, err := s.resolveRoom(writeCtx, StatusRoom); if err == nil { _, err = s.client.PutState(writeCtx, room, StatusEventType, s.creds.UserID, record) }; if err == nil { st.Liveness = &record }`, "TestNoticeSharedWriterUncertainty/hook-cancelled", "same-identity unacknowledged writer bypassed required reconciliation and fabricated certainty"},
+		{"shared-writer-helper-bypass", `publicationErr := s.putOwnStatus(writeCtx, &snapshot, record)`, `room, _, publicationErr := s.resolveRoom(writeCtx, StatusRoom); if publicationErr == nil { _, publicationErr = s.client.PutState(writeCtx, room, StatusEventType, s.creds.UserID, record) }; if publicationErr == nil { snapshot.Liveness = &record }`, "TestNoticeSharedWriterUncertainty/hook-cancelled", "same-identity unacknowledged writer bypassed required reconciliation and fabricated certainty"},
 		{"uncertain-known-equality-exemption", `if !st.NoticeWriteUncertain {`, `if (!st.NoticeWriteUncertain || b.OwnNotice.PossiblyOrphaned != nil) {`, "TestNoticeReturnToAcknowledgedAfterCancellation/applied-cancelled", "uncertain equality did not publish exactly once"},
-		{"resolve-before-local-checks", `var publicationErr error`, `if current, loadErr := config.LoadState(s.paths, s.name); loadErr == nil && current.Liveness == nil { if _, _, eagerErr := s.resolveRoom(writeCtx, StatusRoom); eagerErr != nil { return eagerErr } }; var publicationErr error`, "TestNoticeDispatchLocalNoop/missing", "local no-op made network requests"},
-		{"unchanged-resolve", `if reflect.DeepEqual(st.Liveness.OwnNotice, b.OwnNotice) {`, `if reflect.DeepEqual(st.Liveness.OwnNotice, b.OwnNotice) { if _,_,err:=s.resolveRoom(writeCtx,StatusRoom);err!=nil{return err};`, "TestNoticeDispatchLocalNoop/unchanged", "local no-op made network requests"},
-		{"missing-pending", `b.NoticePublication = "unavailable: no liveness record (a2a status set)"`, `b.NoticePublication = "pending: own liveness publication"`, "TestNoticeDispatchLocalNoop/missing", "missing liveness cause lost"},
+		{"resolve-before-local-checks", `var publicationErr error`, `if _, _, eagerErr := s.resolveRoom(ctx, StatusRoom); eagerErr != nil { return eagerErr }; var publicationErr error`, "TestNoticeDispatchLocalNoop/unchanged", "local no-op made network requests"},
+		{"unchanged-resolve", `if ack != nil && reflect.DeepEqual(ack.OwnNotice, b.OwnNotice) {`, `if ack != nil && reflect.DeepEqual(ack.OwnNotice, b.OwnNotice) { if _,_,err:=s.resolveRoom(ctx,StatusRoom);err!=nil{return config.AgentStatus{},false,err};`, "TestNoticeDispatchLocalNoop/unchanged", "local no-op made network requests"},
+		{"missing-liveness-network", `if st.Liveness == nil {`, `if st.Liveness == nil { _,_,_ = s.resolveRoom(ctx,StatusRoom);`, "TestNoticeDispatchLocalNoop/missing", "local no-op made network requests"},
 		{"stopped-generation-exemption", `|| st.Terminal.Stopped {`, `|| st.Terminal.Stopped && generation!="deadline" {`, "TestNoticePublicationLocalOwnerGates/stopped", "local owner gate made network requests"},
 		{"stale-deadline-exemption", `st.Terminal.Generation != generation`, `st.Terminal.Generation != generation && generation!="deadline"`, "TestNoticePublicationLocalOwnerGates/stale", "local owner gate made network requests"},
 		{"foreign-bob-exemption", `if !ok || name != s.name {`, `if !ok || name != s.name && name!="bob" {`, "TestNoticePublicationLocalOwnerGates/foreign", "local owner gate made network requests"},
@@ -54,7 +56,7 @@ func TestNoticePublicationLoadNarrowingPlants(t *testing.T) {
 		{"not-found-pre-send-uncertainty", "if err != nil {\n\t\tif st.Terminal != nil {", "if err != nil { if errors.Is(err, matrix.ErrUnknownAlias) { st.NoticeWriteUncertain = true };\n\t\tif st.Terminal != nil {", "TestNoticeCurrentRoomPreSendKnowledge/wait/false/M_NOT_FOUND", "pre-send resolution changed ACK/certainty or bypassed resolver"},
 		{"cache-without-invalidation", `func (s *session) putOwnStatus`, `var mutantStatusRooms sync.Map
 func (s *session) putOwnStatus`, "TestNoticeCurrentRoomRotation/hook/silent", "current-room publication used stale alias"},
-		{"recovered-equality-exemption", `if reflect.DeepEqual(st.Liveness.OwnNotice, b.OwnNotice) {`, `if reflect.DeepEqual(st.Liveness.OwnNotice, b.OwnNotice) { if b.NoticePublication=="unavailable: no liveness record (a2a status set)" {return nil};`, "TestNoticeDispatchLocalNoop/recovered", "acknowledged notice retains missing cause"},
+		{"recovered-equality-exemption", `if ack != nil && reflect.DeepEqual(ack.OwnNotice, b.OwnNotice) {`, `if ack != nil && reflect.DeepEqual(ack.OwnNotice, b.OwnNotice) { if b.NoticePublication=="unavailable: no liveness record (a2a status set)" {return config.AgentStatus{},false,nil};`, "TestNoticeDispatchLocalNoop/recovered", "acknowledged notice retains missing cause"},
 		{"missing-observation-exemption", `!reflect.DeepEqual(current.OwnNotice, n) && current.NoticePublication == "published"`, `!reflect.DeepEqual(current.OwnNotice, n) && (current.NoticePublication == "published" || input=="empty")`, "TestNoticeObservationDoesNotMarkPending", "missing liveness cause changed during observation"},
 	}
 
@@ -123,7 +125,7 @@ func (s *session) putOwnStatus`, "TestNoticeCurrentRoomRotation/hook/silent", "c
 			}
 			path := filepath.Join(dst, "internal/cli/bind_notice.go")
 			if p.name == "shared-writer-helper-bypass" {
-				path = filepath.Join(dst, "internal/cli/liveness.go")
+				path = filepath.Join(dst, "internal/cli/own_status.go")
 			}
 			if p.name == "forbidden-pre-send-uncertainty" || p.name == "not-found-pre-send-uncertainty" || p.name == "cache-without-invalidation" {
 				path = filepath.Join(dst, "internal/cli/own_status.go")

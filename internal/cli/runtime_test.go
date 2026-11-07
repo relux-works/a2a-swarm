@@ -122,7 +122,7 @@ func TestRuntimeReconciliationAvoidsFullHistory(t *testing.T) {
 	}
 }
 
-func runtimeWorld(t *testing.T) (*env, string, *nativeFixture, string) {
+func runtimeUnboundWorld(t *testing.T) (*env, string, *nativeFixture) {
 	t.Helper()
 	e, room := world(t)
 	e.as("alice", "status", "init").ok(t)
@@ -149,7 +149,13 @@ func runtimeWorld(t *testing.T) (*env, string, *nativeFixture, string) {
 	cwd, _ := os.Getwd()
 	n := &nativeFixture{thread: codexwake.Snapshot{ID: "owned-thread", Cwd: cwd, Status: codexwake.Status{Type: "idle"}}, endpoint: endpoint, socket: socket, cwd: cwd}
 	e.configure = func(a *App) { a.nativeDial = func(context.Context, string) (nativeRuntime, error) { return n, nil } }
-	e.as("alice", "runtime", "bind", "--codex-thread", n.thread.ID, "--endpoint", endpoint, "--owner-pid", strconv.Itoa(os.Getpid()), "--heartbeat", "1m", "--max-wakes-per-hour", "2", "--gate", "ready", "--hooks", "none").ok(t)
+	return e, room, n
+}
+
+func runtimeWorld(t *testing.T) (*env, string, *nativeFixture, string) {
+	t.Helper()
+	e, room, n := runtimeUnboundWorld(t)
+	e.as("alice", "runtime", "bind", "--codex-thread", n.thread.ID, "--endpoint", n.endpoint, "--owner-pid", strconv.Itoa(os.Getpid()), "--heartbeat", "1m", "--max-wakes-per-hour", "2", "--gate", "ready", "--hooks", "none").ok(t)
 	e.extra[EnvSessionID] = n.thread.ID
 	return e, room, n, e.state("alice").Runtime.Generation
 }

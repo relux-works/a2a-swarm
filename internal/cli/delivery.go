@@ -137,6 +137,9 @@ func (f deliveryFilter) allRooms() map[string]bool {
 
 // shows reports whether wait/watch with this filter prints e.
 func (f deliveryFilter) shows(e config.MailEntry) bool {
+	if principalMail(e, f.predicates.principals) {
+		return true // A room or message predicate cannot suppress principal wake.
+	}
 	if e.Kind == config.MailInvite {
 		return true
 	}
@@ -170,9 +173,16 @@ func inviteEntry(roomID, since string, state []matrix.Event, me, server string) 
 // --all accepts) while it pages; they are classified oldest first. all is the
 // set of rooms whose every message counts (wait/watch --all).
 func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string) (batch, error) {
+	return s.collectBatchWithPrincipals(ctx, resp, since, st, subs, all, labels, s.principals)
+}
+
+func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
 	var b batch
 	me := s.creds.UserID
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
+		if s.adminRoomExcluded(roomID) {
+			continue
+		}
 		b.entries = append(b.entries, inviteEntry(roomID, since, resp.Rooms.Invite[roomID].InviteState.Events, me, s.server))
 	}
 	byID := map[string]Sub{}
@@ -181,8 +191,12 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 	}
 	closed := map[string]bool{}
 	seen := map[string]bool{}
+	firstPages := firstSyncMaxPages
 	// Iterate rooms in a stable order so output is deterministic.
 	for _, roomID := range sortedKeys(resp.Rooms.Join) {
+		if s.adminRoomExcluded(roomID) {
+			continue
+		}
 		jr := resp.Rooms.Join[roomID]
 		keep := func(ev matrix.Event) bool {
 			if ev.Type == "m.room.redaction" || ev.IsRedacted() {
@@ -194,10 +208,20 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 			if ev.Sender == me || ev.ThreadRoot() != "" || all[roomID] {
 				return true
 			}
-			rel, _, _ := classify(ev, roomID, me, s.name, st, subs)
+			rel, _, _ := classifyWithPrincipals(ev, roomID, me, s.name, st, subs, configured)
 			return rel != ""
 		}
-		events, gap, err := s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
+		var events []matrix.Event
+		var gap *backfillGap
+		var err error
+		if since == "" {
+			events, gap, err = s.firstTimeline(ctx, roomID, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, resp.NextBatch, &firstPages)
+			if err == nil {
+				events, _, err = s.timelineEvents(ctx, roomID, "", events, false, "", keep)
+			}
+		} else {
+			events, gap, err = s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
+		}
 		if err != nil {
 			return b, fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
 		}
@@ -216,7 +240,7 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 					}
 				}
 			}
-			rel, root, matched := classify(ev, roomID, me, s.name, st, active)
+			rel, root, matched := classifyWithPrincipals(ev, roomID, me, s.name, st, active, configured)
 			if root != "" {
 				b.learned = append(b.learned, root)
 				st.AddThread(root)
@@ -239,7 +263,7 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 				}
 			}
 			subID := ""
-			if rel == relSub {
+			if rel == relSub && len(matched) > 0 && !mandatoryPrincipal(ev, configured) {
 				subID = matched[0]
 			}
 			raw, err := json.Marshal(ev)
@@ -268,6 +292,11 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {
 			return nil, err
+		}
+		for _, entry := range mb.Pending() {
+			if s.adminRoomExcluded(entry.Room) {
+				return nil, errors.New("admin-room retained mailbox refused; private owner recovery required")
+			}
 		}
 		return fn(cur, mb)
 	}
@@ -351,38 +380,88 @@ func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since st
 	return s.persist(ctx, b, since, resp.NextBatch, deadline)
 }
 
-// takePosition is the very first run: it takes a sync position without
-// replaying history; pending invites go into the mailbox first.
+// takePosition is the very first run. Only history after the identity's own
+// join is eligible; the initial sync and recovery share one HTTP deadline.
 func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.State, error) {
-	resp, err := s.client.Sync(ctx, "", 0, initialFilter)
+	return s.takePositionAll(ctx, deadline, nil)
+}
+
+func (s *session) takePositionAll(ctx context.Context, deadline time.Time, all map[string]bool) (config.State, error) {
+	ctx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
+	defer cancel()
+	resp, err := s.client.Sync(ctx, "", 0, firstDeliveryFilter)
 	if err != nil {
 		return config.State{}, err
 	}
-	return s.savePosition(ctx, resp, deadline)
+	return s.savePositionAll(ctx, resp, deadline, all)
 }
 
 func (s *session) savePosition(ctx context.Context, resp matrix.SyncResponse, deadline time.Time) (config.State, error) {
-	var b batch
-	for roomID, jr := range resp.Rooms.Join {
-		if s.client.FilterEvents != nil {
-			events, err := s.client.FilterEvents(roomID, jr.Timeline.Events)
-			if err != nil {
-				return config.State{}, err
-			}
-			jr.Timeline.Events = events
+	return s.savePositionAll(ctx, resp, deadline, nil)
+}
+
+func (s *session) savePositionAll(ctx context.Context, resp matrix.SyncResponse, deadline time.Time, all map[string]bool) (config.State, error) {
+	ctx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
+	defer cancel()
+	snap, err := config.LoadState(s.paths, s.name)
+	if err != nil || snap.NextBatch != "" {
+		return snap, err // Another consumer already established this identity's cursor.
+	}
+	// Preserve initial redaction learning, including for already retained mail,
+	// without treating pre-join messages as delivery candidates.
+	var redactions []config.Redaction
+	if s.client.FilterEvents != nil {
+		// Scope the callback to this scan without mutating the caller's client.
+		bounded := *s
+		client := *s.client
+		bounded.client = &client
+		s = &bounded
+		s.installRedactionCacheContext(ctx)
+	}
+	for _, roomID := range sortedKeys(resp.Rooms.Join) {
+		if s.adminRoomExcluded(roomID) {
+			continue
 		}
-		b.redactions = append(b.redactions, eventRedactions(roomID, jr.Timeline.Events)...)
+		jr := resp.Rooms.Join[roomID]
+		if len(jr.Timeline.Events) > backfillPageSize {
+			continue // The bounded collector will report this malformed tail as a gap.
+		}
+		if s.client.FilterEvents != nil {
+			jr.Timeline.Events, err = s.client.FilterEvents(roomID, jr.Timeline.Events)
+			if err != nil {
+				return snap, err
+			}
+			resp.Rooms.Join[roomID] = jr
+		}
+		redactions = append(redactions, eventRedactions(roomID, jr.Timeline.Events)...)
 	}
-	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
-		b.entries = append(b.entries, inviteEntry(roomID, "", resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
+	s.principals = s.readDeliveryPrincipals()
+	list, err := s.getSubs(ctx)
+	if err != nil {
+		return snap, err
 	}
+	var subs []Sub
+	for _, sub := range list.Subs {
+		if !sub.expiredAt(s.app.Now()) {
+			subs = append(subs, sub)
+		}
+	}
+	b, err := s.collectBatch(ctx, resp, "", snap, subs, all, map[string]string{})
+	if err != nil {
+		return snap, err
+	}
+	if err := ctx.Err(); err != nil {
+		return snap, err // A timed-out scan must not commit a partial baseline.
+	}
+	b.redactions = append(b.redactions, redactions...)
 	return s.persist(ctx, b, "", resp.NextBatch, deadline)
 }
 
 // syncNow is the "bring the mailbox up to date" step of inbox and the hooks:
 // one /sync from the cursor with timeout 0 (no long poll), persisted like
-// wait's; the first run only takes a position.
+// wait's; the first run recovers only bounded post-join message history.
 func (s *session) syncNow(ctx context.Context, st config.State, subs []Sub, deadline time.Time) (config.State, error) {
+	s.principals = s.readDeliveryPrincipals()
 	if st.NextBatch == "" {
 		return s.takePosition(ctx, deadline)
 	}
@@ -409,6 +488,7 @@ const shownHint = "a2a: printed entries stay in the mailbox until received: run 
 // the state lock (so concurrent waits never print the same entry). It receipts
 // nothing. It returns how many it printed.
 func (a *App) showNew(ctx context.Context, s *session, f deliveryFilter, asJSON bool) (int, error) {
+	f.predicates.principals = s.principals
 	printed := 0
 	_, err := s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
 		var items []waitItem
@@ -508,14 +588,17 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	var lastHeartbeat time.Time
 	if *status != "" {
 		if err := s.writeLivenessSource(ctx, profile, "wait"); err != nil {
-			return err
+			if !errors.Is(err, ErrOwnStatusPending) {
+				return err
+			}
+		} else {
+			lastHeartbeat = a.Now()
 		}
-		lastHeartbeat = a.Now()
 		defer func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), nativeRPCTimeout)
 			defer cancel()
 			profile.Doorbell = "none"
-			if err := s.writeLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {
+			if err := s.retryLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {
 				fmt.Fprintln(a.Stderr, "wait liveness disarm:", a.secrets.Scrub(sanitizeLine(err.Error())))
 			}
 		}()
@@ -536,21 +619,27 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	}
 	if st.NextBatch == "" {
 		if st, err = waitRetry(ctx, s, deadline, func() (config.State, error) {
-			resp, err := s.waitSync(ctx, "", 0, initialFilter)
+			initialCtx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
+			defer cancel()
+			resp, err := s.waitSync(initialCtx, "", 0, firstDeliveryFilter)
 			if err != nil {
 				return config.State{}, err
 			}
-			return s.savePosition(ctx, resp, time.Time{})
+			return s.savePositionAll(initialCtx, resp, time.Time{}, filter.allRooms())
 		}); err != nil {
 			return err
 		}
 	}
 	for {
+		s.principals = s.readDeliveryPrincipals()
 		if *status != "" && a.Now().Sub(lastHeartbeat) >= *heartbeat {
 			if err := s.writeLivenessSource(ctx, profile, "wait-heartbeat"); err != nil {
-				return err
+				if !errors.Is(err, ErrOwnStatusPending) {
+					return err
+				}
+			} else {
+				lastHeartbeat = a.Now()
 			}
-			lastHeartbeat = a.Now()
 		}
 		n, err := a.showNew(ctx, s, filter, *asJSON)
 		if err != nil {
@@ -691,11 +780,12 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		return stopped(err)
 	}
 	if st.NextBatch == "" {
-		if st, err = s.takePosition(ctx, time.Time{}); err != nil {
+		if st, err = s.takePositionAll(ctx, time.Time{}, filter.allRooms()); err != nil {
 			return stopped(err)
 		}
 	}
 	for {
+		s.principals = s.readDeliveryPrincipals()
 		if _, err := a.showNew(ctx, s, filter, *asJSON); err != nil {
 			return err
 		}

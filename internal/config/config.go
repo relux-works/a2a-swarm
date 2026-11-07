@@ -344,6 +344,8 @@ type State struct {
 	// NextBatch is the sync cursor: every relevant event before it is in the
 	// mailbox (appended and fsynced before the cursor was saved).
 	NextBatch string `json:"next_batch,omitempty"`
+	// LastInbox names the last explicitly saved inbox frame; it grants no delivery authority.
+	LastInbox string `json:"last_inbox,omitempty"`
 	// LegacyPending is the pre-mailbox pending wait batch. It is dropped at the
 	// first sync: the cursor never moved past it, so its events are synced
 	// into the mailbox again.
@@ -375,11 +377,22 @@ type State struct {
 	Terminal *TerminalBinding   `json:"terminal,omitempty"`
 	Wake     codexwake.Ledger   `json:"wake,omitempty"`
 	Liveness *AgentStatus       `json:"liveness,omitempty"`
+	// RuntimeProfilePending retains the desired bind profile until an ACK for
+	// this generation, independently of whether any liveness record exists.
+	RuntimeProfilePending *RuntimeProfilePending `json:"runtime_profile_pending,omitempty"`
 	// Knowledge of the identity's status event survives terminal replacement.
+	// NoticeStatus acknowledges notice-only publication without enabling liveness.
+	NoticeStatus         *AgentStatus             `json:"notice_status,omitempty"`
 	NoticeWriteUncertain bool                     `json:"notice_write_uncertain,omitempty"`
 	NoticeRetry          *NoticeRetry             `json:"notice_retry,omitempty"`
+	OwnStatusWrite       *OwnStatusWrite          `json:"own_status_write,omitempty"`
 	LivenessSource       string                   `json:"liveness_source,omitempty"`
 	LivenessAlerts       map[string]LivenessAlert `json:"liveness_alerts,omitempty"`
+}
+
+type RuntimeProfilePending struct {
+	Generation string      `json:"generation"`
+	Profile    AgentStatus `json:"profile"`
 }
 
 // HookSession is the doorbell state of one agent session.
@@ -551,6 +564,9 @@ func LoadState(p Paths, name string) (State, error) {
 	if err := unmarshalState(data, &s); err != nil {
 		return State{}, fmt.Errorf("%s is not valid state JSON: %w", path, err)
 	}
+	if err := s.validateHostNotifications(); err != nil {
+		return State{}, err
+	}
 	return s, nil
 }
 
@@ -564,16 +580,22 @@ func SaveState(p Paths, name string, s State) error {
 	if err != nil {
 		return err
 	}
-	if old.HostEnrollment != nil && (s.HostEnrollment == nil || !s.HostEnrollment.same(*old.HostEnrollment)) {
+	if !validHostNotificationWrite(old, s) {
 		return ErrHostEnrollment
 	}
 	path := p.StateFile(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	strict := s.HostEnrollment != nil && s.HostEnrollment.Version == 2
+	if !strict {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
 	}
 	data, err := marshalState(s)
 	if err != nil {
 		return err
+	}
+	if strict {
+		return writeHostStateAtomic(p, name, append(data, '\n'))
 	}
 	return writeSecretAtomic(path, name, append(data, '\n'))
 }

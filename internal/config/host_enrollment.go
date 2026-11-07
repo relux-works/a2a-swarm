@@ -1,10 +1,9 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -36,8 +35,10 @@ type HostAttachment struct {
 }
 
 type HostEnrollment struct {
-	Version    int            `json:"version"`
-	Attachment HostAttachment `json:"attachment"`
+	Version    int                   `json:"version"`
+	Attachment HostAttachment        `json:"attachment"`
+	ReceiptRef string                `json:"receipt_ref,omitempty"`
+	Attempts   *NotificationAttempts `json:"attempts,omitempty"`
 }
 
 func hostRef(s string, limit int) bool {
@@ -76,11 +77,22 @@ func (a HostAttachment) same(b HostAttachment) bool {
 }
 
 func (e HostEnrollment) same(other HostEnrollment) bool {
-	return e.Version == other.Version && e.Attachment.same(other.Attachment)
+	return e.Version == other.Version && e.ReceiptRef == other.ReceiptRef && e.Attachment.same(other.Attachment)
 }
 func (e HostEnrollment) Validate() error {
-	if e.Version != 1 || !e.Attachment.valid() {
+	if !e.Attachment.valid() {
 		return ErrHostEnrollment
+	}
+	if e.Version == 1 && e.ReceiptRef == "" && e.Attempts == nil {
+		return nil
+	}
+	if e.Version != 2 || len(e.ReceiptRef) != len("a2a-enrollment-")+32 || !strings.HasPrefix(e.ReceiptRef, "a2a-enrollment-") || !lowerHex(strings.TrimPrefix(e.ReceiptRef, "a2a-enrollment-"), 32) || e.Attempts == nil || e.Attempts.Validate() != nil {
+		return ErrHostEnrollment
+	}
+	for i, attempt := range e.Attempts.Entries {
+		if !e.matches(attempt.Key) || i > 0 && attempt.Key.Binding != e.Attempts.Entries[0].Key.Binding {
+			return ErrHostEnrollment
+		}
 	}
 	return nil
 }
@@ -90,12 +102,11 @@ func (e HostEnrollment) Validate() error {
 func (e *HostEnrollment) UnmarshalJSON(data []byte) error {
 	type plain HostEnrollment
 	var next plain
-	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&next); err != nil {
+	if !utf8.Valid(data) || DecodeConnectionJSON(data, &next) != nil {
 		return ErrHostEnrollment
 	}
-	if err := d.Decode(new(any)); err != io.EOF {
+	var fields any
+	if json.Unmarshal(data, &fields) != nil || !literalAttemptFields(fields) {
 		return ErrHostEnrollment
 	}
 	if err := HostEnrollment(next).Validate(); err != nil {

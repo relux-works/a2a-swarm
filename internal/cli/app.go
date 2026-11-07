@@ -57,6 +57,7 @@ type App struct {
 
 	// keychain is a package-test-only factory. Production stays pinned to security.
 	keychain              func(config.Paths) *keychainStore
+	bindStartupWait       func(context.Context, time.Duration) error // deterministic startup retry seam
 	beforeCredentialScrub func() error
 	ctx                   context.Context
 
@@ -64,14 +65,19 @@ type App struct {
 	// printed and before it records that (shown, receipt, rung set): an error
 	// simulates a crash there.
 	afterPrint func() error
+	// afterOwnStatusPending observes local contention after releasing the state
+	// lock (tests only), so fixtures can clear a seeded fence deterministically.
+	afterOwnStatusPending func()
+	// runtimeBindStatusBudget shortens only the one-shot bind publication in tests.
+	runtimeBindStatusBudget time.Duration
 	// beforeDeliver, when set (tests only), runs after a consumer synced and
 	// before it takes the state lock to persist and print: tests use it to let
 	// a concurrent consumer win the race.
 	beforeDeliver func()
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
-	// exe resolves this binary's path for `hook install` (nil: os.Executable).
-	exe func() (string, error)
+	// hookSelection replaces executable selection in installer merge tests only.
+	hookSelection func(hookExecutableChoice) (hookExecutableSelection, error)
 	// stdinTTY reports whether stdin is an interactive terminal, which --human
 	// requires (nil: stdinIsTerminal on os.Stdin; tests override it).
 	stdinTTY func() bool
@@ -124,13 +130,13 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
-		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
+		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room   named Matrix routing", cmdConnection},
+		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"availability", "availability <localpart|@localpart:server> [--json]   read selected-server registration availability (no existence guarantee)", cmdAvailability},
-		{"host", "host init <slug> [--force] | host show   this machine's host slug, the first part of every identity", cmdHost},
+		{"host", "host init <slug> [--force] | host show | host principals set|show|clear   this machine's host slug, the first part of every identity", cmdHost},
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
@@ -144,7 +150,7 @@ func commands() []command {
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
 		{"post", "post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--voice] <text|@file|->", cmdPost},
 		{"attach", "attach <room> --topic <slug|$event> <file> [--kind K] [--to a,b] [--pin] [caption|@file|-]   share a file", cmdAttach},
-		{"fetch", "fetch <room> <$event> [-o path] | fetch <mxc://...> --sha256 <hex> [-o path]   download and verify a file", cmdFetch},
+		{"fetch", "fetch <room> <$event> [-o path] | fetch <mxc://...> --sha256 <hex> [-o path]   download a file (native hash is unverified)", cmdFetch},
 		{"files", "files <room> [--topic X] [--last N] [--json]   list shared files, oldest first", cmdFiles},
 		{"pin", "pin <room> <$event>                  pin an event (m.room.pinned_events)", cmdPin},
 		{"unpin", "unpin <room> <$event>                unpin an event", cmdUnpin},
@@ -154,11 +160,11 @@ func commands() []command {
 		{"wait", "wait [--room R ...] [--all] [--match-text REGEX] [--from A,B] [--kind k1,k2] [--to-me-only] [--timeout 25m|0] [--json]   block for selected new mailbox entries (acknowledges nothing)", cmdWait},
 		{"watch", "watch [--room R ...] [--all] [--match-text REGEX] [--from A,B] [--kind k1,k2] [--to-me-only] [--json]   stream selected new mailbox entries (acknowledges nothing)", cmdWatch},
 		{"inbox", "inbox [--limit N] [--json]           print unreceived mailbox entries inside an untrusted-data frame, then receipt exactly them (N <= 50)", cmdInbox},
-		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude) and Codex (R=codex) hooks: a doorbell (counts only) in the session", cmdHook},
+		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] [--executable PATH | --installed-command PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude), Codex (R=codex) and Muse (R=muse) hooks: a doorbell (counts only) in the session", cmdHook},
 		{"ack", "ack <id...>|all-shown               receipt mailbox entries (all-shown: every entry wait/watch printed)", cmdAck},
-		{"mute", "mute <room> --topic X                 stop replies in a thread from ringing (to/mentions still ring)", cmdMute},
+		{"mute", "mute <room> --topic X                 suppress thread replies and room subscriptions (to/mentions/from still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},
-		{"subscribe", "subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]   add a runtime subscription", cmdSubscribe},
+		{"subscribe", "subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]   add a runtime subscription (muted topics need follow; --from still matches)", cmdSubscribe},
 		{"unsubscribe", "unsubscribe <sub-id>|--all             remove subscriptions", cmdUnsubscribe},
 		{"subs", "subs [--json] | subs check [--json] | subs trim --room R (--drop K --reason TEXT | --clear) | subs sync [--preset P --product X]", cmdSubs},
 		{"subscriptions", "subscriptions [--json]               alias of subs", cmdSubs},
@@ -171,7 +177,7 @@ func commands() []command {
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},
 		{"runtime", "runtime bind --codex-thread ID --endpoint unix:///SOCK --owner-pid PID --heartbeat DUR --max-wakes-per-hour N --gate G --hooks H [--product X] [--watch] | dispatch|gate|abandon|status   launcher-owned native Codex wake", cmdRuntime},
-		{"bind", "bind --runtime R --owner-pid PID [--interval DUR --retry-max DUR --max-wakes-per-hour N] [--session-id ID]   bind this tmux session once; persistent counts-only wake", cmdBind},
+		{"bind", "bind association --private-intent-fd=3 --json | bind --runtime R --owner-pid PID [--interval DUR --retry-max DUR --max-wakes-per-hour N] [--session-id ID]   stored association or persistent counts-only wake", cmdBind},
 		{"unbind", "unbind                               stop this session's persistent wake process", cmdUnbind},
 	}
 }
@@ -205,17 +211,24 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if a.HTTP == nil {
 		a.HTTP = &http.Client{}
 	}
-	if err := verificationGlobalSelection(args); err != nil {
+	globalFailure := func(err error) int {
+		if rest := associationInvocation(args); rest != nil {
+			// Global guards still refuse, through the association's closed output.
+			return a.bindAssociation(append(rest, "--invalid-global-selection"))
+		}
 		return a.fail(err)
+	}
+	if err := verificationGlobalSelection(args); err != nil {
+		return globalFailure(err)
 	}
 	rest, err := a.extractGlobal(args)
 	if err != nil {
-		return a.fail(err)
+		return globalFailure(err)
 	}
 	if a.human && !a.interactive() {
 		// Agents' tool calls have no terminal on stdin, so an agent cannot use a
 		// human's account even when it knows the flag.
-		return a.fail(usagef("--human needs an interactive terminal on stdin: only a human at a terminal uses a human account"))
+		return globalFailure(usagef("--human needs an interactive terminal on stdin: only a human at a terminal uses a human account"))
 	}
 	if len(rest) == 0 || rest[0] == "help" || rest[0] == "-h" || rest[0] == "--help" {
 		if len(rest) == 0 {
@@ -227,14 +240,22 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
+			// Stored association is effect-free and has its own closed JSON
+			// refusals. Both preflight and owner warnings read unrelated state.
+			if c.name == "bind" && len(rest) > 1 && rest[1] == "association" {
+				return a.bindAssociation(rest[2:])
+			}
 			// This anonymous public read has its own routing-only preflight. It
 			// must not consult credentials, secret stores or owner-DM state.
-			if c.name == "availability" {
+			if c.name == "availability" || c.name == "voice" && len(rest) > 1 && rest[1] == "status" {
 				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// Fetch parses usage/help before consulting connection or identity state.
 			if c.name != "fetch" {
 				if err := a.connectionPreflight(c.name, rest[1:]); err != nil {
+					if c.name == "connection" && len(rest) > 1 && rest[1] == "register" {
+						return a.fail(adminRegistrationError("configuration", err))
+					}
 					return a.fail(err)
 				}
 				if c.name != "owner-dm" {
@@ -398,14 +419,16 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // session is an authenticated identity bound to one homeserver.
 type session struct {
-	app          *App
-	paths        config.Paths
-	mx           config.Matrix
-	name         string
-	creds        config.Credentials
-	client       *matrix.Client
-	server       string
-	checkBinding func() error // Immutable operational snapshot; nil for legacy sessions.
+	app              *App
+	paths            config.Paths
+	mx               config.Matrix
+	name             string
+	creds            config.Credentials
+	client           *matrix.Client
+	server           string
+	checkBinding     func() error // Immutable operational snapshot; nil for legacy sessions.
+	principals       []string     // Local snapshot for this delivery cycle; no lock spans I/O.
+	principalWarning bool         // Emit malformed/unreadable metadata warning once per session.
 }
 
 func (a *App) paths() (config.Paths, error) {
@@ -473,6 +496,10 @@ func (a *App) session() (*session, error) {
 
 // sessionAs opens the session of name (already validated and guarded).
 func (a *App) sessionAs(name string) (*session, error) {
+	return a.sessionAsMode(name, false)
+}
+
+func (a *App) sessionAsMode(name string, metadataOnly bool) (*session, error) {
 	p, mx, err := a.loadMatrix()
 	if err != nil {
 		return nil, err
@@ -481,11 +508,19 @@ func (a *App) sessionAs(name string) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	creds, err := a.loadCredentials(a.context(), p, name)
+	var creds config.Credentials
+	if metadataOnly {
+		creds, err = a.credentialMetadata(p, name)
+	} else {
+		creds, err = a.loadCredentials(a.context(), p, name)
+	}
 	if err != nil {
 		return nil, err
 	}
 	a.secrets.Add(creds.AccessToken, creds.Password)
+	if metadataOnly {
+		creds.AccessToken, creds.Password = "", ""
+	}
 	base := creds.Homeserver
 	if base == "" {
 		base = mx.URL
@@ -525,14 +560,20 @@ func (a *App) sessionAs(name string) (*session, error) {
 			if e != nil {
 				return e
 			}
-			if fresh.Fingerprint() != binding.Fingerprint() {
+			if fresh.Fingerprint() != binding.Fingerprint() || !sameAdminPolicy(selected.AdminRegistration, binding.Connection.AdminRegistration) {
 				return errors.New("selected connection changed; explicit migration required")
 			}
 			_, e = a.namedMetadata(p, name)
 			return e
 		}
 	}
+	if selected, _ := a.selectedConnection(); selected != nil && selected.AdminRegistration != nil {
+		c.ProtectedRoom = selected.AdminRegistration.RoomID
+	}
 	c.BeforeRequest = s.checkBinding
+	if metadataOnly {
+		c.BeforeRequest = func() error { return errors.New("credentials unavailable; metadata session only") }
+	}
 	s.installRedactionCache()
 	return s, nil
 }

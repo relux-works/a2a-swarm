@@ -20,10 +20,16 @@ const syncFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":
 	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"state":{"lazy_load_members":true,"types":[]},"timeline":{"limit":100,"types":["m.room.message","m.room.redaction"]}}}`
 
-// initialFilter is used for the very first sync: we only need a next_batch.
+// initialFilter is the projector's first-sync baseline: only next_batch is needed.
 const initialFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"state":{"types":[]},"timeline":{"limit":1,"types":["m.room.message","m.room.redaction"]}}}`
+
+// First delivery needs membership in timeline order to locate our own join.
+// The projector retains its independent initialFilter/baseline behavior.
+const firstDeliveryFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
+	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
+	`"state":{"types":[]},"timeline":{"limit":100,"types":["m.room.message","m.room.redaction","m.room.member"]}}}`
 
 // relevance explains why an event is relevant to me; "" means not relevant.
 type relevance string
@@ -57,14 +63,27 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		return "", "", nil
 	}
 	h, hasHeader := decodeHeader(m.A2A)
+	// Mutes identify canonical thread roots, including the root event itself.
+	// Explicit sender filters express delivery intent, even for headerless client
+	// messages. They retain their normal matching gates; this grants no authority.
+	// Roomless subscriptions and diagnostic capture also remain independent.
+	mutedRoot := root
+	if mutedRoot == "" {
+		mutedRoot = ev.EventID
+	}
+	muted := st.IsMuted(mutedRoot)
 	for _, sub := range subs {
+		if muted && sub.Room != "" && sub.Room == roomID && sub.From == "" && !sub.AllEvents && !(hasHeader && h.Type == "projection") {
+			continue
+		}
 		if sub.matches(ev, roomID, h, hasHeader) {
 			matched = append(matched, sub.ID)
 		}
 	}
 	if hasHeader && h.Type == "projection" {
 		// A projector's mirror of an event that already rang in its own room:
-		// only `wait --all` or an --all-events subscription on the projection room reports it.
+		// only existing projection-eligible subscriptions or `wait --all` report it.
+		// Address-like projection headers do not gain direct-address priority.
 		if len(matched) > 0 {
 			return relSub, "", matched
 		}

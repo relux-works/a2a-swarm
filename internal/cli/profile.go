@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -139,7 +141,14 @@ func cmdStatus(ctx context.Context, a *App, args []string) error {
 		a.printf("%s %s\n", s.name, msg)
 		return nil
 	case "get":
-		if len(args) > 2 {
+
+		fs := newFlagSet("status get")
+		stale := fs.Duration("stale-after", 3*time.Minute, "liveness freshness threshold")
+		pos, err := parseInterspersed(fs, args[1:])
+		if err != nil {
+			return err
+		}
+		if len(pos) > 1 || *stale <= 0 {
 			return usagef(use)
 		}
 		s, err := a.session()
@@ -147,23 +156,31 @@ func cmdStatus(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		user := s.creds.UserID
-		if len(args) == 2 {
-			if user, err = normalizeUser(args[1], s.server); err != nil {
+		if len(pos) == 1 {
+			user, err = normalizeUser(pos[0], s.server)
+			if err != nil {
 				return err
 			}
 		}
-		p, err := s.client.GetPresence(ctx, user)
-		if isNotFound(err) {
-			p, err = matrix.Presence{Presence: "unknown"}, nil
-		}
-		if err != nil {
+		name := localpartIfLocal(user, s.server)
+		// Matrix presence can be renewed by sync traffic without a session turn.
+		// Only self-published telemetry may assert liveness or notice state.
+		rows, err := a.livenessRows(ctx, s, "", *stale, true)
+		if err != nil && !isNotFound(err) && !errors.Is(err, matrix.ErrUnknownAlias) {
 			return fmt.Errorf("status get: %w", err)
 		}
-		msg := p.StatusMsg
-		if msg == "" {
-			msg = "-"
+		row := whoRow{Name: name, State: "unknown", Health: "unknown", Age: "-"}
+		for _, candidate := range rows {
+			if candidate.Name == name {
+				row = candidate
+				break
+			}
 		}
-		a.printf("%s\t%s\t%s\n", localpartIfLocal(user, s.server), p.Presence, sanitizeLine(msg))
+		notice := config.OwnNoticeObservation{}
+		if row.Record != nil {
+			notice = row.Record.OwnNotice
+		}
+		a.printf("%s\t%s\t%s\tage=%s\t%s\n", name, sanitizeLine(row.State), row.Health, row.Age, noticeText(notice))
 		return nil
 	default:
 		return usagef(use)
