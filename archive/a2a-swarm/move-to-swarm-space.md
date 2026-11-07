@@ -32,7 +32,7 @@
     1. Commit ac-R11 (RULINGS, the record for #38-#44) and the archive of #remote-worker-harness to main.
     2. The owner request: move this chat to #swarm-a2a-swarm (move-to-swarm-space, the full checklist), including carry-over topics and Ivan-side subs.
     3. Rebase and land #37, #45 (with its three live fixes) and #46, so the products CLI is on main. Then rebuild bin/a2a, retiring my .temp/a2a-p2, which m1max_skill-project-management_keeper also uses, so it stays until they switch.
-    4. The asks: model-routing link (ivan-model-routing), child-keeper onboarding with a parent subscribed (bsim keeper), agent liveness (your opener), the agent-facing-reads design with tb-keeper's doorbell recipe, admin-in-every-room, and advice-vs-human.
+    4. The asks: model-routing link (ivan-model-routing), child-keeper onboarding with a parent subscribed (an out-of-scope work project keeper), agent liveness (your opener), the agent-facing-reads design with tb-keeper's doorbell recipe, admin-in-every-room, and advice-vs-human.
     tb-keeper's channel-live note: impact-start and impact-end exist since #44 (cf0e973). An a2a built from main accepts them.
 
 ## $i9zlaup9FlRVCIhzKdlSC06ScJhNYlnsiWdJyNd87yg
