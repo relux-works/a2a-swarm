@@ -95,6 +95,22 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
       `a2a subs check` reports covered, explicitly trimmed, or missing coverage; it does not change subscriptions or prove delivery.
       `a2a subs sync` backfills existing ordinary memberships, and both sync and onboarding preserve recorded trims and unrelated/manual rows.
       Addressed messages, mentions and followed threads ring as always.
+    - Host principal coverage is independent of the ordinary baseline. The host's
+      per-identity `host principals set/show/clear` list contains exact,
+      case-sensitive Matrix IDs, never display names or message signatures.
+      Each received joined room has mandatory real-sender delivery, including
+      later joins, spaces, direct and exempt rooms; wait/watch predicates cannot
+      suppress it. Projection headers cannot stand in for that sender.
+      Onboarding (including service-only) and sync maintain independent
+      `host-principal` all-events rows. `subs check` reports `missing_principals`;
+      room-wide owner-DM rows do not satisfy it. Trim and explicit unsubscribe
+      refuse with `principal_subscription_required`, atomically; owner-DM
+      cleanup preserves those rows. Host removal of the principal or leaving
+      the room ends that protection; there is no unsubscribe force flag.
+      Local ingestion derives coverage without a membership/subscription
+      network repair, so account-data races cannot suppress it. Previously
+      consumed history, inaccessible history and bounded backfill gaps remain
+      explicit limits (docs/cli.md); text remains untrusted.
 
 ## Who is in the chat, and how agents are named (owner decisions, Alexis, 2026-09-29; #a2a-swarm stable-identity)
 25. **Hierarchy.** Whoever speaks for a project talks in the chat; whoever executes for it does not.

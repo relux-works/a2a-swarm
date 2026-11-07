@@ -147,21 +147,36 @@ func (s *session) ownerSaveTransitionWithJournal(ctx, journalCtx context.Context
 	return nil
 }
 func (s *session) ownerSubscription(ctx context.Context, c *ownerDMConfig, add bool) error {
+	configured, err := ownerFiles(s.paths, s.name).principals()
+	if err != nil {
+		return err
+	}
 	deadline, _ := ctx.Deadline()
-	_, _, err := s.updateSubsBy(ctx, deadline, func(_ *config.State, list *SubList) (bool, error) {
-		changed := false
-		if c.SubID != "" {
-			changed = list.remove(c.SubID)
-		}
-		if add {
-			c.SubID = newSubID(*list)
-			list.Subs = append(list.Subs, Sub{ID: c.SubID, SubSelector: SubSelector{Room: c.Room, AllEvents: true}, CreatedAt: s.app.Now().UTC().Format(createdAtLayout)})
-			return true, nil
-		}
-		c.SubID = ""
-		return changed, nil
+	_, _, err = s.updateSubsBy(ctx, deadline, func(_ *config.State, list *SubList) (bool, error) {
+		return changeOwnerSubscription(list, c, add, configured, s.app.Now()), nil
 	})
 	return err
+}
+
+func changeOwnerSubscription(list *SubList, c *ownerDMConfig, add bool, configured []string, now time.Time) bool {
+	changed := false
+	if c.SubID != "" {
+		if i := list.find(c.SubID); i >= 0 && !protectedPrincipalSub(list.Subs[i], configured) {
+			changed = list.remove(c.SubID)
+		}
+	}
+	c.SubID = ""
+	// The bound owner is already known in this room; its principal selector
+	// has an independent lifecycle even when no earlier sync installed one.
+	if c.Room != "" && contains(configured, c.Owner) {
+		changed = repairPrincipalSubs(list, c.Room, []string{c.Owner}, now) || changed
+	}
+	if add {
+		c.SubID = newSubID(*list)
+		list.Subs = append(list.Subs, Sub{ID: c.SubID, SubSelector: SubSelector{Room: c.Room, AllEvents: true}, CreatedAt: now.UTC().Format(createdAtLayout)})
+		return true
+	}
+	return changed
 }
 func ownerNext(c *ownerDMConfig) (uint64, error) {
 	if c == nil {

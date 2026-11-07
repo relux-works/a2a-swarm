@@ -21,6 +21,11 @@ type roomCoverage struct {
 	MissingPrincipals []string `json:"missing_principals,omitempty"`
 }
 
+type coverageReport struct {
+	OK    bool           `json:"ok"`
+	Rooms []roomCoverage `json:"rooms"`
+}
+
 // missingRoomKinds measures current unconditional coverage, not historical
 // delivery or future wake/reply guarantees. Restricted/one-shot selectors do
 // not provide the baseline even when their kind lists contain all three kinds.
@@ -107,10 +112,7 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		exempt[id] = reason
 	}
 	slices.Sort(rooms)
-	result := struct {
-		OK    bool           `json:"ok"`
-		Rooms []roomCoverage `json:"rooms"`
-	}{OK: true, Rooms: []roomCoverage{}}
+	result := coverageReport{OK: true, Rooms: []roomCoverage{}}
 	now := a.Now()
 	for _, id := range rooms {
 		var create struct {
@@ -146,10 +148,11 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		}
 		result.Rooms = append(result.Rooms, row)
 	}
-	if len(configured) == 0 {
-		fmt.Fprintln(a.Stderr, "principals: none configured; principal coverage not checked")
-	}
-	if *asJSON {
+	return a.printCoverage(result, *asJSON, len(configured) > 0)
+}
+
+func (a *App) printCoverage(result coverageReport, asJSON, principalsConfigured bool) error {
+	if asJSON {
 		if err := a.printJSON(result); err != nil {
 			return err
 		}
@@ -177,7 +180,7 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	if !result.OK {
-		if len(configured) == 0 {
+		if !principalsConfigured {
 			return fmt.Errorf("subscription coverage gaps; review missing kinds, then run a2a subs sync to backfill")
 		}
 		return fmt.Errorf("subscription coverage gaps; review missing kinds/principals, then run a2a subs sync to backfill")

@@ -40,7 +40,9 @@ func TestPrincipalCoverageSelectors(t *testing.T) {
 		covered bool
 	}{
 		{"sender-all-events", func(*Sub) {}, true},
-		{"room-all-events", func(s *Sub) { s.From = "" }, true},
+		{"room-all-events", func(s *Sub) { s.From = "" }, false},
+		{"manual-row", func(s *Sub) { s.Source = "" }, false},
+		{"preset-owned", func(s *Sub) { s.Preset = "keeper:fixture" }, false},
 		{"no-all-events", func(s *Sub) { s.AllEvents = false }, false},
 		{"room", func(s *Sub) { s.Room = "!other:fixture.invalid" }, false},
 		{"global", func(s *Sub) { s.Room = "" }, false},
@@ -61,7 +63,7 @@ func TestPrincipalCoverageSelectors(t *testing.T) {
 		{"future-since", func(s *Sub) { s.Since, s.SinceTS = "$future", now.Add(time.Hour).UnixMilli() }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sub := Sub{ID: "sub-fixture", SubSelector: SubSelector{Room: room, From: fixturePrincipal, AllEvents: true}, CreatedAt: now.Add(-time.Hour).Format(time.RFC3339)}
+			sub := Sub{ID: "sub-fixture", SubSelector: SubSelector{Room: room, From: fixturePrincipal, AllEvents: true}, CreatedAt: now.Add(-time.Hour).Format(time.RFC3339), Source: principalSubSource}
 			tc.change(&sub)
 			missing := missingRoomPrincipals(room, []string{fixturePrincipal}, SubList{V: 1, Subs: []Sub{sub}}, now)
 			if (len(missing) == 0) != tc.covered || (!tc.covered && !reflect.DeepEqual(missing, []string{fixturePrincipal})) {
@@ -291,8 +293,8 @@ func TestPrincipalPresetCleanup(t *testing.T) {
 	}
 }
 
-// Nonmembers (including invite/leave/ban/knock) and lookalike IDs are ignored.
-// A profile display name or typed signature is not a configured Matrix ID.
+// Only the configured state key's membership is queried. Nonmembers (including
+// invite/leave/ban/knock) and neighboring case/domain identities do not cover it.
 func TestPrincipalMembershipExactness(t *testing.T) {
 	for _, membership := range []string{"absent", "invite", "leave", "ban", "knock", "join"} {
 		t.Run(membership, func(t *testing.T) {
@@ -300,7 +302,6 @@ func TestPrincipalMembershipExactness(t *testing.T) {
 			worker := e.agent("worker")
 			room := e.hs.addRoom("fixture-room", worker, "@Principal:authority.invalid", "@principal:other.invalid")
 			e.hs.mu.Lock()
-			e.hs.rooms[room].state["m.room.member|@copy:fixture.invalid"] = json.RawMessage(`{"membership":"join","displayname":"@principal:authority.invalid","reason":"Signed: @principal:authority.invalid"}`)
 			if membership != "absent" {
 				e.hs.rooms[room].members[fixturePrincipal] = membership
 			}
@@ -317,8 +318,8 @@ func TestPrincipalMembershipExactness(t *testing.T) {
 }
 
 // Without configured principals, stdout (text and JSON), coverage and sync
-// writes keep their previous shape. A stderr notice explicitly says disabled;
-// even an owner pin alone does not infer a principal or read room membership.
+// writes keep their previous shape, including empty stderr. Even an owner pin
+// alone does not infer a principal or read room membership.
 func TestPrincipalUnconfiguredCompatibility(t *testing.T) {
 	e, _, _ := principalWorld(t)
 	f := ownerFiles(e.paths(), "worker")
@@ -343,7 +344,7 @@ func TestPrincipalUnconfiguredCompatibility(t *testing.T) {
 	}
 	text := e.as("worker", "subs", "check").ok(t)
 	want := "#ordinary-room\tcovered\n#principal-room\tcovered\ncoverage: ok\n"
-	if text.stdout != want || !strings.Contains(text.stderr, "principals: none configured") {
+	if text.stdout != want || text.stderr != "" {
 		t.Fatalf("no-config output = %+v", text)
 	}
 	out := e.as("worker", "subs", "check", "--json").ok(t).stdout
