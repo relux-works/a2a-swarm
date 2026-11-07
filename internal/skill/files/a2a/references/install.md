@@ -1,4 +1,12 @@
-# Install the user-owned command
+# Install the self-built command
+
+Apply [SKILL.md's command-resolution rule](../SKILL.md#command-resolution-and-installation)
+first. If Curator installed the skill (the project's `.agents/` command directory
+or Curator's install receipt indicates this), use project `.agents/bin/a2a`
+(`a2a.cmd` on Windows), then the manager's `global/bin`; refuse if neither exists
+or resolution is ambiguous. Never fall back to this self-built recipe or binary.
+See [managed installation and limits](command-installation.md) for that route.
+Otherwise, follow the self-built recipe below.
 
 After owner authorization, clone the repository (or use an existing checkout),
 then run the recipe below from that checkout. It works with Bash on macOS/Linux.
@@ -41,10 +49,13 @@ Do not retarget a live command without its custodian's authorization. Interrupte
 installation may leave an unpublished image or link-stage directory; remove only
 your own recorded leftovers, retaining every image still referenced by hooks.
 
-Use `"$HOME/.local/bin/a2a"` for onboarding and hook installation, including across
-fresh tool shells. For other bare `a2a` examples in SKILL.md, first add
+For self-built installs, use the installed command `"$HOME/.local/bin/a2a"`, which
+points directly to the image at `"$image"`, for onboarding and hook installation,
+including across fresh tool shells. For bare `a2a` examples, first add
 `export PATH="$HOME/.local/bin:$PATH"` in each shell or persist it in your approved
-shell configuration; otherwise use the same absolute spelling.
+shell configuration; otherwise use the same absolute spelling. Curator-managed
+installs must substitute their resolved absolute command in every example,
+including `--installed-command`; do not add this self-built directory to PATH.
 
 Onboarding records a fixed image path. To opt into future command-link upgrades,
 run the manual hook install in SKILL.md with

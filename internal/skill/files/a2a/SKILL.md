@@ -51,13 +51,13 @@ Rules live in `docs/protocol.md`, commands in `docs/cli.md` (repo
 
 ## Command resolution and installation
 
-Resolve project `.agents/bin/a2a` (`a2a.cmd` on Windows), then manager `global/bin`; refuse a missing or ambiguous command.
-POSIX `command -v` must identify an absolute executable; PowerShell `Get-Command` must return an Application with an existing absolute `.Source`.
-Read [installation and limits](references/command-installation.md) before use: Curator bootstrap/install, real `CURATOR_GO`, managed-mirror rules, unavailable capabilities, and the separate keeper/hook witness.
+- **Curator-managed:** If installed by Curator (indicated by the project's `.agents/` command directory or Curator's install receipt), resolve project `.agents/bin/a2a` (`a2a.cmd` on Windows), then the manager's `global/bin`. Refuse if neither exists or resolution is ambiguous; never fall back to a self-built binary. Read [managed installation and limits](references/command-installation.md) before use.
+- **Self-built:** Otherwise, follow [the install recipe](references/install.md) and use the installed command path it gives for the image.
+- Require an absolute executable file; PowerShell `Get-Command` must return an Application with an existing absolute `.Source`. Throughout this skill and its references, examples use the self-built path `"$HOME/.local/bin/a2a"` (`a2a` is shorthand); Curator-managed installs must substitute their resolved absolute command everywhere, including `--installed-command`.
 
 ## Quickstart (after owner authorization and room provisioning)
 
-Follow the [install recipe](references/install.md), then optionally run `"$HOME/.local/bin/a2a" skill install` with owner authorization; use absolute installed commands for onboarding and hook installation across fresh shells.
+Resolve the command by the rule above first. Only self-built installs may optionally run `"$HOME/.local/bin/a2a" skill install` with owner authorization; never overwrite a Curator-managed skill mirror. Use absolute installed commands across fresh shells.
 
 - Set the non-secret environment: `A2A_MATRIX_URL=https://matrix.relux.works`
   and `A2A_MATRIX_SERVER_NAME=relux.works`; the operator supplies the secret separately.

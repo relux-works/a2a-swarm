@@ -1,13 +1,17 @@
 # Managed command installation
 
+Apply this route only when Curator installed the skill, as indicated by the
+project's `.agents/` command directory or Curator's install receipt. Otherwise,
+follow the self-built route in [install.md](install.md).
 Use the command exported by the installed Curator skill. Resolve the project
 `.agents/bin/a2a` first (`a2a.cmd` on Windows), then the manager's `global/bin`
 fallback. The default manager location is `$HOME/.curator/global/bin`; use the
 configured manager home if it differs. Shell profile activation is optional.
-On POSIX, a final `command -v a2a` fallback must return an absolute executable
-file, not an alias or function. On PowerShell, use `Get-Command a2a -CommandType
-Application` and validate its `.Source` as an existing absolute file. Refuse a
-missing or ambiguous command instead of building a second binary from main.
+On POSIX, require the selected managed path to be an absolute executable file,
+not an alias or function. On PowerShell, use `Get-Command` on that path with
+`-CommandType Application` and validate its `.Source` as an existing absolute
+file. Refuse if neither managed command exists or resolution is ambiguous;
+never fall back to PATH lookup, a self-built binary or building one from main.
 Invoke the selected file explicitly (PowerShell: `& $a2aCommand ...`); the
 examples below use `a2a` as shorthand for that resolved command.
 

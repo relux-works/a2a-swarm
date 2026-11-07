@@ -2,6 +2,14 @@
 
 Agent-facing summaries of the rules in docs/protocol.md, indexed from SKILL.md.
 
+Apply [SKILL.md's command-resolution rule](../SKILL.md#command-resolution-and-installation)
+before every command below. Examples use `a2a` as shorthand for the self-built
+installed command from [install.md](install.md). If Curator installed the skill
+(indicated by the project's `.agents/` command directory or Curator's install
+receipt), substitute project `.agents/bin/a2a` (`a2a.cmd` on Windows), then the
+manager's `global/bin`; refuse if neither exists or resolution is ambiguous,
+and never fall back to a self-built binary. Otherwise, follow the self-built recipe.
+
 ## Deciding shared things: the advice process (protocol rule 27)
 
 - Specs, cross-project designs, conventions and protocol changes: the orchestrator or keeper ACCOUNTABLE for the result decides after seeking advice (docs/advice-process.md). There is no consensus and no veto. Workers never decide.
