@@ -1753,8 +1753,11 @@ tmux and python3 are required for terminal fixtures (absence is a skip, not pass
 `state/NAME.binding.log`; screens and peer bodies are not persisted there. No shared guidance is installed by these commands.
 
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
-`wait` rings on every reply in a thread the agent created or posted in. `mute` forgets that thread, so plain replies stop ringing; messages addressed to the agent,
-mentions, and subscriptions in it still ring. The mute is sticky: posting in the thread again does not re-follow it; only `follow` does.
+`wait` rings on every reply in a thread the agent created or posted in. `mute` suppresses those replies and ordinary room-scoped subscription matches in that canonical thread root, including kind and topic filters when there is no `--from` sender filter. Suppressed matches do not close `--until-kind` subscriptions, even when the event separately delivers by address or mention.
+
+Exact addresses to the agent and mentions still ring. Explicit `--from` subscriptions, whether room-scoped or roomless, keep matching even for plain client messages without an a2a header or mention. All existing sender, room, topic, product, kind, subtype, subject, creation, `--since` and expiry gates still apply; a sender filter requests delivery, not authority. This exemption applies to every sender filter, without a principal allowlist. Roomless subscriptions, subscription `--all-events`, and wait/watch `--all` retain their independent capture semantics; projection matching is unchanged. A mute uses the resolved root event ID, not a topic slug, and does not suppress a different root with the same slug. It applies to future classification only: existing pending mail, receipts and cursors are preserved, within the existing bounded mute retention. The mute is sticky: posting in the thread again does not re-follow it; only `follow` does.
+
+`a2a subscribe` warns on stderr when adding a muted topic selector without `--from` or `--all-events`; it still creates the subscription and leaves the mute intact. A topic-only one-shot subscription such as `--room R --topic '$root' --until-kind answer` does not override a mute. Its suppressed answers neither ring nor close the subscription, even if a separate address or mention delivers the answer. Run `a2a follow R --topic '$root'` before relying on that subscription, including the blocking-ask pattern. Subscribing does not automatically follow or replay events already passed by the cursor. An explicit `--from` row retains its own delivery and normal `--until-kind` behavior.
 ```bash
 a2a mute remote-worker-harness --topic plan-worker
 ```

@@ -57,14 +57,27 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		return "", "", nil
 	}
 	h, hasHeader := decodeHeader(m.A2A)
+	// Mutes identify canonical thread roots, including the root event itself.
+	// Explicit sender filters express delivery intent, even for headerless client
+	// messages. They retain their normal matching gates; this grants no authority.
+	// Roomless subscriptions and diagnostic capture also remain independent.
+	mutedRoot := root
+	if mutedRoot == "" {
+		mutedRoot = ev.EventID
+	}
+	muted := st.IsMuted(mutedRoot)
 	for _, sub := range subs {
+		if muted && sub.Room != "" && sub.Room == roomID && sub.From == "" && !sub.AllEvents && !(hasHeader && h.Type == "projection") {
+			continue
+		}
 		if sub.matches(ev, roomID, h, hasHeader) {
 			matched = append(matched, sub.ID)
 		}
 	}
 	if hasHeader && h.Type == "projection" {
 		// A projector's mirror of an event that already rang in its own room:
-		// only `wait --all` or an --all-events subscription on the projection room reports it.
+		// only existing projection-eligible subscriptions or `wait --all` report it.
+		// Address-like projection headers do not gain direct-address priority.
 		if len(matched) > 0 {
 			return relSub, "", matched
 		}
