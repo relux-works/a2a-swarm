@@ -871,6 +871,27 @@ Readable output, oldest first (default 20, max 1000). Each message is a meta lin
 followed by the indented text; header lines are folded into the meta line. With `--topic`, the root comes first, then the last N replies.
 `--event` prints only that message event (it cannot be combined with `--topic` or `--last`). Control characters and bidi overrides are stripped.
 
+Topic replies come only from the selected root's `/relations/{root}/m.thread`
+listing, newest first on the wire and oldest first in the output. Empty pages
+with `next_batch` continue pagination. The read returns the newest N distinct
+message replies, or all available replies when the server exhausts that listing;
+a successful limited read does not claim to include the entire thread. Native
+`m.in_reply_to` targets are not used to filter thread replies or rewritten into
+the root: a reply to another reply still belongs to its declared `m.thread` root.
+The existing `re` output field reflects the a2a header, not an inferred native
+reply target.
+
+A topic read scans at most 20 relations pages and 2000 returned events, with a
+16 MiB limit per response. Repeated cursors, an unfinished scan at either bound,
+missing/malformed page fields, foreign-room or contradictory thread relations,
+and interrupted/refused pages fail before printing any events. These failures
+are not complete empty threads or successful partial output. The command does
+not fall back to scanning room history for replies or write receipts/cursors.
+Slug discovery retains its existing separate bounded history lookup. A server
+that returns a valid exhausted listing while omitting replies cannot be detected
+from this response alone; this is not proof of completeness against its room
+timeline.
+
 The single-event display requires the returned `event_id` to match exactly and
 the payload's `room_id` to match the resolved selected room. A foreign room is a
 usage error naming both room IDs, with no event output. Missing, malformed or

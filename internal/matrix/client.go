@@ -732,20 +732,6 @@ func (c *Client) Threads(ctx context.Context, roomID, from string, limit int) (P
 	return out, err
 }
 
-// ThreadReplies lists replies to root (v1 /relations/{root}/m.thread). dir "b" is newest first.
-func (c *Client) ThreadReplies(ctx context.Context, roomID, root, from, dir string, limit int) (Page, error) {
-	q := url.Values{"limit": {strconv.Itoa(limit)}, "dir": {dir}}
-	if from != "" {
-		q.Set("from", from)
-	}
-	var out Page
-	err := c.callBulk(ctx, http.MethodGet, v1+"/rooms/"+seg(roomID)+"/relations/"+seg(root)+"/m.thread", q, nil, &out)
-	if err == nil && c.FilterEvents != nil {
-		out.Chunk, err = c.FilterEvents(roomID, out.Chunk)
-	}
-	return out, err
-}
-
 // GetEvent fetches one event.
 func (c *Client) GetEvent(ctx context.Context, roomID, eventID string) (Event, error) {
 	var out Event
