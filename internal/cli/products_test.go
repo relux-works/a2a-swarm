@@ -390,7 +390,7 @@ func TestCombinedPresetsKeepEachOther(t *testing.T) {
 	}
 	e.as("alice", "broadcast-room", "init").ok(t)
 	e.as("alice", "product", "new", "swarm").ok(t)
-	e.as("alice", "product", "new", "bsim").ok(t)
+	e.as("alice", "product", "new", "product-b").ok(t)
 	e.as("alice", "host", "init", "mini").ok(t)
 	dir := t.TempDir() // not a git repository: the product folder
 	name := "mini_swarm_keeper"
@@ -412,12 +412,12 @@ func TestCombinedPresetsKeepEachOther(t *testing.T) {
 		t.Fatalf("combined rows = keeper %d, meta %d: %+v", count("keeper:swarm"), count("meta-keeper"), e.serverSubs(name).Subs)
 	}
 	// A keeper row for a second product, then a sync of the first: nothing of the others moves.
-	e.as(name, "join", "bsim").ok(t)
-	e.as(name, "subs", "sync", "--preset", "keeper", "--product", "bsim").ok(t)
+	e.as(name, "join", "product-b").ok(t)
+	e.as(name, "subs", "sync", "--preset", "keeper", "--product", "product-b").ok(t)
 	sync := e.as(name, "subs", "sync", "--preset", "keeper", "--product", "swarm").ok(t).stdout
 	tuitestestContains(t, sync, "unchanged")
-	if count("keeper:swarm") != 4 || count("keeper:bsim") != 4 || count("meta-keeper") != 3 {
-		t.Fatalf("after syncs: swarm %d, bsim %d, meta %d", count("keeper:swarm"), count("keeper:bsim"), count("meta-keeper"))
+	if count("keeper:swarm") != 4 || count("keeper:product-b") != 4 || count("meta-keeper") != 3 {
+		t.Fatalf("after syncs: swarm %d, product-b %d, meta %d", count("keeper:swarm"), count("keeper:product-b"), count("meta-keeper"))
 	}
 }
 

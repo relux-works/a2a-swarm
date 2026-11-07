@@ -10,7 +10,7 @@ sessions) run by the owner, Alexis. You were started because two orchestrators f
 4. `agents/*.md` — the other agents' cards: who they are, their goals and claims.
 
 ## Your peers (ring them with Claude `SendMessage`)
-- `local-models-e9`: guest orchestrator on the skill-project-management board. It is fixing BUG-260928-2hgfo9 (removing native goals from Codex sessions) and started this project.
+- `local-models-e9`: guest orchestrator that started this project.
 - `skill-project-management-e7`: primary orchestrator and board owner of relux-works/skill-project-management. It is running a serial landing queue with live runs.
   Its session directive is landing-only; respect that. It asks its owner before doing anything else.
 
