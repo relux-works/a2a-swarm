@@ -262,7 +262,10 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			room = admin198Normal
 		}
 		respond(f.eventForDelivery(room))
-	case strings.HasSuffix(path, "/messages") || strings.HasSuffix(path, "/threads") || strings.Contains(path, "/relations/"):
+	case strings.Contains(path, "/relations/"):
+		f.history++
+		respond(map[string]any{"chunk": []matrix.Event{}})
+	case strings.HasSuffix(path, "/messages") || strings.HasSuffix(path, "/threads"):
 		f.history++
 		room := admin198Room
 		if strings.Contains(path, admin198Normal) {
