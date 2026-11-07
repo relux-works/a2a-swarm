@@ -152,7 +152,7 @@ func noticeText(n config.OwnNoticeObservation) string {
 	if *n.PossiblyOrphaned {
 		return "SUSPECTED-DEAF: own notice possibly orphaned since=" + n.Since + " last-observed-at=" + n.ObservedAt
 	}
-	return "own notice clear (last rendered observation)"
+	return "own notice clear (last observation or turn)"
 }
 
 func (a *App) terminalStatus(ctx context.Context, args []string) error {
@@ -286,14 +286,15 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 		if err := writeCtx.Err(); err != nil {
 			return err
 		}
-		if st.Liveness == nil {
-			b.NoticePublication = "unavailable: no liveness record (a2a status set)"
-			return nil
+		ack := st.Liveness
+		if ack == nil {
+			ack = st.NoticeStatus
 		}
+
 		if err := noticeValid(b.OwnNotice); err != nil {
 			return err
 		}
-		if reflect.DeepEqual(st.Liveness.OwnNotice, b.OwnNotice) {
+		if ack != nil && reflect.DeepEqual(ack.OwnNotice, b.OwnNotice) {
 			if !st.NoticeWriteUncertain {
 				b.NoticePublication = "published"
 				return nil
@@ -320,7 +321,10 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 				return nil
 			}
 		}
-		record := *st.Liveness
+		record := config.AgentStatus{Name: s.name, State: "unknown", Host: alarmHost(b.Host), Version: 1, A2AVersion: binaryVersion()}
+		if st.Liveness != nil {
+			record = *st.Liveness
+		}
 		record.OwnNotice = b.OwnNotice
 		failed := func(err error) error {
 			delay := b.Interval
@@ -358,9 +362,7 @@ func (a *App) unknownTerminalNotice(ctx context.Context, s *session, generation 
 	// This is suspicion from retained journal evidence, not a fresh screen claim.
 	if st, err := config.LoadState(s.paths, s.name); err == nil && st.Terminal != nil && st.Terminal.Generation == generation && !st.Terminal.Stopped {
 		if a.observeTerminalNotice(s, generation, *st.Terminal, "unknown") == nil {
-			if err := a.reportStrandedTerminalNotice(ctx, s, generation); err != nil {
-				fmt.Fprintln(a.Stderr, "binding incident report unavailable; local status retained")
-			}
+			a.reportTerminalIncident(ctx, s, generation)
 		}
 	}
 	err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
@@ -380,4 +382,41 @@ func (a *App) unknownTerminalNotice(ctx context.Context, s *session, generation 
 			_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Outcome = "consumer unavailable; retrying" })
 		}
 	}
+}
+
+// A matching runtime hook is evidence of a turn, even without opted-in
+// liveness. Retire the old typing authority; pending mail is never receipted.
+func (a *App) clearTerminalNoticeOnTurn(ctx context.Context, s *session, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	deadline := time.Now().Add(nativeRPCTimeout)
+	return config.WithRuntimeLock(s.paths, s.name, "control", deadline, func() error {
+		generation := ""
+		_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+			b := st.Terminal
+			if st.HooksPaused || b == nil || b.Stopped || b.SessionID != sessionID || b.Host != machineLabel() {
+				return nil
+			}
+			if b.OwnNotice.PossiblyOrphaned != nil && !*b.OwnNotice.PossiblyOrphaned && b.Notice == "" {
+				if b.NoticePublication != "published" {
+					generation = b.Generation
+				}
+				return nil
+			}
+			clear := false
+			b.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
+			b.NoticeReport = nil
+			dropRetiredStrandedAlarms(st)
+			b.AttemptIDs, b.Notice, b.Typed, b.TypingStarted = nil, "", false, false
+			b.NoticeOrigin, b.NoticePosition, b.Idle = nil, nil, nil
+			b.NoticePublication = "unavailable: own notice changed"
+			generation = b.Generation
+			return nil
+		})
+		if err != nil || generation == "" {
+			return err
+		}
+		return s.publishTerminalNotice(ctx, generation)
+	})
 }

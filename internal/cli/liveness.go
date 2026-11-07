@@ -40,6 +40,13 @@ func statusValid(record config.AgentStatus) error {
 	if err := noticeValid(record.OwnNotice); err != nil {
 		return err
 	}
+	// Notice-only records intentionally carry no liveness assertions.
+	if record.State == "unknown" {
+		if !record.HeartbeatAt.IsZero() || record.HeartbeatEvery != "" || !record.Since.IsZero() || record.Runtime != "" || record.Hooks != "" || record.Doorbell != "" || record.Detail != "" || record.Wake != "" || record.Product != "" {
+			return fmt.Errorf("notice-only status cannot claim liveness")
+		}
+		return nil
+	}
 	switch record.State {
 	case "working", "idle", "waiting-human", "blocked", "stopping":
 	default:
@@ -272,10 +279,14 @@ func (a *App) livenessRows(ctx context.Context, s *session, product string, stal
 		if product != "" && (!exists || record.Product != product) {
 			continue
 		}
-		row := whoRow{Name: name, State: "unknown", Health: "down", Age: "-", Unanswered: "unknown (not scanned)"}
+		row := whoRow{Name: name, State: "unknown", Health: "unknown", Age: "-", Unanswered: "unknown (not scanned)"}
 		if exists {
 			row.Record = &record
 			row.State = record.State
+			if record.State == "unknown" && statusValid(record) == nil && record.Version == 1 {
+				rows = append(rows, row)
+				continue
+			}
 			heartbeat, err := time.ParseDuration(record.HeartbeatEvery)
 			if err != nil || statusValid(record) != nil || record.Version != 1 || record.HeartbeatAt.IsZero() {
 				row.Health = "invalid"

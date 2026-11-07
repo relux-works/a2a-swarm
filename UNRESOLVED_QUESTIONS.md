@@ -67,10 +67,28 @@ the pin; neither the source fix nor synthetic controls prove universal duplicate
 prevention or live provider behavior.
 
 Own-room configuration is opt-in. No CLI setter or live provisioning is delivered;
-unconfigured identities emit a local unavailable status and zero incident sends.
+unconfigured identities now use the existing mail-alarm owner route and optional lead target. Missing alert destinations remain locally
+unavailable; no live routes are provisioned by this producer slice.
 The operator supplies the known own project/lane route; runtime checks do not
 classify arbitrary projection, broadcast or status rooms. The explicit global
 `#system` refusal does not establish a new room-type policy. Conservative power
 checks may refuse valid room-version-12 creator/default-omission cases. Live
 membership, permission, subscriber receipt, provider behavior and transaction
 retention remain unknown. Binding-log rotation is not established here.
+
+## Stranded-notice fallback: retry lifetime
+
+The producer slice uses one durable transaction per audience/episode in the
+mail-alarm outbox, retrying failed incident sends with its bounded exponential
+backoff. Ordinary stale-mail uncertainty holds are unchanged. Matrix transaction
+retention is finite and has not been measured here: arbitrarily late retries
+cannot promise universal server-side deduplication. Owner question: should
+incidents have an explicit maximum retry age/manual hold, and what should it be?
+The current implementation keeps retrying while the episode/audience remains
+eligible, with the same transaction and destination.
+
+No tests, live panes, live delivery or process-replacement experiments were run
+on this host. Added tests use pure logic and a fake homeserver and await CI.
+The older recovery descriptions above are historical and conflict with current
+bind documentation/source; reconciling those unrelated recovery decisions is
+outside this producer slice.

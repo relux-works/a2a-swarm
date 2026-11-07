@@ -78,7 +78,7 @@ func TestLivenessWaitHeartbeatAndHooks(t *testing.T) {
 	e.as("alice", "wait", "--heartbeat", "1m", "--timeout", "1ms").failsWith(t, ExitUsage, "--status")
 }
 
-// Proves a member without a record is down; two stale agents on one host
+// Proves a member without a record is unknown; two stale agents on one host
 // produce one keeper-routed event per transition, retained across invocations.
 func TestLivenessCorrelatedTransitionAlerts(t *testing.T) {
 	e, _ := world(t)
@@ -89,7 +89,7 @@ func TestLivenessCorrelatedTransitionAlerts(t *testing.T) {
 	e.as("carol", "join", "proj").ok(t)
 	e.as("bob", "join", "status").ok(t)
 	r := e.as("alice", "who", "--stale-after", "3m").ok(t)
-	if !strings.Contains(r.stdout, "bob\tunknown\tdown") {
+	if !strings.Contains(r.stdout, "bob\tunknown\tunknown") {
 		t.Fatal("missing record looked live")
 	}
 	e.as("alice", statusArgs("idle")...).ok(t)

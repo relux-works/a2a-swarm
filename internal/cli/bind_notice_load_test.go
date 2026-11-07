@@ -59,8 +59,8 @@ func TestNoticeDispatchLocalNoop(t *testing.T) {
 					t.Fatal(err)
 				}
 				b := e.state("alice").Terminal
-				if kind == "missing" && b.NoticePublication != "unavailable: no liveness record (a2a status set)" {
-					t.Errorf("missing liveness cause lost: %q", b.NoticePublication)
+				if kind == "missing" && (b.NoticePublication != "published" || e.state("alice").Liveness != nil || e.state("alice").NoticeStatus == nil) {
+					t.Errorf("notice-only publication lost: %q", b.NoticePublication)
 				}
 				if kind == "unchanged" && b.NoticePublication != before.Terminal.NoticePublication {
 					t.Errorf("no-op publication metadata changed: %q", b.NoticePublication)
@@ -71,10 +71,10 @@ func TestNoticeDispatchLocalNoop(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if kind != "changed" && requests != 0 {
+			if kind != "changed" && kind != "missing" && requests != 0 {
 				t.Fatalf("local no-op made network requests: kind=%s requests=%d", kind, requests)
 			}
-			if kind == "changed" && (requests != 2 || puts != 1) {
+			if (kind == "changed" || kind == "missing") && (requests != 2 || puts != 1) {
 				t.Fatalf("changed publication count: requests=%d puts=%d", requests, puts)
 			}
 			if !reflect.DeepEqual(mail, e.mailbox("alice").Pending()) {
@@ -315,8 +315,8 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 			case "put-missing":
 				a.publishTerminalNotice(context.Background(), s, "deadline")
 				st = e.state("alice")
-				if puts.Load() != 1 || st.Liveness != nil || st.Terminal.NoticePublication != "unavailable: no liveness record (a2a status set)" {
-					t.Fatal("queued missing liveness not refused locally")
+				if puts.Load() != 2 || st.Liveness != nil || st.NoticeStatus == nil || st.Terminal.NoticePublication != "published" {
+					t.Fatal("queued notice-only state not published")
 				}
 			}
 		})
@@ -452,11 +452,11 @@ func TestNoticeDispatchObservedNoop(t *testing.T) {
 	for _, kind := range []string{"missing", "unchanged"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
+			f.e.as("alice", "status", "init").ok(t)
 			if kind == "unchanged" {
-				f.e.as("alice", "status", "init").ok(t)
 				f.e.as("alice", statusArgs("working")...).ok(t)
-				f.dispatch()
 			}
+			f.dispatch()
 			var requests, puts atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
@@ -469,16 +469,12 @@ func TestNoticeDispatchObservedNoop(t *testing.T) {
 			f.s.client.BaseURL = srv.URL
 			for i := 0; i < 3; i++ {
 				f.dispatch()
-				if kind == "missing" && f.binding().NoticePublication != "unavailable: no liveness record (a2a status set)" {
-					t.Fatal("observed missing cause flapped")
+				if kind == "missing" && (f.binding().NoticePublication != "published" || f.e.state("alice").Liveness != nil) {
+					t.Fatal("observed notice-only publication flapped")
 				}
 			}
 			if requests.Load() != 0 {
 				t.Fatalf("observed local no-op made network requests: %d", requests.Load())
-			}
-			if kind == "missing" {
-				f.e.as("alice", "status", "init").ok(t)
-				f.e.as("alice", statusArgs("working")...).ok(t)
 			}
 			f.now = f.now.Add(time.Second)
 			f.dispatch()

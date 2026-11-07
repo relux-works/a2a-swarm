@@ -61,7 +61,12 @@ func (s *session) putOwnStatus(ctx context.Context, st *config.State, record con
 	if err != nil {
 		return err
 	}
-	st.Liveness = &record
+	if record.State == "unknown" {
+		st.NoticeStatus = &record
+	} else {
+		st.Liveness = &record
+		st.NoticeStatus = nil
+	}
 	st.NoticeWriteUncertain = false
 	st.NoticeRetry = nil
 	if st.Terminal != nil {

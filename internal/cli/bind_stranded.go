@@ -52,11 +52,22 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		if r == nil || r.Since != n.Since {
 			r = &config.NoticeReport{Since: n.Since, Message: config.LivenessAlertMessage{Txn: matrix.NewTxnID()}}
 			b.NoticeReport = r
+			dropRetiredStrandedAlarms(st)
 		}
 		if r.Sent || a.Now().Before(r.RetryAt) {
 			return nil
 		}
+		if r.Alarm {
+			reportErr = queueStrandedAlarm(s, st, a.Now())
+			r.RetryAt = a.Now().Add(b.RetryMax)
+			return nil
+		}
 		room, routeErr := s.strandedOwnRoom(reportCtx, r.Message.Room)
+		if routeErr != nil && routeErr.Error() == "incident route not configured" && r.Message.Room == "" {
+			reportErr = queueStrandedAlarm(s, st, a.Now())
+			r.RetryAt = a.Now().Add(b.RetryMax)
+			return nil
+		}
 		if routeErr != nil {
 			r.Outcome = routeErr.Error()
 			r.RetryAt = a.Now().Add(b.RetryMax)
@@ -125,7 +136,7 @@ func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 		return "not due"
 	}
 	switch b.NoticeReport.Outcome {
-	case "pending", "published", "unavailable: system incident report failed",
+	case "unavailable: invalid alarm state", "queued via mail-alarm", "published via mail-alarm", "unavailable: alarm destination missing", "unavailable: invalid alarm config", "pending", "published", "unavailable: system incident report failed",
 		"incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed":
 		return b.NoticeReport.Outcome
 	default:
@@ -137,9 +148,7 @@ func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 // dispatch completion path used by runTerminal after a healthy observation.
 func (a *App) completeTerminalObservation(ctx context.Context, s *session, generation string) error {
 	a.publishTerminalNotice(ctx, s, generation)
-	if err := a.reportStrandedTerminalNotice(ctx, s, generation); err != nil {
-		fmt.Fprintln(a.Stderr, "binding incident report unavailable; local status retained")
-	}
+	a.reportTerminalIncident(ctx, s, generation)
 	return nil
 }
 
@@ -207,4 +216,26 @@ func (s *session) strandedOwnRoom(ctx context.Context, pinned string) (string, e
 		return "", unavailable
 	}
 	return room, nil
+}
+
+// Persist diagnostic transitions, so repeated retries and consumer restarts do
+// not fill the binding log. Only closed status codes enter the log.
+func (a *App) reportTerminalIncident(ctx context.Context, s *session, generation string) {
+	_ = a.reportStrandedTerminalNotice(ctx, s, generation)
+	outcome := ""
+	_, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout), func(st *config.State) error {
+		b := st.Terminal
+		if b == nil || b.Generation != generation || b.NoticeReport == nil {
+			return nil
+		}
+		status := terminalNoticeReportStatus(b)
+		if status != "not due" && status != b.NoticeReport.LoggedOutcome {
+			b.NoticeReport.LoggedOutcome = status
+			outcome = status
+		}
+		return nil
+	})
+	if err == nil && outcome != "" {
+		fmt.Fprintf(a.Stderr, "binding incident report: %s\n", outcome)
+	}
 }

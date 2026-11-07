@@ -8,12 +8,15 @@ import (
 
 // MailAlarmConfig is local per-identity policy, independent of binding generations.
 type MailAlarmConfig struct {
-	Minutes  int    `json:"minutes"`
-	Owner    string `json:"owner"` // auto, off, or an explicit room
-	Operator string `json:"operator,omitempty"`
-	Room     string `json:"room,omitempty"`
-	Topic    string `json:"topic,omitempty"`
-	Invalid  bool   `json:"-"`
+	Lead      string `json:"lead,omitempty"`
+	LeadRoom  string `json:"lead_room,omitempty"`
+	LeadTopic string `json:"lead_topic,omitempty"`
+	Minutes   int    `json:"minutes"`
+	Owner     string `json:"owner"` // auto, off, or an explicit room
+	Operator  string `json:"operator,omitempty"`
+	Room      string `json:"room,omitempty"`
+	Topic     string `json:"topic,omitempty"`
+	Invalid   bool   `json:"-"`
 }
 
 func (c *MailAlarmConfig) UnmarshalJSON(b []byte) error {
@@ -50,6 +53,8 @@ func (a *MailAlarm) UnmarshalJSON(b []byte) error {
 }
 
 type MailAlarmJob struct {
+	Kind         string        `json:"kind,omitempty"`
+	Since        string        `json:"since,omitempty"`
 	Failure      string        `json:"failure,omitempty"`
 	AutoOwner    string        `json:"auto_owner,omitempty"`
 	ID           string        `json:"id"`
