@@ -162,7 +162,7 @@ func commands() []command {
 		{"inbox", "inbox [--limit N] [--json]           print unreceived mailbox entries inside an untrusted-data frame, then receipt exactly them (N <= 50)", cmdInbox},
 		{"hook", "hook stop|session-start|prompt --runtime R | hook install --agent NAME --runtime R [--settings PATH] [--executable PATH | --installed-command PATH] | hook uninstall --runtime R [--settings PATH] | hook pause|resume --agent NAME   Claude Code (R=claude), Codex (R=codex) and Muse (R=muse) hooks: a doorbell (counts only) in the session", cmdHook},
 		{"ack", "ack <id...>|all-shown               receipt mailbox entries (all-shown: every entry wait/watch printed)", cmdAck},
-		{"mute", "mute <room> --topic X                 suppress thread replies and room subscriptions (to/mentions/from still ring)", cmdMute},
+		{"mute", "mute <room> --topic X | mute list [--json]   suppress topic delivery or list local mutes (to/mentions/from still ring)", cmdMute},
 		{"follow", "follow <room> --topic X               ring on replies in a thread again", cmdFollow},
 		{"subscribe", "subscribe [--room R|all] [--topic X] [--from A] [--subject X] [--subtype S] [--kind k1,k2] [--until T] [--until-kind K] [--since $ev] [--all-events]   add a runtime subscription (muted topics need follow; --from still matches)", cmdSubscribe},
 		{"unsubscribe", "unsubscribe <sub-id>|--all             remove subscriptions", cmdUnsubscribe},
@@ -245,9 +245,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			if c.name == "bind" && len(rest) > 1 && rest[1] == "association" {
 				return a.bindAssociation(rest[2:])
 			}
-			// This anonymous public read has its own routing-only preflight. It
+			// These inspections have their own routing-only validation. They
 			// must not consult credentials, secret stores or owner-DM state.
-			if c.name == "availability" || c.name == "voice" && len(rest) > 1 && rest[1] == "status" {
+			if c.name == "availability" || c.name == "voice" && len(rest) > 1 && rest[1] == "status" || c.name == "mute" && len(rest) > 1 && rest[1] == "list" {
 				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// Fetch parses usage/help before consulting connection or identity state.

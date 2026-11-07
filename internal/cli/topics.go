@@ -901,7 +901,7 @@ func (a *App) printEvent(ev matrix.Event, server string) {
 			}
 		}
 	}
-	if root := ev.ThreadRoot(); root != "" {
+	if root := eventTopicRoot(ev); root != "" {
 		meta = append(meta, "thread="+root)
 	}
 	line := fmt.Sprintf("[%s] %s %s", ts, localpartIfLocal(ev.Sender, server), ev.EventID)

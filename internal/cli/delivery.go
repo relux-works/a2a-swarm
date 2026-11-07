@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -114,10 +115,12 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 
 // batch is what one sync response adds to the mailbox.
 type batch struct {
-	entries    []config.MailEntry
-	redactions []config.Redaction
-	learned    []string // thread roots learned from my own events
-	close      []string // --until-kind subscriptions closed by a persisted event
+	entries      []config.MailEntry
+	redactions   []config.Redaction
+	learned      []string             // thread roots learned from my own events
+	threadEvents []config.ThreadEvent // room-scoped server-derived membership
+	close        []string             // --until-kind subscriptions closed by a persisted event
+	muted        []string             // mute snapshot used for classification
 }
 
 // deliveryFilter is the --room/--all selection of wait and watch.
@@ -177,7 +180,8 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 }
 
 func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
-	var b batch
+	b := batch{muted: slices.Clone(st.Muted)}
+	st.ThreadEvents = slices.Clone(st.ThreadEvents)
 	me := s.creds.UserID
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		if s.adminRoomExcluded(roomID) {
@@ -205,7 +209,9 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 			if ev.Type != "m.room.message" {
 				return false
 			}
-			if ev.Sender == me || ev.ThreadRoot() != "" || all[roomID] {
+			// Keep plain replies before chronological classification, even when
+			// their targets will only be learned on an older backfill page.
+			if ev.Sender == me || ev.Message().RelatesTo != nil || all[roomID] {
 				return true
 			}
 			rel, _, _ := classifyWithPrincipals(ev, roomID, me, s.name, st, subs, configured)
@@ -231,6 +237,16 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 		}
 		b.redactions = append(b.redactions, eventRedactions(roomID, events)...)
 		for _, ev := range events {
+			if ev.Type == "m.room.message" && !ev.IsRedacted() {
+				root := deliveryTopicRoot(ev, roomID, st)
+				if root != "" {
+					for _, id := range []string{root, ev.EventID} {
+						membership := config.ThreadEvent{Room: roomID, EventID: id, Root: root}
+						st.RememberThreadEvent(membership)
+						b.threadEvents = append(b.threadEvents, membership)
+					}
+				}
+			}
 			active := subs
 			if len(closed) > 0 {
 				active = nil
@@ -329,12 +345,19 @@ func migrateLegacyDelivery(cur *config.State, mb *config.Mailbox) error {
 	return nil
 }
 
+var errDeliveryMutesChanged = errors.New("topic mutes changed during delivery; retry sync")
+
 // persist appends a collected batch to the mailbox (fsynced) and only then
 // moves the cursor from since to next; a cursor another consumer moved
 // meanwhile is left alone (its batch is in the mailbox too).
 func (s *session) persist(ctx context.Context, b batch, since, next string, deadline time.Time) (config.State, error) {
 	a := s.app
 	return s.lockedDeliver(ctx, deadline, len(b.close) > 0, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
+		// Mute and admission share the state lock. A policy change invalidates
+		// the whole batch, including one-shot closures and learned threads.
+		if !slices.Equal(b.muted, cur.Muted) {
+			return nil, errDeliveryMutesChanged
+		}
 		if err := migrateLegacyDelivery(cur, mb); err != nil {
 			return nil, err
 		}
@@ -354,6 +377,9 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 				return nil, err
 			}
 		}
+		for _, e := range b.threadEvents {
+			cur.RememberThreadEvent(e)
+		}
 		for _, r := range b.learned {
 			cur.AddThread(r)
 		}
@@ -366,18 +392,53 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 
 // ingest classifies one sync response from since and persists it.
 func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time) (config.State, error) {
-	snap, err := config.LoadState(s.paths, s.name)
-	if err != nil {
-		return snap, err
+	if since == "" {
+		return s.savePositionAll(ctx, resp, deadline, all)
 	}
-	b, err := s.collectBatch(ctx, resp, since, snap, subs, all, map[string]string{})
-	if err != nil {
-		return snap, err
+	return s.ingestWithRedactions(ctx, resp, since, subs, all, nil, deadline)
+}
+
+// Recollect outside the state lock when a concurrent mute/follow invalidates
+// admission. Bound contention; refusal leaves the cursor and mailbox untouched
+// so the consumer's next cycle can retry. Already pending mail is preserved.
+func (s *session) ingestWithRedactions(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, redactions []config.Redaction, deadline time.Time) (config.State, error) {
+	var st config.State
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return st, err
+		}
+		snap, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return snap, err
+		}
+		b, err := s.collectBatch(ctx, resp, since, snap, subs, all, map[string]string{})
+		if err != nil {
+			return snap, err
+		}
+		if err := ctx.Err(); err != nil {
+			return snap, err
+		}
+		b.redactions = append(b.redactions, redactions...)
+		if s.app.beforeDeliver != nil {
+			s.app.beforeDeliver()
+		}
+		st, err = s.persist(ctx, b, since, resp.NextBatch, deadline)
+		if !errors.Is(err, errDeliveryMutesChanged) {
+			return st, err
+		}
 	}
-	if s.app.beforeDeliver != nil {
-		s.app.beforeDeliver()
+	// Deferral is a normal cycle outcome, including during first sync. Return
+	// fresh persisted state: never the zero State returned by a refused update.
+	// Consumers keep their cursor and ownership and poll again normally.
+	return config.LoadState(s.paths, s.name)
+}
+
+// A deferred first sync must still locate our join on the next normal cycle.
+func deliverySyncFilter(since string) string {
+	if since == "" {
+		return firstDeliveryFilter
 	}
-	return s.persist(ctx, b, since, resp.NextBatch, deadline)
+	return syncFilter
 }
 
 // takePosition is the very first run. Only history after the identity's own
@@ -446,15 +507,7 @@ func (s *session) savePositionAll(ctx context.Context, resp matrix.SyncResponse,
 			subs = append(subs, sub)
 		}
 	}
-	b, err := s.collectBatch(ctx, resp, "", snap, subs, all, map[string]string{})
-	if err != nil {
-		return snap, err
-	}
-	if err := ctx.Err(); err != nil {
-		return snap, err // A timed-out scan must not commit a partial baseline.
-	}
-	b.redactions = append(b.redactions, redactions...)
-	return s.persist(ctx, b, "", resp.NextBatch, deadline)
+	return s.ingestWithRedactions(ctx, resp, "", subs, all, redactions, deadline)
 }
 
 // syncNow is the "bring the mailbox up to date" step of inbox and the hooks:
@@ -663,7 +716,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 			}
 		}
 		resp, err := waitRetry(ctx, s, deadline, func() (matrix.SyncResponse, error) {
-			return s.waitSync(ctx, st.NextBatch, poll, syncFilter)
+			return s.waitSync(ctx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch))
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -792,7 +845,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		if err := a.acquireLease(s, "", time.Time{}); err != nil {
 			return stopped(err)
 		}
-		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, syncFilter)
+		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, deliverySyncFilter(st.NextBatch))
 		if err != nil {
 			return stopped(err)
 		}

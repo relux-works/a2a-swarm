@@ -1093,6 +1093,12 @@ their content policies and explicit missing-room policies remain distinct.
 `--json` prints one JSON object per event instead (same selection and order):
 `{type, room, room_id, event_id, sender, at, kind, subtype, subject, topic, title, root, to, re, reply_by, trunk, sub_request, body, attachment}`. `type` is `topic` for a topic root,
 otherwise `message`; `topic` is the slug; `root` is the thread root event id; `body` is the full text without the header lines.
+`read --json`'s `root` comes only from `ev.ThreadRoot()`: the explicit Matrix
+`m.thread` relation, never the a2a header's `topic` or a plain `m.in_reply_to`.
+Delivery's `deliveryTopicRoot` also accepts a plain `m.in_reply_to` when its
+target has learned thread membership in the same room; it never uses the header.
+Projection origin metadata does not establish a local thread. These rules do
+not change `read --topic` relation-list selection or `post --re` routing validation.
 Empty fields are omitted.
 ```bash
 a2a read a2a-swarm --topic bridge-daemon --last 50
@@ -2233,9 +2239,73 @@ tmux and python3 are required for terminal fixtures (absence is a skip, not pass
 Exact addresses to the agent and mentions still ring. Explicit `--from` subscriptions, whether room-scoped or roomless, keep matching even for plain client messages without an a2a header or mention. All existing sender, room, topic, product, kind, subtype, subject, creation, `--since` and expiry gates still apply; a sender filter requests delivery, not authority. This exemption applies to every sender filter, without a principal allowlist. Roomless subscriptions, subscription `--all-events`, and wait/watch `--all` retain their independent capture semantics; projection matching is unchanged. A mute uses the resolved root event ID, not a topic slug, and does not suppress a different root with the same slug. It applies to future classification only: existing pending mail, receipts and cursors are preserved, within the existing bounded mute retention. The mute is sticky: posting in the thread again does not re-follow it; only `follow` does.
 
 `a2a subscribe` warns on stderr when adding a muted topic selector without `--from` or `--all-events`; it still creates the subscription and leaves the mute intact. A topic-only one-shot subscription such as `--room R --topic '$root' --until-kind answer` does not override a mute. Its suppressed answers neither ring nor close the subscription, even if a separate address or mention delivers the answer. Run `a2a follow R --topic '$root'` before relying on that subscription, including the blocking-ask pattern. Subscribing does not automatically follow or replay events already passed by the cursor. An explicit `--from` row retains its own delivery and normal `--until-kind` behavior.
+
+Delivery trusts server relations: an explicit Matrix `m.thread` root, or a
+plain `m.in_reply_to` targeting an event whose thread membership this identity
+already learned in the same room. The a2a header's `topic` never establishes a
+root, suppresses ordinary mail, or creates a topic-subscription/follow match.
+Unknown and cross-room reply targets cannot inherit thread membership. Learning
+is chronological, includes suppressed/unmatched events, and persists with the
+cursor; it does not follow a thread or lift a mute. The local membership cache
+retains up to 2,000 room/event/root entries; missing or evicted membership is
+unknown, without a network lookup or header fallback. A plain reply directly to
+a muted root therefore still rings an otherwise matching room subscription
+until an `m.thread` child naming that root has been observed in the same room;
+it also rings after that root's membership is evicted. Observing the root event
+alone does not establish this membership. Unknown membership deliberately
+fails open toward delivery. Legacy `threads`/`muted` lists alone do not prove
+room membership. The root event itself is muted by its
+event ID. `read --json`'s `root` is `m.relates_to.event_id` only when `rel_type` is
+`m.thread`; header fields such as the topic slug and reply ID remain display
+metadata.
+
+The CLI emits these relations (R = canonical root, E = selected reply target):
+
+| Command | `m.relates_to` |
+| --- | --- |
+| `topic new` | Absent: the sent event is R |
+| `post --topic R` | `rel_type: m.thread`, `event_id: R`, `m.in_reply_to.event_id: R`, `is_falling_back: true` |
+| `post --re E` (with or without a matching `--topic`) | `rel_type: m.thread`, `event_id: R`, `m.in_reply_to.event_id: E`, `is_falling_back` omitted (false) |
+| Topic attachments / envelope posts | Same shared thread relation; explicit `--re` selects E, otherwise fallback to R |
+| Optional voice reply to text E | `rel_type: m.thread`, `event_id: R`, `m.in_reply_to.event_id: E`, `is_falling_back` omitted (false) |
+
+There is no header-only topic-post lane: `post --topic` and `post --re` share
+`threadReply`; `resolveReplyTopic` refuses header claims. Thus a missing header
+fallback does not explain #304 for a2a-generated topic posts. The supported
+source-level failure is the admission race: a mute can succeed after collection
+but before a stale batch appends to the mailbox. A running consumer reloads mutes
+for each ingestion and validates that snapshot under the state lock before
+admitting mail. Concurrent mute/follow changes trigger up to three
+reclassifications; continued contention defers the batch without an error exit,
+mail append, learned-state writes, one-shot closure or cursor movement. Wait,
+watch and native consumers retry at their next normal poll with the saved
+cursor, retaining first-sync membership recovery when no cursor exists. No
+consumer restart is needed. Offline code inspection does not establish which
+race or pre-existing pending entry caused a particular deployed incident.
+Bound terminal/native consumers, hook Prompt/Stop, doorbell counts and inbox
+all use the resulting durable mailbox. Previously admitted pending mail remains
+available and may still ring; muting never deletes it or creates a receipt.
+Mandatory host-principal delivery retains its exemption.
 ```bash
 a2a mute remote-worker-harness --topic plan-worker
 ```
+
+### `a2a mute list [--json]`
+Lists only the selected identity's local muted root IDs in the selected
+connection/config namespace. Text prints one root per line, sorted by ID, or
+`no muted topics`. JSON prints one object, including an empty array when none
+are muted:
+
+```json
+{"identity":"worker","muted":["$root-a","$root-b"]}
+```
+
+This is a read-only local inspection: no room/topic resolution, server request,
+credential lookup, sync, lease acquisition, cursor movement, receipt or state
+rewrite. Missing state means an empty list; unreadable or malformed state is an
+error. IDs are listed as stored; room labels and slugs require server resolution
+and are not part of this command. JSON escapes Unicode format characters using
+the same rules as `EventRecord` JSON; decoding preserves the stored ID bytes.
 
 ### Runtime subscriptions: `a2a subscribe` / `a2a unsubscribe` / `a2a subs`
 Every agent manages its own subscriptions at runtime (protocol rules 10 and 24). They live on the homeserver, in the agent's Matrix account data

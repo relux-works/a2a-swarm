@@ -42,6 +42,23 @@ const (
 	relAll     relevance = "all"
 )
 
+// eventTopicRoot exposes only the server's explicit Matrix thread relation.
+// Sender-controlled a2a headers never establish thread membership.
+func eventTopicRoot(ev matrix.Event) string { return ev.ThreadRoot() }
+
+// deliveryTopicRoot additionally accepts plain replies to events whose thread
+// membership this identity already learned from server events in this room.
+func deliveryTopicRoot(ev matrix.Event, roomID string, st config.State) string {
+	if root := eventTopicRoot(ev); root != "" {
+		return root
+	}
+	r := ev.Message().RelatesTo
+	if r != nil && r.RelType == "" && r.InReplyTo != nil {
+		return st.ThreadEventRoot(roomID, r.InReplyTo.EventID)
+	}
+	return ""
+}
+
 // classify decides whether a timeline event concerns this agent. It is pure:
 // the caller updates the thread list from the returned learnedRoot. matched
 // lists the subscriptions that deliver the event, whatever its relevance, so
@@ -51,7 +68,7 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		return "", "", nil
 	}
 	m := ev.Message()
-	root := ev.ThreadRoot()
+	root := deliveryTopicRoot(ev, roomID, st)
 	if ev.Sender == me {
 		// My own message: a reply joins me to its thread; a topic root I sent is a thread I own.
 		if root != "" {
@@ -76,7 +93,7 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		if muted && sub.Room != "" && sub.Room == roomID && sub.From == "" && !sub.AllEvents && !(hasHeader && h.Type == "projection") {
 			continue
 		}
-		if sub.matches(ev, roomID, h, hasHeader) {
+		if sub.matchesTopicRoot(ev, roomID, h, hasHeader, root) {
 			matched = append(matched, sub.ID)
 		}
 	}
@@ -171,7 +188,7 @@ func eventLine(rel relevance, room string, ev matrix.Event, server, subID string
 		}
 		text = stripHeaderBody(text)
 	}
-	if root := ev.ThreadRoot(); root != "" {
+	if root := eventTopicRoot(ev); root != "" {
 		parts = append(parts, "root="+root)
 	}
 	return sanitizeLine(strings.Join(parts, " ")) + ": " + snippet(text, SnippetMax)

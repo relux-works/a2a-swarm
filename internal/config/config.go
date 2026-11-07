@@ -355,6 +355,9 @@ type State struct {
 	LegacyAcked []string `json:"acked,omitempty"`
 	// Threads holds thread root event ids where this agent posted or which it created.
 	Threads []string `json:"threads,omitempty"`
+	// ThreadEvents retains bounded room-scoped membership learned from server relations.
+	// It grants no follow status and is independent of mute/follow changes.
+	ThreadEvents []ThreadEvent `json:"thread_events,omitempty"`
 	// Muted holds thread roots the agent muted explicitly; posting in them or
 	// seeing its own events there never re-follows them (only Follow does).
 	Muted []string `json:"muted,omitempty"`
@@ -462,6 +465,36 @@ func (s *State) SetHookBlocks(id string, n int) {
 
 // LegacyAllRooms is the LegacySubscriptions key that matched every joined room.
 const LegacyAllRooms = "*"
+
+// ThreadEvent identifies an observed event's thread in one room.
+type ThreadEvent struct {
+	Room    string `json:"room"`
+	EventID string `json:"event_id"`
+	Root    string `json:"root"`
+}
+
+// ThreadEventRoot never infers membership from the unscoped follow/mute lists.
+func (s State) ThreadEventRoot(room, id string) string {
+	for i := len(s.ThreadEvents) - 1; i >= 0; i-- {
+		e := s.ThreadEvents[i]
+		if e.Room == room && e.EventID == id {
+			return e.Root
+		}
+	}
+	return ""
+}
+
+// RememberThreadEvent retains server-derived membership without following it.
+func (s *State) RememberThreadEvent(e ThreadEvent) {
+	if e.Room == "" || e.EventID == "" || e.Root == "" || s.ThreadEventRoot(e.Room, e.EventID) != "" {
+		return
+	}
+	s.ThreadEvents = append(s.ThreadEvents, e)
+	const max = 2000
+	if len(s.ThreadEvents) > max {
+		s.ThreadEvents = s.ThreadEvents[len(s.ThreadEvents)-max:]
+	}
+}
 
 // HasThread reports whether root is a thread this agent participates in.
 func (s State) HasThread(root string) bool {
