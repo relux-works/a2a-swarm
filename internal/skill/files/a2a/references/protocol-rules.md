@@ -2,6 +2,16 @@
 
 Agent-facing summaries of the rules in docs/protocol.md, indexed from SKILL.md.
 
+Apply this command-resolution rule before every command below:
+
+- **Curator-managed:** If either directory exists — the project's `.agents/bin/` or the manager's `global/bin/` — use the managed route. The manager home is `$HOME/.curator` by default, or the directory of `CURATOR_CONFIG` when that is set. Test directory existence, not the `a2a` file; `.agents/` or `.agents/skills/a2a` alone is not evidence. Resolve project `.agents/bin/a2a` (`a2a.cmd` on Windows), then the manager's `global/bin/a2a` (`a2a.cmd` on Windows). Refuse if neither managed command is valid or resolution is ambiguous; never fall back to PATH lookup, a self-built binary or building one.
+- **Self-built:** Only when both directories are confirmed absent and the owner has authorized the self-built install recipe, follow that recipe and use its installed command path.
+- **Otherwise refuse:** If the manager home, directory existence or route is uncertain, or self-built recipe authorization is missing, refuse and ask the owner which route applies. Never default to building.
+
+Throughout this skill and its references, `a2a` is shorthand for the absolute installed command selected by this rule. Examples spelling `"$HOME/.local/bin/a2a"` use the self-built form; Curator-managed installs must substitute their resolved absolute command everywhere, including `--installed-command`.
+See [managed installation and limits](command-installation.md) or the
+[self-built install recipe](install.md) for the selected route.
+
 ## Deciding shared things: the advice process (protocol rule 27)
 
 - Specs, cross-project designs, conventions and protocol changes: the orchestrator or keeper ACCOUNTABLE for the result decides after seeking advice (docs/advice-process.md). There is no consensus and no veto. Workers never decide.
