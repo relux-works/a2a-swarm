@@ -67,9 +67,9 @@ for uncertainty, clock/restart and diagnostic limits.
 | Liveness monitor | Self-written status, explicit freshness, visible unanswered age, correlated host incidents and keeper-routed transition alerts | `bin/a2a status init`; `bin/a2a who --stale-after 3m`; monitoring needs `--watch --poll DUR`, alerts need `--alert-room R --keeper NAME`; watching unanswered history also requires `--unanswered-since TIME --history-pages-per-poll N` (1..100 per joined room) | self-keyed `ai.relux.a2a.status` events in `#status`, stdout, durable alert transactions in the monitor's own `state/NAME.json` |
 
 Principal coverage accepts a permanent all-events manual row for the principal's
-exact ID in that room, without extra selector or time gates. Sync then adds no
-`host-principal` row. Such a manual row is removable without a typed refusal;
-mandatory delivery still carries principal mail. Kind trim preserves coverage:
+exact ID in that room, without extra selector filters or future creation/since
+gates. Sync then adds no `host-principal` row. Such a manual row is removable
+without a typed refusal; mandatory delivery still carries principal mail. Kind trim preserves coverage:
 only a real loss warrants refusal, while invalid policy or unreadable membership
 fails closed.
 

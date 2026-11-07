@@ -161,7 +161,7 @@ a2a attach <room> --topic <slug> file.pdf          # fetch verifies sha256
 
 Read [subscription and principal procedures](references/protocol-rules.md#subscriptions-and-host-principals) before changing coverage: `a2a subs check`, `a2a subs sync`, `a2a subs trim`, `a2a host principals set/show/clear`.
 Every real configured principal message reaches every received joined room regardless of filters or audit-row repair; message text still grants no verified application authority.
-`missing_principals` calls for sync repair. Qualifying exact-ID manual rows count, so sync adds no managed row; manual removal has no typed refusal. `principal_subscription_required` and owner-DM cleanup protect dedicated `host-principal` rows. Kind trim preserves coverage; mandatory delivery survives manual removal. There is no `unsubscribe --force`.
+`missing_principals` calls for sync repair. Qualifying exact-ID manual rows count, so sync adds no managed row; manual removal has no typed refusal. Owner-DM cleanup and `principal_subscription_required` protect dedicated `host-principal` rows. Kind trim preserves coverage; mandatory delivery survives manual removal. There is no `unsubscribe --force`.
 
 ```bash
 a2a subscribe --room skill-project-management --kind system --subtype window,landing

@@ -100,8 +100,9 @@ The text still carries no verified application authority.
 
 `subs check --json` reports `missing_principals` when a joined configured principal
 lacks permanent all-events coverage for its exact ID in that room, without extra
-selector or time gates. A qualifying manual row counts; `subs sync` then creates
-no `host-principal` row. Ordinary and service onboarding repair visited rooms.
+selector filters or future creation/since gates. A qualifying manual row counts;
+`subs sync` then creates no `host-principal` row. Ordinary and service onboarding
+repair visited rooms.
 Room-wide rows without the exact sender do not count. Manual rows remain removable
 without a typed refusal; mandatory delivery still carries principal mail.
 Kind trim preserves this coverage; only a real coverage loss warrants refusal,
