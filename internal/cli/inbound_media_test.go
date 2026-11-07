@@ -133,12 +133,15 @@ func TestElementMediaLegacyCannotFallback(t *testing.T) {
 			id := e.hs.inject(room, "@bob:"+testServer, content)
 			root := t.TempDir()
 			t.Setenv("TMPDIR", root)
-			r := e.as("alice", "fetch", room, id, "-o", filepath.Join(root, "out"))
+			r := e.as("alice", "fetch", room, id, "-o", filepath.Join(root, "out")).failsWith(t, ExitError, "attachment")
 			if r.code != ExitError || r.stdout != "" || e.hs.CallCount(downloadRoute) != 0 || len(dirEntries(t, root)) != 0 {
 				t.Fatalf("malformed legacy attachment fell back: %+v", r)
 			}
 			if strings.Contains(r.stderr, "hash_status=computed_unverified") {
 				t.Fatal("native success for legacy descriptor")
+			}
+			if e.hs.CallCount("/_matrix/client/v1/media/config") != 0 {
+				t.Fatal("malformed legacy descriptor reached media preflight")
 			}
 			valid := e.hs.inject(room, "@bob:"+testServer, elementContent("m.file"))
 			e.as("alice", "fetch", room, valid, "-o", filepath.Join(root, "good")).ok(t)

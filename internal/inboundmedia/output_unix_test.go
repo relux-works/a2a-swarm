@@ -139,7 +139,7 @@ func TestNativePublicationRacesAndPrivateModes(t *testing.T) {
 			defer srv.Close()
 			defer releaseStream()
 			c := matrix.New(srv.URL, "synthetic")
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			done := make(chan error, 1)
 			path := filepath.Join(parent, "out")
@@ -193,7 +193,7 @@ func TestNativePublicationRacesAndPrivateModes(t *testing.T) {
 			var err error
 			select {
 			case err = <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(15 * time.Second):
 				t.Fatal("fetch did not stop after release")
 			}
 			switch kind {

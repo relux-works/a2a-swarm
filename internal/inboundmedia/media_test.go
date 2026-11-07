@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
@@ -141,7 +141,8 @@ func TestNativeFourKindsAndOpaqueHash(t *testing.T) {
 				t.Fatal("listing downloaded")
 			}
 			r, err := f.fetch(ev, "explicit")
-			if err != nil || r.SHA256 == strings.Repeat("0", 64) || r.ActualSize != int64(encoded.Len()) {
+			expectedHash := fmt.Sprintf("%x", sha256.Sum256(encoded.Bytes()))
+			if err != nil || r.SHA256 != expectedHash || r.ActualSize != int64(encoded.Len()) {
 				t.Fatalf("opaque computed digest: %+v %v", r, err)
 			}
 			got, _ := os.ReadFile(r.Path)
@@ -386,6 +387,18 @@ func (b *countBody) Read(p []byte) (int, error) {
 }
 func (b *countBody) Close() error { b.closed = true; return b.closeErr }
 
+// A manually triggered deadline keeps preflight timing out of the body test.
+type triggeredDeadline struct{ context.Context }
+
+func (c triggeredDeadline) Value(any) any { return nil }
+
+func (c triggeredDeadline) Err() error {
+	if c.Context.Err() != nil {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 func TestNativeReaderLimitErrorsAndCancellation(t *testing.T) {
 	for _, kind := range []string{"L+1", "D+1", "read-error", "close-error", "cancel", "deadline", "connection-change"} {
 		t.Run(kind, func(t *testing.T) {
@@ -395,10 +408,11 @@ func TestNativeReaderLimitErrorsAndCancellation(t *testing.T) {
 			c := matrix.New("http://synthetic.invalid", "synthetic")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			// Arm the deadline only when the download body is acquired below;
+			// slow preflight must not turn this into a different test.
+			var fetchCtx context.Context = ctx
 			if kind == "deadline" {
-				var stop context.CancelFunc
-				ctx, stop = context.WithTimeout(ctx, 10*time.Millisecond)
-				defer stop()
+				fetchCtx = triggeredDeadline{ctx}
 			}
 			c.HTTP = &http.Client{Transport: mediaTransport(func(r *http.Request) (*http.Response, error) {
 				rc := io.ReadCloser(io.NopCloser(strings.NewReader(`{"m.upload.size":64}`)))
@@ -414,7 +428,8 @@ func TestNativeReaderLimitErrorsAndCancellation(t *testing.T) {
 					case "cancel":
 						cancel()
 					case "deadline":
-						<-ctx.Done()
+						cancel()
+						<-r.Context().Done()
 					case "connection-change":
 						body.data = strings.NewReader("valid")
 						c.BeforeRequest = func() error { return errors.New("changed") }
@@ -426,7 +441,7 @@ func TestNativeReaderLimitErrorsAndCancellation(t *testing.T) {
 			if kind == "D+1" {
 				declared = 4
 			}
-			_, err := Fetch(ctx, c, validEvent("m.file", declared), selection, filepath.Join(root, "out"))
+			_, err := Fetch(fetchCtx, c, validEvent("m.file", declared), selection, filepath.Join(root, "out"))
 			code := TransferFailed
 			switch kind {
 			case "L+1":

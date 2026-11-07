@@ -84,6 +84,25 @@ func openTarget(output string) (*outputTarget, Code) {
 		// Also accept the canonical spelling of the same trusted root.
 		relative, err = filepath.Rel(rootPath, abs)
 	}
+	if err == nil && (relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		// The output may spell the trusted root through different ancestor
+		// aliases (for example /var while TMPDIR is a separate symlink).
+		// Resolve prefixes only until that root is reached. Never resolve a
+		// descendant: the remainder must still pass the no-follow dirfd walk.
+		prefix := string(filepath.Separator)
+		parts := strings.Split(strings.TrimPrefix(abs, prefix), string(filepath.Separator))
+		for i, part := range parts[:len(parts)-1] {
+			prefix = filepath.Join(prefix, part)
+			resolved, resolveErr := filepath.EvalSymlinks(prefix)
+			if resolveErr != nil {
+				break
+			}
+			if resolved == rootPath {
+				relative = filepath.Join(parts[i+1:]...)
+				break
+			}
+		}
+	}
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return nil, UnsafeOutput
 	}

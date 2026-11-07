@@ -173,7 +173,7 @@ func TestOpaqueTenMinuteClampAndShorterContext(t *testing.T) {
 
 func TestGetMediaEventExactSelection(t *testing.T) {
 	valid := `{"event_id":"$native","sender":"@human:synthetic","room_id":"!room:synthetic","type":"m.room.message","content":{"msgtype":"m.file","url":"mxc://foreign.invalid/media"}}`
-	for _, kind := range []string{"valid", "encrypted", "event", "sender", "room", "room-null", "duplicate", "alias", "unicode", "redacted", "unsigned-null", "content-null", "content-over-limit", "filtered"} {
+	for _, kind := range []string{"valid", "encrypted", "event", "sender", "room", "room-null", "state", "state-null", "duplicate", "alias", "unicode", "redacted", "unsigned-null", "content-null", "content-over-limit", "filtered"} {
 		t.Run(kind, func(t *testing.T) {
 			raw := valid
 			switch kind {
@@ -187,6 +187,10 @@ func TestGetMediaEventExactSelection(t *testing.T) {
 				raw = strings.Replace(raw, "!room:synthetic", "!other:synthetic", 1)
 			case "room-null":
 				raw = strings.Replace(raw, `"room_id":"!room:synthetic"`, `"room_id":null`, 1)
+			case "state":
+				raw = strings.Replace(raw, `"content":`, `"state_key":"","content":`, 1)
+			case "state-null":
+				raw = strings.Replace(raw, `"content":`, `"state_key":null,"content":`, 1)
 			case "duplicate":
 				raw = strings.Replace(raw, `"event_id":"$native"`, `"event_id":"$other","event_id":"$native"`, 1)
 			case "alias":

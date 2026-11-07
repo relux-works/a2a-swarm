@@ -43,6 +43,23 @@ func TestElementMediaProjectionIsInboxOnly(t *testing.T) {
 	}
 }
 
+func TestEventRecordFormatControlsAreEscapedLosslessly(t *testing.T) {
+	want := EventRecord{Type: "message", RoomID: "!room\U000e0001:synthetic", EventID: "$event\u2066", Sender: "@peer\u202e:synthetic"}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, control := range []string{"\U000e0001", "\u2066", "\u202e"} {
+		if strings.Contains(string(raw), control) {
+			t.Fatalf("literal format control: %s", raw)
+		}
+	}
+	var got EventRecord
+	if err := json.Unmarshal(raw, &got); err != nil || got.RoomID != want.RoomID || got.EventID != want.EventID || got.Sender != want.Sender {
+		t.Fatalf("identifier changed: %+v %v", got, err)
+	}
+}
+
 func TestElementMediaRedactedFetchCLI(t *testing.T) {
 	for _, observation := range []int{1, 2} {
 		t.Run(map[int]string{1: "initial", 2: "reobserve"}[observation], func(t *testing.T) {

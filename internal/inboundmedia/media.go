@@ -261,7 +261,7 @@ func Inspect(ev matrix.Event, roomID string) *Metadata {
 		return fail(MetadataInvalid)
 	}
 	m.Kind = kind
-	if !matrix.ValidVerificationID(roomID, '!') || !matrix.ValidVerificationID(ev.EventID, '$') || !matrix.ValidVerificationID(ev.Sender, '@') || (ev.RoomID != "" && ev.RoomID != roomID) {
+	if ev.StateKey != nil || !matrix.ValidVerificationID(roomID, '!') || !matrix.ValidVerificationID(ev.EventID, '$') || !matrix.ValidVerificationID(ev.Sender, '@') || (ev.RoomID != "" && ev.RoomID != roomID) {
 		return fail(ContextInvalid)
 	}
 	if header, present := tree["ai.relux.a2a"]; present {
@@ -286,10 +286,8 @@ func Inspect(ev matrix.Event, roomID string) *Metadata {
 		m.NameSource = "body_fallback"
 		m.NameStatus = "declared_untrusted"
 	}
-	if x, present := tree["filename"]; present && x != nil && !filenameOK {
-		m.NameStatus = "invalid"
-	}
-	if x, present := tree["filename"]; present && x == nil {
+	if _, present := tree["filename"]; present && !filenameOK {
+		m.Name, m.NameSource = "", "unknown"
 		m.NameStatus = "invalid"
 	}
 	if info, present := tree["info"]; present {
@@ -331,6 +329,16 @@ func Inspect(ev matrix.Event, roomID string) *Metadata {
 		if !ok || mediaKeys(obj) != nil {
 			return fail(MetadataInvalid)
 		}
+		if raw, present := obj["name"]; present {
+			name, ok := raw.(string)
+			canonical := filename
+			if !filenameOK || filename == "" {
+				canonical = body
+			}
+			if !ok || name == "" || name != canonical || m.NameStatus == "invalid" {
+				return fail(MetadataInvalid)
+			}
+		}
 		for key, canonical := range map[string]any{"url": tree["url"], "size": nil, "mimetype": nil} {
 			if info, ok := tree["info"].(map[string]any); ok && key != "url" {
 				canonical = info[key]
@@ -361,7 +369,7 @@ func Inspect(ev matrix.Event, roomID string) *Metadata {
 // remain opaque. The strict parser separately rejects exact/escaped duplicates.
 func mediaKeys(m map[string]any) error {
 	for k := range m {
-		for _, canonical := range []string{"msgtype", "url", "file", "info", "size", "mimetype", "filename", "body", "ai.relux.a2a", "attachment", "thumbnail_file", "key", "iv", "hashes", "encrypted", "org.matrix.msc1767.file", "m.file"} {
+		for _, canonical := range []string{"msgtype", "url", "file", "info", "size", "mimetype", "filename", "name", "body", "ai.relux.a2a", "attachment", "thumbnail_file", "key", "iv", "hashes", "encrypted", "org.matrix.msc1767.file", "m.file"} {
 			if k != canonical && strings.EqualFold(k, canonical) {
 				return errors.New("ambiguous media metadata")
 			}
@@ -394,7 +402,7 @@ const MaxLimit int64 = 1 << 40 // existing attachment limit, unchanged
 func Fetch(ctx context.Context, c *matrix.Client, ev matrix.Event, handle Handle, output string) (Result, error) {
 	result := Result{Handle: handle}
 	failure := func(code Code) (Result, error) { return result, refuse(code, handle) }
-	if ev.EventID != handle.EventID || !matrix.ValidVerificationID(handle.EventID, '$') || !matrix.ValidVerificationID(handle.RoomID, '!') || !matrix.ValidVerificationID(ev.Sender, '@') || (ev.RoomID != "" && ev.RoomID != handle.RoomID) {
+	if ev.StateKey != nil || ev.EventID != handle.EventID || !matrix.ValidVerificationID(handle.EventID, '$') || !matrix.ValidVerificationID(handle.RoomID, '!') || !matrix.ValidVerificationID(ev.Sender, '@') || (ev.RoomID != "" && ev.RoomID != handle.RoomID) {
 		return failure(ContextInvalid)
 	}
 	if ev.IsRedacted() {

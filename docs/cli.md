@@ -714,7 +714,7 @@ a2a attach a2a-swarm --topic bridge-daemon --to m1max_swarm_keeper design.pdf "D
 Downloads through authenticated `GET /_matrix/client/v1/media/download/<server>/<id>`. Legacy a2a attachments and bare MXC fetches compare temporary bytes against their expected SHA256 before publication without replacing an existing file. Native Matrix media has no trusted expected hash; its distinct contract follows below. The encoding table, bounds and verification order above apply. A bare mxc URI requires
 `--sha256 <hex>`, uses `L + 1` as its read bound, and saves stored bytes. The default target is the top-level name, or `encoding.original.name`
 for v1 gzip. Unsafe default names (empty, `.`, `..`, containing `/`, `\`, NUL or control characters, or starting with `-`) are refused;
-`-o` uses the given path. mxc URIs are parsed strictly (`mxc://<hostname[:port]>/<[A-Za-z0-9_-]+>`). Prints the written path.
+`-o` uses the given path. mxc URIs are parsed strictly (`mxc://<hostname[:port]>/<[A-Za-z0-9_-]+>`). Legacy and bare-MXC success print the written path; native success prints the JSON result described below.
 ```bash
 a2a fetch a2a-swarm '$F1...' -o /tmp/design.pdf
 ```
@@ -728,7 +728,10 @@ It includes canonical kind, declared name/MIME/size, their untrusted status,
 full sender MXID, an exact `{room_id,event_id}` handle, and
 `integrity: "homeserver_only_no_trusted_hash"`. Native metadata is inbox-only;
 `wait --json`, `watch --json` and `read --json` retain their prior fields. Names are display
-data, never paths. Missing size is unknown; present malformed/nonpositive size
+data, never paths. Existing body/excerpt text can itself contain a filename
+(Element commonly uses the filename as the body); inbox-only applies to the
+new metadata fields, not to those pre-existing text channels. JSON format controls
+are escaped without changing decoded identifiers. Missing size is unknown; present malformed/nonpositive size
 refuses that item. A bad media item retains its handle and does not suppress
 valid neighbours. Listing performs no download, transcription or new receipt
 transition; successful inbox writes retain the existing explicit receipt rule.
@@ -739,16 +742,21 @@ output must be beneath that root, with existing nonsymlink descendant directorie
 The caller-selected trusted TMPDIR is canonicalized once, accepting system
 aliases such as macOS `/var` and `/tmp`; output descendants are never
 canonicalized or followed through symlinks. Both configured and canonical root
-spellings are accepted:
+spellings, including an alternate alias of the root's ancestors, are accepted:
 
 ```bash
 a2a fetch '!room:example.org' '$event' -o "$TMPDIR/chosen-image.bin"
 ```
 
 The new branch re-observes the original room/event endpoint, validates exact
-event/sender/room context, and downloads only canonical unencrypted MXC media
+event and sender context and any supplied room ID (an absent room ID is filled
+from the requested endpoint), refuses state events, and downloads only canonical unencrypted MXC media
 through the selected homeserver's authenticated API. This consistency evidence
-does not grant sender or owner authority. Every media redirect is refused.
+does not grant sender or owner authority. The second observation supplies the
+locator, size and kind; it may differ from the first in these fields. An immutable
+event is therefore trusted only as reported by the selected homeserver.
+Conflicting extensible-file names refuse; malformed filename declarations are
+labelled invalid with no fallback display name. Every media redirect is refused.
 The byte limit is the existing `min(positive m.upload.size, 1 TiB)`; absent or
 invalid caps refuse. Reads are bounded to declared size plus one, or cap plus
 one when size is unknown. An unknown-size stream can consume disk up to the
@@ -776,8 +784,12 @@ cap and encoding checks establish no authenticity: a native event supplies no
 trusted expected hash and relies on the selected homeserver. Native failures
 and bounded event-observation failures use closed `MEDIA_*` codes and the exact
 selected handle; legacy attachment validation retains its existing errors.
-A redaction at either event observation or in the local tombstone store refuses
-with `MEDIA_REDACTED`, without downloading.
+A redaction at either successfully parsed event observation or in the local
+tombstone store refuses with `MEDIA_REDACTED`, without downloading. Resolve room
+aliases first; an alias-resolution failure retains its existing error and cannot
+probe a tombstone. Malformed or duplicate-key strict observations refuse as
+`MEDIA_CONTEXT_INVALID`, even if they also contain redaction indicators. Redaction
+is not re-observed during the download or immediately before publication.
 Caller cancellation and deadline expiry retain `MEDIA_CANCELLED` and
 `MEDIA_TIMEOUT` during preflight as well as transfer; a missing/invalid cap or
 configuration failure remains `MEDIA_LIMIT_UNAVAILABLE`.
@@ -801,6 +813,11 @@ is limited to 64 KiB and 32 nesting levels with duplicate/alias checks. Native
 kind detection uses the dispatch bound, so oversized metadata refuses with
 `MEDIA_METADATA_INVALID` regardless of whether `msgtype` precedes or follows
 it; refused native metadata does not fall through to legacy attachment decoding.
+Inbox's additive `media` object (including nullable `declared_size`) and indented
+metadata line require consumers to tolerate the new field/line. Legacy event
+fetches share the bounded initial lookup and pre-dispatch encryption refusal;
+observation failures now use `MEDIA_*` errors. Their historical attachment
+identity validation remains separate from the stricter native observation.
 
 Actual Element and macOS acceptance remain external. This is Part 1 only;
 speech recognition and its model/codec/duration policies are a separate unit.

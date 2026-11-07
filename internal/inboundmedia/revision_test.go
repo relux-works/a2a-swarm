@@ -50,7 +50,7 @@ func TestNativeConfigContextClassification(t *testing.T) {
 				cancel()
 			case "already-deadline", "deadline-during-config":
 				cancel()
-				duration := 25 * time.Millisecond
+				duration := 5 * time.Second
 				if name == "already-deadline" {
 					duration = -time.Second
 				}
@@ -80,6 +80,9 @@ func TestNativeConfigContextClassification(t *testing.T) {
 			wantRefusal(t, err, want)
 			if strings.HasPrefix(name, "already-") && calls != 0 {
 				t.Fatal("ended caller context made a preflight request")
+			}
+			if !strings.HasPrefix(name, "already-") && calls != 1 {
+				t.Fatalf("configuration was not entered exactly once: %d", calls)
 			}
 			cleanRoot(t, f.root)
 			f.c.HTTP = original

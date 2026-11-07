@@ -5,6 +5,7 @@ package inboundmedia
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,9 +20,20 @@ func TestNativeTrustedRootAliasAndNoFollowBelow(t *testing.T) {
 	if err := os.Symlink(f.root, alias); err != nil {
 		t.Fatal(err)
 	}
+	canonical, err := filepath.EvalSymlinks(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce macOS's system-ancestor spelling even on Linux. This is
+	// distinct from both the configured TMPDIR alias and its canonical path.
+	ancestorAlias := filepath.Join(aliases, "system")
+	if err := os.Symlink(filepath.Dir(canonical), ancestorAlias); err != nil {
+		t.Fatal(err)
+	}
+	systemSpelling := filepath.Join(ancestorAlias, filepath.Base(canonical))
 	t.Setenv("TMPDIR", alias)
-	for _, root := range []string{alias, f.root} {
-		output := filepath.Join(root, filepath.Base(root)+"-out")
+	for i, root := range []string{alias, f.root, canonical, systemSpelling} {
+		output := filepath.Join(root, fmt.Sprintf("chosen-%d", i))
 		result, err := Fetch(context.Background(), f.c, validEvent("m.file", 5), selection, output)
 		if err != nil {
 			t.Fatal(err)
@@ -35,8 +47,10 @@ func TestNativeTrustedRootAliasAndNoFollowBelow(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := f.downloads.Load()
-	_, err := Fetch(context.Background(), f.c, validEvent("m.file", 5), selection, filepath.Join(alias, "child", "out"))
-	wantRefusal(t, err, UnsafeOutput)
+	for _, root := range []string{alias, f.root, canonical, systemSpelling} {
+		_, err := Fetch(context.Background(), f.c, validEvent("m.file", 5), selection, filepath.Join(root, "child", "out"))
+		wantRefusal(t, err, UnsafeOutput)
+	}
 	if f.downloads.Load() != before {
 		t.Fatal("symlink descendant downloaded")
 	}
@@ -69,4 +83,45 @@ func TestNativeMetadataFormatEscapesAndTextNeighbor(t *testing.T) {
 	if Inspect(plain, selection.RoomID) != nil {
 		t.Fatal("ordinary text gained media refusal")
 	}
+}
+
+func TestNativeDeclaredNameConsistency(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		refusal      Code
+		status       string
+	}{
+		{"same", `"filename":"report.pdf","org.matrix.msc1767.file":{"name":"report.pdf"}`, "", "declared_untrusted"},
+		{"body", `"body":"report.pdf","org.matrix.msc1767.file":{"name":"report.pdf"}`, "", "declared_untrusted"},
+		{"conflict", `"filename":"report.pdf","org.matrix.msc1767.file":{"name":"evil.exe"}`, MetadataInvalid, "declared_untrusted"},
+		{"null", `"filename":null,"body":"report.pdf"`, "", "invalid"},
+		{"malformed", `"filename":7,"body":"report.pdf"`, "", "invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := nativeEvent(`{"msgtype":"m.file","url":"mxc://remote.invalid/media-id",` + tc.fields + `}`)
+			m := Inspect(ev, selection.RoomID)
+			if m == nil || m.Refusal != tc.refusal || m.NameStatus != tc.status {
+				t.Fatalf("name contract: %+v", m)
+			}
+			if tc.status == "invalid" && (m.Name != "" || m.NameSource != "unknown") {
+				t.Fatalf("invalid filename retained fallback: %+v", m)
+			}
+		})
+	}
+}
+
+func TestNativeStateEventRefusedBeforeDownload(t *testing.T) {
+	f := newFixture(t, []byte("valid"), 64)
+	ev := validEvent("m.file", 5)
+	key := ""
+	ev.StateKey = &key
+	if m := Inspect(ev, selection.RoomID); m == nil || m.Refusal != ContextInvalid {
+		t.Fatalf("state-event projection: %+v", m)
+	}
+	_, err := f.fetch(ev, "state")
+	wantRefusal(t, err, ContextInvalid)
+	if f.configs.Load() != 0 || f.downloads.Load() != 0 {
+		t.Fatal("state event reached preflight or download")
+	}
+	cleanRoot(t, f.root)
 }

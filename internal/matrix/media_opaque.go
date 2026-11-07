@@ -177,6 +177,9 @@ func (c *Client) GetMediaEvent(ctx context.Context, roomID, eventID string) (Eve
 	if room, present := v.value["room_id"]; present && room != roomID {
 		return zero, ErrOpaqueTransfer
 	}
+	if _, present := v.value["state_key"]; present {
+		return zero, ErrOpaqueTransfer
+	}
 	if _, ok := v.value["content"].(map[string]any); !ok {
 		return zero, ErrOpaqueTransfer
 	}

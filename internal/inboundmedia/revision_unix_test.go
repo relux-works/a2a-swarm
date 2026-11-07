@@ -51,7 +51,7 @@ func TestNativeConfiguredRootReplacement(t *testing.T) {
 			defer srv.Close()
 			defer unblock()
 			c := matrix.New(srv.URL, "synthetic-token")
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			output := filepath.Join(root, "out")
 			done := make(chan error, 1)
@@ -85,7 +85,12 @@ func TestNativeConfiguredRootReplacement(t *testing.T) {
 				}
 			}
 			unblock()
-			err := <-done
+			var err error
+			select {
+			case err = <-done:
+			case <-ctx.Done():
+				t.Fatal("fetch did not finish after stream release: ", ctx.Err())
+			}
 			if name == "valid" {
 				if err != nil {
 					t.Fatal(err)

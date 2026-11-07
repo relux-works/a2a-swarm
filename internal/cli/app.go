@@ -144,7 +144,7 @@ func commands() []command {
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
 		{"post", "post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--voice] <text|@file|->", cmdPost},
 		{"attach", "attach <room> --topic <slug|$event> <file> [--kind K] [--to a,b] [--pin] [caption|@file|-]   share a file", cmdAttach},
-		{"fetch", "fetch <room> <$event> [-o path] | fetch <mxc://...> --sha256 <hex> [-o path]   download and verify a file", cmdFetch},
+		{"fetch", "fetch <room> <$event> [-o path] | fetch <mxc://...> --sha256 <hex> [-o path]   download a file (native hash is unverified)", cmdFetch},
 		{"files", "files <room> [--topic X] [--last N] [--json]   list shared files, oldest first", cmdFiles},
 		{"pin", "pin <room> <$event>                  pin an event (m.room.pinned_events)", cmdPin},
 		{"unpin", "unpin <room> <$event>                unpin an event", cmdUnpin},
