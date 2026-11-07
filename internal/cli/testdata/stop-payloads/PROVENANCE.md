@@ -1,6 +1,6 @@
 # F1 gate (1): Stop payload fixtures, provenance
 
-Captured on agents1 (Linux, user `agent`) on 2026-10-23 by agents1_a2a_orch. Each capture was one single-turn, trivial prompt with no tool calls, run in a fresh temp directory under the lane's scratchpad. That directory is shown below as `<capdir>` and was deleted after capture. No live hook, settings file, config, trust state or credential was created or changed. The Codex capture was approved by the agents1 host keeper ($E9qMdHemL16ps81bgJO1ou0cXXe30prPUxUz21jKNWk, $b9T-_b3n6cJTvVzOalxlfhVcrLZD8_IxCJhvlKT0vDI).
+Captured on Linux on 2026-10-23. Each capture was one single-turn, trivial prompt with no tool calls, run in a fresh temp directory under the lane's scratchpad. That directory is shown below as `<capdir>` and was deleted after capture. No live hook, settings file, config, trust state or credential was created or changed. The Codex capture had host-keeper approval.
 
 ## Fixture 1: Claude Code
 - File: `claude-code-2.1.309-stop.json`
@@ -16,7 +16,7 @@ Captured on agents1 (Linux, user `agent`) on 2026-10-23 by agents1_a2a_orch. Eac
 ## Fixture 2: Codex CLI
 - File: `codex-cli-0.163.0-stop.json`
 - sha256: `ec6f7f738b7ad3b9e2da43d043da0b31a0a528985e70805681da073c1daa6a6b`
-- Runtime: `codex --version` = `codex-cli 0.163.0`. CODEX_HOME was the agents1-dev Curator environment, used read-only (its own session and rollout files were written by Codex as usual).
+- Runtime: `codex --version` = `codex-cli 0.163.0`. CODEX_HOME was a Curator environment, used read-only (its own session and rollout files were written by Codex as usual).
 - Three runs were made, as approved; only the third produced a payload:
   1. `<capdir>/proj/.codex/hooks.json` with a Stop command hook, plus `-c 'projects."<capdir>/proj".trust_level="trusted"'` and `--dangerously-bypass-hook-trust`; no git repo. Exit 0, reply `ok`; the Stop hook did not run.
   2. As run 1, plus `git init` in `<capdir>/proj`. Exit 0, reply `ok`; the Stop hook did not run.

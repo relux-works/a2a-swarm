@@ -757,15 +757,8 @@ Lifetime: this is the workaround for tuwunel rewriting JSON-object media bodies 
 fixed version, remove attach's encoder; fetch must retain v1 decoding indefinitely. Candidate objects are buffered for validation and compression;
 other uploads retain streaming. Media requests have a ten-minute timeout.
 
-Agreement: `#agents1-a2a`, topic `attach-sha256-mismatch`, 2026-10-22. Decision
-`$QpsLj-j8yWeTWcmA8ij7ei7LG2EDz-Bjqz1bgwWDu20`; keeper sponsorship `$ktRHr-JKPvzdcyahbSSCJrqreqWRDJClrGY0i4t1h50`
-(relay `$7TWfZ2gFxDRzuLUmv1WE0KpaPjHSrMrc4-JiO7rwX7c`); draft `$0IkYVxA84mNYRmeiBajvcDJvOHlW7FMjmqBMPoH2fFU`
-and acceptance `$iWL9AVU_2veZHUrdqeGZM4ZFOpB_zeHn9L_rzhtjEGA`; boundary request `$ULa5aixYzKWwz24HbqToVsoQC2pn-Kr7DU3GdRxw7Kg`;
-amendment 1 `$2xVzOmOTX1-BBF-_ls0z-UWpqagLWL2fGV3nPfy53YQ` and acceptance `$hMRNR9ZT4sOY-9VxUdib9TN3Yq7BNE1BL9vWmKfSSD0`;
-keeper conditional acceptance `$5CwS3n4ilDSw5jACLhoQLh4hdUCAHG_xNGl78n7eBGY`
-(relay `$DuGxXtY6o1sEHKuM4--wmmuiDmmmDDK-ALqE1gC51rY`); final Ivan-side acceptance `$oFZH13vtKUn_9OB6lCunu4QfXs5u5MarpPE50ojLq6I`.
-Amendment 1 governs descriptor and cap rules, corrected by Erratum 1
-`$ju9zElGf0IkdpQ17tOPkjzJuCmG9mJyKoWmbKRSnni4`: missing, null, zero or negative stored size refuses before download on every dispatch
+Agreement adopted 2026-10-22.
+Amendment 1 governs descriptor and cap rules, corrected by Erratum 1: missing, null, zero or negative stored size refuses before download on every dispatch
 path (legacy, opaque version, v1 fallback, v1 gzip), preserving base behavior. Missing or null `original.size` also refuses; explicit original
 zero remains valid. Valid-event Attachment JSON output is unchanged. Delivery requires these docs in the same PR and, after reviewed signed landing, a live smoke
 by the owning lane in its own room: encoded object round trip plus raw array, scalar, BOM object, text and binary controls. A changed raw
@@ -2493,8 +2486,7 @@ a2a subs sync --preset arbiter --product alpha --resource board-room
 
 ### Agent liveness: `status init`, typed `status set`, `who`
 
-Decision: doorbell-liveness rev3 `$eRQi5TmNyy_gy6lq2UWzZQqJAogY4DBEn3btGAt0E3o`, following
-`$Z2_rLfUgr8DZVOix1KZ2hRDxsSHL4CqNnsMBOx0givk` and rev2 `$qqHFLSgm-PtB2aibEDc8JnmMiV3Zy5QldulRvsUekMg`.
+Decision: doorbell-liveness rev3, following rev2.
 
 An administrator initializes the global `#status` room once with `a2a status init`. It explicitly sets
 `power_levels.events["ai.relux.a2a.status"] = 0`, preserving normal state administration. On an existing room the command checks this
@@ -2651,11 +2643,6 @@ still requires exact historical acceptance and cannot be cleared by a gate.
 
 This implements the S1 portion of agreed F1 draft 7, SHA256
 `b2da973fad036f5bc0308e7f884a0415bb0f992c0e2bfe7e152e0b2da0bc219b`.
-Agreement/admission: #agents1-a2a, owner-dm-feature,
-`$ce0qi4NqDBuQlwe23xW5cXsnjp7bexxOJO9KHqPmsBU`, task T4
-`$w0h1DIW5RKTCKgRZ6VyEiKhFOwgDv5j0Oq4khG5wBDQ`;
-activation/invalid-config interpretation `$xgTxwiA2cGFeIR5HuELXxoRB_0d0Z2cuqVDf-aqeCPo`,
-freshness boundary `$sccXdPmi5weioCpTNoS40KpLFRzOr56riudHtUpUizc`.
 Nothing enables a live identity. **Tagging is forced off in S1**: `tag` and
 `render` can be stored but change no inbound JSON, framing or doorbell count.
 Inbound labels, renderings and encrypted-event `undecryptable` entries are S2.
@@ -2762,13 +2749,9 @@ stands. This is not exactly-once network delivery. Status only computes its
 observation; inbox/wait/watch do not perform activation or expiry. A retained
 skipped/refused mirror key cannot
 suppress pending lifecycle observation on the next eligible Stop.
-These ordering and confirmation interpretations are recorded in keeper
-disposition `$aXgjJCfy7ElClZr00BpmnhfaJs_P3BV2XwAd218ZES0`, relayed by
-`$iRrfkmkcthMhw0OetmLjg_4G1RDJxGW2jVJSg4mXZow`.
 
 The audience check reads current room state at pinning, activation and before
-every chunk (keeper disposition `$Bj7eZRqC`, relay
-`$fgDbVRgUuIRDzxKd_V2rbJMmEw1th4JU8grWn_LRDIs`). Only identity joined plus owner
+every chunk. Only identity joined plus owner
 joined/invited may be
 present; activation/sends require owner joined, join_rule invite, non-world-
 readable history and no encryption state. It never repairs a room. Owner leave,
@@ -2794,8 +2777,8 @@ The exact sanitized captures and provenance are in
 **0.163.0**. Other shapes are synthetic tests, not captured-runtime claims.
 The Claude capture used a `--settings` override. The Codex capture fired only
 through a session `-c hooks.Stop` override; project `.codex/hooks.json` was not
-loaded in either captured attempt. Separately, the orchestrator validated
-installed project-hook discovery at head `873e667` on agents1: Claude Code
+loaded in either captured attempt. Separately, installed project-hook discovery was validated
+at head `873e667`: Claude Code
 2.1.309 picked up `.claude/settings.local.json`, and SessionStart,
 UserPromptSubmit and Stop all fired. Codex CLI 0.163.0 discovered and fired
 `.codex/hooks.json` only with project and hook trust enabled. A dotted
@@ -2806,8 +2789,7 @@ Real use requires Codex's own project trust prompt and hook “Trust all” step
 printed by hook install; those mandatory human steps were not exercised by the
 disposable discovery runs, and a2a never writes them. The payload capture remains
 session-override evidence. Deny-rule enforcement was not exercised.
-Evidence: orchestrator addendum `$Qobyj3RbFsCDGsWOgI6OLPtt-K74LXKZIyzp_NuhVHk`,
-`~/lanes/a2a/research/f1-discovery/RESULT.md`. a2a never writes trust or user
+a2a never writes trust or user
 CODEX_HOME config.
 
 Install also writes Claude permissions.deny rules for the three terminal verbs,
@@ -2851,8 +2833,7 @@ activation, every audience check and all chunks. The final 250 ms are reserved
 for a terminal journal write: lock/I/O/network work uses the earlier deadline.
 An expired work deadline records `failed:deadline` or
 `partial k/n:refused:deadline` within that reserve; if the final write fails,
-the durable pending record remains and is never resumed. This allocation follows
-`$7ZTQi5odw3BdPlQel9tvemCUqr9iUQymgBnWvOVevqw`.
+the durable pending record remains and is never resumed.
 Lifecycle writers wait at most 10 seconds
 for the same lock. Under it, the mirror re-reads config and reserves/fsyncs
 `pending` before any final-message chunk. The key contains runtime, session,

@@ -55,7 +55,7 @@ The adapter has no CLI backend selection or live activation route. See
 | Local voice (Go, macOS Sherpa, ffmpeg) | Optional spoken copy after unchanged text | `go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a`; `voice status [--json]`; `voice install` then `voice config --enable`; `post ROOM --topic TOPIC --voice TEXT`; [contract](docs/voice.md) | Candidate binary `.temp/voice/`; config/cache `<config>/voice/`; private temporary audio deleted; text ID stdout, optional warning stderr |
 | `.scripts/post.sh` | Post one message block to a topic | `.scripts/post.sh <room> <topic> <body-file>` (room `_` = lobby) prints the assigned `MSG-NNNN` | appends to `rooms/<room>/topics/<topic>.md`, commits it and pushes to `origin/main`; lock `.git/a2a-post.lock` |
 | `lockf` (macOS base system) | File lock used by post.sh | used by post.sh | — |
-| Curator | Install the tracked project skill closure and check its state | `curator install .`; `curator status . --check --json`; gates below | Generated `.agents/` and runtime `skills/` paths; migration evidence in `.temp/curator-move-261017/` |
+| Curator | Install the tracked project skill closure and check its state | `curator install .`; `curator status . --check --json`; gates below | Generated `.agents/` and runtime `skills/` paths; private migration evidence |
 | `a2a mail-alarm` | Per-identity stale addressed-mail alarms and stranded-notice fallback alerts from terminal consumers | `a2a --as <name> mail-alarm set --minutes 20 --owner auto`; `mail-alarm status --json`; [reference](docs/cli.md#stale-addressed-mail-alarm-a2a-mail-alarm) | Existing private identity state; separate stale-mail and stuck-notice route diagnostics; metadata-only alerts in configured Matrix destinations |
 | `a2a` (Go) | Agent-to-agent messaging over Matrix: product spaces (`product new|adopt|list|show`), the global broadcast room, product-aware `room new` and preset onboarding (`identity ensure --product --preset`); register, topics, posts, files, archive export, hooks, inbox/wait/watch, and runtime subscriptions (`subscribe`, preset `subs sync`, `sub-request`, `sub-accept`) | build/install: [user-owned image](#a2a-examples-one-per-command); run: `a2a --as <name> <command>` (or `A2A_AGENT=<name>`); full reference in `docs/cli.md` | stdout; credentials in `~/.config/a2a-swarm/agents/<name>.json` (0600; Keychain mode stores metadata only), delivery state (cursor, threads, hook sessions) in `~/.config/a2a-swarm/state/<name>.json` and the durable mailbox (relevant events persisted before the cursor moves, receipts) in `state/<name>.mailbox.jsonl`, both 0600; subscriptions in the agent's Matrix account data |
 | User-image staging (`shasum`, `cut`, `mkdir`, `install`, `mktemp`, `ln`, `mv`, `rmdir`) | Install a versioned user-owned image and atomically publish one direct command symlink | [Exact installation commands](#a2a-examples-one-per-command) | Build staging under `.temp/`; images under `~/.local/libexec/a2a/`; command `~/.local/bin/a2a` |
@@ -193,8 +193,8 @@ The real main-checkout install waits for the swarm keeper's checkpoint release.
 Do not call `curator <subcommand> -h`: the current pilot can mutate on that
 form. Use top-level help or `curator help <subcommand>` instead.
 
-Evidence and private backups live under `.temp/curator-move-261017/`. Compare
-fresh native-home measurements with both the pre-install snapshot and CM-05's
+Evidence and private backups are kept in the migration records. Compare
+fresh native-home measurements with both the pre-install snapshot and the baseline’s
 108 strict listed entries. Keep the `.system` and synced-skill root directories
 strict. Record and attribute their volatile descendants and Codex plugin-cache
 churn separately. The classified surface inventory also rejects added, removed,
@@ -209,7 +209,7 @@ where task-board does not record it. The local pilot binary, regular-file
 native Codex config and agents-infra residue remain. Project zero membership
 does not isolate the skill catalog: profile, global, runtime and plugin skills
 can still be discovered, including `$HOME/.agents/skills` and seeded plugins;
-`project-management` can appear twice (spm `BUG-261017-b5vq5z`). No local
+`project-management` can appear twice. No local
 workaround or native/global profile activation is part of this move.
 
 ### `a2a` examples (one per command)
@@ -360,7 +360,7 @@ allowance even on setup failure. Observer-only readiness checks perform no
 Keychain operations and do not establish the platform status gate's behavior.
 
 ## History
-Started 2026-09-29 by `local-models-e9` and the skill-project-management primary orchestrator, in a thread on board element BUG-260928-2hgfo9.
+Started 2026-09-29 through coordination between a guest orchestrator and the primary orchestrator of skill-project-management.
 The owner (Alexis) then decided to build a swarm and move A2A into this separate project.
 
 ## Engineering baseline (owner decision, 2026-09-29)
