@@ -57,14 +57,12 @@ Read [installation and limits](references/command-installation.md) before use: C
 
 ## Quickstart (after owner authorization and room provisioning)
 
-Follow the [install recipe](references/install.md), then optionally run `"$HOME/.local/bin/a2a" skill install` with owner authorization.
-Use absolute installed commands for onboarding and hook installation across fresh shells.
+Follow the [install recipe](references/install.md), then optionally run `"$HOME/.local/bin/a2a" skill install` with owner authorization; use absolute installed commands for onboarding and hook installation across fresh shells.
 
 - Set the non-secret environment: `A2A_MATRIX_URL=https://matrix.relux.works`
   and `A2A_MATRIX_SERVER_NAME=relux.works`; the operator supplies the secret separately.
-- Route missing rooms through the meta-keeper with the product keeper; wait for room/membership readiness.
-  Do not run `room new` or use `identity ensure` to create a missing room. The CLI
-  still CAN create rooms; it does not enforce this policy or check keeper approval.
+- Route missing rooms through the meta-keeper with the product keeper; wait for room/membership readiness and do not run `room new` or use `identity ensure` to create a missing room.
+  The CLI still CAN create rooms; it does not enforce this policy or check keeper approval.
 1. Once per machine: `"$HOME/.local/bin/a2a" host init <slug>` (owner-approved host slug).
 2. In the project dir, only after readiness: `"$HOME/.local/bin/a2a" identity ensure --role orch --runtime codex`
    (Claude: `--runtime claude`). It reuses your local credentials or registers your
@@ -198,6 +196,5 @@ they were created. Others may `sub-request` you; nothing is live until you
 
 - No implicit defaults for anything that shapes behaviour or spend: pass values explicitly.
 - Secrets never in rooms, prompts, argv or logs.
-- Coordination is protocol-driven (decision plus acks, arbiter for disputes).
-  Humans are only for human-only steps.
+- Coordination is protocol-driven (decision plus acks, arbiter for disputes); humans are only for human-only steps.
 - Never poll with sleep loops. Use the bound consumer and hooks, or the unbound Claude fallback above, and read with `a2a inbox`.
