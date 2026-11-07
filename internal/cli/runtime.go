@@ -321,7 +321,10 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 			profile.Detail = preserve.Detail
 			profile.Doorbell = preserve.Doorbell
 		}
-		if err := s.writeLivenessSource(ctx, profile, preserveSource); err != nil && !errors.Is(err, ErrOwnStatusPending) {
+		if err := s.retryLivenessSource(ctx, profile, preserveSource); err != nil {
+			if errors.Is(err, ErrOwnStatusPending) {
+				return fmt.Errorf("runtime binding kept; liveness not published: %w", err)
+			}
 			return err
 		}
 		a.printf("%s bound generation=%s session=%s; launcher must export A2A_SESSION_ID=%s\n", s.name, binding.Generation, binding.SessionID, binding.SessionID)

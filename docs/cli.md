@@ -2198,7 +2198,7 @@ original capped deadline. Certain-equal acknowledged observations remain zeroHTT
 room resolution and PUT run without control/state locks, followed by a token-checked result merge that preserves concurrent mail and binding edits.
 An overlapping status writer returns the typed local refusal `own status publication already pending` before any preparation or HTTP.
 Automatic wait/native heartbeats, hooks and bound-consumer notice writers quietly skip that cycle without advancing heartbeat time or
-changing notice retry eligibility/backoff. Explicit status writes and wait/native disarm poll without holding a lock; waiting and publication
+changing notice retry eligibility/backoff. Explicit status writes, native runtime bind's one-shot profile publication and wait/native disarm poll without holding control/state locks; waiting and publication
 share the existing 10-second RPC budget, shortened by any earlier caller deadline. Only contention remaining at that deadline returns the
 pending refusal. A crashed writer's reservation expires at its RPC deadline, retaining uncertainty until reconciliation; an earlier caller
 deadline can expire before that fence, and a fence expiring at the caller's deadline leaves no publication budget.
@@ -2600,6 +2600,14 @@ host, identity, thread, session and generated generation. An alias move cannot m
 The thread must already be loaded on that server with the exact directory. Reading saved history is not a binding; the adapter never
 resumes a thread or attaches a second owner. Identical binds preserve generation and journal. `--watch` obtains the sole consumer lock
 before changing anything and holds it for its lifetime. Without `--watch`, bind records the configuration but does not arm a consumer.
+
+After recording the binding, bind publishes its runtime, hooks, heartbeat interval and product profile once. An in-flight own-status
+publication is retried without control/state locks within the existing 10-second RPC budget (or an earlier caller deadline).
+If contention outlasts that deadline, bind keeps the successful binding and its generation/journal, prints
+`a2a: runtime binding kept; liveness not published: own status publication already pending` on stderr and exits nonzero without
+printing the usual `bound` line. With `--watch`, this exits before starting the consumer and releases the consumer lock.
+The owning launcher must notice the exit and retry the same bind with bounded backoff; an identical bind reuses its generation/journal.
+Native heartbeats still skip contended cycles and copy the last acknowledged profile; they do not repair a refused bind-profile publication.
 
 The owner supplies `A2A_AGENT=NAME` and `A2A_SESSION_ID=THREAD_ID` to the attached thread's CLI calls/hooks so the supervised consumer and inbox share
 one identity lease. Exporting these only in a local TUI shell does not establish remote subprocess inheritance: configure and verify

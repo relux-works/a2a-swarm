@@ -144,7 +144,8 @@ mail-alarm owner route and optional per-identity lead target (`mail-alarm set --
 Outcomes log only on state changes; delivery requires a persisted ACK for each alert audience. `who` and `status get` read self-published
 notice evidence; a stale existing heartbeat stays stale. Lanes without an opted-in liveness record make no automatic status HTTP requests.
 Hooks finish mail delivery and its acknowledgement before quiet, best-effort status work; status HTTP holds neither the control nor state lock.
-Concurrent own-status publication makes automatic writers quietly skip that cycle; explicit status and disarm wait within their existing RPC budget.
+Concurrent own-status publication makes automatic writers quietly skip that cycle; explicit status, native runtime bind and disarm wait within their existing RPC budget.
+If contention outlasts that budget, native runtime bind keeps the binding, reports the pending publication on stderr and exits nonzero before starting `--watch`; its launcher can retry the same generation with bounded backoff.
 Submission or an opted-in matching session turn clears the episode. Completed attempts can retain time/count history without making a later human draft uncertain; retained pending IDs or
 notice text keep unsettled attempts distinguishable from completed history. A retained notice journal alerts even when partial/untyped or recovery is held; unknown frames cannot suppress that alert past ten minutes. See the CLI contract for authority and verification limits.
 
