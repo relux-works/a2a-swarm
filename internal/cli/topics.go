@@ -276,6 +276,7 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 		return usagef(use)
 	}
 	fs := newFlagSet("topic new")
+	result := addResultFlags(fs)
 	bodyArg := fs.String("body", "", "topic body: - (stdin), @file, or text")
 	kind := fs.String("kind", "notice", "message kind")
 	var to stringList
@@ -297,6 +298,11 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	if title == "" {
 		return usagef("empty topic title refused")
 	}
+	resultFile, err := result.prepare(fs)
+	if err != nil {
+		return err
+	}
+	defer resultFile.close()
 	var body string
 	if *bodyArg != "" {
 		if body, err = a.readBody(*bodyArg); err != nil {
@@ -348,8 +354,7 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	if err := s.rememberThread(id); err != nil {
 		fmt.Fprintf(a.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}
-	a.printf("%s\n", id)
-	return nil
+	return result.emit(a, resultFile, PublishResult{id, roomID, id, ""})
 }
 
 // cmdTopics: a2a topics <room>
@@ -402,6 +407,7 @@ func validKind(k string) bool {
 func cmdPost(ctx context.Context, a *App, args []string) error {
 	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
 	fs := newFlagSet("post")
+	result := addResultFlags(fs)
 	withVoice := fs.Bool("voice", false, "add a local voice reply after the unchanged text post")
 	topic := fs.String("topic", "", "topic slug or root event id")
 	kind := fs.String("kind", "notice", "message kind")
@@ -423,6 +429,11 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		}
 		return usagef(use)
 	}
+	resultFile, err := result.prepare(fs)
+	if err != nil {
+		return err
+	}
+	defer resultFile.close()
 	envelopeMode := false
 	fs.Visit(func(f *flag.Flag) { envelopeMode = envelopeMode || f.Name == "envelope" })
 	if envelopeMode {
@@ -519,13 +530,13 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	a.printf("%s\n", id)
+	resultErr := result.emit(a, resultFile, PublishResult{id, roomID, root, firstNonEmpty(*re, root)})
 	if *withVoice {
 		if err := s.postVoice(ctx, roomID, root, id, text); err != nil {
 			a.voiceWarning(err)
 		}
 	}
-	return nil
+	return resultErr
 }
 
 // sendThreadMessage sends h plus text as a thread reply to h.Topic and records
@@ -711,13 +722,11 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		rootEv, err := s.client.GetEvent(ctx, roomID, root)
+		rootEv, err := s.client.GetRoomEvent(ctx, roomID, root)
 		if err != nil {
 			return err
 		}
-		replies, err := s.collect(ctx, *last, func(from string) (matrix.Page, error) {
-			return s.client.ThreadReplies(ctx, roomID, root, from, "b", 100)
-		})
+		replies, err := s.collectTopicReplies(ctx, roomID, root, *last)
 		if err != nil {
 			return err
 		}
@@ -748,6 +757,61 @@ func cmdRead(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	return nil
+}
+
+// collectTopicReplies follows relations cursors even across empty pages. A
+// successful result is the requested newest n replies or an exhausted relation
+// listing, never a silent prefix caused by a scan bound or stalled cursor.
+// Keep this policy local to topic reads; timeline and delivery collectors differ.
+func (s *session) collectTopicReplies(ctx context.Context, roomID, root string, n int) ([]matrix.Event, error) {
+	const maxPages = 20
+	var out []matrix.Event
+	from := ""
+	cursors := map[string]bool{"": true}
+	seen := map[string]bool{}
+	scanned := 0
+	for page := 0; page < maxPages; page++ {
+		p, err := s.client.ThreadReplies(ctx, roomID, root, from, "b", 100)
+		if err != nil {
+			return nil, fmt.Errorf("incomplete topic replies: %w", err)
+		}
+		scanned += len(p.Chunk)
+		if scanned > maxScanEvents {
+			return nil, errors.New("incomplete topic replies: event scan limit reached")
+		}
+		for _, ev := range p.Chunk {
+			if ev.RoomID != "" && ev.RoomID != roomID {
+				return nil, errors.New("incomplete topic replies: foreign room event")
+			}
+			if ev.Type != "m.room.message" {
+				continue
+			}
+			thread := ev.ThreadRoot()
+			// Redacted events can lose their relation content. They retain the
+			// endpoint's scope, but a contradictory relation is never accepted.
+			if !matrix.ValidVerificationID(ev.EventID, '$') || ev.EventID == root || (thread != root && !(thread == "" && ev.IsRedacted())) {
+				return nil, errors.New("incomplete topic replies: invalid thread relation")
+			}
+			if !seen[ev.EventID] && len(out) < n {
+				seen[ev.EventID] = true
+				out = append(out, ev)
+			}
+		}
+		// /relations uses next_batch, not the timeline's end cursor.
+		next := p.NextBatch
+		if len(out) >= n || next == "" {
+			for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+				out[i], out[j] = out[j], out[i]
+			}
+			return out, nil
+		}
+		if cursors[next] {
+			return nil, errors.New("incomplete topic replies: repeated pagination cursor")
+		}
+		cursors[next] = true
+		from = next
+	}
+	return nil, errors.New("incomplete topic replies: page scan limit reached")
 }
 
 // collect pages newest-first until n message events are gathered, then

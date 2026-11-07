@@ -69,7 +69,8 @@ func TestTerminalConsumerProtocol(t *testing.T) {
 
 // Native old-flag, nonzero, wrong, excess-output and stderr candidates never
 // reach exec and stay fenced across minutes; a good token does. Each is probed
-// once with the allowlisted environment, leaving state/lease unchanged.
+// once with the allowlisted environment, leaving state/lease unchanged except
+// the refresh diagnostic, whose token identifies protocol refusal or exec failure.
 func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 	isolateBindTest(t)
 	_, raw := refreshExecutable(t)
@@ -124,8 +125,15 @@ func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := e.state("alice")
-			if !reflect.DeepEqual(after, before) {
+			if !reflect.DeepEqual(withoutRefreshDiagnostic(after), withoutRefreshDiagnostic(before)) {
 				t.Fatal("probe changed consumer authority")
+			}
+			wantStatus := "changed_protocol_incompatible"
+			if kind == "good" {
+				wantStatus = "changed_exec_failed"
+			}
+			if got := after.Terminal.RefreshStatus; got != wantStatus {
+				t.Fatalf("refresh diagnostic=%q want=%q", got, wantStatus)
 			}
 			// An atomic replacement, even with identical bytes, is a new fingerprint.
 			next := path + ".next"
@@ -149,6 +157,7 @@ func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 // poll of the identical fingerprint. A real hanging candidate never execs over
 // three attempts. The clock seam proves no retry at any poll before 60s and one
 // fixed transient log across retries; a failed Start has the same retry policy.
+// Consumer authority is unchanged; only refresh diagnostics may be written.
 func TestTerminalRefreshProtocolRetry(t *testing.T) {
 	isolateBindTest(t)
 	_, raw := refreshExecutable(t)
@@ -231,7 +240,7 @@ func TestTerminalRefreshProtocolRetry(t *testing.T) {
 			if log.String() != want {
 				t.Fatalf("retry logs: %q", log.String())
 			}
-			if !reflect.DeepEqual(before, e.state("alice")) {
+			if !reflect.DeepEqual(withoutRefreshDiagnostic(before), withoutRefreshDiagnostic(e.state("alice"))) {
 				t.Fatal("probe changed consumer authority")
 			}
 		})

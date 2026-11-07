@@ -51,6 +51,14 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 
 ## Commands
 
+### `a2a bind association --private-intent-fd=3 --json`
+
+Compare only the selected own stored terminal binding against one private
+launcher-supplied expectation, without credentials, preflight, warnings, native
+observations or state changes. Match means stored equality only. The inherited
+descriptor, schemas, bounded lock/snapshot, privacy refusals and exit codes are
+specified in [the association contract](terminal-association.md).
+
 ### `a2a --as <own-name> creds migrate`
 With `A2A_SECRET_STORE=keychain`, migrate exactly the selected identity. No wildcard
 or directory enumeration is supported. A human uses interactive `--human --as`.
@@ -500,6 +508,43 @@ framing is preserved.
 a2a topic new a2a-swarm bridge-daemon "Bridge daemon for managed sessions" --to m1max_swarm_keeper --kind proposal --body @proposal.md
 ```
 
+#### Publication results: `--json` and `--id-file PATH`
+
+`topic new`, `post` and `attach` accept these opt-in flags. Without them, stdout
+is byte-identical to the existing output: the event id and one newline.
+`--json` prints exactly one compact JSON object and a newline, with these four
+string fields in this order, always present:
+
+```json
+{"event_id":"$sent","room_id":"!room:example.invalid","topic_root":"$root","reply_to":"$root"}
+```
+
+`event_id` identifies the successfully sent message. `room_id` is the resolved
+Matrix room. `topic_root` is the resolved thread root; for `topic new` it equals
+`event_id`. `reply_to` is the effective Matrix reply target: the explicit
+`post --re` target when supplied, otherwise the root for `post` and `attach`,
+and an empty string for `topic new`. This object reports the existing send; it
+does not add sends, verify a reply target, or change thread-follow behavior.
+
+`--id-file PATH` writes just the event id and a newline to a new mode `0600`
+file. It can accompany `--json`; alone it keeps the default stdout bytes.
+The parent directory must already exist. Empty paths, paths over 4096 bytes,
+control characters, symlink ancestry and any existing target (including a
+symlink or directory) are refused. Use a canonical path on systems with a
+symlinked temporary directory. Preparation happens before publication; a
+failed input/room/topic lookup leaves no id file. Complete bytes are fsynced
+and published atomically without replacement, then the directory is fsynced.
+Filesystems without hard-link publication support refuse this mode.
+
+A destination can still appear after preparation, or a disk/stdout write can
+fail after the remote send succeeds. Such a failure exits 1, names the known
+sent event id and says `do not repost`; it never retries the send. A completed
+id file remains available if stdout subsequently fails. Invalid/unsafe receipt
+fields are refused without echoing them; receipt fields are capped at 4096
+bytes in these opt-in modes. As with existing `attach --pin`, a later pin
+failure can follow a successful publication result. Consumers must check the
+exit status as well as the result.
+
 ### `a2a topics <room>`
 Thread roots, oldest first: `slug<TAB>event id<TAB>reply count<TAB>title`. Uses the v1 `/threads` API and adds topic roots with no
 replies yet from a bounded `/messages` scan (2000 events); if `/threads` is unsupported, counts come from that scan.
@@ -731,14 +776,152 @@ a2a attach a2a-swarm --topic bridge-daemon --to m1max_swarm_keeper design.pdf "D
 ```
 
 ### `a2a fetch <room> <$event_id> [-o path]` / `a2a fetch <mxc://...> --sha256 <hex> [-o path]`
-Downloads through authenticated `GET /_matrix/client/v1/media/download/<server>/<id>`, verifies temporary bytes, and publishes only after
-verification without replacing an existing file. The encoding table, bounds and verification order above apply. A bare mxc URI requires
+Downloads through authenticated `GET /_matrix/client/v1/media/download/<server>/<id>`. Legacy a2a attachments and bare MXC fetches compare temporary bytes against their expected SHA256 before publication without replacing an existing file. Native Matrix media has no trusted expected hash; its distinct contract follows below. The encoding table, bounds and verification order above apply. A bare mxc URI requires
 `--sha256 <hex>`, uses `L + 1` as its read bound, and saves stored bytes. The default target is the top-level name, or `encoding.original.name`
 for v1 gzip. Unsafe default names (empty, `.`, `..`, containing `/`, `\`, NUL or control characters, or starting with `-`) are refused;
-`-o` uses the given path. mxc URIs are parsed strictly (`mxc://<hostname[:port]>/<[A-Za-z0-9_-]+>`). Prints the written path.
+`-o` uses the given path. mxc URIs are parsed strictly (`mxc://<hostname[:port]>/<[A-Za-z0-9_-]+>`). Legacy and bare-MXC success print the written path; native success prints the JSON result described below.
 ```bash
 a2a fetch a2a-swarm '$F1...' -o /tmp/design.pdf
 ```
+
+#### Native Matrix media (Part 1 candidate)
+
+Plaintext Element `m.image`, `m.file`, `m.audio` and `m.video` events that already
+meet the existing delivery gates gain a bounded `media` projection in inbox JSON
+and an indented JSON metadata line inside the text inbox's untrusted frame.
+It includes canonical kind, declared name/MIME/size, their untrusted status,
+full sender MXID, an exact `{room_id,event_id}` handle, and
+`integrity: "homeserver_only_no_trusted_hash"`. Native metadata is inbox-only;
+`wait --json`, `watch --json` and `read --json` retain their prior fields. Names are display
+data, never paths. Existing body/excerpt text can itself contain a filename
+(Element commonly uses the filename as the body); inbox-only applies to the
+new metadata fields, not to those pre-existing text channels. JSON format controls
+are escaped without changing decoded identifiers. Missing size is unknown; present malformed/nonpositive size
+refuses that item. A bad media item retains its handle and does not suppress
+valid neighbours. Listing performs no download, transcription or new receipt
+transition; successful inbox writes retain the existing explicit receipt rule.
+
+Native fetch requires an explicit `-o` and an existing caller-selected `TMPDIR`.
+Until the upstream final-output wording is clarified, both scratch and final
+output must be beneath that root, with existing nonsymlink descendant directories.
+The caller-selected trusted TMPDIR is canonicalized once, accepting system
+aliases such as macOS `/var` and `/tmp`; output descendants are never
+canonicalized or followed through symlinks. Both configured and canonical root
+spellings, including an alternate alias of the root's ancestors, are accepted:
+
+```bash
+a2a fetch '!room:example.org' '$event' -o "$TMPDIR/chosen-image.bin"
+```
+
+The new branch re-observes the original room/event endpoint, validates exact
+event and sender context and any supplied room ID (an absent room ID is filled
+from the requested endpoint), refuses state events, and downloads only canonical unencrypted MXC media
+through the selected homeserver's authenticated API. This consistency evidence
+does not grant sender or owner authority. The second observation supplies the
+locator, size and kind; it may differ from the first in these fields. An immutable
+event is therefore trusted only as reported by the selected homeserver.
+Conflicting extensible-file names refuse; malformed filename declarations are
+labelled invalid with no fallback display name. Every media redirect is refused.
+The byte limit is the existing `min(positive m.upload.size, 1 TiB)`; absent or
+invalid caps refuse. Reads are bounded to declared size plus one, or cap plus
+one when size is unknown. An unknown-size stream can consume disk up to the
+server cap (at most 1 TiB) plus one byte; the caller must provision space accordingly. Actual bytes must be positive and match any declared
+size. The transfer has a ten-minute maximum and respects shorter caller
+deadlines. HTTP decoding, gzip extraction, thumbnails and codec decoding are
+disabled; gzip media remains opaque bytes.
+
+Scratch uses a private 0700 directory and 0600 file beneath TMPDIR. Directory
+traversal below the canonical root uses anchored no-follow operations; size-checked bytes publish by atomic
+hard link with no replacement and no rename fallback. Existing targets,
+symlinks, traversal, directory-only output spellings (trailing `/` or `/.`)
+and unsupported publication refuse. The configured absolute root path and its
+identity, plus the destination parent identity, are revalidated around
+publication; a moved/replaced root or ancestor observed during transfer refuses.
+The caller must control TMPDIR and output parents and trust their ancestors
+against concurrent namespace changes. These checks are not isolation from a
+hostile process with the same UID or an administrator able to rename directories
+between system calls or after return. Normal failures clean
+only task-owned scratch. Native success prints one JSON object on stdout with
+`path`, `handle`, `actual_size`, `declared_size` (null when unknown), computed
+`sha256`, and `hash_status: "computed_unverified"`; stderr also summarizes the
+bounds and hash status. Legacy success retains path-only stdout. Native size,
+cap and encoding checks establish no authenticity: a native event supplies no
+trusted expected hash and relies on the selected homeserver. Native failures
+and bounded event-observation failures use closed `MEDIA_*` codes and the exact
+selected handle; legacy attachment validation retains its existing errors.
+A redaction at either successfully parsed event observation or in the local
+tombstone store refuses with `MEDIA_REDACTED`, without downloading. Resolve room
+aliases first; an alias-resolution failure retains its existing error and cannot
+probe a tombstone. Malformed or duplicate-key strict observations refuse as
+`MEDIA_CONTEXT_INVALID`, even if they also contain redaction indicators. Redaction
+is not re-observed during the download or immediately before publication.
+Caller cancellation and deadline expiry retain `MEDIA_CANCELLED` and
+`MEDIA_TIMEOUT` during preflight as well as transfer; a missing/invalid cap or
+configuration failure remains `MEDIA_LIMIT_UNAVAILABLE`.
+
+Publication's contract is atomic no-replace. Crash durability is outside that
+contract: a crash can lose or truncate a published file, or leave an orphaned
+private scratch directory. A truncated final file blocks the same output name
+with `MEDIA_OUTPUT_EXISTS`. The event and its exact `{room_id,event_id}` handle
+persist; refetch to a new output path recovers it.
+Neither the fetched file nor its destination directory is fsynced by this path.
+
+Encrypted envelopes explicitly fetched, encrypted `file` data (including
+null/malformed fields with a clear URL), encrypted thumbnails and recognized
+encrypted extension indicators refuse as `MEDIA_ENCRYPTED` without downloading.
+This candidate does not widen encrypted ingress, subscriptions or wait filters;
+coverage of encrypted envelopes in listings remains an upstream source question.
+Existing a2a attachment dispatch (including malformed/null descriptors), stored
+hash/size checks, gzip decoding and bare-MXC behavior remain separate. The
+initial event dispatch lookup now has a bounded 1 MiB entity; native metadata
+is limited to 64 KiB and 32 nesting levels with duplicate/alias checks. Native
+kind detection uses the dispatch bound, so oversized metadata refuses with
+`MEDIA_METADATA_INVALID` regardless of whether `msgtype` precedes or follows
+it; refused native metadata does not fall through to legacy attachment decoding.
+Inbox's additive `media` object (including nullable `declared_size`) and indented
+metadata line require consumers to tolerate the new field/line. Legacy event
+fetches share the bounded initial lookup and pre-dispatch encryption refusal;
+observation failures now use `MEDIA_*` errors. Their historical attachment
+identity validation remains separate from the stricter native observation.
+
+Actual Element and macOS acceptance remain external. This is Part 1 only;
+speech recognition and its model/codec/duration policies are a separate unit.
+
+#### Batch fetch: `a2a fetch <room> <$event> <$event>... -o DIR`
+
+Two to fifty distinct event ids select batch mode. `-o DIR` is required and
+must name a **fresh directory**: even an existing empty directory is refused.
+Its parent must already exist, with no symlink components. The directory is
+created with mode `0700`; each verified file has mode `0600`. Event ids must
+start with `$`, contain no whitespace/control characters and be at most 512
+bytes. `--sha256` remains exclusive to a single bare mxc URI.
+
+Each event uses the same bounded event observation, local tombstone, redaction
+and encryption checks as single fetch, followed by the single-file checksum,
+size, encoding and decoding gates above. Batch mode accepts legacy a2a
+attachments with a trusted expected hash. Native Matrix media requires a
+separate single fetch with an explicit output path; it is refused in batch
+mode as `metadata_error`, without downloading or printing native JSON. A checksum mismatch leaves neither a partial file nor a temporary file.
+Safe attachment names are limited to 255 bytes in batch mode. Duplicate names
+are refused for the later file without overwriting the earlier one. No archive
+is unpacked and no scanner runs. Existing attachment encoding restoration still
+applies; the reported hash and size describe the resulting file bytes.
+
+Stdout has one tab-separated line per requested event, in argument order:
+`event<TAB>name<TAB>sha256<TAB>size<TAB>status`. Success status is `ok`. A failure
+uses a fixed token: `event_not_found`, `metadata_error`, `encoding_invalid`,
+`media_config_error`, `size_invalid`, `unsafe_name`, `output_error`,
+`download_error`, `size_mismatch`, or `sha256_mismatch`. Before successful
+verification, hash and size are `-` and `0`; an unavailable name is `-`.
+Server error text never appears in these lines. Per-event failures do not stop
+later events; any failure makes the command exit 1. Successfully verified files
+remain in the directory, and a wholly failed batch leaves an empty directory.
+A stdout failure or cancellation ends the command and retains completed files.
+Single-event and bare-mxc invocations keep their existing stdout bytes.
+Unsupported batch encoding emits the fixed stderr notice
+`a2a: attachment encoding not supported; saved the stored bytes`; it never
+interpolates peer encoding metadata or paths. Single-file fallback keeps its
+existing version/coding/path warning.
 
 ### `a2a files <room> [--topic X] [--last N] [--json]`
 Attachment messages, oldest first (default the last 20, max 1000, scanning at most 2000 events):
@@ -870,6 +1053,27 @@ a separately authorised observation before reporting actual media retention.
 Readable output, oldest first (default 20, max 1000). Each message is a meta line (`[time] sender event_id kind=… to=… re=… subtype=… subject=… thread=…`)
 followed by the indented text; header lines are folded into the meta line. With `--topic`, the root comes first, then the last N replies.
 `--event` prints only that message event (it cannot be combined with `--topic` or `--last`). Control characters and bidi overrides are stripped.
+
+Topic replies come only from the selected root's `/relations/{root}/m.thread`
+listing, newest first on the wire and oldest first in the output. Empty pages
+with `next_batch` continue pagination. The read returns the newest N distinct
+message replies, or all available replies when the server exhausts that listing;
+a successful limited read does not claim to include the entire thread. Native
+`m.in_reply_to` targets are not used to filter thread replies or rewritten into
+the root: a reply to another reply still belongs to its declared `m.thread` root.
+The existing `re` output field reflects the a2a header, not an inferred native
+reply target.
+
+A topic read scans at most 20 relations pages and 2000 returned events, with a
+16 MiB limit per response. Repeated cursors, an unfinished scan at either bound,
+missing/malformed page fields, foreign-room or contradictory thread relations,
+and interrupted/refused pages fail before printing any events. These failures
+are not complete empty threads or successful partial output. The command does
+not fall back to scanning room history for replies or write receipts/cursors.
+Slug discovery retains its existing separate bounded history lookup. A server
+that returns a valid exhausted listing while omitting replies cannot be detected
+from this response alone; this is not proof of completeness against its room
+timeline.
 
 The single-event display requires the returned `event_id` to match exactly and
 the payload's `room_id` to match the resolved selected room. A foreign room is a
@@ -1214,6 +1418,58 @@ The entries are the same as `wait`'s (`to`, `mention`, `thread`, `sub`, invites,
 - The receipt is recorded only after a successful write and flush, for exactly the printed entries (the rest stay, oldest first, so a backlog of
   any size drains with repeated calls). A crash or a broken stdout before that receipts nothing, so the next `inbox` prints the same entries again
   (at least once).
+  A short stdout write is also a failure, even when the writer returns no error;
+  incomplete output never receipts the batch.
+
+#### Saved inbox: `--out FILE [--summary [--width N]]`
+
+`--out FILE` saves the selected batch with **full sanitized bodies**, including
+text beyond the legacy 2000-character stdout limit. It uses the private,
+atomic, no-overwrite path rules of `--id-file` above. It refuses `--json`;
+without `--summary`, stdout keeps the ordinary bounded human frame. Both saved
+data and these opt-in displays redact known credentials and token-shaped text.
+Decoded metadata also redacts fields named `access_token`, `password`, `token`
+or `refresh_token`, case-insensitively, at every object/array depth. A named
+secret field's entire value is replaced, including an object or array value;
+ordinary neighboring metadata is retained. Escaped known credentials are
+scrubbed after JSON decoding.
+
+The saved format is `BEGIN UNTRUSTED PEER EVENTS ...`, followed by one compact
+`EventRecord` JSON object per line prefixed with `  | `, and then
+`END UNTRUSTED PEER EVENTS`, each with a newline. Bodies are JSON-escaped, so
+peer text cannot create frame markers or event boundaries. Invitations and
+gaps retain their mailbox ids as `event_id`. The whole frame is capped at
+16 MiB and 50 records; an oversized save fails without truncating or receipting
+events. `--limit` still selects the oldest 1..50 entries and leaves the rest
+pending. An empty batch saves an empty frame.
+
+`--summary` requires `--out`: stdout contains the untrusted-frame markers,
+sorted counts by sender, kind and room, and one line per selected event with
+its 1-based index, sender, kind, room, topic, event id and body prefix.
+Rooms use their alias when available, otherwise their Matrix room id.
+`--width N` requires `--summary`, defaults to 160, and accepts 1..2000 Unicode
+characters after normalizing whitespace to one line. Summary metadata fields
+over 512 characters are refused before saving or receipting, so truncated
+identities cannot merge counts. Save with `--out` alone to retain such data.
+The existing pending-count footer follows the frame when more entries remain.
+
+The complete file is written, fsynced and published before stdout is written
+and flushed; only then are exactly those saved entries receipted. A write,
+publish or stdout failure, or a crash before the receipt, leaves entries
+pending. A fully published frame can remain after failure; use another fresh
+path for a subsequent inbox invocation. No partial target is published.
+
+#### `a2a inbox show <$event> [--from FILE]`
+
+Prints one saved event's full sanitized body inside an untrusted-data frame.
+Without `--from`, it uses the last successful `inbox --out` path recorded for
+the selected identity/connection. `--from FILE` reads an explicit saved frame.
+This is a local read: it never syncs, fetches an event, or receipts mail.
+Unknown events, missing frames, malformed/incomplete frames, duplicate event
+ids, files over 16 MiB, non-regular files, symlinks and modes other than `0600`
+are refused without printing a body. File opening requires Unix no-follow
+support. If a saved path was moved or the last-path state update failed after
+a durable receipt, supply its current path explicitly with `--from`.
 
 ### Environment delivery: the Claude Code and Codex hook doorbell (`a2a hook`)
 Notifications reach the agent's session (protocol rule 4) through the public hook mechanism of its runtime: commands that Claude Code or the Codex
@@ -1307,6 +1563,31 @@ backward jump. A forward wall-clock discontinuity may permit one early
 notification, followed by a new 30s window. This is not a strict elapsed-time
 bound across wall-clock changes, independent config roots, or mixed old clients.
 
+`bind status` also shows `refresh=TOKEN` (JSON: `refresh`), the consumer's
+last recorded executable-refresh observation. `current` means its loaded image
+matched the launch target at that poll. `changed_stabilizing` and
+`changed_cooldown` mean a replacement was seen but stability or the refresh
+safety-check cooldown deferred it. `changed_pending_attempt`,
+`changed_reservation`, `changed_lease`, `changed_authority` and
+`changed_invalid_notification` name the last observed safety refusal, retained
+between throttled checks so cooldown does not hide its cause. Notification
+spacing alone does not block re-exec. Other closed tokens are
+`changed_safety_unavailable`, `changed_probe_unavailable`,
+`changed_protocol_incompatible`, `changed_exec_failed`,
+`changed_candidate_unavailable`, `changed_pin_unavailable` and `changed_ready`.
+Probe, launch-connection pinning and candidate failures retain their cause during
+cooldown. Candidate unavailability also remains visible during renewed
+stabilization until a mature check or the current image supplies a new observation;
+an installation alternating readable and incomplete candidates does not save
+state on every poll. The former `changed_connection` token is removed: an invalid
+active connection fences diagnostic writes as well as refresh, so its last
+persisted observation remains. Pinning failures with a still-valid active
+connection use `changed_pin_unavailable`.
+`unavailable` covers absent/older/stopped consumers or unknown telemetry.
+Only an updated consumer can record these observations; status reads do not
+probe the executable or trigger replacement. Persistence is best effort under
+the state lock; the token has no screen content, paths, argv or authority.
+
 `a2a bind status --json` adds a read-only `notification` state/deadline projection;
 text bind/runtime status also shows its closed state. `uncertain cooldown` and
 `uncertain ready` mean possible prior output, not a receipt or retry grant.
@@ -1315,11 +1596,91 @@ Reading status does not migrate, clamp or repair the record. There is no interva
 flag; 30s is the fixed protocol constant. Source delivery does not activate
 already installed consumers; their custodian coordinates adoption separately.
 
-#### `a2a hook install --agent NAME --runtime claude|codex [--settings PATH]` / `a2a hook uninstall --runtime claude|codex [--settings PATH]`
+<a id="hook-executable-selection"></a>
+
+#### `a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH]` / `a2a hook uninstall --runtime claude|codex|muse [--settings PATH]`
 `--runtime` is required; a missing or unknown runtime, like an invalid agent name, is a usage error (exit 2) and writes nothing.
 
+Executable selection is local and explicit. Choose one of these modes:
+
+| Selection | Recorded executable | Upgrade behavior |
+| --- | --- | --- |
+| Neither path flag | The running image's absolute, symlink-resolved path | Fixed image path, subject to the launch-spelling ancestry check below |
+| `--executable /absolute/path/a2a` | The selected path after symlink resolution | Fixed image path; a launch alias changing later does not change it |
+| `--installed-command /absolute/installed/a2a` | The selected symlink's absolute spelling, shell-quoted when needed | Subsequent hook invocations follow that link after the install custodian upgrades it |
+
+Path flags are mutually exclusive, require non-empty absolute paths and are accepted
+only by `hook install`. A relative path, empty path or both flags is a usage error
+(exit 2). Installation never searches PATH to choose an executable. To select a
+different binary, invoke that binary first: the selected target must match the
+currently loaded executable image, not merely a file with the same bytes or name.
+For example:
+
+```sh
+"$HOME/.local/libexec/a2a/a2a-<sha>" hook install --agent worker --runtime muse --executable "$HOME/.local/libexec/a2a/a2a-<sha>"
+"$HOME/.local/bin/a2a" hook install --agent worker --runtime muse --installed-command "$HOME/.local/bin/a2a"
+```
+
+Replace `<sha>` with the installed image's version digest. See the README's
+[user-owned installation recipe](../README.md#a2a-examples-one-per-command).
+No-flag selection uses `os.Executable()`: Linux usually reports the resolved image,
+while macOS may retain a launch alias. A legacy checkout alias can therefore
+succeed on Linux but refuse on macOS because its ancestry contains `.git`.
+For a portable migration, invoke `"$HOME/.local/bin/a2a"` and explicitly select
+that path with `--installed-command`; explicitly selecting the checkout alias
+refuses on both systems. Existing hooks naming that alias are not rewritten or
+counted: they keep following the existing two-link route at runtime.
+
+The second command explicitly chooses the install custodian's upgrade route.
+A root-owned image refuses in every mode, including a plain `a2a hook install` with no flags: the image must be owned by the installing user. A host with a system-wide install must first install a copy under the agent user. A path with any Git marker in its ancestry also refuses, so an image inside a source checkout must move out first.
+
+`--installed-command` requires a symlink owned by the current UID or root, pointing
+directly to the canonical native image (a relative link to that canonical location
+is also accepted). Parent directory aliases such as macOS `/var` and `/tmp`
+are resolved separately; a second link in the target filename still refuses.
+Both spellings retain the ancestry checks, so shared writable temporary directories
+still refuse. Chains of command/image symlinks refuse. A symlink alone does not establish
+trust, and being outside a Git checkout does not establish trust. The operator
+must select a route whose future targets remain under the install custodian's
+control. No automatic installed-path discovery or migration of existing hooks occurs.
+
+On macOS and Linux, the target must be a complete native image owned by the current
+UID, with owner execute permission, no group/world write and no set-ID bits. Both
+the selected and resolved paths' ancestor directories must be owned by the current
+UID or root and have no group/world write permission. A `.git` directory or gitdir
+file anywhere in either ancestry refuses installation from a mutable source
+checkout. Every `.git` marker refuses, including a dangling symlink or an entry
+that cannot be inspected. Missing or unreadable custody information refuses too. There is no
+checkout override. Build and install a separate complete image, then invoke it
+before installing hooks. A missing checkout build output is never recorded for
+a future build to fill. Other platforms refuse unavailable validation.
+
+The installer validates the loaded image identity, native image ranges, metadata
+and SHA-256 content, and repeats the path/image observation before settings or
+companion rules are written. A missing, non-executable, mismatched, truncated,
+unsafe or replaced target is an error (exit 1) with no configuration write. Invalid
+or foreign configuration keeps its existing refusal/preservation behavior. These
+observations do not lock the filesystem against a concurrent custodian or same-UID
+writer; pathname validation and publication remain separate operations. A fixed
+image path stays fixed only while the custodian preserves that image at that path;
+the hook command does not enforce content immutability at runtime. An installed
+link intentionally delegates future selection to its custodian. Companion Codex
+owner-DM rules include the selected spelling, resolved image and observed absolute
+launch alias, plus the existing bare/checkout spellings. Arbitrary undiscovered
+aliases and future link targets are not covered by those spelling-based rules;
+the independent host-terminal checks remain required.
+
+Custody permission checks currently inspect POSIX mode bits only, including in
+the shared terminal-refresh image validator. macOS extended ACL write grants are
+not inspected. This remains an unresolved security limitation; mode checks do
+not prove ACL-level exclusion of other users. Native ACL handling needs dedicated
+platform validation before this custody guarantee can be broadened.
+
+Runtime fail-open
+behavior, identity ownership and native runtime trust steps remain unchanged.
+
 `--runtime claude` merges the three hooks and `env.A2A_AGENT` into a Claude Code settings file (default `./.claude/settings.local.json`, the project's
-local, uncommitted settings). The command is this binary's absolute path (symlinks resolved, shell-quoted when needed). In a new file (created with mode
+local, uncommitted settings). The executable uses the selection above. In a new file (created with mode
 `0600`) the result is exactly:
 ```json
 {
@@ -1422,6 +1783,27 @@ a2a hook install --agent alice --runtime claude    # in the project directory of
 a2a hook install --agent alice --runtime codex     # in the project directory of alice's Codex session, then the human trust step
 a2a hook uninstall --runtime codex
 ```
+
+#### Muse hooks (`--runtime muse`)
+
+```bash
+a2a hook install --agent worker --runtime muse
+```
+
+This installs project hooks in `.muse/hooks.json` (`--settings PATH` overrides
+it); follow Muse's native human trust step. Start (`SessionStart`) and Prompt
+(`UserPromptSubmit`) check mail and supply a fixed a2a-authored mail notice as model
+context. Stop emits a terminal `systemMessage`; it does not block stopping,
+acknowledge model receipt, or consume the next Start/Prompt context notice.
+Shell, hook and inbox session propagation and Start/Prompt model receipt remain
+unqualified; installation exports no project environment and commands pin `--as`.
+Read the messages with `a2a inbox`, which works only outside the default Muse
+sandbox. The first addressed event before first sync may be missing. Both limits
+are tracked in issue #278.
+
+Idle wake is unsupported for Muse (issue #274). Hooks run only at those
+lifecycle events; installation does not create a terminal/native consumer.
+Use `a2a hook uninstall --runtime muse` to remove these hooks.
 
 #### `a2a hook pause|resume --agent NAME`
 The hook kill switch: `pause` sets `hooks_paused` in `state/NAME.json`, and while it is set every hook event of that agent (both runtimes) prints
@@ -1783,7 +2165,12 @@ and replacement bindings; changed observations remain local until eligibility. C
 `unavailable: own liveness publication retry pending`. A due attempt resolves the current status room and sends at most one PUT within the
 original capped deadline. Certain-equal acknowledged observations remain zeroHTTP. A short state transaction reserves each writer;
 room resolution and PUT run without control/state locks, followed by a token-checked result merge that preserves concurrent mail and binding edits.
-An overlapping status writer refuses locally; a crashed writer's reservation expires at its RPC deadline, retaining uncertainty until reconciliation.
+An overlapping status writer returns the typed local refusal `own status publication already pending` before any preparation or HTTP.
+Automatic wait/native heartbeats, hooks and bound-consumer notice writers quietly skip that cycle without advancing heartbeat time or
+changing notice retry eligibility/backoff. Explicit status writes and wait/native disarm poll without holding a lock; waiting and publication
+share the existing 10-second RPC budget, shortened by any earlier caller deadline. Only contention remaining at that deadline returns the
+pending refusal. A crashed writer's reservation expires at its RPC deadline, retaining uncertainty until reconciliation; an earlier caller
+deadline can expire before that fence, and a fence expiring at the caller's deadline leaves no publication budget.
 Hook Prompt/Stop deliver mail, persist the rung/Stop acknowledgement and release delivery locks first. Status uses only the hook budget remaining
 afterward, and failures/pending retries emit no hook diagnostic or change mail receipts. Manual status and legitimate heartbeat writers
 retain their usual behavior; an actual own-status ACK clears the obsolete notice retry schedule and uncertainty. Own-status PUT and its room resolution never follow HTTP redirects, even redirects back to the original URL. A resolution redirect is a pre-send failure and preserves prior certainty; a PUT redirect leaves the write uncertain. Only a direct genuine 2xx ACK advances the acknowledged record. For own-status writes and their room resolution, success requires a complete body read to EOF without read error or cancellation, matching Content-Length when declared, and exactly one JSON object (surrounding JSON whitespace is allowed). The PUT object requires a nonempty string `event_id`; resolution requires a nonempty string `room_id`. Missing IDs, malformed or trailing JSON, partial bodies and interrupted reads provide no ACK. A failed resolution preserves prior knowledge; an invalid post-send response leaves the write uncertain and cannot clear notice cooldown. Only a direct response to the original PUT URL, with no redirect followed and a completely read body below the 64KiB error cap
@@ -1888,10 +2275,13 @@ for each configured principal whose exact MXID has current `join` membership.
 Nonmembers and invitations are ignored. The JSON room row includes
 `missing_principals` when coverage is absent, has `status: "missing"`, and exits 1;
 text output names the missing MXIDs. Baseline exemptions (spaces, global
-#system/#broadcast) do not waive principal coverage. Only an independent,
-untagged `source: "host-principal"` all-events row with the exact `from`
-qualifies; room-wide owner-DM/manual rows cannot stand in for it. Kind/thread/subject/product/
-subtype filters, expiry, one-shot rows and future creation/since gates do not.
+#system/#broadcast) do not waive principal coverage. A permanent all-events row
+for that room with the exact full `from` MXID qualifies, including manual and
+preset rows. Same-server IDs are abbreviated only for text display; matching
+keeps the full ID. Sync adds a managed row only when coverage is missing;
+existing duplicates remain harmless. Room-wide rows without an exact sender,
+kind/thread/subject/product/subtype filters, expiry, one-shot rows and future
+creation/since gates do not provide principal coverage.
 This includes plain client messages without an A2A header.
 
 Delivery enforces principal coverage independently of this audit snapshot.
@@ -1949,11 +2339,11 @@ a2a subs check --json
 a2a subs trim --room team --clear
 ```
 
-`trim` requires a joined room and explicitly named standard kinds. A new trim in
-any room containing a joined configured principal is refused before any policy
-or subscription write, with typed `PrincipalSubscriptionError` and reason
-`principal_subscription_required`; clear remains allowed. Ordinary rooms still
-accept deliberate trims. It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
+`trim` requires a joined room and explicitly named standard kinds. Recording a
+kind trim preserves separate principal all-events rows and succeeds in rooms
+with configured principals. Trim policy never suppresses principal repair;
+protected row removal still refuses with `principal_subscription_required`.
+It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
 
 Automatic repair also filters room-scoped legacy State subscriptions through the recorded trims before migration; allowed kinds remain. A legacy global selector intersecting a room trim cannot express that exception, so repair refuses before writing subscriptions or consuming legacy State. Resolve it deliberately with the subscription commands, then retry repair; for an intended full replacement, `unsubscribe --all` removes the legacy rows in the same write before `subs sync` restores the trimmed baseline. Explicit subscription and delivery commands retain their existing migration behavior; trim records do not rewrite manually requested selectors.
 ```bash
@@ -2514,6 +2904,19 @@ may differ. Duplicate keys, unknown fields/schema, unsupported stores, missing
 current and malformed entries fail closed. References above are illustrative;
 never put token/password values in this file.
 
+The credential-store schema accepts exactly these two backends:
+
+| Backend | Configuration | Secret storage |
+| --- | --- | --- |
+| `keychain` | Requires distinct valid `access_token_service` and `password_service` names, as above; macOS only | Access token and recovery password in the selected Keychain services, keyed by full MXID |
+| `file` | `"credential_store": {"backend": "file"}`; no Keychain service names and no `registration_token_ref` | Access token in the existing connection-scoped credential file, mode `0600`; passwords stay in memory |
+
+`registration_token_ref` resolves only through Keychain, so any such reference
+is invalid on a file connection. File connections work on Linux and macOS and
+never access Keychain. The registry remains `schema_version: 1`. Older binaries
+that accept only `keychain` refuse a registry containing `file` during validation;
+they do not fall back to legacy routing or another credential store.
+
 ```bash
 a2a connection list
 a2a connection show coordination
@@ -2538,14 +2941,21 @@ In named mode the selected endpoint, identity domain and secret references are
 authoritative. Nonempty legacy routing/store settings (including routing in `matrix.env`) must match; clear stale
 `A2A_MATRIX_URL`, `A2A_MATRIX_SERVER_NAME` and `A2A_SECRET_STORE` overrides before
 selecting a different connection. Unset secret-store selection uses the named
-backend. Named profiles require macOS Keychain; unsupported hosts refuse without
-falling back to files. Inherited registration tokens are never a named fallback.
+backend. A nonempty `A2A_SECRET_STORE` must equal that backend exactly: `file`
+versus `keychain` conflicts in either direction. Keychain connections still
+require macOS and never fall back to files. Inherited registration tokens are
+never a named fallback.
 `--as`, `A2A_AGENT` and the interactive `--human` guard remain identity controls.
 
 Named metadata lives in `connections/<connection_id>/agents|humans/<name>.json`.
-It contains the full MXID, class, endpoint and public credential binding, without
-secrets. Access-token/password items use the selected services and full MXID
-account. Missing or mismatched metadata/items refuse before traffic; no legacy
+It contains the full MXID, class, endpoint and public credential binding.
+Keychain mode keeps this file free of secrets; access-token/password items use
+the selected services and full MXID account. File mode keeps its access token
+in this same file, which must be a regular `0600` file; symlinks, unsafe modes,
+missing tokens, passwords and mismatched bindings refuse. This has the existing
+same-UID limit: mode `0600` protects against other OS users, not another process
+running as the same user or an administrator, and backups may retain tokens.
+Missing or mismatched metadata/items refuse before traffic; no legacy
 credential or compiled-service fallback is attempted. A known human metadata
 entry prevents agent reinterpretation of that name.
 
@@ -2559,7 +2969,8 @@ traffic functional. Changing the selected endpoint, identity or store requires
 an explicit migration; stale bindings fail without retargeting or resetting
 state. Token-bearing or registration-body HTTP redirects cannot change origin.
 
-First named agent registration must be separately owner-admitted and explicit:
+First named agent registration using a Keychain bootstrap reference must be
+separately owner-admitted and explicit:
 
 ```bash
 a2a --profile staging register my_own_agent --authorize-registration
@@ -2571,8 +2982,11 @@ approval or human-account access. Without it, missing metadata is refused. The
 selected bootstrap reference must already exist. The CLI refuses existing
 metadata/state/items, stores a recovery password in the selected password service
 before registration, stores the returned token exclusively, then atomically
-publishes complete metadata without replacement. Onboarding reuses verified
-existing metadata without registering again.
+publishes complete metadata without replacement. File connections refuse this
+bootstrap-reference route by name; use the explicitly configured
+[admin-room registration route](#admin-room-account-registration) instead.
+Onboarding reuses verified existing credentials with either backend without
+registering again.
 
 Private `registration.pending.json` records distinguish preflight refusal,
 remote rejection, ambiguous outcome, remote creation with failed token storage,
@@ -2581,6 +2995,12 @@ attempt blocks automatic retry; preserve it and the selected recovery items for
 the existing keeper/operator recovery path. Do not delete the remote account,
 overwrite an existing item or infer that an ambiguous failure created nothing.
 Registration recovery is intentionally manual in this initial command surface.
+There are no named account-recovery, credential-rotation or credential-delete
+commands. `creds migrate` and `creds move-human` refuse named profiles for both
+backends; they cannot rewrite a file binding or fall through to Keychain.
+The normal bound-session loader supports file-backed identity reuse, room
+retirement (including alias deletion), and archive with the existing identity,
+binding and admin-room exclusion checks.
 
 For a typed Matrix 4xx response classified as `remote-rejected`, the journal
 also retains `http_status` and, when recognized, `errcode`; the command's error
@@ -2600,6 +3020,16 @@ activation, bindings, identity creation, federation and rollout each retain
 their existing owner/keeper admission gates.
 
 ## Stale addressed-mail alarm (`a2a mail-alarm`)
+
+`mail-alarm status`, `mail-alarm set` feedback and `bind status` show stale-mail
+and stuck-notice routes separately. The legacy top-level mail-alarm fields
+(`mail_alarm` in bind JSON) describe stale mail; `stuck_notice` has its own
+state, targets and pending count. Targets identify `owner`, `operator` or
+`lead` and their room/topic. The operator receives stale-mail alerts only;
+the lead receives stuck-notice alerts only. With no active owner DM, a lead
+still arms its stuck-notice route (`partial`, with the missing owner reported),
+while stale mail remains disabled unless an operator destination is configured.
+These are configured routes, not a guarantee of consumer health or delivery.
 
 The terminal bind consumer observes its own durable mailbox without receipting,
 marking shown, changing the doorbell ledger, or typing into the pane. It reuses
@@ -2723,3 +3153,89 @@ CI should run the plain Go `TestMailAlarm*` cases and the opt-in dedupe control:
 The control must fail on the dedupe assertion with the gate removed and pass its
 independent destination control. No test, tmux or live messaging is needed to
 configure or inspect this feature.
+
+### Admin-room account registration
+
+`a2a --as ADMIN connection register NAME --via-admin-room` creates one new
+agent account on the selected named connection using that connection's explicitly
+configured administrator session. `--as` is required and must agree with the
+session's `A2A_AGENT`, when set. The selected backend handles the new account's
+access token. Keychain retains the generated recovery password in its selected
+password service as before. With `credential_store.backend: "file"`, the password
+stays only in memory: nothing replaces the Keychain recovery-password store.
+After a matching successful registration response, the access token is
+published exclusively in `connections/<connection_id>/agents/<name>.json`, a
+regular `0600` file using the existing file store and binding checks. The
+same-UID limit above still applies; this is not protection from another process
+running as the same OS user. Passwords are never written to disk. The
+registration token stays in process memory: it is never written to
+`registration_token_ref`, credentials, state, argv, logs or CLI output, and is
+never included in the posted command. Existing owner-issued-token registration
+continues to use its existing route.
+
+The public connection entry must contain all of these prerequisites, for example:
+
+```json
+"admin_registration": {
+  "method": "tuwunel-v1.9.4-admin-room",
+  "admin_user_id": "@admin:example.org",
+  "server_bot_user_id": "@server:example.org",
+  "room_id": "!admin-room:example.org",
+  "expected_members": ["@admin:example.org", "@server:example.org"],
+  "reply_deadline_seconds": 15
+}
+```
+
+This dialect is source-verified against Tuwunel v1.9.4, commit
+[`f473d9a4a8342514302884041e0ccfea1ad503fc`](https://github.com/matrix-construct/tuwunel/tree/f473d9a4a8342514302884041e0ccfea1ad503fc).
+It sends exactly `!admin token issue --once --max-age 5m`. It accepts only the
+pinned complete `m.notice` token response, either directly replying to the
+command or in a thread rooted at it, from the configured bot in the exact room
+before the configured deadline (1–30 seconds). Attachments, extra plaintext,
+ambiguous replies and other formats refuse. A real disposable Tuwunel test is
+required before landing; fake-server tests do not qualify an installed server.
+
+Before issue, the CLI verifies the selected session with the server, the room's
+local server-qualified ID and bot-created state, explicit `m.federate: false`,
+and exactly the configured joined members, including the administrator and bot.
+Invites, knocks, extra members, broad or room-specific subscriptions, retained
+relevant mailbox entries, and an overlapping owner-DM route refuse. Membership
+is a point-in-time observation; it does not lock the room against changes by
+another administrator. No local power-level check grants server administration
+rights. A server refusal reports a fixed stage, recognized Matrix errcode and
+HTTP status without server text; unknown errcodes use `SERVER_ERROR`. A local
+refusal or deadline has `LOCAL_REFUSAL` and HTTP 0, which is not a server status.
+A server that silently ignores a command can only be reported as a deadline,
+not as a fabricated server denial.
+
+The server posts the secret token in its reply. Admin-room readers and server
+operators can read it; the room must not federate. Its single use and maximum
+five-minute validity limit exposure. Token expiry invalidates the token; it does
+not delete history. History may retain the expired token until redaction, and
+server copies may remain even after redaction. On failed registration, a token
+can remain unused and valid until its deadline. There is one issue attempt and
+one registration flow per invocation, without automatic reissue for expired or
+used tokens. A failed or ambiguous registration retains the normal recovery
+journal and blocks an automatic fresh attempt for that destination.
+For file connections, remote failure or ambiguity leaves no password, admission
+token or access token on disk, including in the journal. Interruption before
+credential publication also retains only the secret-free journal. Owner recovery
+must establish the server outcome and recover access through the administrator;
+there is no saved password, password login, automatic reissue or retry. Preserve
+the journal even after a definite rejection until owner recovery resolves it.
+
+The CLI attempts to redact the reply and command with one shared five-second
+cleanup budget, including after registration failure. This narrow client path
+does not require a general redaction CLI. Cleanup failure keeps the registration
+outcome and emits a fixed warning: rotation is not needed, but the single-use
+token remains in room history until expiry and may still be unused. Expiry
+limits validity, not history retention.
+
+Ordinary `read` refuses the entire configured admin room, including JSON,
+single-event, topic and `--verification-input` reads; this also prevents bot
+replies escaping through thread, file and fetch readers. Ordinary sync excludes
+that room from mailbox delivery, inbox, doorbell and projection. Archive skips
+it, and owner-DM mirroring cannot target it. A retained mailbox entry from this
+room causes delivery to refuse for private owner recovery; it is never printed.
+These exclusions apply to the selected connection's configured room. Unrelated
+rooms retain normal read, delivery, projection and archive behavior.

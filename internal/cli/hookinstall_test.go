@@ -77,7 +77,11 @@ const userSettings = `{
 `
 
 func (e *env) exePath(p string) {
-	e.configure = func(a *App) { a.exe = func() (string, error) { return p, nil } }
+	e.configure = func(a *App) {
+		a.hookSelection = func(hookExecutableChoice) (hookExecutableSelection, error) {
+			return hookExecutableSelection{path: p, check: func() error { return nil }}, nil
+		}
+	}
 }
 
 func readFile(t *testing.T, p string) string {

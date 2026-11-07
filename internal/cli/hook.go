@@ -173,7 +173,7 @@ func lookupRuntime(name string) (hookRuntime, error) {
 }
 
 const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex|muse  (reads the hook JSON on stdin) | " +
-	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
+	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
 	"a2a hook pause|resume --agent NAME"
 
 // cmdHook: a2a hook stop|session-start|prompt|install|uninstall
@@ -332,7 +332,11 @@ func (a *App) hookLiveness(ctx context.Context, ev hookEvent, in hookInput) erro
 	if ev.arg == "stop" && st.HookBlocks(hookSessionKey(in.SessionID)) == 0 {
 		profile.State = "idle"
 	}
-	return s.writeLivenessSource(ctx, profile, "hook")
+	err = s.writeLivenessSource(ctx, profile, "hook")
+	if errors.Is(err, ErrOwnStatusPending) {
+		return nil
+	}
+	return err
 }
 
 // readHookInput parses the hook JSON; empty input is an empty object.

@@ -2,8 +2,13 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf16"
 
+	"github.com/relux-works/a2a-swarm/internal/inboundmedia"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -36,6 +41,29 @@ type EventRecord struct {
 	Body       string       `json:"body,omitempty"`    // read: the full text without the header lines
 	// Attachment is set for file messages (a2a attach).
 	Attachment *Attachment `json:"attachment,omitempty"`
+	// Media is set only by inbox, with bounded untrusted declarations and a handle.
+	Media *inboundmedia.Metadata `json:"media,omitempty"`
+}
+
+// Keep opaque identifier bytes on decoding, but make format controls inert
+// for consumers displaying the NDJSON directly.
+func (r EventRecord) MarshalJSON() ([]byte, error) {
+	type plain EventRecord
+	raw, err := json.Marshal(plain(r))
+	if err != nil {
+		return nil, err
+	}
+	var b strings.Builder
+	for _, ch := range string(raw) {
+		if unicode.Is(unicode.Cf, ch) {
+			for _, u := range utf16.Encode([]rune{ch}) {
+				fmt.Fprintf(&b, "\\u%04x", u)
+			}
+		} else {
+			b.WriteRune(ch)
+		}
+	}
+	return []byte(b.String()), nil
 }
 
 // eventRecord builds the record for a message event. typ is the record type;
