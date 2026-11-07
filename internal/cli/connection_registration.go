@@ -44,12 +44,27 @@ func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r conf
 // A retained journal always blocks a fresh attempt. Recovery is an explicit
 // owner operation; source onboarding never retries an ambiguous remote creation.
 type registrationJournal struct {
-	Binding config.ConnectionBinding `json:"binding"`
-	Stage   string                   `json:"stage"`
+	Binding    config.ConnectionBinding `json:"binding"`
+	Stage      string                   `json:"stage"`
+	HTTPStatus int                      `json:"http_status,omitempty"`
+	ErrCode    string                   `json:"errcode,omitempty"`
 }
 
-func updateRegistrationJournal(path string, b config.ConnectionBinding, stage string) error {
-	data, e := json.Marshal(registrationJournal{b, stage})
+// Server-controlled error codes may contain private data. Retain only this
+// closed registration vocabulary; never persist the response body or message.
+func registrationRejectionCode(code string) string {
+	switch code {
+	case "M_FORBIDDEN", "M_USER_IN_USE", "M_INVALID_USERNAME", "M_EXCLUSIVE",
+		"M_LIMIT_EXCEEDED", "M_BAD_JSON", "M_NOT_JSON", "M_MISSING_PARAM",
+		"M_INVALID_PARAM", "M_UNRECOGNIZED", "M_UNAUTHORIZED",
+		"M_UNKNOWN_TOKEN", "M_MISSING_TOKEN":
+		return code
+	}
+	return ""
+}
+
+func updateRegistrationJournal(path string, j registrationJournal) error {
+	data, e := json.Marshal(j)
 	if e != nil {
 		return e
 	}
@@ -120,7 +135,9 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 		return empty, "", errors.New("registration already pending; owner recovery required")
 	}
 	f.Close()
-	stage := func(s string) error { return updateRegistrationJournal(journal, b, s) }
+	stage := func(s string) error {
+		return updateRegistrationJournal(journal, registrationJournal{Binding: b, Stage: s})
+	}
 	if e = stage("preflight"); e != nil {
 		return empty, "", e
 	}
@@ -160,15 +177,25 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 	client.HTTP = a.HTTP
 	resp, e := client.Register(ctx, name, password, bootstrap, "a2a "+name)
 	if e != nil {
-		state := "remote-outcome-ambiguous"
+		j := registrationJournal{Binding: b, Stage: "remote-outcome-ambiguous"}
 		var me *matrix.Error
 		if errors.As(e, &me) && me.Status >= 400 && me.Status < 500 {
-			state = "remote-rejected"
+			j.Stage = "remote-rejected"
+			j.HTTPStatus = me.Status
+			j.ErrCode = registrationRejectionCode(me.ErrCode)
 		}
-		if se := stage(state); se != nil {
+		if se := updateRegistrationJournal(journal, j); se != nil {
 			return empty, "", errors.New("registration outcome pending; recovery journal update failed")
 		}
-		return empty, "", fmt.Errorf("registration %s; owner recovery required (no automatic retry)", state)
+		diagnostic := j.Stage
+		if j.HTTPStatus != 0 {
+			diagnostic += fmt.Sprintf(" (HTTP %d", j.HTTPStatus)
+			if j.ErrCode != "" {
+				diagnostic += "; " + j.ErrCode
+			}
+			diagnostic += ")"
+		}
+		return empty, "", fmt.Errorf("registration %s; owner recovery required (no automatic retry)", diagnostic)
 	}
 	a.secrets.Add(resp.AccessToken)
 	if resp.UserID != b.UserID || resp.AccessToken == "" {
