@@ -52,8 +52,17 @@ func TestOwnStatusPendingSentinel(t *testing.T) {
 	if err = write(); !errors.Is(err, ErrOwnStatusPending) || err.Error() != "own status publication already pending" {
 		t.Fatalf("local refusal lost sentinel/text: %v", err)
 	}
-	if prepared || finished || !reflect.DeepEqual(before, e.state("alice")) || e.hs.CallCount("GET /_matrix/client/v3/directory/room/{alias}") != requests {
-		t.Fatal("pending refusal prepared, finished, mutated state or resolved a room")
+	if prepared {
+		t.Error("pending refusal called prepare")
+	}
+	if finished {
+		t.Error("pending refusal called finish")
+	}
+	if after := e.state("alice"); !reflect.DeepEqual(before, after) {
+		t.Errorf("pending refusal mutated state: before=%+v after=%+v", before, after)
+	}
+	if got := e.hs.CallCount("GET /_matrix/client/v3/directory/room/{alias}"); got != requests {
+		t.Errorf("pending refusal resolved a room: requests=%d, want %d", got, requests)
 	}
 	setOwnStatusFence(t, e, nil)
 	if err = write(); err != nil || !prepared || finished {
@@ -118,8 +127,17 @@ func TestStatusPendingDeadline(t *testing.T) {
 	if !errors.Is(err, ErrOwnStatusPending) || err.Error() != "own status publication already pending" || a.fail(err) != ExitError {
 		t.Fatalf("deadline lost sentinel identity/text/exit code: %v", err)
 	}
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) || refused.Load() == 0 || !reflect.DeepEqual(before, e.state("alice")) || e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}") != puts {
-		t.Fatal("deadline refusal returned early, sent a PUT or changed local state")
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Errorf("deadline refusal returned before caller deadline: %v", ctx.Err())
+	}
+	if refused.Load() == 0 {
+		t.Error("deadline caller observed no pending refusal")
+	}
+	if after := e.state("alice"); !reflect.DeepEqual(before, after) {
+		t.Errorf("deadline refusal changed local state: before=%+v after=%+v", before, after)
+	}
+	if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != puts {
+		t.Errorf("deadline refusal sent a PUT: count=%d, want %d", got, puts)
 	}
 }
 
@@ -188,8 +206,11 @@ func TestAutomaticStatusPendingPreservesRetry(t *testing.T) {
 					t.Fatalf("automatic writer failed on contention: %v", err)
 				}
 			}
-			if !reflect.DeepEqual(before, f.e.state("alice")) || f.requests.Load() != requests {
-				t.Fatal("skipped attempt changed heartbeat, retry eligibility/knowledge or made HTTP")
+			if after := f.e.state("alice"); !reflect.DeepEqual(before, after) {
+				t.Errorf("skipped attempt changed local state: before=%+v after=%+v", before, after)
+			}
+			if got := f.requests.Load(); got != requests {
+				t.Errorf("skipped attempt made HTTP: requests=%d, want %d", got, requests)
 			}
 			setOwnStatusFence(t, f.e, nil)
 			if err := write(); err != nil {
@@ -207,6 +228,7 @@ func TestAutomaticStatusPendingPreservesRetry(t *testing.T) {
 // fence and publishes next cycle without waiting another heartbeat interval.
 // Initial and periodic contention retain manual state; disarm retries a seeded
 // fence after delivery, while the controlled mail remains unreceipted.
+// Sync cursor advancement and lease renewal are independent of status refusal.
 func TestWaitPendingHeartbeatAndDisarm(t *testing.T) {
 	for _, initial := range []bool{false, true} {
 		t.Run(map[bool]string{false: "periodic", true: "initial"}[initial], func(t *testing.T) {
@@ -303,14 +325,52 @@ func TestWaitPendingHeartbeatAndDisarm(t *testing.T) {
 				offset.Store(int64(time.Hour))
 			}
 			before := e.state("alice")
+			if before.Liveness == nil {
+				t.Fatal("missing acknowledged liveness before fenced heartbeat")
+			}
+			if !initial && e.now().Sub(before.Liveness.HeartbeatAt) < time.Hour {
+				t.Fatal("periodic heartbeat is not due at the frozen observation time")
+			}
 			puts := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}")
+			refusalsBefore := pending.Load()
+			// The next sync barrier follows the loop's heartbeat check. Periodic
+			// time is due above; initial refusal leaves lastHeartbeat zero. Require
+			// a fresh refusal, rather than counting initial startup contention.
 			next()
-			if pending.Load() == 0 || !reflect.DeepEqual(before, e.state("alice")) || e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}") != puts {
-				t.Fatal("live-fence skip mutated heartbeat/state or sent a PUT")
+			if got := pending.Load(); got != refusalsBefore+1 {
+				t.Errorf("fenced heartbeat refusals=%d, want %d after next sync barrier", got, refusalsBefore+1)
+			}
+			// waitRetry renews the lease after the periodic clock jump. ingest
+			// also persists NextBatch, though the fake keeps it stable without
+			// new stream events. Neither belongs to own-status preservation.
+			st := e.state("alice")
+			if !reflect.DeepEqual(before.Liveness, st.Liveness) {
+				t.Errorf("live-fence skip changed liveness: before=%+v after=%+v", before.Liveness, st.Liveness)
+			}
+			if st.Liveness == nil {
+				t.Fatal("live-fence skip removed acknowledged liveness")
+			}
+			if !st.Liveness.HeartbeatAt.Equal(before.Liveness.HeartbeatAt) {
+				t.Errorf("live-fence skip changed heartbeat time: before=%s after=%s", before.Liveness.HeartbeatAt, st.Liveness.HeartbeatAt)
+			}
+			if st.LivenessSource != before.LivenessSource {
+				t.Errorf("live-fence skip changed liveness source: before=%q after=%q", before.LivenessSource, st.LivenessSource)
+			}
+			if !reflect.DeepEqual(before.OwnStatusWrite, st.OwnStatusWrite) {
+				t.Errorf("live-fence skip changed own-status fence: before=%+v after=%+v", before.OwnStatusWrite, st.OwnStatusWrite)
+			}
+			if !reflect.DeepEqual(before.NoticeRetry, st.NoticeRetry) {
+				t.Errorf("live-fence skip changed notice retry: before=%+v after=%+v", before.NoticeRetry, st.NoticeRetry)
+			}
+			if st.NoticeWriteUncertain != before.NoticeWriteUncertain {
+				t.Errorf("live-fence skip changed notice uncertainty: before=%t after=%t", before.NoticeWriteUncertain, st.NoticeWriteUncertain)
+			}
+			if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != puts {
+				t.Errorf("live-fence skip sent a PUT: count=%d, want %d", got, puts)
 			}
 			setOwnStatusFence(t, e, nil)
 			next() // Do not advance observation time after the skipped heartbeat.
-			st := e.state("alice")
+			st = e.state("alice")
 			if st.Liveness == nil || !st.Liveness.HeartbeatAt.After(before.Liveness.HeartbeatAt) || st.Liveness.State != "blocked" || st.LivenessSource != "manual" || st.Liveness.Doorbell != "armed" {
 				t.Fatalf("skip advanced last-heartbeat or lost manual state: %+v", st.Liveness)
 			}
