@@ -21,6 +21,11 @@ type connectionSecretStore interface {
 }
 
 func (a *App) readConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference) (string, error) {
+	if store, e := a.selectedStore(); e != nil {
+		return "", e
+	} else if store != "keychain" {
+		return "", errors.New("file connections cannot read Keychain references")
+	}
 	if a.connectionSecretStore != nil {
 		return a.connectionSecretStore.Read(ctx, p, r)
 	}
@@ -31,6 +36,11 @@ func (a *App) readConnectionSecret(ctx context.Context, p config.Paths, r config
 	return result, err
 }
 func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if store, e := a.selectedStore(); e != nil {
+		return e
+	} else if store != "keychain" {
+		return errors.New("file connections cannot create Keychain references")
+	}
 	if a.connectionSecretStore != nil {
 		return a.connectionSecretStore.Create(ctx, p, r, v)
 	}
@@ -99,6 +109,10 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	if e != nil {
 		return empty, "", e
 	}
+	store, e := a.selectedStore()
+	if e != nil {
+		return empty, "", e
+	}
 	if a.human {
 		return empty, "", errors.New("agent registration cannot use a human identity")
 	}
@@ -118,6 +132,9 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	p, e := a.pathsFor(name)
 	if e != nil {
 		return empty, "", e
+	}
+	if admin == nil && store == "file" {
+		return empty, "", errors.New("file connections require connection register --via-admin-room; registration_token_ref is Keychain-only")
 	}
 	if admin == nil && c.RegistrationTokenRef == nil {
 		return empty, "", errors.New("selected profile has no registration_token_ref")
@@ -146,12 +163,15 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 		return empty, "", e
 	}
 	// Conflicting pre-existing items are never updated, even if their names match.
-	tokenRef := config.SecretReference{Service: c.Store.AccessTokenService, Account: b.UserID}
-	passwordRef := config.SecretReference{Service: c.Store.PasswordService, Account: b.UserID}
-	for _, r := range []config.SecretReference{tokenRef, passwordRef} {
-		if _, e = a.readConnectionSecret(ctx, p, r); !errors.Is(e, errKeychainMissing) {
-			_ = stage("secret-preflight-refused")
-			return empty, "", errors.New("selected credential item exists or is unavailable; no registration attempted")
+	var tokenRef, passwordRef config.SecretReference
+	if store == "keychain" {
+		tokenRef = config.SecretReference{Service: c.Store.AccessTokenService, Account: b.UserID}
+		passwordRef = config.SecretReference{Service: c.Store.PasswordService, Account: b.UserID}
+		for _, r := range []config.SecretReference{tokenRef, passwordRef} {
+			if _, e = a.readConnectionSecret(ctx, p, r); !errors.Is(e, errKeychainMissing) {
+				_ = stage("secret-preflight-refused")
+				return empty, "", errors.New("selected credential item exists or is unavailable; no registration attempted")
+			}
 		}
 	}
 	var bootstrap string
@@ -169,10 +189,13 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	}
 	password := base64.RawURLEncoding.EncodeToString(raw[:])
 	a.secrets.Add(password)
-	// Store the intended recovery password before a remote account can exist.
-	if e = a.createConnectionSecret(ctx, p, passwordRef, password); e != nil {
-		_ = stage("password-store-failed")
-		return empty, "", errors.New("recovery password could not be stored; no registration attempted")
+	// Only Keychain retains a recovery password. File passwords stay in memory;
+	// the secret-free journal still fences every failed/ambiguous attempt.
+	if store == "keychain" {
+		if e = a.createConnectionSecret(ctx, p, passwordRef, password); e != nil {
+			_ = stage("password-store-failed")
+			return empty, "", errors.New("recovery password could not be stored; no registration attempted")
+		}
 	}
 	if e = ctx.Err(); e != nil {
 		return empty, "", e
@@ -208,6 +231,9 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 			return empty, "", errors.New("registration outcome pending; recovery journal update failed")
 		}
 		if admin != nil {
+			if store == "file" {
+				return empty, "", fmt.Errorf("%w; owner recovery required; file connection retained no recovery password", adminRegistrationError("register", e))
+			}
 			return empty, "", adminRegistrationError("register", e)
 		}
 		diagnostic := j.Stage
@@ -228,24 +254,38 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	if e = stage("remote-created-token-storage-pending"); e != nil {
 		return empty, "", errors.New("remote account created; recovery journal unavailable")
 	}
-	if e = a.createConnectionSecret(ctx, p, tokenRef, resp.AccessToken); e != nil {
-		_ = stage("remote-created-token-store-failed")
-		return empty, "", errors.New("remote account created but token storage failed; recovery password retained in selected store; owner recovery required")
+	if store == "keychain" {
+		if e = a.createConnectionSecret(ctx, p, tokenRef, resp.AccessToken); e != nil {
+			_ = stage("remote-created-token-store-failed")
+			return empty, "", errors.New("remote account created but token storage failed; recovery password retained in selected store; owner recovery required")
+		}
 	}
 	if e = stage("remote-created-metadata-publication-pending"); e != nil {
+		if store == "file" {
+			return empty, "", errors.New("remote account created; file token not published; journal update failed; owner recovery required (no automatic retry)")
+		}
 		return empty, "", errors.New("remote account and token stored; metadata publication pending")
 	}
 	creds := config.Credentials{UserID: b.UserID, DeviceID: resp.DeviceID, Homeserver: c.URL, ConnectionBinding: &b}
+	if store == "file" {
+		creds.AccessToken = resp.AccessToken
+	}
+	publicationError := func(message string) error {
+		if store == "file" {
+			return errors.New("remote account created; file credential publication incomplete; no recovery password retained; owner recovery required (no automatic retry)")
+		}
+		return errors.New(message)
+	}
 	if e = ctx.Err(); e != nil {
-		return empty, "", errors.New("remote account and token stored; publication interrupted; owner recovery required")
+		return empty, "", publicationError("remote account and token stored; publication interrupted; owner recovery required")
 	}
 	if a.beforeNamedPublish != nil {
 		if e = a.beforeNamedPublish(); e != nil {
-			return empty, "", errors.New("remote account and token stored; publication interrupted; owner recovery required")
+			return empty, "", publicationError("remote account and token stored; publication interrupted; owner recovery required")
 		}
 	}
 	if e = config.PublishBoundCredentials(p, name, false, creds); e != nil {
-		return empty, "", errors.New("remote account and token stored; metadata publication pending; owner recovery required")
+		return empty, "", publicationError("remote account and token stored; metadata publication pending; owner recovery required")
 	}
 	if e = stage("complete"); e != nil {
 		return empty, "", errors.New("credentials published; recovery journal completion pending")

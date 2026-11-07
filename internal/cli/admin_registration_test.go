@@ -47,18 +47,31 @@ type admin198Fixture struct {
 }
 
 func newAdmin198(t *testing.T, mode string) *admin198Fixture {
+	return newAdmin198Backend(t, mode, "keychain")
+}
+
+func newAdmin198Backend(t *testing.T, mode, backend string) *admin198Fixture {
 	t.Helper()
 	f := &admin198Fixture{t: t, root: t.TempDir(), now: time.Now().UTC().Truncate(time.Millisecond), mode: mode, store: &namedTestStore{items: map[config.SecretReference]string{}}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	f.c = config.Connection{ID: "private-test", URL: f.server.URL, ServerName: "test.invalid", Store: config.CredentialStore{Backend: "keychain", AccessTokenService: "test.access", PasswordService: "test.password"}, AdminRegistration: &config.AdminRegistration{Method: "tuwunel-v1.9.4-admin-room", AdminUserID: admin198User, ServerBotUserID: admin198Bot, RoomID: admin198Room, ExpectedMembers: []string{admin198User, admin198Bot}, ReplyDeadlineSeconds: 1}}
+	if backend == "file" {
+		f.c.Store = config.CredentialStore{Backend: "file"}
+	}
 	f.save()
 	b, _ := f.c.Binding("admin", false)
 	p, _ := f.c.Paths(config.Paths{Base: f.root}, "admin", false)
-	if err := config.PublishBoundCredentials(p, "admin", false, config.Credentials{UserID: b.UserID, Homeserver: f.c.URL, ConnectionBinding: &b}); err != nil {
+	creds := config.Credentials{UserID: b.UserID, Homeserver: f.c.URL, ConnectionBinding: &b}
+	if backend == "file" {
+		creds.AccessToken = "isolated-admin-session"
+	}
+	if err := config.PublishBoundCredentials(p, "admin", false, creds); err != nil {
 		t.Fatal("fixture metadata setup failed")
 	}
-	f.store.items[config.SecretReference{Service: f.c.Store.AccessTokenService, Account: admin198User}] = "isolated-admin-session"
+	if backend == "keychain" {
+		f.store.items[config.SecretReference{Service: f.c.Store.AccessTokenService, Account: admin198User}] = "isolated-admin-session"
+	}
 	prior := log.Writer()
 	log.SetOutput(&f.logs)
 	t.Cleanup(func() { log.SetOutput(prior) })

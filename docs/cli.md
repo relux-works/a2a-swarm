@@ -2637,6 +2637,19 @@ may differ. Duplicate keys, unknown fields/schema, unsupported stores, missing
 current and malformed entries fail closed. References above are illustrative;
 never put token/password values in this file.
 
+The credential-store schema accepts exactly these two backends:
+
+| Backend | Configuration | Secret storage |
+| --- | --- | --- |
+| `keychain` | Requires distinct valid `access_token_service` and `password_service` names, as above; macOS only | Access token and recovery password in the selected Keychain services, keyed by full MXID |
+| `file` | `"credential_store": {"backend": "file"}`; no Keychain service names and no `registration_token_ref` | Access token in the existing connection-scoped credential file, mode `0600`; passwords stay in memory |
+
+`registration_token_ref` resolves only through Keychain, so any such reference
+is invalid on a file connection. File connections work on Linux and macOS and
+never access Keychain. The registry remains `schema_version: 1`. Older binaries
+that accept only `keychain` refuse a registry containing `file` during validation;
+they do not fall back to legacy routing or another credential store.
+
 ```bash
 a2a connection list
 a2a connection show coordination
@@ -2661,14 +2674,21 @@ In named mode the selected endpoint, identity domain and secret references are
 authoritative. Nonempty legacy routing/store settings (including routing in `matrix.env`) must match; clear stale
 `A2A_MATRIX_URL`, `A2A_MATRIX_SERVER_NAME` and `A2A_SECRET_STORE` overrides before
 selecting a different connection. Unset secret-store selection uses the named
-backend. Named profiles require macOS Keychain; unsupported hosts refuse without
-falling back to files. Inherited registration tokens are never a named fallback.
+backend. A nonempty `A2A_SECRET_STORE` must equal that backend exactly: `file`
+versus `keychain` conflicts in either direction. Keychain connections still
+require macOS and never fall back to files. Inherited registration tokens are
+never a named fallback.
 `--as`, `A2A_AGENT` and the interactive `--human` guard remain identity controls.
 
 Named metadata lives in `connections/<connection_id>/agents|humans/<name>.json`.
-It contains the full MXID, class, endpoint and public credential binding, without
-secrets. Access-token/password items use the selected services and full MXID
-account. Missing or mismatched metadata/items refuse before traffic; no legacy
+It contains the full MXID, class, endpoint and public credential binding.
+Keychain mode keeps this file free of secrets; access-token/password items use
+the selected services and full MXID account. File mode keeps its access token
+in this same file, which must be a regular `0600` file; symlinks, unsafe modes,
+missing tokens, passwords and mismatched bindings refuse. This has the existing
+same-UID limit: mode `0600` protects against other OS users, not another process
+running as the same user or an administrator, and backups may retain tokens.
+Missing or mismatched metadata/items refuse before traffic; no legacy
 credential or compiled-service fallback is attempted. A known human metadata
 entry prevents agent reinterpretation of that name.
 
@@ -2682,7 +2702,8 @@ traffic functional. Changing the selected endpoint, identity or store requires
 an explicit migration; stale bindings fail without retargeting or resetting
 state. Token-bearing or registration-body HTTP redirects cannot change origin.
 
-First named agent registration must be separately owner-admitted and explicit:
+First named agent registration using a Keychain bootstrap reference must be
+separately owner-admitted and explicit:
 
 ```bash
 a2a --profile staging register my_own_agent --authorize-registration
@@ -2694,8 +2715,11 @@ approval or human-account access. Without it, missing metadata is refused. The
 selected bootstrap reference must already exist. The CLI refuses existing
 metadata/state/items, stores a recovery password in the selected password service
 before registration, stores the returned token exclusively, then atomically
-publishes complete metadata without replacement. Onboarding reuses verified
-existing metadata without registering again.
+publishes complete metadata without replacement. File connections refuse this
+bootstrap-reference route by name; use the explicitly configured
+[admin-room registration route](#admin-room-account-registration) instead.
+Onboarding reuses verified existing credentials with either backend without
+registering again.
 
 Private `registration.pending.json` records distinguish preflight refusal,
 remote rejection, ambiguous outcome, remote creation with failed token storage,
@@ -2704,6 +2728,12 @@ attempt blocks automatic retry; preserve it and the selected recovery items for
 the existing keeper/operator recovery path. Do not delete the remote account,
 overwrite an existing item or infer that an ambiguous failure created nothing.
 Registration recovery is intentionally manual in this initial command surface.
+There are no named account-recovery, credential-rotation or credential-delete
+commands. `creds migrate` and `creds move-human` refuse named profiles for both
+backends; they cannot rewrite a file binding or fall through to Keychain.
+The normal bound-session loader supports file-backed identity reuse, room
+retirement (including alias deletion), and archive with the existing identity,
+binding and admin-room exclusion checks.
 
 For a typed Matrix 4xx response classified as `remote-rejected`, the journal
 also retains `http_status` and, when recognized, `errcode`; the command's error
@@ -2852,8 +2882,15 @@ configure or inspect this feature.
 `a2a --as ADMIN connection register NAME --via-admin-room` creates one new
 agent account on the selected named connection using that connection's explicitly
 configured administrator session. `--as` is required and must agree with the
-session's `A2A_AGENT`, when set. The normal named-registration credential store
-and recovery journal handle the new account's password and access token. The
+session's `A2A_AGENT`, when set. The selected backend handles the new account's
+access token. Keychain retains the generated recovery password in its selected
+password service as before. With `credential_store.backend: "file"`, the password
+stays only in memory: nothing replaces the Keychain recovery-password store.
+After a matching successful registration response, the access token is
+published exclusively in `connections/<connection_id>/agents/<name>.json`, a
+regular `0600` file using the existing file store and binding checks. The
+same-UID limit above still applies; this is not protection from another process
+running as the same OS user. Passwords are never written to disk. The
 registration token stays in process memory: it is never written to
 `registration_token_ref`, credentials, state, argv, logs or CLI output, and is
 never included in the posted command. Existing owner-issued-token registration
@@ -2903,6 +2940,12 @@ can remain unused and valid until its deadline. There is one issue attempt and
 one registration flow per invocation, without automatic reissue for expired or
 used tokens. A failed or ambiguous registration retains the normal recovery
 journal and blocks an automatic fresh attempt for that destination.
+For file connections, remote failure or ambiguity leaves no password, admission
+token or access token on disk, including in the journal. Interruption before
+credential publication also retains only the secret-free journal. Owner recovery
+must establish the server outcome and recover access through the administrator;
+there is no saved password, password login, automatic reissue or retry. Preserve
+the journal even after a definite rejection until owner recovery resolves it.
 
 The CLI attempts to redact the reply and command with one shared five-second
 cleanup budget, including after registration failure. This narrow client path

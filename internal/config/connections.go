@@ -154,7 +154,19 @@ func (c Connection) Validate() error {
 	if err := ValidateMatrixRouting(c.URL, c.ServerName); err != nil {
 		return err
 	}
-	if c.Store.Backend != "keychain" || !serviceName.MatchString(c.Store.AccessTokenService) || !serviceName.MatchString(c.Store.PasswordService) || c.Store.AccessTokenService == c.Store.PasswordService {
+	switch c.Store.Backend {
+	case "keychain":
+		if !serviceName.MatchString(c.Store.AccessTokenService) || !serviceName.MatchString(c.Store.PasswordService) || c.Store.AccessTokenService == c.Store.PasswordService {
+			return errors.New("invalid or unsupported credential_store")
+		}
+	case "file":
+		if c.Store.AccessTokenService != "" || c.Store.PasswordService != "" {
+			return errors.New("file credential_store must not declare keychain service names")
+		}
+		if c.RegistrationTokenRef != nil {
+			return errors.New("file credential_store cannot use keychain registration_token_ref")
+		}
+	default:
 		return errors.New("invalid or unsupported credential_store")
 	}
 	if r := c.RegistrationTokenRef; r != nil {
@@ -362,7 +374,7 @@ func (c Connection) Paths(p Paths, name string, human bool) (Paths, error) {
 
 // ValidateBoundCredentials runs before secret-store lookup or client creation.
 func ValidateBoundCredentials(c Credentials, want ConnectionBinding) error {
-	if c.AccessToken != "" || c.Password != "" {
+	if c.Password != "" || c.AccessToken != "" && want.Connection.Store.Backend != "file" {
 		return errors.New("named metadata must not contain secrets")
 	}
 	if c.ConnectionBinding == nil || c.ConnectionBinding.Fingerprint() != want.Fingerprint() || c.UserID != want.UserID || c.Homeserver != want.Connection.URL {

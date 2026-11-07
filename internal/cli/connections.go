@@ -133,7 +133,7 @@ func (a *App) connectionPreflight(command string, args []string) error {
 	if command == "connection" || command == "host" || command == "help" {
 		return nil
 	}
-	if runtime.GOOS != "darwin" && a.keychain == nil && a.connectionSecretStore == nil {
+	if c.Store.Backend == "keychain" && runtime.GOOS != "darwin" && a.keychain == nil && a.connectionSecretStore == nil {
 		return errors.New("keychain secret store requires macOS")
 	}
 	if command == "register" || command == "identity" && len(args) > 0 && args[0] == "ensure" {
