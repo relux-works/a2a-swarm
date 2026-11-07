@@ -7,7 +7,8 @@ Rooms are projects, threads are topics. The protocol itself lives in `docs/proto
 
 Optional local spoken copies: `post ... --voice`, explicit
 `voice config --enable`, and pinned
-`voice install`. See [the voice contract](voice.md) for native build,
+`voice install`. Read local configuration with `voice status [--json]` without
+enabling voice, credentials, or a synthesis probe. See [the voice contract](voice.md) for native build,
 dependencies,180s cap, text-preserving failures and separate activation.
 
 ```bash

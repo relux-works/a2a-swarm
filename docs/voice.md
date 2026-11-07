@@ -29,6 +29,32 @@ there is no engine/voice picker or implicit enablement. These commands change
 no binding/profile/hook or subscription. Shared-station activation requires separate admission after
 source delivery; the commands document the interface.
 
+## Read-only status
+
+`a2a voice status [--json]` inspects local configuration without enabling voice,
+installing assets, running a process, looking up credentials or contacting Matrix.
+It works without an account. With named connections, public `connections.json`
+and the selected identity/profile determine the same config directory used by
+voice configuration; unrelated credential and owner-DM state is not consulted.
+
+The closed status fields are:
+
+- `config`: `enabled`, `missing`, `invalid` or `unavailable`.
+- `native`: `compiled` for a Darwin/CGO/Sherpa build, otherwise `unavailable`.
+  Compiled support does not prove a native engine will initialize successfully.
+- `model`: `missing`, `invalid`, `unavailable` or `present_unverified`.
+  A directory's presence does not authenticate its manifest or assets.
+- `encoder`: `found_unverified` or `unavailable`, from PATH lookup only.
+  This does not run ffmpeg or establish its Opus support.
+- `max_seconds`: the fixed audio cap, 180.
+- `synthesis`: always `not_checked`; `last_attempt`: always `not_recorded`.
+
+Status exits zero after reporting local observations, including missing or invalid
+voice configuration; usage and routing failures remain nonzero. It never reports
+readiness or a previous attempt's cause from these observations. Attempt failures
+remain the safe categories in the original `[VOICE_TEXT_ONLY]` warning, with the
+text retained. No history is written and no automatic retry is introduced.
+
 ## Dependencies and pins
 
 The single route currently requires macOS: sherpa-onnx through the native Go
