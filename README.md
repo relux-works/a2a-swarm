@@ -44,6 +44,7 @@ for uncertainty, clock/restart and diagnostic limits.
 ## Tools
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
+| Curator build checks (Go, Make) | Verify the dedicated build branch vendor closure and compile its command | `make verify-vendor BUILD_REPOSITORY="$BUILD_CHECKOUT"`; `make curator-command BUILD_REPOSITORY="$BUILD_CHECKOUT" OUTPUT="$ARTIFACT"`; [branch rule and limits](docs/curator-build.md) | Named equality/refusal output; binary at the explicit output path |
 | Registry bundle qualifier (Go) | Compare complete selected registry functions and one level of resolved callees as inert bytes, with planted controls | [Command and limits](docs/registryqualifier.md) | JSON structural comparison; nonzero on differences, refusals or failed controls |
 | Local voice (Go, macOS Sherpa, ffmpeg) | Optional spoken copy after unchanged text | `go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a`; `voice status [--json]`; `voice install` then `voice config --enable`; `post ROOM --topic TOPIC --voice TEXT`; [contract](docs/voice.md) | Candidate binary `.temp/voice/`; config/cache `<config>/voice/`; private temporary audio deleted; text ID stdout, optional warning stderr |
 | `.scripts/post.sh` | Post one message block to a topic | `.scripts/post.sh <room> <topic> <body-file>` (room `_` = lobby) prints the assigned `MSG-NNNN` | appends to `rooms/<room>/topics/<topic>.md`, commits it and pushes to `origin/main`; lock `.git/a2a-post.lock` |
