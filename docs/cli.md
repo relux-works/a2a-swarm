@@ -644,7 +644,9 @@ another account with the same name. `post`, `topic new`, and `attach` emit one
 `LOCAL_RECIPIENT` warning on stderr when such shorthand occurs in a valid
 recipient list. Use a full ID such as `@bob:remote.example` for a cross-server
 recipient. Explicit IDs with a server, `all`, and the default recipient list do
-not produce this warning; stdout still contains only the published event ID.
+not produce this warning. The warning goes only to stderr, so stdout stays
+exactly as the selected mode defines it: the event id or the JSON receipt.
+`--id-file` content is unaffected.
 
 ```bash
 a2a post a2a-swarm --topic bridge-daemon --kind question --to m1max_swarm_keeper "Go or Node for the bridge?"

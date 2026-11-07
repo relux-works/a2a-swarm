@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -60,8 +63,8 @@ func TestRecipientServerWarning(t *testing.T) {
 					if r.stderr != wantWarning {
 						t.Errorf("stderr = %q, want %q", r.stderr, wantWarning)
 					}
-					ev, ok := e.hs.eventByID(strings.TrimSpace(r.stdout))
-					if !ok || e.hs.CallCount(send) != before+1 {
+					ev := e.hs.lastEvent()
+					if r.stdout != ev.EventID+"\n" || e.hs.CallCount(send) != before+1 {
 						t.Fatal("event ID did not identify exactly one publication")
 					}
 					m := ev.Message()
@@ -71,5 +74,49 @@ func TestRecipientServerWarning(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// For each publisher, shorthand emits exactly one stderr warning without
+// contaminating the single JSON receipt on stdout or the id-only file.
+func TestRecipientServerWarningJSON(t *testing.T) {
+	for _, command := range []string{"post", "topic", "attach"} {
+		t.Run(command, func(t *testing.T) {
+			e, room := world(t)
+			root := strings.TrimSuffix(e.as("alice", "topic", "new", room, "root", "Root").ok(t).stdout, "\n")
+			args := []string{command, room, "--topic", root}
+			if command == "topic" {
+				args = []string{"topic", "new", room, "addressed", "Addressed"}
+			} else {
+				if command == "attach" {
+					args = append(args, writeFile(t, t.TempDir(), "notes.txt", []byte("fixture\n")))
+				}
+				args = append(args, "body")
+			}
+			idPath := filepath.Join(outputTestDir(t), "event-id")
+			args = append(args, "--to", "bob", "--json", "--id-file", idPath)
+			r := e.as("alice", args...).ok(t)
+			ev := e.hs.lastEvent()
+			wantRoot, wantReply := root, root
+			if command == "topic" {
+				wantRoot, wantReply = ev.EventID, ""
+			}
+			want := fmt.Sprintf("{\"event_id\":%q,\"room_id\":%q,\"topic_root\":%q,\"reply_to\":%q}\n", ev.EventID, room, wantRoot, wantReply)
+			if r.stdout != want {
+				t.Errorf("stdout = %q, want %q", r.stdout, want)
+			}
+			var receipt PublishResult
+			// Unmarshal consumes the whole input, rejecting trailing JSON values or text.
+			if err := json.Unmarshal([]byte(r.stdout), &receipt); err != nil {
+				t.Fatalf("stdout is not one JSON receipt: %v", err)
+			}
+			warning := "a2a: warning [LOCAL_RECIPIENT]: --to shorthand resolves on selected server \"" + testServer + "\"; use full @name:server IDs for cross-server recipients\n"
+			if r.stderr != warning {
+				t.Errorf("stderr = %q, want %q", r.stderr, warning)
+			}
+			if got := readFileStr(t, idPath); got != ev.EventID+"\n" {
+				t.Errorf("id file = %q, want %q", got, ev.EventID+"\n")
+			}
+		})
 	}
 }
