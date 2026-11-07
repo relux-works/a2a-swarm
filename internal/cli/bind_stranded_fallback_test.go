@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -96,6 +97,126 @@ func TestStrandedFallbackEpisodes(t *testing.T) {
 	}
 	if e.state("alice").Liveness != nil {
 		t.Fatal("alert invented liveness")
+	}
+}
+
+// Per-audience receipts survive reload. Missing jobs, wrong transaction ACKs
+// and a malformed outbox followed by a drain cannot establish delivery; the
+// neighboring real successful sends establish both owner and lead ACKs.
+func TestStrandedFallbackRequiresAudienceACK(t *testing.T) {
+	for _, mode := range []string{"delivered", "missing-owner", "missing-lead", "wrong-ack", "corrupt-drained"} {
+		t.Run(mode, func(t *testing.T) {
+			e, a, session, _ := strandedFallbackFixture(t)
+			if err := a.reportStrandedTerminalNotice(context.Background(), session, "gen"); err != nil {
+				t.Fatal(err)
+			}
+			jobs := e.state("alice").MailAlarm.Jobs
+			if mode == "corrupt-drained" {
+				raw, err := os.ReadFile(session.paths.StateFile(session.name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					t.Fatal(err)
+				}
+				fields["mail_alarm"] = json.RawMessage(`{"jobs":"invalid"}`)
+				raw, err = json.Marshal(fields)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(session.paths.StateFile(session.name), raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if !e.state("alice").MailAlarm.Invalid {
+					t.Fatal("corruption control did not invalidate outbox")
+				}
+				notificationState(t, e, func(st *config.State) {
+					if err := advanceAlarm(&st.MailAlarm, alarmSample{At: a.Now()}, *st.MailAlarmConfig, nil, session.name, "host-a"); err != nil {
+						t.Fatal(err)
+					}
+				})
+			} else {
+				for _, job := range jobs {
+					r := e.state("alice").Terminal.NoticeReport
+					if mode == "missing-owner" && job.ID == r.AlarmOwner || mode == "missing-lead" && job.ID == r.AlarmLead {
+						continue
+					}
+					// Exercise the real sender for just this audience.
+					notificationState(t, e, func(st *config.State) {
+						for i := range st.MailAlarm.Jobs {
+							st.MailAlarm.Jobs[i].Next = a.Now().Add(time.Hour)
+							if st.MailAlarm.Jobs[i].ID == job.ID {
+								st.MailAlarm.Jobs[i].Next = a.Now()
+							}
+						}
+					})
+					a.sendMailAlarm(context.Background(), session, "gen")
+				}
+			}
+			notificationState(t, e, func(st *config.State) {
+				st.MailAlarm.Jobs = nil
+				if mode == "wrong-ack" {
+					st.Terminal.NoticeReport.AlarmLeadAck = "another-transaction"
+				}
+				updateStrandedAlarmOutcome(st)
+			})
+			r := e.state("alice").Terminal.NoticeReport
+			if mode == "delivered" {
+				if !r.Sent || r.Outcome != "published via mail-alarm" || r.AlarmOwnerAck != r.AlarmOwner || r.AlarmLeadAck != r.AlarmLead || len(strandedAlerts(e)) != 2 {
+					t.Fatal("real ACKs lost after reload", r)
+				}
+			} else if r.Sent || r.Outcome != "unavailable: alarm acknowledgement missing" {
+				t.Fatal("job absence fabricated delivery", r)
+			}
+		})
+	}
+}
+
+// An ordinary not-due cycle and unchanged queued/delivered outcomes do not
+// replace state just to log the same outcome. A changed due outcome is
+// the positive control and persists its logged transition before this check.
+func TestStrandedReportUnchangedDoesNotSave(t *testing.T) {
+	for _, mode := range []string{"not-due", "queued", "delivered"} {
+		t.Run(mode, func(t *testing.T) {
+			e, a, session, _ := strandedFallbackFixture(t)
+			if mode == "not-due" {
+				notificationState(t, e, func(st *config.State) {
+					st.Terminal.OwnNotice.Since = a.Now().Add(-time.Minute).Format(time.RFC3339Nano)
+				})
+			} else {
+				a.reportTerminalIncident(context.Background(), session, "gen")
+				if mode == "delivered" {
+					a.sendMailAlarm(context.Background(), session, "gen")
+					a.reportTerminalIncident(context.Background(), session, "gen")
+				}
+				r := e.state("alice").Terminal.NoticeReport
+				if r == nil || r.LoggedOutcome != r.Outcome {
+					t.Fatal("transition control was not persisted")
+				}
+			}
+			path := session.paths.StateFile(session.name)
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.reportTerminalIncident(context.Background(), session, "gen")
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) || !bytes.Equal(raw, data) {
+				t.Fatal("unchanged report rewrote state")
+			}
+		})
 	}
 }
 

@@ -1,16 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
 )
 
@@ -98,6 +102,105 @@ func TestHookDoorbellTemplate(t *testing.T) {
 		got := e.hook("alice", c.event, `{"session_id":"`+c.event+`","hook_event_name":"ignored"}`).ok(t).stdout
 		if w := fmt.Sprintf(c.format, want); got != w {
 			t.Fatalf("%s:\n got %s\nwant %s", c.event, got, w)
+		}
+	}
+}
+
+// Healthy publication is the neighboring control for cooldown, in-flight,
+// resolution/PUT failure and cancellation. Each public Prompt/Stop emits the
+// same doorbell, commits its rung/Stop ledger before status HTTP, leaves mail
+// unreceived, and lets inbox receipt it normally. No terminal/process is used.
+func TestHookPublicationIsolation(t *testing.T) {
+	for _, runtime := range []string{"claude", "codex"} {
+		for _, event := range []string{"prompt", "stop"} {
+			for _, mode := range []string{"healthy", "cooldown", "pending", "resolve-failed", "put-failed", "cancelled"} {
+				t.Run(runtime+"/"+event+"/"+mode, func(t *testing.T) {
+					e, room := world(t)
+					e.as("alice", "status", "init").ok(t)
+					e.as("alice", statusArgs("working")...).ok(t)
+					e.extra[EnvSessionID] = "publication-session"
+					e.as("alice", "wait", "--timeout", "1ms").ok(t)
+					e.hs.inject(room, "@bob:test.local", ping(1))
+					a, session := notificationApp(t, e)
+					notificationState(t, e, func(st *config.State) {
+						st.Terminal = &config.TerminalBinding{Generation: "publication", SessionID: "publication-session", Host: machineLabel(), OwnNotice: schemaNotice("true"), Interval: time.Second, RetryMax: time.Second}
+						if mode == "cooldown" || mode == "pending" {
+							at := a.Now()
+							st.NoticeRetry = &config.NoticeRetry{FailedAt: at, Next: at.Add(time.Second), Delay: time.Second}
+						}
+						if mode == "pending" {
+							st.OwnStatusWrite = &config.OwnStatusWrite{Token: "another-writer", Until: time.Now().Add(time.Minute)}
+						}
+					})
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					base := a.HTTP.Transport
+					if base == nil {
+						base = http.DefaultTransport
+					}
+					statusCalls := 0
+					a.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+						status := strings.Contains(r.URL.Path, "/directory/room/#status:") || strings.Contains(r.URL.Path, "/state/"+StatusEventType+"/")
+						if !status {
+							return base.RoundTrip(r)
+						}
+						statusCalls++
+						st := e.state("alice")
+						h := st.HookSession("publication-session")
+						if len(h.Rung) != 1 || st.Notification.Reservation != nil || event == "stop" && h.Blocks != 1 {
+							t.Error("status spent hook budget before mail acknowledgement")
+						}
+						if err := config.WithRuntimeLock(session.paths, session.name, "control", time.Now(), func() error { return nil }); err != nil {
+							t.Errorf("status holds control lock during HTTP: %v", err)
+						}
+						probe := errors.New("state lock available")
+						if _, err := config.UpdateStateBy(session.paths, session.name, time.Now(), func(*config.State) error { return probe }); !errors.Is(err, probe) {
+							t.Errorf("status holds state lock during HTTP: %v", err)
+						}
+						if mode == "resolve-failed" || mode == "put-failed" && r.Method == http.MethodPut {
+							return nil, errors.New("synthetic status failure")
+						}
+						if mode == "cancelled" {
+							cancel()
+							return nil, ctx.Err()
+						}
+						return base.RoundTrip(r)
+					})}
+					var out, diagnostic bytes.Buffer
+					a.Stdout, a.Stderr = &out, &diagnostic
+					a.Stdin = strings.NewReader(`{"session_id":"publication-session"}`)
+					ev := hookEvent{arg: event, name: "UserPromptSubmit"}
+					if event == "stop" {
+						ev.name = "Stop"
+					}
+					a.runHook(ctx, ev, []string{"--runtime", runtime})
+					want := "a2a: 1 new peer event (mention: 1) from bob" + bellTail
+					var got string
+					if event == "stop" {
+						got = stopReason(t, out.String())
+					} else {
+						got = bellContext(t, out.String())
+					}
+					if got != want || diagnostic.Len() != 0 {
+						t.Fatalf("publication changed mail output: %q %q", got, diagnostic.String())
+					}
+					st := e.state("alice")
+					if len(st.HookSession("publication-session").Rung) != 1 || st.Notification.Reservation != nil || len(e.mailbox("alice").Pending()) != 1 {
+						t.Fatal("publication changed hook acknowledgement or receipted mail")
+					}
+					if mode == "pending" && statusCalls != 0 || mode != "pending" && statusCalls == 0 {
+						t.Fatal("publication control was not exercised", statusCalls)
+					}
+					if (mode == "healthy" || mode == "cooldown") && st.Terminal.NoticePublication != "published" {
+						t.Fatal("valid publication control did not ACK")
+					}
+					rung := append([]string(nil), st.HookSession("publication-session").Rung...)
+					e.as("alice", "inbox").ok(t)
+					if len(e.mailbox("alice").Pending()) != 0 || !reflect.DeepEqual(rung, e.state("alice").HookSession("publication-session").Rung) {
+						t.Fatal("inbox acknowledgement changed")
+					}
+				})
+			}
 		}
 	}
 }

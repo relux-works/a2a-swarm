@@ -380,6 +380,7 @@ type State struct {
 	NoticeStatus         *AgentStatus             `json:"notice_status,omitempty"`
 	NoticeWriteUncertain bool                     `json:"notice_write_uncertain,omitempty"`
 	NoticeRetry          *NoticeRetry             `json:"notice_retry,omitempty"`
+	OwnStatusWrite       *OwnStatusWrite          `json:"own_status_write,omitempty"`
 	LivenessSource       string                   `json:"liveness_source,omitempty"`
 	LivenessAlerts       map[string]LivenessAlert `json:"liveness_alerts,omitempty"`
 }

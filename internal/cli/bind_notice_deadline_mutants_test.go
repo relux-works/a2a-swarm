@@ -25,9 +25,9 @@ func TestNoticePublicationDeadlineNarrowingPlants(t *testing.T) {
 		t.Skip("opt-in synthetic B1 controls")
 	}
 	plants := []struct{ name, old, next, killer, assertion string }{
-		{"background-put-no-deadline", "if err := s.putOwnStatus(writeCtx, st, record)", "if _, hasDeadline := ctx.Deadline(); !hasDeadline { writeCtx = ctx }; if err := s.putOwnStatus(writeCtx, st, record)", "TestNoticePublicationNetworkBound/put-default", "publication exceeded network bound"},
+		{"background-put-no-deadline", "publicationErr := s.putOwnStatus(writeCtx, &snapshot, record)", "if _, hasDeadline := ctx.Deadline(); !hasDeadline { writeCtx = ctx }; publicationErr := s.putOwnStatus(writeCtx, &snapshot, record)", "TestNoticePublicationNetworkBound/put-default", "publication exceeded network bound"},
 		{"background-resolve-no-deadline", "s.resolveRoom(ctx, StatusRoom)", "s.resolveRoom(func() context.Context { if d, ok := ctx.Deadline(); ok && time.Until(d)>9*time.Second { return context.WithoutCancel(ctx) }; return ctx }(), StatusRoom)", "TestNoticePublicationNetworkBound/resolve-default", "publication exceeded network bound"},
-		{"earlier-lock-budget-exemption", "config.UpdateStateBy(s.paths, s.name, deadline,", "config.UpdateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout),", "TestNoticePublicationEarlierLockDeadline", "lock wait ignored earlier caller deadline"},
+		{"earlier-lock-budget-exemption", "snapshot, err := config.UpdateStateBy(s.paths, s.name, deadline,", "snapshot, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout),", "TestNoticePublicationEarlierLockDeadline", "lock wait ignored earlier caller deadline"},
 		{"background-cancel-release-exemption", "defer cancel()", "defer func() { if _, hasDeadline := ctx.Deadline(); hasDeadline { cancel() } }()", "TestNoticePublicationSuccessCancelsBudget", "network budget missing or cancellation resources not released"},
 	}
 	root, err := filepath.Abs("../..")
@@ -60,10 +60,7 @@ func TestNoticePublicationDeadlineNarrowingPlants(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			path := filepath.Join(dst, "internal/cli/bind_notice.go")
-			if p.name == "background-resolve-no-deadline" {
-				path = filepath.Join(dst, "internal/cli/own_status.go")
-			}
+			path := filepath.Join(dst, "internal/cli/own_status.go")
 			b, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -72,9 +69,6 @@ func TestNoticePublicationDeadlineNarrowingPlants(t *testing.T) {
 				t.Fatal("setup: nonunique plant anchor")
 			}
 			mutated := strings.Replace(string(b), p.old, p.next, 1)
-			if p.name == "background-resolve-no-deadline" {
-				mutated = strings.Replace(mutated, `"reflect"`, `"reflect"; "time"`, 1)
-			}
 			if err = os.WriteFile(path, []byte(mutated), 0600); err != nil {
 				t.Fatal(err)
 			}

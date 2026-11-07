@@ -284,8 +284,10 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		fail(err)
 		return
 	}
-	if err := a.hookLiveness(ctx, ev, in); err != nil {
-		fail(err)
+	// Mail output and its acknowledgement are already committed. Status gets
+	// only the remaining budget; its retries/failures are private diagnostics.
+	if ctx.Err() == nil {
+		_ = a.hookLiveness(ctx, ev, in)
 	}
 }
 
@@ -300,7 +302,7 @@ func (a *App) hookLiveness(ctx context.Context, ev hookEvent, in hookInput) erro
 	if err != nil {
 		return err
 	}
-	if st.HooksPaused || st.Liveness == nil && st.Terminal == nil {
+	if st.HooksPaused || st.Liveness == nil {
 		return nil
 	}
 	if st.Runtime != nil && st.Runtime.SessionID != in.SessionID {
@@ -321,6 +323,9 @@ func (a *App) hookLiveness(ctx context.Context, ev hookEvent, in hookInput) erro
 
 	profile := *st.Liveness
 	if st.LivenessSource == "manual" && (profile.State == "blocked" || profile.State == "stopping" || (profile.State == "waiting-human" && ev.arg != "prompt")) {
+		if st.Terminal != nil {
+			return s.publishTerminalNotice(ctx, st.Terminal.Generation)
+		}
 		return nil
 	}
 	profile.State = "working"

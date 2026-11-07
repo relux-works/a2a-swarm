@@ -546,3 +546,23 @@ func TestStateJSONHostEnrollmentComposition(t *testing.T) {
 		})
 	}
 }
+
+// Optional publication-fence corruption does not reject the delivery cursor or
+// hook acknowledgement. A well-formed active fence is preserved as the control.
+func TestOwnStatusWriteDecodePreservesDelivery(t *testing.T) {
+	for _, value := range []string{`{"token":"writer","until":"2026-11-01T12:00:00Z"}`, `{"until":"invalid"}`, `{"until":7}`, `"invalid"`, `[]`} {
+		t.Run(value, func(t *testing.T) {
+			var st State
+			raw := `{"next_batch":"cursor","hook_sessions":[{"id":"session","rung":["$mail"]}],"own_status_write":` + value + `}`
+			if err := unmarshalState([]byte(raw), &st); err != nil {
+				t.Fatal("publication fence blocked delivery state", err)
+			}
+			if st.NextBatch != "cursor" || len(st.HookSession("session").Rung) != 1 || st.HookSession("session").Rung[0] != "$mail" {
+				t.Fatal("publication fence changed delivery state")
+			}
+			if st.OwnStatusWrite == nil || (st.OwnStatusWrite.Token == "writer") != (value == `{"token":"writer","until":"2026-11-01T12:00:00Z"}`) {
+				t.Fatal("wrong fence decode")
+			}
+		})
+	}
+}

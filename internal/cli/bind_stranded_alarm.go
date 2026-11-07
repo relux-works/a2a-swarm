@@ -76,6 +76,7 @@ func updateStrandedAlarmOutcome(st *config.State) {
 	if !r.Alarm {
 		return
 	}
+	r.Sent = false
 	if st.MailAlarm.Invalid {
 		r.Outcome = "unavailable: invalid alarm state"
 		return
@@ -90,7 +91,30 @@ func updateStrandedAlarmOutcome(st *config.State) {
 			return
 		}
 	}
+	// A missing job can mean corruption or retirement, not delivery. Only
+	// the sender's successful transaction ACK records an audience receipt.
+	if r.AlarmOwnerAck != r.AlarmOwner || r.AlarmLeadRequired && r.AlarmLeadAck != r.AlarmLead {
+		r.Sent = false
+		r.Outcome = "unavailable: alarm acknowledgement missing"
+		return
+	}
 	r.Sent, r.Outcome, r.RetryAt = true, "published via mail-alarm", time.Time{}
+}
+
+func acknowledgeStrandedAlarm(st *config.State, job config.MailAlarmJob) {
+	if job.Kind != strandedAlarmKind || st.Terminal == nil || st.Terminal.NoticeReport == nil {
+		return
+	}
+	r := st.Terminal.NoticeReport
+	if !r.Alarm || r.Since != job.Since {
+		return
+	}
+	if r.AlarmOwner == job.ID {
+		r.AlarmOwnerAck = job.ID
+	}
+	if r.AlarmLead == job.ID {
+		r.AlarmLeadAck = job.ID
+	}
 }
 
 // Cleared/replaced episodes cannot keep unsent incident jobs alive. An already
