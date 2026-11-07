@@ -1,12 +1,13 @@
 # Install the self-built command
 
-Apply [SKILL.md's command-resolution rule](../SKILL.md#command-resolution-and-installation)
-first. If Curator installed the skill (the project's `.agents/` command directory
-or Curator's install receipt indicates this), use project `.agents/bin/a2a`
-(`a2a.cmd` on Windows), then the manager's `global/bin`; refuse if neither exists
-or resolution is ambiguous. Never fall back to this self-built recipe or binary.
-See [managed installation and limits](command-installation.md) for that route.
-Otherwise, follow the self-built recipe below.
+- **Curator-managed:** If either directory exists — the project's `.agents/bin/` or the manager's `global/bin/` — use the managed route. The default manager home is `$HOME/.curator` (`$HOME/.curator/global/bin/`); a non-default manager home must be supplied explicitly. Test directory existence, not the `a2a` file; `.agents/` or `.agents/skills/a2a` alone is not evidence. Resolve project `.agents/bin/a2a` (`a2a.cmd` on Windows), then the manager's `global/bin/a2a` (`a2a.cmd` on Windows). Refuse if neither managed command is valid or resolution is ambiguous; never fall back to PATH lookup, a self-built binary or building one.
+- **Self-built:** Only when both directories are confirmed absent and the owner has authorized the self-built install recipe, follow that recipe and use its installed command path.
+- **Otherwise refuse:** If the manager home, directory existence or route is uncertain, or self-built recipe authorization is missing, refuse and ask the owner which route applies. Never default to building.
+
+Throughout this skill and its references, `a2a` is shorthand for the absolute installed command selected by this rule. Examples spelling `"$HOME/.local/bin/a2a"` use the self-built form; Curator-managed installs must substitute their resolved absolute command everywhere, including `--installed-command`.
+
+See [managed installation and limits](command-installation.md) for the managed
+route. Run the recipe below only after the self-built conditions above hold.
 
 After owner authorization, clone the repository (or use an existing checkout),
 then run the recipe below from that checkout. It works with Bash on macOS/Linux.

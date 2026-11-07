@@ -2,13 +2,15 @@
 
 Agent-facing summaries of the rules in docs/protocol.md, indexed from SKILL.md.
 
-Apply [SKILL.md's command-resolution rule](../SKILL.md#command-resolution-and-installation)
-before every command below. Examples use `a2a` as shorthand for the self-built
-installed command from [install.md](install.md). If Curator installed the skill
-(indicated by the project's `.agents/` command directory or Curator's install
-receipt), substitute project `.agents/bin/a2a` (`a2a.cmd` on Windows), then the
-manager's `global/bin`; refuse if neither exists or resolution is ambiguous,
-and never fall back to a self-built binary. Otherwise, follow the self-built recipe.
+Apply this command-resolution rule before every command below:
+
+- **Curator-managed:** If either directory exists — the project's `.agents/bin/` or the manager's `global/bin/` — use the managed route. The default manager home is `$HOME/.curator` (`$HOME/.curator/global/bin/`); a non-default manager home must be supplied explicitly. Test directory existence, not the `a2a` file; `.agents/` or `.agents/skills/a2a` alone is not evidence. Resolve project `.agents/bin/a2a` (`a2a.cmd` on Windows), then the manager's `global/bin/a2a` (`a2a.cmd` on Windows). Refuse if neither managed command is valid or resolution is ambiguous; never fall back to PATH lookup, a self-built binary or building one.
+- **Self-built:** Only when both directories are confirmed absent and the owner has authorized the self-built install recipe, follow that recipe and use its installed command path.
+- **Otherwise refuse:** If the manager home, directory existence or route is uncertain, or self-built recipe authorization is missing, refuse and ask the owner which route applies. Never default to building.
+
+Throughout this skill and its references, `a2a` is shorthand for the absolute installed command selected by this rule. Examples spelling `"$HOME/.local/bin/a2a"` use the self-built form; Curator-managed installs must substitute their resolved absolute command everywhere, including `--installed-command`.
+See [managed installation and limits](command-installation.md) or the
+[self-built install recipe](install.md) for the selected route.
 
 ## Deciding shared things: the advice process (protocol rule 27)
 
