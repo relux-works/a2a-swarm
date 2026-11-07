@@ -414,6 +414,9 @@ func (b *protocolOutput) Write(p []byte) (int, error) {
 func probeTerminalConsumer(ctx context.Context, path string, env []string) error {
 	ctx, cancel := context.WithTimeout(ctx, terminalConsumerProbeTimeout)
 	defer cancel()
+	// Negotiation deliberately bypasses credentials. Loading them here would
+	// expose secrets to a candidate child and run Keychain access/marker effects;
+	// the inherited-lock startup path handles transient readiness refusals.
 	cmd := exec.CommandContext(ctx, path, "bind", "--consumer-protocol")
 	cmd.Env = env
 	// No inherited lock or readiness descriptors. Kill the private probe group

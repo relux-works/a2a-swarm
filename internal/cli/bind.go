@@ -120,15 +120,17 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	if len(pos) != 0 {
 		return usagef("bind takes flags only")
 	}
+	// Refresh conveys re-exec ownership with the inherited lock descriptor.
+	// Route detached startup before any credential access.
+	if *run != "" {
+		return runBoundChild(ctx, a, *run, *lockFD)
+	}
 	s, err := a.session()
 	if err != nil {
 		return err
 	}
 	if err := refuseHostConsumer(s); err != nil {
 		return err
-	}
-	if *run != "" {
-		return runBoundChild(ctx, a, *run, *lockFD)
 	}
 	if *lockFD != 0 {
 		return usagef("consumer lock requires detached generation")
@@ -356,39 +358,50 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 
 func runBoundChild(ctx context.Context, a *App, generation string, inherited int) error {
 	reason := "startup unavailable"
-	defer func() { fmt.Fprintln(a.Stderr, "binding exit: "+reason) }()
-	var ready *os.File
-	if inherited == 0 {
-		ready = os.NewFile(3, "binding-ready")
-		if ready == nil {
-			return errors.New("missing bind startup pipe")
+	// Ordinary startup refusals historically returned before exit logging.
+	// Re-exec owns a live binding already, so its startup always logs an exit.
+	logExit := inherited != 0
+	defer func() {
+		if logExit {
+			fmt.Fprintln(a.Stderr, "binding exit: "+reason)
 		}
-		defer ready.Close()
-	}
-	s, err := a.session()
+	}()
+	s, err := a.boundChildSession(inherited)
 	if err != nil {
 		return err
 	}
-	return config.WithConsumerLock(s.paths, s.name, time.Now().Add(100*time.Millisecond), inherited, func(lock *os.File) error {
+	err = a.withBoundChildStartup(ctx, s, generation, inherited, func(s *session, initial config.TerminalBinding, lock *os.File) error {
+		logExit = true
+		var ready *os.File
+		if inherited == 0 {
+			ready = os.NewFile(3, "binding-ready")
+			if ready == nil {
+				return errors.New("missing bind startup pipe")
+			}
+			defer ready.Close()
+		}
 		refresh := newTerminalRefresh(ctx)
-		var initial config.TerminalBinding
+		// Retain the original control transaction around final authority, lease
+		// acquisition and readiness. Credentials may have taken minutes to recover.
 		err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+			if err := s.checkConnection(); err != nil {
+				return err
+			}
 			st, err := config.LoadState(s.paths, s.name)
 			if err != nil {
 				return err
 			}
 			b := st.Terminal
-			birth, err := tmuxwake.Birth(ctx, os.Getpid())
-			if err != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != birth || b.Host != machineLabel() {
+			if st.HostEnrollment != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != initial.DaemonBirth || b.Host != machineLabel() {
 				reason = "stale consumer"
-				return errors.New("binding stale consumer")
-			}
-			if err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
-				return err
+				return errBindingStaleConsumer
 			}
 			initial = *b
+			if err := a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
+				return err
+			}
 			if ready != nil {
-				if _, err = ready.WriteString("ready\n"); err != nil {
+				if _, err := ready.WriteString("ready\n"); err != nil {
 					return err
 				}
 				ready.Close()
@@ -405,6 +418,13 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 		reason, runErr = a.runTerminalWithRefresh(ctx, s, generation, initial, func() { refresh.poll(ctx, a, s, generation, lock) })
 		return runErr
 	})
+	if errors.Is(err, errBindingStaleConsumer) {
+		logExit = true
+		reason = "stale consumer"
+	} else if errors.Is(err, errStartupCredentialsUnavailable) {
+		reason = "startup credentials unavailable"
+	}
+	return err
 }
 
 func cmdUnbind(ctx context.Context, a *App, args []string) error {

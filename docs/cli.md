@@ -45,8 +45,8 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 - Production always invokes `/usr/bin/security`. Reads use `find-generic-password -s SERVICE -a FULL_ID -w` with stdout captured in a pipe; writes use `security -i` with the command on stdin. Helper stdout/stderr never goes to the terminal or errors. The subprocess environment is limited to PATH and C locale; credentials never enter its argv/environment. Interactive command lines at or beyond security's 4096-byte limit and control characters are refused.
 - New items use `-T /usr/bin/security` without `-U`; existing items use `-U` without `-T`. A duplicate create permits one relookup/update. Per-identity writers serialize; every write is read back exactly. External same-UID deletion may cause `-U` recreation with creator trust. No preservation of a deleted prior item/ACL is claimed; never `-A`, empty `-T`, ACL/partition-list changes or unlocking.
 - A repo-built Swift status companion runs before EVERY security invocation, including migration lookup/new/update/relookup/readback. It calls `SecKeychainOpen` and `SecKeychainGetStatus` without accessing items, stdin, ACLs or unlock. Both processes explicitly address the OS user's `~/Library/Keychains/login.keychain-db`; search-list/default targets and HOME overrides are unsupported. A test-only fixture seam selects the same explicit throwaway path in both processes.
-- The fixed companion path is `a2a-keychain-status` beside `os.Executable()` after symlink resolution. Never PATH or an environment override. Only stdout `unlocked\n` with exit 0 and empty stderr admits security. `locked`/3 and `error`/2 refuse; missing/nonexecutable/helper failure, timeout, extra text, unknown output or mismatched status refuse too. Production non-Darwin Keychain selection refuses; file mode remains available. See README for the local `swiftc`/ad-hoc signing build; installation is held. Portable Go tests use fake processes, including on Linux; the hosted Go workflow runs on self-hosted macOS and does not require Swift. The status APIs are available in the current SDK but deprecated since macOS 10.10.
-- Every probe/security call has a 5-second hard process-group deadline. Remaining group members are also killed synchronously when the leader exits early, whether they retain or close its pipes. Successful leader exit stays successful after cleanup; pipe-completion failures refuse and set cooldown independently of the leader exit status, including missing/duplicate statuses. Owned stdin/stdout/stderr copies must finish within a 100ms post-exit drain bound; unfinished pipes are closed and all copy loops are joined before return. Timeout/interaction failures persist a secret-free 0600 per-identity marker under 0700 `<config>/keychain-state/`. Probe locked/error/timeout also sets a host-wide marker, bound to kernel host UUID and target path. The 5-minute cooldown suppresses ALL probes/security for that identity, or all identities on that host for a host marker, across CLI processes sharing this config directory. A host lock serializes preflight/access and marker publication. Other hosts are unaffected by a host marker; identity markers remain identity-wide. Separate config directories do not share markers. Expiry permits a bounded fresh attempt; corrupt/unreadable/symlink/public markers refuse. Never delete markers to force a retry.
+- The fixed companion path is `a2a-keychain-status` beside `os.Executable()` after symlink resolution. Never PATH or an environment override. Only stdout `unlocked\n` with exit 0 and empty stderr admits security. `locked`/3 and `error`/2 refuse; missing/nonexecutable/helper failure, timeout, extra text, unknown output or mismatched status refuse too. Failure to resolve or launch the companion is local to that executable installation: it records neither identity nor host cooldown, so another correctly installed image of the same identity can proceed. Production non-Darwin Keychain selection refuses; file mode remains available. See README for the local `swiftc`/ad-hoc signing build; installation is held. Portable Go tests use fake processes, including on Linux; the hosted Go workflow runs on self-hosted macOS and does not require Swift. The status APIs are available in the current SDK but deprecated since macOS 10.10.
+- Every probe/security call has a 5-second hard process-group deadline. Remaining group members are also killed synchronously when the leader exits early, whether they retain or close its pipes. Successful leader exit stays successful after cleanup; pipe-completion failures refuse and set cooldown independently of the leader exit status, including missing/duplicate statuses. Owned stdin/stdout/stderr copies must finish within a 100ms post-exit drain bound; unfinished pipes are closed and all copy loops are joined before return. Timeout/interaction failures persist a secret-free 0600 per-identity marker under 0700 `<config>/keychain-state/`. A running probe returning locked/error, timing out, failing pipe completion/cleanup or refusing the exact protocol also sets a host-wide marker, bound to kernel host UUID and target path. The 5-minute cooldown suppresses ALL probes/security for that identity, or all identities on that host for a host marker, across CLI processes sharing this config directory. A host lock serializes preflight/access and marker publication. Other hosts are unaffected by a host marker; identity markers remain identity-wide. Separate config directories do not share markers. Expiry permits a bounded fresh attempt; corrupt/unreadable/symlink/public markers refuse. Refusals that set a cooldown and subsequent active-cooldown refusals include a closed `cause=TOKEN` and the UTC `retry after` deadline, without executable paths or helper output. Causes are `preflight_locked`, `preflight_error`, `preflight_timeout`, `preflight_io`, `preflight_refused`, `security_timeout`, `security_interaction` and `security_io`. Timestamp markers remain readable by older images; private `.reason` sidecars bind that closed cause to the marker deadline. Legacy or unreadable/unknown cause metadata projects `unknown` without bypassing the marker. Never delete markers to force a retry.
 - No-dialog operation is bounded to unlocked login Keychain plus an ACL trusting `/usr/bin/security`. Untrusted ACL and locking between probe and access remain accepted races. The first real sentinel left a dialog after child termination; A-lite prevents known-locked access. Reopen full helperA if the probe prompts/API is unavailable, host lock policy changes or a no-dialog domain is required. Fakes are not macOS UI proof. Phase 1 protects against file leaks, not same-UID impersonation; backups remain. Phase 2 broker, launcher-bound identity, isolated workers and revocation are deferred.
 
 ## Commands
@@ -1591,7 +1591,14 @@ state on every poll. The former `changed_connection` token is removed: an invali
 active connection fences diagnostic writes as well as refresh, so its last
 persisted observation remains. Pinning failures with a still-valid active
 connection use `changed_pin_unavailable`.
-`unavailable` covers absent/older/stopped consumers or unknown telemetry.
+After re-exec, `startup_keychain_cooldown`, `startup_keychain_locked`,
+`startup_keychain_unavailable` and `startup_companion_unavailable` name transient
+credential refusals while the same consumer owns its binding and retries.
+`startup_ready` records credential recovery before the next executable observation.
+During a transient credential refusal, `bind status` can project these diagnostics
+from validated local metadata without an authenticated session; permanent metadata
+or identity refusals still fail. `unavailable` covers absent/older/stopped consumers
+or unknown telemetry.
 Only an updated consumer can record these observations; status reads do not
 probe the executable or trigger replacement. Persistence is best effort under
 the state lock; the token has no screen content, paths, argv or authority.
@@ -1911,7 +1918,7 @@ bindings, owner/target exit, cancellation and startup failure; it never contains
 run exit logging and remain distinguishable from a handled exit by missing evidence. Binding, reservations and event-ID fences live in `state/NAME.json`.
 The retry line is `binding consumer unavailable; bounded retry cause=CAUSE`, where CAUSE is exactly one of
 `sync`, `state`, `lock`, `lease`, `connection` or `dispatch`. It identifies the failed cycle boundary (including ingest/persistence for `sync`),
-with recognized lock contention reported as `lock`; it never includes underlying error text.
+with recognized lock contention reported as `lock`; it never includes underlying error text. Re-exec startup credential backoff uses the same line with `keychain_cooldown`, `keychain_locked`, `keychain_unavailable` or `companion_unavailable` instead.
 Local lease/state/dispatch failures also back off and retry; a conflicting lease is never stolen. Only unbind, retirement, or a confirmed dead/replaced
 target ends the consumer. Launchers creating a new Codex session must scrub an inherited `CODEX_THREAD_ID` along with old session variables, so the
 new runtime exports its own metadata; this command does not edit launcher configuration.
@@ -1955,6 +1962,18 @@ The control lock is released before exec; the existing consumer flock is inherit
 without a release/reacquire gap. The resumed image validates the same PID/birth/generation, skips the already-used startup pipe, and starts with
 fresh idle qualification. Its loaded image becomes the baseline, preventing exec loops. Arguments are rebuilt from the selected connection pin,
 identity, generation and inherited lock descriptor; the allowlisted environment above is reapplied.
+The inherited descriptor identifies a re-exec start. That image adopts the same consumer lock before loading credentials.
+Transient cooldown, locked-Keychain, other typed Keychain availability/interaction refusals and unavailable-companion failures
+retry with exponential backoff from the binding's interval up to its retry-max (at most 5 minutes per sleep), for at most
+30 minutes from the first transient refusal, or until recovery, cancellation or loss of binding/connection authority.
+The final sleep is capped by the remaining startup budget. At the deadline, startup records the closed status token
+`startup_credentials_unavailable`, logs `binding exit: startup credentials unavailable`, and exits, releasing the consumer
+lock through the normal exit path so a later hook-started image can take over.
+Until then the lock, PID, birth and generation stay owned; it does not spawn a replacement.
+No lease renewal, pane action or authenticated request runs before credentials recover. Retained notice evidence still ages into
+stranded suspicion and queues the existing owner/lead alarm locally. Alarm delivery needs credentials and resumes after recovery;
+missing alarm destinations retain the ordinary own-room reporting fallback. Missing credentials/items, identity mismatch and other
+permanent refusals still end startup. A start without an inherited lock keeps its immediate credential-refusal behavior.
 
 Before exec, a short-lived candidate subprocess runs `bind --consumer-protocol` with the same allowlisted environment and no
 inherited lock/readiness descriptors. It must exit successfully within a 10-second deadline (plus at most 100ms pipe drain), emit
@@ -1967,6 +1986,10 @@ poll, at most once per 60 seconds (cooldown starts when the previous attempt com
 allows healthy startup on heavily loaded hosts. A hanging candidate can hold one consumer delivery cycle for that long,
 plus the 100ms pipe drain, at most once per 60 seconds for that fingerprint. Its process group is killed on timeout and it
 never reaches exec. A successful probe is also cached for that fingerprint.
+This probe deliberately consults neither identity credentials nor secret stores. Credential readiness would load secrets into the
+candidate child and invoke Keychain preflight/access and cooldown-state effects, breaking the existing negotiation boundary.
+It therefore remains protocol-only; transient credential readiness races after successful exec are handled by the resumed startup
+retry above. There is no effect-free candidate credential-load guarantee.
 
 A successful resumed consumer logs exactly `binding re-exec: executable changed` in `state/NAME.binding.log`. If exec fails, the old image keeps
 running and logs exactly `binding re-exec refused: exec failed`, once for that file fingerprint. It retries that file only after identity, metadata

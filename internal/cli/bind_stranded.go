@@ -20,6 +20,10 @@ var errIncidentUnchanged = errors.New("incident report unchanged")
 // Dispatch owns the control lock during observation; the state lock serializes
 // report writers and retirement during each bounded network operation.
 func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, generation string) error {
+	return a.reportStrandedTerminalNoticeMode(ctx, s, generation, true)
+}
+
+func (a *App) reportStrandedTerminalNoticeMode(ctx context.Context, s *session, generation string, credentialsReady bool) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -61,6 +65,16 @@ func (a *App) reportStrandedTerminalNotice(ctx context.Context, s *session, gene
 		}
 		if r.Alarm {
 			reportErr = queueStrandedAlarm(s, st, a.Now())
+			r.RetryAt = a.Now().Add(b.RetryMax)
+			return nil
+		}
+		if !credentialsReady {
+			// Persist the usual owner/lead jobs now; authenticated delivery resumes
+			// after credential recovery. Missing routes retain the own-room fallback.
+			reportErr = queueStrandedAlarm(s, st, a.Now())
+			if !r.Alarm {
+				r.Outcome = "unavailable: credentials"
+			}
 			r.RetryAt = a.Now().Add(b.RetryMax)
 			return nil
 		}
@@ -142,7 +156,7 @@ func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 	}
 	switch b.NoticeReport.Outcome {
 	case "unavailable: alarm acknowledgement missing", "unavailable: invalid alarm state", "queued via mail-alarm", "published via mail-alarm", "unavailable: alarm destination missing", "unavailable: invalid alarm config", "pending", "published", "unavailable: system incident report failed",
-		"incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed":
+		"incident route not configured", "unavailable: credentials", "unavailable: incident route", "unavailable: pinned incident route changed":
 		return b.NoticeReport.Outcome
 	default:
 		return "unavailable: invalid report state"
