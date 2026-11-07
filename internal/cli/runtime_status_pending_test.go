@@ -145,10 +145,24 @@ func TestRuntimeBindStatusPendingDeadline(t *testing.T) {
 					if strings.Contains(string(p), "native consumer armed generation=") {
 						armed = true
 						st := e.state("alice")
-						if st.Runtime.ConsumerPID != os.Getpid() || st.Runtime.ConsumerGeneration != st.Runtime.Generation ||
-							st.Liveness != nil || st.RuntimeProfilePending == nil || !reflect.DeepEqual(st.OwnStatusWrite, fence) ||
-							e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}") != puts {
-							t.Fatal("consumer did not arm with retained fence/profile and no ACK/PUT")
+						if st.Runtime.ConsumerPID != os.Getpid() {
+							t.Fatalf("armed consumer PID = %d, want %d", st.Runtime.ConsumerPID, os.Getpid())
+						}
+						if st.Runtime.ConsumerGeneration != st.Runtime.Generation {
+							t.Fatalf("armed consumer generation = %q, want %q", st.Runtime.ConsumerGeneration, st.Runtime.Generation)
+						}
+						if st.Liveness != nil {
+							t.Fatalf("consumer arming fabricated acknowledged liveness: %+v", st.Liveness)
+						}
+						if st.RuntimeProfilePending == nil {
+							t.Fatal("consumer arming lost the pending bind profile")
+						}
+						// JSON persistence omits the seed's monotonic clock reading.
+						if st.OwnStatusWrite == nil || st.OwnStatusWrite.Token != fence.Token || !st.OwnStatusWrite.Until.Equal(fence.Until) {
+							t.Fatalf("consumer arming changed the fence: got %+v, want %+v", st.OwnStatusWrite, fence)
+						}
+						if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != puts {
+							t.Fatalf("consumer arming sent a PUT: count = %d, want %d", got, puts)
 						}
 						assertRuntimePendingProfile(t, st)
 						if clear == "before-heartbeat" {
@@ -201,9 +215,21 @@ func TestRuntimeBindStatusPendingDeadline(t *testing.T) {
 				if start != "watch" {
 					st := e.state("alice")
 					assertRuntimePendingProfile(t, st)
-					if armed || st.Runtime.ConsumerPID != 0 || st.Liveness != nil ||
-						!reflect.DeepEqual(st.OwnStatusWrite, fence) || e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}") != puts {
-						t.Fatal("non-watch bind started a consumer, changed fence or fabricated ACK")
+					if armed {
+						t.Fatal("non-watch bind announced an armed consumer")
+					}
+					if st.Runtime.ConsumerPID != 0 {
+						t.Fatalf("non-watch bind recorded consumer PID %d", st.Runtime.ConsumerPID)
+					}
+					if st.Liveness != nil {
+						t.Fatalf("non-watch bind fabricated acknowledged liveness: %+v", st.Liveness)
+					}
+					// Compare the entire persisted fence without monotonic clock data.
+					if st.OwnStatusWrite == nil || st.OwnStatusWrite.Token != fence.Token || !st.OwnStatusWrite.Until.Equal(fence.Until) {
+						t.Fatalf("non-watch bind changed the fence: got %+v, want %+v", st.OwnStatusWrite, fence)
+					}
+					if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != puts {
+						t.Fatalf("non-watch bind sent a PUT: count = %d, want %d", got, puts)
 					}
 					generation := st.Runtime.Generation
 					if start == "later-bind-watch" {
@@ -322,6 +348,10 @@ func TestRuntimePendingProfileAcknowledgement(t *testing.T) {
 						body = `{"errcode":"M_FORBIDDEN","error":"refused"}`
 					}
 					resp.Body = io.NopCloser(strings.NewReader(body))
+					// Keep framing consistent so rejection reaches the intended
+					// Matrix error or missing event_id, rather than a length mismatch.
+					resp.ContentLength = int64(len(body))
+					resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 				case "new-generation", "new-profile":
 					_, updateErr := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 						if mode == "new-generation" {
