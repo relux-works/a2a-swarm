@@ -46,7 +46,8 @@ func terminalRefreshCooldownStatus(last string) string {
 
 func safeTerminalRefreshStatus(token string) string {
 	switch token {
-	case "current", "unavailable", "changed_stabilizing", "changed_cooldown",
+	case "startup_ready", "startup_keychain_cooldown", "startup_keychain_locked", "startup_keychain_unavailable", "startup_companion_unavailable",
+		"current", "unavailable", "changed_stabilizing", "changed_cooldown",
 		"changed_pending_attempt", "changed_reservation", "changed_lease",
 		"changed_authority", "changed_invalid_notification", "changed_safety_unavailable",
 		"changed_probe_unavailable", "changed_protocol_incompatible", "changed_exec_failed",

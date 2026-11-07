@@ -112,23 +112,68 @@ func (k *keychainStore) checkMarker(path, uid string) error {
 		return fmt.Errorf("keychain cooldown state invalid for %s", uid)
 	}
 	if k.clock().UnixNano() < until {
-		return fmt.Errorf("keychain cooldown active for %s; retry after %s", uid, time.Unix(0, until).UTC().Format(time.RFC3339))
+		return &transientCredentialError{reason: "keychain_cooldown", message: fmt.Sprintf("keychain cooldown active for %s; cause=%s; retry after %s", uid, keychainMarkerReason(path, until), time.Unix(0, until).UTC().Format(time.RFC3339))}
 	}
 	return nil
 }
 
-func (k *keychainStore) recordCooldown(uid string) error {
-	return k.recordMarker(k.identityPath(uid) + ".cooldown")
+func (k *keychainStore) recordCooldown(uid string, reason ...string) error {
+	return k.recordMarker(k.identityPath(uid)+".cooldown", reason...)
 }
 
-func (k *keychainStore) recordMarker(path string) error {
+// Keep the timestamp marker readable by older images. A private sidecar carries
+// only a closed failure class; legacy/malformed diagnostic data projects unknown.
+func keychainMarkerReason(path string, until int64) string {
+	f, err := openKeychainState(path + ".reason")
+	if err != nil {
+		return "unknown"
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 65))
+	if err != nil || len(data) > 64 {
+		return "unknown"
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 2 || fields[0] != strconv.FormatInt(until, 10) {
+		return "unknown"
+	}
+	return safeKeychainFailure(fields[1])
+}
+
+func safeKeychainFailure(reason string) string {
+	switch reason {
+	case "preflight_locked", "preflight_error", "preflight_timeout", "preflight_io", "preflight_refused",
+		"security_timeout", "security_interaction", "security_io":
+		return reason
+	default:
+		return "unknown"
+	}
+}
+
+func (k *keychainStore) recordMarker(path string, reason ...string) error {
+	cause := "unknown"
+	if len(reason) != 0 {
+		cause = safeKeychainFailure(reason[0])
+	}
+	return writeKeychainCooldown(path, cause, k.clock().Add(k.cooldownDuration()))
+}
+
+func writeKeychainCooldown(path, cause string, deadline time.Time) error {
+	until := strconv.FormatInt(deadline.UnixNano(), 10)
+	if err := writeKeychainMarker(path+".reason", until+" "+safeKeychainFailure(cause)); err != nil {
+		return err
+	}
+	return writeKeychainMarker(path, until)
+}
+
+func writeKeychainMarker(path, value string) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".cooldown-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
 	if err = f.Chmod(0o600); err == nil {
-		_, err = fmt.Fprintln(f, k.clock().Add(k.cooldownDuration()).UnixNano())
+		_, err = fmt.Fprintln(f, value)
 	}
 	if err == nil {
 		err = f.Sync()
@@ -190,13 +235,26 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 		return "", err
 	}
 	if err := k.preflight(ctx); err != nil {
+		var refusal *keychainPreflightError
+		if !errors.As(err, &refusal) {
+			return "", err
+		}
+		if refusal.local {
+			// Installation/launch failures say nothing about this identity's Keychain.
+			return "", &transientCredentialError{reason: "companion_unavailable", message: fmt.Sprintf("keychain preflight failed for %s; companion unavailable; no cooldown recorded", uid)}
+		}
 		// Persist host first: other identities must not probe a known locked host.
-		herr := k.recordMarker(host + ".cooldown")
-		ierr := k.recordCooldown(uid)
+		until := k.clock().Add(k.cooldownDuration())
+		herr := writeKeychainCooldown(host+".cooldown", refusal.cause, until)
+		ierr := writeKeychainCooldown(k.identityPath(uid)+".cooldown", refusal.cause, until)
 		if herr != nil || ierr != nil {
 			return "", fmt.Errorf("keychain preflight failed for %s; cannot persist cooldown; repair private state", uid)
 		}
-		return "", fmt.Errorf("keychain preflight failed for %s; cooldown recorded", uid)
+		reason := "keychain_unavailable"
+		if refusal.cause == "preflight_locked" {
+			reason = "keychain_locked"
+		}
+		return "", &transientCredentialError{reason: reason, message: fmt.Sprintf("keychain preflight failed for %s; cooldown recorded; cause=%s; retry after %s", uid, refusal.cause, until.UTC().Format(time.RFC3339))}
 	}
 	ctx, cancel := context.WithTimeout(ctx, k.timeoutDuration())
 	defer cancel()
@@ -215,10 +273,18 @@ func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...s
 	}
 	err = runBoundSecurityProcess(cmd)
 	if ctx.Err() != nil || interactionFailure(err) {
-		if e := k.recordCooldown(uid); e != nil {
+		cause := "security_interaction"
+		switch {
+		case ctx.Err() != nil:
+			cause = "security_timeout"
+		case errors.Is(err, exec.ErrWaitDelay), errors.Is(err, errSecurityProcessIO), errors.Is(err, errSecurityProcessCleanup):
+			cause = "security_io"
+		}
+		until := k.clock().Add(k.cooldownDuration())
+		if e := writeKeychainCooldown(k.identityPath(uid)+".cooldown", cause, until); e != nil {
 			return "", fmt.Errorf("keychain interaction failed for %s; cannot persist cooldown; stop and repair private state", uid)
 		}
-		return "", fmt.Errorf("keychain interaction failed or timed out for %s; cooldown recorded", uid)
+		return "", &transientCredentialError{reason: "keychain_unavailable", message: fmt.Sprintf("keychain interaction failed or timed out for %s; cooldown recorded; cause=%s; retry after %s", uid, cause, until.UTC().Format(time.RFC3339))}
 	}
 	if err != nil {
 		var ee *exec.ExitError

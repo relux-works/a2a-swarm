@@ -57,6 +57,7 @@ type App struct {
 
 	// keychain is a package-test-only factory. Production stays pinned to security.
 	keychain              func(config.Paths) *keychainStore
+	bindStartupWait       func(context.Context, time.Duration) error // deterministic startup retry seam
 	beforeCredentialScrub func() error
 	ctx                   context.Context
 
@@ -493,6 +494,10 @@ func (a *App) session() (*session, error) {
 
 // sessionAs opens the session of name (already validated and guarded).
 func (a *App) sessionAs(name string) (*session, error) {
+	return a.sessionAsMode(name, false)
+}
+
+func (a *App) sessionAsMode(name string, metadataOnly bool) (*session, error) {
 	p, mx, err := a.loadMatrix()
 	if err != nil {
 		return nil, err
@@ -501,11 +506,19 @@ func (a *App) sessionAs(name string) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	creds, err := a.loadCredentials(a.context(), p, name)
+	var creds config.Credentials
+	if metadataOnly {
+		creds, err = a.credentialMetadata(p, name)
+	} else {
+		creds, err = a.loadCredentials(a.context(), p, name)
+	}
 	if err != nil {
 		return nil, err
 	}
 	a.secrets.Add(creds.AccessToken, creds.Password)
+	if metadataOnly {
+		creds.AccessToken, creds.Password = "", ""
+	}
 	base := creds.Homeserver
 	if base == "" {
 		base = mx.URL
@@ -556,6 +569,9 @@ func (a *App) sessionAs(name string) (*session, error) {
 		c.ProtectedRoom = selected.AdminRegistration.RoomID
 	}
 	c.BeforeRequest = s.checkBinding
+	if metadataOnly {
+		c.BeforeRequest = func() error { return errors.New("credentials unavailable; metadata session only") }
+	}
 	s.installRedactionCache()
 	return s, nil
 }

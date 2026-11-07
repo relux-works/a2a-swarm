@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -10,6 +11,52 @@ import (
 )
 
 const envSecretStore = "A2A_SECRET_STORE"
+
+// Only explicitly transient store refusals permit a resumed consumer to wait.
+// Missing items, invalid metadata and revoked credentials never acquire this type.
+type transientCredentialError struct {
+	reason  string
+	message string
+}
+
+func (e *transientCredentialError) Error() string { return e.message }
+
+func transientCredentialReason(err error) string {
+	var refusal *transientCredentialError
+	if errors.As(err, &refusal) {
+		switch refusal.reason {
+		case "keychain_cooldown", "keychain_locked", "keychain_unavailable", "companion_unavailable":
+			return refusal.reason
+		}
+	}
+	return ""
+}
+
+// Metadata sessions can observe their own binding without opening a secret store.
+// They cannot issue authenticated requests or grant terminal delivery authority.
+func (a *App) sessionMetadata() (*session, error) {
+	name, err := a.identity()
+	if err != nil {
+		return nil, err
+	}
+	return a.sessionAsMode(name, true)
+}
+
+func (a *App) credentialMetadata(p config.Paths, name string) (config.Credentials, error) {
+	if _, err := a.selectedStore(); err != nil {
+		return config.Credentials{}, err
+	}
+	if c, err := a.selectedConnection(); err != nil {
+		return config.Credentials{}, err
+	} else if c != nil {
+		return a.namedMetadata(p, name)
+	}
+	c, err := config.LoadCredentialMetadata(p, name, a.human)
+	if err == nil {
+		err = validateCredentialIdentity(c, name)
+	}
+	return c, err
+}
 
 func (a *App) selectedStore() (string, error) {
 	c, e := a.selectedConnection()

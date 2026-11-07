@@ -120,15 +120,17 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	if len(pos) != 0 {
 		return usagef("bind takes flags only")
 	}
+	// Refresh conveys re-exec ownership with the inherited lock descriptor.
+	// Route detached startup before any credential access.
+	if *run != "" {
+		return runBoundChild(ctx, a, *run, *lockFD)
+	}
 	s, err := a.session()
 	if err != nil {
 		return err
 	}
 	if err := refuseHostConsumer(s); err != nil {
 		return err
-	}
-	if *run != "" {
-		return runBoundChild(ctx, a, *run, *lockFD)
 	}
 	if *lockFD != 0 {
 		return usagef("consumer lock requires detached generation")
@@ -365,30 +367,29 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 		}
 		defer ready.Close()
 	}
-	s, err := a.session()
-	if err != nil {
-		return err
-	}
-	return config.WithConsumerLock(s.paths, s.name, time.Now().Add(100*time.Millisecond), inherited, func(lock *os.File) error {
+	return a.withBoundChildSession(ctx, generation, inherited, func(s *session, initial config.TerminalBinding, lock *os.File) error {
 		refresh := newTerminalRefresh(ctx)
-		var initial config.TerminalBinding
+		// Retain the original control transaction around final authority, lease
+		// acquisition and readiness. Credentials may have taken minutes to recover.
 		err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+			if err := s.checkConnection(); err != nil {
+				return err
+			}
 			st, err := config.LoadState(s.paths, s.name)
 			if err != nil {
 				return err
 			}
 			b := st.Terminal
-			birth, err := tmuxwake.Birth(ctx, os.Getpid())
-			if err != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != birth || b.Host != machineLabel() {
+			if st.HostEnrollment != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != initial.DaemonBirth || b.Host != machineLabel() {
 				reason = "stale consumer"
 				return errors.New("binding stale consumer")
 			}
-			if err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
+			initial = *b
+			if err := a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
 				return err
 			}
-			initial = *b
 			if ready != nil {
-				if _, err = ready.WriteString("ready\n"); err != nil {
+				if _, err := ready.WriteString("ready\n"); err != nil {
 					return err
 				}
 				ready.Close()

@@ -165,6 +165,9 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		return usagef("bind status takes only --json")
 	}
 	s, err := a.session()
+	if transientCredentialReason(err) != "" {
+		s, err = a.sessionMetadata()
+	}
 	if err != nil {
 		return err
 	}
