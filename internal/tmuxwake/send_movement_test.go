@@ -76,7 +76,14 @@ func (f *terminalFixture) render(options map[string]any) {
 // Pure captured-screen/key tables cover the remaining neighboring refusals. These synthetic fixtures do not prove a live UI cause.
 func TestBoundSendComposerMovement(t *testing.T) {
 	for _, runtime := range []string{"claude", "claude-named", "claude-fallback", "codex"} {
-		for _, mode := range []string{"valid", "column", "cursor", "cursor-row", "pre-cursor", "width", "foreign", "dialog"} {
+		modes := []string{"valid", "column", "cursor", "cursor-row", "pre-cursor", "width", "foreign", "dialog"}
+		// Row-only pre-type movement keeps the cursor on the new empty
+		// composer, isolating strict key equality from cursor rejection.
+		// Empty post-type rendering must retain AwaitingRender and send no Enter.
+		if runtime == "codex" {
+			modes = append(modes, "pre-row", "pre-row-down", "empty")
+		}
+		for _, mode := range modes {
 			if (runtime == "codex" || runtime == "claude-fallback") && (mode == "registry-busy" || mode == "status" || mode == "timestamp") {
 				continue
 			}

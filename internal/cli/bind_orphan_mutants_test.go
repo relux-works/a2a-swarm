@@ -25,6 +25,14 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 	type plant struct{ name, file, old, next, killer, positive string }
 	const admission = "TestTerminalDispatchIdleQualification"
 	plants := []plant{
+		{"codex-indented-foreign-guard-removed", "tmuxwake/screen.go", `if trimmed != line && (trimmed == "›" || strings.HasPrefix(trimmed, "› ") || strings.HasPrefix(trimmed, "›\u00a0")) && !(fixedNotice.MatchString(owned) && strings.TrimRight(trimmed, " ") == "› "+owned) {`, `if trimmed != line && false {`, "TestCodexIndentedForeignGuard/foreign", "TestCodexIndentedForeignGuard/owned"},
+		{"pretype-row-normalized", "tmuxwake/send_result.go", `keyMatches := r.Key == expected`, `preKey := r.Key; preKey.ComposerRow = expected.ComposerRow; keyMatches := preKey == expected`, "TestBoundSendComposerMovement/codex/pre-row", "TestBoundSendComposerMovement/codex/valid"},
+
+		{"registry-busy-key-admitted", "tmuxwake/readiness.go", `(k.RegistryStatus == "idle" || k.RegistryStatus == "shell")`, `(k.RegistryStatus == "idle" || k.RegistryStatus == "shell" || k.RegistryStatus == "busy")`, "TestOwnedNoticeEligibilityNeighbors/registry_named/registry-busy", "TestOwnedNoticeEligibilityNeighbors/registry_named/owned"},
+		{"recovery-filled-position-ignored", "cli/bind_resume.go", `(b.NoticePosition == nil || b.NoticePosition.Row == k.ComposerRow && b.NoticePosition.Column == k.ComposerColumn)`, `true`, "TestNoticeOriginNeighbors/codex/both/moved-again", "TestNoticeOriginNeighbors/codex/both/recorded"},
+
+		{"recovery-codex-hint-ignored", "tmuxwake/readiness.go", `t.Target.Runtime == "codex" && t.NoticePosition == nil && !b.FooterHint`, `false`, "TestTerminalRecoveryFilledPosition/codex/false/both/crash", "TestTerminalRecoveryFilledPosition/codex/false/both/recorded"},
+
 		{"owned-column-normalization-removed", "tmuxwake/send_result.go", `current.ComposerColumn = expected.ComposerColumn`, `// column normalization removed`, "TestBoundSendComposerMovement/claude-named/column", "TestBoundSendComposerMovement/claude-named/valid"},
 		{"owned-cursor-restriction-restored", "tmuxwake/readiness.go", `(parserNotice == "" || b.Text != parserNotice) && (x != b.Column || y != b.Row || x2 != x || y2 != y)`, `(x != b.Column || y != b.Row || x2 != x || y2 != y)`, "TestBoundSendComposerMovement/codex/cursor", "TestBoundSendComposerMovement/codex/valid"},
 		{"owned-recovery-origin-bypass", "cli/bind_resume.go", `func sameNoticeOrigin(b config.TerminalBinding, k tmuxwake.ReadinessKey) bool {`, `func sameNoticeOrigin(b config.TerminalBinding, k tmuxwake.ReadinessKey) bool { if b.NoticeCount==1 { return true };`, "TestTerminalOwnedNoticeRecovery/codex/width", "TestTerminalOwnedNoticeRecovery/codex/valid"},
@@ -76,9 +84,9 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"registry-idle-scope-cas", "cli/bind_readiness.go", `st.Terminal.Stopped || !sameTerminalScope(*st.Terminal, b) ||`, `st.Terminal.Stopped || (!sameTerminalScope(*st.Terminal, b) && false) ||`, "TestReadinessIdleCAS/root", "TestReadinessIdleCAS/valid"},
 		// Before ten minutes, partial/untyped journals without typing authority
 		// remain unknown; aged retained fixed notices are independently suspected.
-		// Partial selectors remain controls for unrelated admission plants. Source only: no campaign implied.
-		{"detect-partial-as-orphan", "cli/bind_notice.go", `len(b.AttemptIDs) == 0`, `len(b.AttemptIDs) <= 1`, "TestTerminalNoticeDetection/partial", admission + "/none"},
-		{"detect-unowned-draft", "cli/bind_notice.go", `b.Typed && b.NoticeCount > 0`, `(b.Typed && b.NoticeCount > 0 || !b.Typed && b.NoticeCount == 0)`, "TestTerminalNoticeDetection/no-journal", admission + "/none"},
+		// Legacy eligibility plants use no-origin neighbors so pending cannot mask them.
+		{"detect-partial-as-orphan", "cli/bind_notice.go", `len(b.AttemptIDs) == 0`, `len(b.AttemptIDs) <= 1`, "TestNoticeDetectionGateNeighbors/partial", "TestNoticeDetectionGateNeighbors/valid"},
+		{"detect-unowned-draft", "cli/bind_notice.go", `b.Typed && b.NoticeCount > 0`, `(b.Typed && b.NoticeCount > 0 || !b.Typed && b.NoticeCount == 0)`, "TestNoticeDetectionGateNeighbors/no-journal", "TestNoticeDetectionGateNeighbors/valid"},
 		{"unknown-silently-clear", "cli/bind_notice.go", `n.PossiblyOrphaned = nil`, `n.PossiblyOrphaned = nil; if n.Since!="" { v:=false; n.PossiblyOrphaned=&v }`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
 		{"since-refreshed-count-one", "cli/bind_notice.go", `if n.Since == "" {`, `if n.Since == "" || b.NoticeCount==1 {`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
 		{"empty-reconcile-count-one-omission", "cli/bind.go", `observation == "empty" && b.Typed && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) && len(b.AttemptIDs) < b.NoticeCount`, `observation == "empty" && b.Typed && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) && len(b.AttemptIDs) < b.NoticeCount && b.NoticeCount!=1`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
@@ -107,9 +115,22 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 		{"lease-foreign-holder-exemption", "cli/bind.go", `l.Holder != b.SessionID`, `l.Holder != b.SessionID && l.Holder!="another-session"`, "TestTerminalFreshAuthorityGates/foreign-lease", admission + "/none"},
 		{"binding-owner-one-exemption", "cli/bind.go", `if !ownTerminalTarget(b, b.Target) {`, `if !ownTerminalTarget(b, b.Target) && b.OwnerPID!=b.Target.OwnerPID+1 {`, "TestTerminalFreshAuthorityGates/binding-owner", admission + "/none"},
 		{"rate-one-exemption", "cli/bind.go", `if len(reservations) >= b.MaxWakes {`, `if len(reservations) >= b.MaxWakes && b.MaxWakes!=1 {`, "TestTerminalFreshAuthorityGates/rate", admission + "/none"},
-		{"typed-fence-detection-exemption", "cli/bind_notice.go", `b.Typed && b.NoticeCount > 0`, `(b.Typed || b.NoticeCount==1) && b.NoticeCount > 0`, "TestTerminalNoticeDetection/untyped", admission + "/none"},
+		{"typed-fence-detection-exemption", "cli/bind_notice.go", `b.Typed && b.NoticeCount > 0`, `(b.Typed || b.NoticeCount==1) && b.NoticeCount > 0`, "TestNoticeDetectionGateNeighbors/untyped", "TestNoticeDetectionGateNeighbors/valid"},
 		{"journal-count-two-exemption", "cli/bind_notice.go", `b.Notice != tmuxwake.Notice(b.NoticeCount)`, `b.Notice != tmuxwake.Notice(b.NoticeCount) && b.NoticeCount!=2`, "TestTerminalNoticeDetection/count", admission + "/none"},
-		{"fully-pruned-one-omitted", "cli/bind_notice.go", `len(b.AttemptIDs) == 0`, `len(b.AttemptIDs) == 0 && b.NoticeCount!=1`, "TestTerminalNoticeDetection/suspected", admission + "/none"},
+		{"fully-pruned-one-omitted", "cli/bind_notice.go", `len(b.AttemptIDs) == 0`, `len(b.AttemptIDs) == 0 && b.NoticeCount!=1`, "TestNoticeDetectionGateNeighbors/valid-single", "TestNoticeDetectionGateNeighbors/valid"},
+	}
+
+	// Each policy plant must cross the observed inspection boundary; downstream
+	// refusal, a compiler failure or a canceled process is not a successful kill.
+	for _, gate := range []struct{ name, old string }{
+		{"not-typed", "!b.TypingStarted"}, {"zero-count", "b.NoticeCount <= 0"}, {"invalid-count", "b.Notice != tmuxwake.Notice(b.NoticeCount)"},
+		{"missing-token", `b.NotificationToken == ""`}, {"interval", "b.Interval < time.Second"},
+		{"retry-short", "b.RetryMax < b.Interval"}, {"retry-long", "b.RetryMax > 5*time.Minute"},
+		{"retry-cap", "b.Retried"}, {"retry-delay", "now.Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax)))"},
+		{"cooldown", "now.Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax)))"},
+		{"budget", "!noticeRecoveryBudget(b, now)"},
+	} {
+		plants = append(plants, plant{"recovery-policy-" + gate.name, "cli/bind_resume.go", gate.old, "false", "TestNoticeRecoveryPolicyHeld/" + gate.name, "TestNoticeRecoveryPolicyHeld/valid"})
 	}
 
 	root, err := filepath.Abs("../..")
@@ -159,7 +180,7 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			if !strings.Contains(string(data), p.old) {
 				t.Fatal("mutation anchor missing")
 			}
-			if p.name == "orphan-space-lookalike-erase" && strings.Count(string(data), p.old) != 1 {
+			if (p.name == "orphan-space-lookalike-erase" || p.name == "codex-indented-foreign-guard-removed" || p.name == "pretype-row-normalized") && strings.Count(string(data), p.old) != 1 {
 				t.Fatal("observation mutation anchor ambiguous")
 			}
 			// Narrow the same forbidden identity at both admission and locked
@@ -249,9 +270,19 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 			switch strings.Split(p.killer, "/")[0] {
 			case "TestRegistryQualifiedSchemas", "TestBoundReadinessRoutes":
 				intended = "got "
+			case "TestOwnedNoticeEligibilityNeighbors":
+				intended = "wrong eligibility"
+			case "TestTerminalRecoveryFilledPosition":
+				intended = "geometry/hint refusal spent key or retry"
+			case "TestNoticeOriginNeighbors":
+				intended = "wrong origin constraint"
+			case "TestCodexIndentedForeignGuard":
+				intended = "indented foreign prompt admitted transcript"
+			case "TestNoticeRecoveryPolicyHeld":
+				intended = "policy inspection boundary bypassed"
 			case "TestBoundSendComposerMovement":
 				intended = "row movement refused"
-				if strings.HasSuffix(p.killer, "/width") {
+				if strings.HasSuffix(p.killer, "/width") || strings.HasSuffix(p.killer, "/pre-row") {
 					intended = "refusal input effects"
 				}
 			case "TestTerminalOwnedNoticeRecovery":
@@ -303,7 +334,7 @@ func TestTerminalOrphanNarrowingPlants(t *testing.T) {
 				intended = "first recovery idle glimpse typed/reserved"
 			case "TestTerminalFreshAuthorityGates":
 				intended = "fresh authority gate admitted"
-			case "TestTerminalNoticeDetection":
+			case "TestNoticeDetectionGateNeighbors", "TestTerminalNoticeDetection":
 				intended = "notice detection mismatch"
 				if p.name == "since-refreshed-count-one" {
 					intended = "since changed without fresh clear"

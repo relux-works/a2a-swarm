@@ -23,7 +23,7 @@ func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 	for _, runtime := range []string{"codex", "claude", "claude-named"} {
 		modes := []string{"restart", "foreign", "dialog"}
 		if runtime == "codex" {
-			modes = append(modes, "valid", "more-mail", "at-budget", "width")
+			modes = append(modes, "valid", "more-mail", "at-budget", "width", "prompt-foreign")
 		}
 		for _, mode := range modes {
 			t.Run(runtime+"/"+mode, func(t *testing.T) {
@@ -65,6 +65,12 @@ func TestTerminalOwnedNoticeRecovery(t *testing.T) {
 					f.update(func(st *config.State) { st.Terminal.MaxWakes = 1 })
 				case "foreign":
 					render["text"] = "FOREIGN"
+					// With no saved position and a footer hint, only the indented
+				// foreign guard prevents selecting the transcript as recovery input.
+				case "prompt-foreign":
+					render["text"], render["indent"], render["hint"] = "HUMAN_DRAFT", 3, true
+					render["diagnostic-row"], render["diagnostic-text"] = 12, "› "+b.Notice
+					f.update(func(st *config.State) { st.Terminal.NoticePosition = nil })
 				case "dialog":
 					render["diagnostic-row"] = 23
 					render["diagnostic-text"] = "Permission required"

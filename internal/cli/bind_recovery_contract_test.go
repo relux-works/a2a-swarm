@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"os"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,12 +71,26 @@ func TestNoticeOriginNeighbors(t *testing.T) {
 	}
 }
 
-// Early policy refusals preserve the entire journal without inspecting a pane.
+// The canceled probe makes any attempted process inspection observable without
+// launching ps or tmux. Valid policy reaches it; each single-gate refusal must
+// not. This proves early policy short-circuiting, not successful Enter (covered
+// by TestTerminalOwnedNoticeRecovery/valid). A dead target cannot mask a bypass.
+type recoveryInspectionProbe struct {
+	context.Context
+	calls atomic.Int32
+}
+
+func (p *recoveryInspectionProbe) Err() error {
+	p.calls.Add(1)
+	return p.Context.Err()
+}
+
+// Early policy refusals preserve the journal except the explicit held outcome.
 // A distinct in-hour reservation exhausts the cap; the attempt's own reservation
 // (including duplicate timestamps) is excluded by the documented budget rule.
 func TestNoticeRecoveryPolicyHeld(t *testing.T) {
 	isolateBindTest(t)
-	for _, mode := range []string{"not-typed", "retry-cap", "retry-delay", "cooldown", "budget", "invalid-count"} {
+	for _, mode := range []string{"valid", "not-typed", "retry-cap", "retry-delay", "cooldown", "budget", "invalid-count", "zero-count", "missing-token", "interval", "retry-short", "retry-long"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, _ := reportFixture(t)
 			now := a.Now()
@@ -81,11 +98,22 @@ func TestNoticeRecoveryPolicyHeld(t *testing.T) {
 			b.Notice = tmuxwake.Notice(1)
 			b.NoticeCount = 1
 			b.NotificationToken = "synthetic-token"
+			b.Target.OwnerPID = os.Getpid() // Inspect consults the canceled context before starting ps.
 			b.TypingStarted = true
 			b.AttemptAt = now.Add(-30 * time.Second)
 			b.MaxWakes = 1
 			b.Reservations = []time.Time{b.AttemptAt}
 			switch mode {
+			case "missing-token":
+				b.NotificationToken = ""
+			case "interval":
+				b.Interval = 0
+			case "retry-short":
+				b.RetryMax = 0
+			case "retry-long":
+				b.RetryMax = 6 * time.Minute
+				b.AttemptAt = now.Add(-7 * time.Minute) // Isolate validation from the later retry-delay gate.
+				b.Reservations = []time.Time{b.AttemptAt}
 			case "not-typed":
 				b.TypingStarted = false
 			case "retry-cap":
@@ -94,8 +122,12 @@ func TestNoticeRecoveryPolicyHeld(t *testing.T) {
 				b.RetryMax = time.Minute
 			case "cooldown":
 				b.AttemptAt = now.Add(-time.Second)
+				b.Reservations = []time.Time{b.AttemptAt}
 			case "budget":
 				b.Reservations = append(b.Reservations, b.AttemptAt.Add(time.Second))
+			case "zero-count":
+				b.NoticeCount = 0
+				b.Notice = tmuxwake.Notice(0)
 			case "invalid-count":
 				b.NoticeCount = 2
 			}
@@ -104,12 +136,18 @@ func TestNoticeRecoveryPolicyHeld(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := *e.state("alice").Terminal
-			if err := a.resumeTerminalNotice(context.Background(), s, "gen", before); err != nil {
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			probe := &recoveryInspectionProbe{Context: canceled}
+			if err := a.resumeTerminalNotice(probe, s, "gen", before); err != nil {
 				t.Fatal(err)
 			}
 			after := *e.state("alice").Terminal
-			after.Idle = before.Idle
-			after.Outcome = before.Outcome
+			if (probe.calls.Load() > 0) != (mode == "valid") {
+				t.Fatal("policy inspection boundary bypassed", mode, probe.calls.Load())
+			}
+			before.Idle = nil
+			before.Outcome = "suppressed: owned notice recovery held"
 			if !reflect.DeepEqual(before, after) {
 				t.Fatal("held policy changed journal")
 			}
@@ -129,7 +167,7 @@ func TestNoticeRecoveryPolicyHeld(t *testing.T) {
 // or notification state. A valid neighbor reserves exactly once, with no tmux.
 func TestNoticeRecoveryFenceAuthority(t *testing.T) {
 	isolateBindTest(t)
-	for _, mode := range []string{"valid", "paused", "manual", "stopped", "generation", "session", "target", "lease", "budget", "registry-busy", "version", "position-row", "position-column"} {
+	for _, mode := range []string{"valid", "paused", "manual", "stopped", "generation", "session", "target", "lease", "budget", "route", "version", "position-row", "position-column"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, _ := reportFixture(t)
 			now := a.Now()
@@ -178,9 +216,8 @@ func TestNoticeRecoveryFenceAuthority(t *testing.T) {
 					st.Lease.Holder = "other"
 				case "budget":
 					c.Reservations = append(c.Reservations, b.AttemptAt.Add(time.Second))
-				case "registry-busy":
-					k.RegistryStatus = "busy"
-					k.Route = tmuxwake.RegistryNamed // Invalid origin route must refuse, regardless of readiness.
+				case "route":
+					k.Route = tmuxwake.RegistryNamed
 				case "version":
 					k.RegistryVersion = "other"
 				case "position-row":
@@ -194,7 +231,17 @@ func TestNoticeRecoveryFenceAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := e.state("alice")
-			_, err = a.reserveTerminalRecovery(context.Background(), s, "gen", expected, k)
+			// Retry only a proven pre-write fence timeout, preserving the production
+			// deadline and requiring unchanged state before another attempt.
+			for attempt := 0; attempt < 3; attempt++ {
+				_, err = a.reserveTerminalRecovery(context.Background(), s, "gen", expected, k)
+				if !errors.Is(err, tmuxwake.ErrEnterFenceTimeout) {
+					break
+				}
+				if !reflect.DeepEqual(before, e.state("alice")) {
+					t.Fatal("timed-out fence changed state")
+				}
+			}
 			after := e.state("alice")
 			if mode == "valid" {
 				if err != nil || !after.Terminal.Retried {
@@ -208,6 +255,62 @@ func TestNoticeRecoveryFenceAuthority(t *testing.T) {
 			}
 			if err == nil || err.Error() != wantError || !reflect.DeepEqual(before, after) {
 				t.Fatal("authority refusal changed state or reason", err)
+			}
+		})
+	}
+}
+
+// These legacy detection neighbors deliberately have no pending-origin path:
+// it would mask changes to the separate Typed/count/ID eligibility expression.
+// Retained pending-origin behavior remains in TestTerminalNoticeDetection.
+func TestNoticeDetectionGateNeighbors(t *testing.T) {
+	isolateBindTest(t)
+	for _, mode := range []string{"valid", "valid-single", "partial", "no-journal", "untyped"} {
+		t.Run(mode, func(t *testing.T) {
+			e, a, s, _ := reportFixture(t)
+			b := *e.state("alice").Terminal
+			b.OwnNotice = config.OwnNoticeObservation{}
+			b.Typed = true
+			b.NoticeCount = 2
+			b.Notice = tmuxwake.Notice(2)
+			b.AttemptAt = a.Now().Add(-time.Minute)
+			switch mode {
+			case "valid-single":
+				b.NoticeCount = 1
+				b.Notice = tmuxwake.Notice(1)
+			case "partial":
+				b.AttemptIDs = []string{"one"}
+			case "no-journal":
+				b.Typed = false
+				b.NoticeCount = 0
+				b.Notice = ""
+			case "untyped":
+				b.Typed = false
+				b.NoticeCount = 1
+				b.Notice = tmuxwake.Notice(1)
+			}
+			if _, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Terminal = &b; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			before := *e.state("alice").Terminal
+			if err := a.observeTerminalNotice(s, "gen", before, "nonempty"); err != nil {
+				t.Fatal(err)
+			}
+			after := *e.state("alice").Terminal
+			want := "unknown"
+			if mode == "valid" || mode == "valid-single" {
+				want = "suspected"
+			}
+			if mode == "no-journal" {
+				want = "clear"
+			}
+			requireNotice(t, after.OwnNotice, want)
+			// Detection grants no recovery authority and changes no attempt journal.
+			after.OwnNotice = before.OwnNotice
+			after.NoticePublication = before.NoticePublication
+			after.Idle = before.Idle
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("detection changed attempt journal")
 			}
 		})
 	}

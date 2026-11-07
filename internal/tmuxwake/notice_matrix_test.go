@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+// Render-setting audit against HEAD^ (before the test move):
+//   - prompt-foreign carried indent=3 as well as transcript row 12; restored here
+//     and isolated with a hint in TestCodexIndentedForeignGuard/foreign.
+//   - prompt-empty/transcript carried text="" and cursor=0; parser empty geometry
+//     and legacy/Codex cursor admission remain below; named cursor admission is
+//     retained through real TestTerminalTranscriptPromptAdmission/claude-named/fresh.
+//   - second-prompt carried row 23; prompt-above carried the runtime glyph.
+//   - filled-position carried row 17/indent 3, NBSP, rule width 80 and crash hint;
+//     row/column/both remain below and real recorded/no-anchor cases remain in CLI.
+//   - pre-row/up/down used an on-composer cursor, unlike pre-cursor; restored in
+//     Send's Codex fixtures. Post-type empty now has a live AwaitingRender row.
+//
+// Identity/version/width/status/time claims use actual changed keys and origin
+// tables; restart, lost ACK, mail count and no-replay effects stay in dispatch.
 // Captured text and synthetic neighboring cells exercise the parser without a
 // terminal. They prove classification/geometry, not delivery or key effects.
 func TestOwnedNoticeCapturedMatrix(t *testing.T) {
@@ -43,7 +57,7 @@ func TestOwnedNoticeCapturedMatrix(t *testing.T) {
 				if mode == "row" || mode == "both" {
 					row = 16
 				}
-				if mode == "column" || mode == "both" {
+				if mode == "column" || mode == "both" || mode == "prompt-foreign" {
 					indent = 3
 				}
 				glyph, footer := "❯\u00a0", ""
@@ -134,19 +148,57 @@ func TestOwnedNoticeCapturedMatrix(t *testing.T) {
 	}
 }
 
-// Exact owned typing normalizes geometry only; pre-type keys retain full
-// equality. Each changed runtime/identity/width/status field still refuses.
+// An indented foreign prompt below a transcript notice must stop the scan.
+// The hint and blank separator deliberately allow the transcript to pass every
+// later parser check if the guard is deleted. Exact indented input is its valid
+// neighbor; no-foreign also proves that the upper notice is otherwise selectable.
+func TestCodexIndentedForeignGuard(t *testing.T) {
+	for _, mode := range []string{"foreign", "owned", "no-foreign"} {
+		t.Run(mode, func(t *testing.T) {
+			lines := make([]string, 24)
+			lines[11] = "› " + Notice(1)
+			lines[21] = "  ? for shortcuts"
+			wantRow := 11
+			switch mode {
+			case "foreign":
+				lines[19] = "   › HUMAN_DRAFT"
+			case "owned":
+				lines[19] = "   › " + Notice(1)
+				wantRow = 19
+			}
+			screen := strings.Join(lines, "\n") + "\n"
+			b, reason, _ := boundInput(screen, "codex", Notice(1), false)
+			if mode == "foreign" {
+				if reason != InputReasonLayoutUnrecognized {
+					t.Fatal("indented foreign prompt admitted transcript", reason, b)
+				}
+				return
+			}
+			column := 2
+			if mode == "owned" {
+				column += 3
+			}
+			if reason != InputReasonNone || b.Text != Notice(1) || b.Row != wantRow || b.position().Column != column || !b.FooterHint || !completeInput(screen, b) {
+				t.Fatal("valid indented guard neighbor refused", reason, b)
+			}
+		})
+	}
+}
+
+// Owned typing normalizes actual composer geometry, while identity, width and
+// registry evidence stay pinned. Cursor coordinates are not ReadinessKey fields;
+// their real Send witnesses live in TestBoundSendComposerMovement.
 func TestOwnedNoticeKeyNeighbors(t *testing.T) {
 	base := ReadinessKey{Route: RegistryNamed, Target: Target{Runtime: "claude", OwnerPID: 123, OwnerBirth: "birth", Pane: "%0", SocketID: "socket"}, ClaudeRegistryRoot: "/synthetic", Generation: "g", SessionID: "s", RegistrySessionID: "s", RegistryVersion: "2.1.318", RegistryStatus: "idle", ComposerRow: 19, ComposerColumn: 2, PaneWidth: 120}
-	for _, mode := range []string{"valid-down", "pre-row-down", "pre-row", "pre-cursor", "column", "cursor", "cursor-row", "width", "registry-busy", "status", "timestamp", "generation", "session", "target", "version"} {
+	for _, mode := range []string{"valid", "row-down", "row-up", "column", "width", "registry-busy", "status", "timestamp", "generation", "session", "target", "version"} {
 		t.Run(mode, func(t *testing.T) {
 			k := base
 			switch mode {
-			case "valid-down", "pre-row-down":
+			case "row-down":
 				k.ComposerRow++
-			case "pre-row":
+			case "row-up":
 				k.ComposerRow--
-			case "pre-cursor", "column":
+			case "column":
 				k.ComposerColumn++
 			case "width":
 				k.PaneWidth++
@@ -165,21 +217,23 @@ func TestOwnedNoticeKeyNeighbors(t *testing.T) {
 			case "version":
 				k.RegistryVersion = "2.1.319"
 			}
-			geometry := mode == "valid-down" || mode == "pre-row-down" || mode == "pre-row" || mode == "pre-cursor" || mode == "column" || mode == "cursor" || mode == "cursor-row"
+			geometry := mode == "valid" || mode == "row-down" || mode == "row-up" || mode == "column"
 			if sameKeyAfterOwnedTyping(k, base) != geometry {
 				t.Fatal("wrong post-type comparison")
 			}
-			if strings.HasPrefix(mode, "pre-") && k == base {
-				t.Fatal("pre-type movement lost equality constraint")
-			}
-			if mode == "width" || mode == "status" || mode == "timestamp" {
-				r := ReadinessAssessment{Runtime: runtimeResult(RuntimeNone, ""), Input: InputAssessment{InputNonempty, InputReasonInputNonempty}, Key: k}
+			if mode == "width" || mode == "status" || mode == "timestamp" || mode == "row-down" || mode == "row-up" || mode == "column" {
+				r := ReadinessAssessment{Runtime: runtimeResult(RuntimeNone, ""), Input: InputAssessment{InputEmpty, InputReasonNone}, Key: k}
 				want := ReasonKeyStatusChanged
-				if mode == "width" {
+				switch mode {
+				case "width":
 					want = ReasonKeyWidthChanged
+				case "row-down", "row-up":
+					want = ReasonKeyRowChanged
+				case "column":
+					want = ReasonKeyChanged
 				}
-				if got := sendRefusalReason(r, base, Box{Text: Notice(1)}, Notice(1)); got != want {
-					t.Fatal("wrong refusal token", got)
+				if got := sendRefusalReason(r, base, Box{}, ""); got != want {
+					t.Fatal("wrong pre-type refusal token", got)
 				}
 			}
 		})
@@ -191,7 +245,7 @@ func TestOwnedNoticeKeyNeighbors(t *testing.T) {
 // are supplied assessments, not a claim that capture or registry I/O succeeded.
 func TestOwnedNoticeEligibilityNeighbors(t *testing.T) {
 	for _, route := range []ReadinessRoute{LegacyCodex, RegistryLegacy, RegistryNamed, LegacyFallback} {
-		for _, mode := range []string{"empty", "owned", "unknown", "busy", "dialog"} {
+		for _, mode := range []string{"empty", "owned", "shell", "registry-busy", "unknown", "busy", "dialog"} {
 			t.Run(string(route)+"/"+mode, func(t *testing.T) {
 				k := ReadinessKey{Route: route, Target: Target{Runtime: "claude", OwnerPID: 123, OwnerBirth: "birth", SocketID: "socket", Pane: "%0"}, Generation: "g", SessionID: "s", ComposerRow: 19, ComposerColumn: 2, PaneWidth: 120}
 				reason := RuntimeNone
@@ -207,6 +261,12 @@ func TestOwnedNoticeEligibilityNeighbors(t *testing.T) {
 				}
 				r := ReadinessAssessment{Runtime: runtimeResult(reason, ""), Input: InputAssessment{InputNonempty, InputReasonInputNonempty}, Key: k}
 				switch mode {
+				case "shell":
+					k.RegistryStatus = "shell"
+					r.Key = k
+				case "registry-busy":
+					k.RegistryStatus = "busy"
+					r.Key = k
 				case "empty":
 					r.Input = InputAssessment{InputEmpty, InputReasonNone}
 				case "unknown":
@@ -216,7 +276,7 @@ func TestOwnedNoticeEligibilityNeighbors(t *testing.T) {
 				case "dialog":
 					r.Input = InputAssessment{InputUnavailable, InputReasonBusyOrDialog}
 				}
-				if r.Eligible() != (mode == "empty") || r.OwnedNoticeEligible() != (mode == "owned") {
+				if r.Eligible() != (mode == "empty") || r.OwnedNoticeEligible() != (mode == "owned" || mode == "shell" && (route == RegistryLegacy || route == RegistryNamed)) {
 					t.Fatal("wrong eligibility", r)
 				}
 				if mode == "busy" || mode == "dialog" {
