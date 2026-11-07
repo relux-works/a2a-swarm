@@ -1,0 +1,69 @@
+# Public Git reads only. No credentials, vendor generation or build execution.
+name: curator-build-retention
+
+on:
+  push:
+    branches: [curator-build]
+  delete:
+  schedule:
+    - cron: '19 */6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  retention:
+    if: github.event_name != 'delete' || (github.event.ref_type == 'branch' && github.event.ref == 'curator-build')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse branch rewrite or deletion events
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCED: ${{ github.event.forced }}
+        run: |
+          if [ "$EVENT" = delete ]; then
+            echo 'build_branch_deleted'
+            exit 1
+          fi
+          if [ "$FORCED" = true ]; then
+            echo 'build_branch_rewritten'
+            exit 1
+          fi
+      - name: Check published pin retention from main
+        env:
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="$RUNNER_TEMP/curator-build-retention.git"
+          git init --bare --quiet "$repository"
+          git --git-dir="$repository" fetch --quiet --no-tags --depth=1 \
+            https://github.com/relux-works/a2a-swarm.git \
+            refs/heads/main:refs/remotes/origin/main
+          git --git-dir="$repository" show \
+            refs/remotes/origin/main:docs/curator-build-pins.txt > "$RUNNER_TEMP/pins"
+          git --git-dir="$repository" fetch --quiet --no-tags \
+            https://github.com/relux-works/a2a-swarm.git \
+            refs/heads/curator-build:refs/remotes/origin/curator-build || {
+              echo 'build_branch_unavailable'
+              exit 1
+            }
+          count=0
+          while IFS= read -r pin; do
+            case "$pin" in ''|'#'*) continue ;; esac
+            [[ "$pin" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || {
+              echo 'build_anchor_invalid'
+              exit 1
+            }
+            git --git-dir="$repository" merge-base --is-ancestor \
+              "$pin" refs/remotes/origin/curator-build || {
+                echo "build_pin_not_on_branch: $pin"
+                exit 1
+              }
+            count=$((count + 1))
+          done < "$RUNNER_TEMP/pins"
+          [ "$count" -gt 0 ] || { echo 'build_anchors_missing'; exit 1; }
+          echo "build_pin_retention_equal pins=$count"

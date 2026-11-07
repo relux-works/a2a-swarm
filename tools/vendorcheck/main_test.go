@@ -37,7 +37,7 @@ func TestCompareTreesDriftAndRestore(t *testing.T) {
 // Proves a byte comparison cannot silently omit extras, missing files, type
 // changes or symlinks, even when a link would resolve to matching bytes.
 func TestCompareTreesRefusesStructuralChanges(t *testing.T) {
-	for _, kind := range []string{"extra", "missing", "directory", "symlink"} {
+	for _, kind := range []string{"extra", "missing", "directory", "symlink", "executable"} {
 		t.Run(kind, func(t *testing.T) {
 			expected, actual := t.TempDir(), t.TempDir()
 			for _, root := range []string{expected, actual} {
@@ -48,6 +48,10 @@ func TestCompareTreesRefusesStructuralChanges(t *testing.T) {
 			file := filepath.Join(actual, "module.go")
 			if kind == "extra" {
 				if err := os.WriteFile(filepath.Join(actual, "extra"), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if kind == "executable" {
+				if err := os.Chmod(file, 0o755); err != nil {
 					t.Fatal(err)
 				}
 			} else {
