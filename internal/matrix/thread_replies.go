@@ -98,10 +98,13 @@ func decodeRelationsPage(raw []byte, roomID, root string) (Page, error) {
 	}
 	for name, dst := range map[string]*string{"next_batch": &out.NextBatch, "end": &out.End} {
 		if value, present := fields[name]; present {
-			value = bytes.TrimSpace(value)
-			if len(value) == 0 || value[0] != '"' || json.Unmarshal(value, dst) != nil || *dst == "" {
+			// Decode the original scalar once: JSON repair must not manufacture
+			// a different opaque cursor that can select another page.
+			cursor, ok := relationsString(value)
+			if !ok {
 				return Page{}, invalid
 			}
+			*dst = cursor
 		}
 	}
 	return out, nil
