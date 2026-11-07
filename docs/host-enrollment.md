@@ -189,11 +189,18 @@ go test ./internal/hostnotification -run '^TestHostCounterpartDock$' -count=1 -v
 
 With neither input this check is skipped and docking remains unqualified. A
 partial input pair, invalid executable or mismatched digest fails the check.
-The runner hashes the opened regular-file descriptor and executes that same
-descriptor via inherited fd 5; pathname replacement cannot substitute a later
-executable. The supplier must keep the artifact immutable during the run: an
-open descriptor does not prevent in-place writes by another process. The
-ordinary pinned-execution test replaces the pathname with a different file
+The runner hashes the opened regular-file descriptor. Linux executes that same
+descriptor via inherited fd 5. Darwin cannot execute `/dev/fd/N`, so the runner
+copies from the same descriptor into a fresh private temporary directory with
+the same 64 MiB admission limit (plus one overflow-detection byte), rechecks the
+supplied SHA-256 over the copied bytes, closes the
+0700 file and executes that exact copy. It removes the private directory after
+the child is reaped or startup fails. Neither route reopens the supplied path;
+pathname replacement cannot substitute a later executable. The supplier must
+keep the artifact immutable during the run: an open descriptor does not prevent
+in-place writes by another process. The copy route also refuses a changed hash.
+Private temporary paths do not provide isolation from malicious same-UID peers.
+The ordinary pinned-execution test replaces the pathname with a different file
 and checks that the original inert helper still runs on the hosted platforms.
 The test owns finite subprocess/socket cleanup and uses the actual Source
 enrollment and transaction with the counterpart's actual private engine. The

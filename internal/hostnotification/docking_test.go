@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -95,13 +96,58 @@ func checkDockArtifact(path, digest string) error {
 	return f.Close()
 }
 
-// Execute the descriptor whose contents were hashed, never the supplied path.
-// The two existing protocol endpoints keep fds 3/4; the artifact is fd 5.
-// An owner-supplied artifact must still be immutable during its execution.
-func dockCommand(ctx context.Context, artifact, wire, control *os.File, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "/dev/fd/5", args...)
-	cmd.ExtraFiles = []*os.File{wire, control, artifact}
-	return cmd
+// Linux executes the hashed descriptor at fd 5. Darwin cannot exec /dev/fd/N,
+// so execute a bounded, digest-checked copy from that same open descriptor in a
+// fresh private directory. Never reopen the supplied pathname. The supplier
+// must keep its artifact immutable; this is not isolation from same-UID peers.
+// The caller owns cleanup until the child has been reaped, including failures.
+func dockCommand(ctx context.Context, artifact, wire, control *os.File, digest string, args ...string) (*exec.Cmd, func(), error) {
+	if runtime.GOOS == "linux" {
+		cmd := exec.CommandContext(ctx, "/dev/fd/5", args...)
+		cmd.ExtraFiles = []*os.File{wire, control, artifact}
+		return cmd, func() {}, nil
+	}
+	if runtime.GOOS != "darwin" {
+		return nil, nil, errDockArtifact
+	}
+	path, cleanup, err := copyDockArtifact(artifact, digest)
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.ExtraFiles = []*os.File{wire, control}
+	return cmd, cleanup, nil
+}
+
+func copyDockArtifact(artifact *os.File, digest string) (string, func(), error) {
+	info, err := artifact.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Size() < 1 || info.Size() > 64<<20 {
+		return "", nil, errDockArtifact
+	}
+	dir, err := os.MkdirTemp("", "a2a-dock-")
+	if err != nil {
+		return "", nil, errDockArtifact
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	output, err := os.CreateTemp(dir, "artifact-")
+	if err != nil {
+		cleanup()
+		return "", nil, errDockArtifact
+	}
+	h := sha256.New()
+	// ReadAt starts at zero even though admission left the descriptor at EOF.
+	n, copyErr := io.Copy(io.MultiWriter(output, h), io.NewSectionReader(artifact, 0, (64<<20)+1))
+	valid := copyErr == nil && n == info.Size() && n <= 64<<20 && hex.EncodeToString(h.Sum(nil)) == digest
+	var modeErr error
+	if valid {
+		modeErr = output.Chmod(0o700)
+	}
+	closeErr := output.Close()
+	if !valid || modeErr != nil || closeErr != nil {
+		cleanup()
+		return "", nil, errDockArtifact
+	}
+	return output.Name(), cleanup, nil
 }
 
 func TestDockPinnedArtifactHelper(t *testing.T) {
@@ -135,7 +181,8 @@ func TestDockArtifactPinnedExecution(t *testing.T) {
 	if copyErr != nil || closeErr != nil {
 		t.Fatalf("copy fixture: %v %v", copyErr, closeErr)
 	}
-	artifact, err := openDockArtifact(path, hex.EncodeToString(h.Sum(nil)))
+	digest := hex.EncodeToString(h.Sum(nil))
+	artifact, err := openDockArtifact(path, digest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,12 +200,95 @@ func TestDockArtifactPinnedExecution(t *testing.T) {
 	defer placeholder.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := dockCommand(ctx, artifact, placeholder, placeholder, "-test.run=^TestDockPinnedArtifactHelper$")
+	cmd, cleanup, err := dockCommand(ctx, artifact, placeholder, placeholder, digest, "-test.run=^TestDockPinnedArtifactHelper$")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if runtime.GOOS == "darwin" && (strings.HasPrefix(cmd.Path, "/dev/fd/") || len(cmd.ExtraFiles) != 2) {
+		t.Fatal("Darwin must execute the private copy with only the protocol endpoints")
+	}
+	if runtime.GOOS == "linux" && (cmd.Path != "/dev/fd/5" || len(cmd.ExtraFiles) != 3) {
+		t.Fatal("Linux must execute the admitted descriptor")
+	}
 	cmd.Env = []string{"A2A_TEST_DOCK_PINNED_HELPER=1"}
 	got, err := cmd.CombinedOutput()
 	if err != nil || string(got) != "descriptor-original\n" {
-		t.Fatalf("hashed descriptor execution: %q %v", got, err)
+		t.Fatalf("pinned artifact execution on %s: %q %v", runtime.GOOS, got, err)
 	}
+	cleanup()
+	if runtime.GOOS == "darwin" {
+		if _, err := os.Lstat(filepath.Dir(cmd.Path)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("private execution directory retained")
+		}
+	}
+}
+
+// Exercise copying on both hosted platforms, including in-place mutation
+// refusal. Path substitution must still copy the admitted original descriptor.
+func TestDockArtifactCopyAdmission(t *testing.T) {
+	digest := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	path := filepath.Join(t.TempDir(), "artifact")
+	if err := os.WriteFile(path, []byte("abc"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := openDockArtifact(path, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Close()
+	if err := os.Rename(path, path+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	copyPath, cleanup, err := copyDockArtifact(artifact, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	data, err := os.ReadFile(copyPath)
+	if err != nil || string(data) != "abc" {
+		t.Fatal("copy did not retain admitted bytes")
+	}
+	for _, p := range []string{copyPath, filepath.Dir(copyPath)} {
+		info, err := os.Lstat(p)
+		if err != nil || info.Mode().Perm() != 0o700 {
+			t.Fatal("copy namespace is not private 0700")
+		}
+	}
+	cleanup()
+	if _, err := os.Lstat(filepath.Dir(copyPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("copy namespace retained")
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	refuse := func() {
+		t.Helper()
+		p, clean, err := copyDockArtifact(artifact, digest)
+		if clean != nil {
+			defer clean()
+		}
+		if err != errDockArtifact || p != "" {
+			t.Fatal("changed or invalid artifact copied")
+		}
+		entries, err := os.ReadDir(os.TempDir())
+		if err != nil || len(entries) != 0 {
+			t.Fatal("refused copy retained temporary files")
+		}
+	}
+	if err := os.WriteFile(path+"-original", []byte("abd"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	refuse()
+	if err := os.Truncate(path+"-original", (64<<20)+1); err != nil {
+		t.Fatal(err)
+	}
+	refuse()
+	if err := artifact.Close(); err != nil {
+		t.Fatal(err)
+	}
+	refuse()
 }
 
 // Control messages are fixture metadata, never raw stores or peer payloads.
@@ -296,7 +426,11 @@ func runDockCase(t *testing.T, f *adapterFixture, path, digest, mode string) err
 		return errDockProcess
 	}
 	defer controlFile.Close()
-	cmd := dockCommand(ctx, artifact, wireFile, controlFile, "-test.run=^TestSourceNotificationDockHelper$", "-test.count=1", "-test.timeout=20s")
+	cmd, cleanup, err := dockCommand(ctx, artifact, wireFile, controlFile, digest, "-test.run=^TestSourceNotificationDockHelper$", "-test.count=1", "-test.timeout=20s")
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	cmd.Env = []string{"HOST_NOTIFICATION_DOCK_HELPER=1"}
 	cmd.Dir = t.TempDir()
 	stdout, stderr := &dockOutput{}, &dockOutput{}
