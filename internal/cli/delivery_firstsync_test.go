@@ -76,13 +76,13 @@ func TestFirstSyncDeliveryOnce(t *testing.T) {
 }
 
 // Limited first sync uses backward history and stops on the own join page,
-// excluding older mail, another user's join, and a join-to-join profile update.
+// excluding older mail and ignoring another user's membership updates.
 func TestFirstSyncLimitedStopsAtJoin(t *testing.T) {
 	e, room := world(t)
 	post := firstSyncMessage("$post", "@bob:test.local", ping(1))
 	cut := firstSyncMessage("$cut", "@bob:test.local", ping(2))
 	before := firstSyncMessage("$before", "@bob:test.local", ping(0))
-	profile := firstSyncJoin("@alice:test.local", "$profile")
+	profile := firstSyncJoin("@bob:test.local", "$profile")
 	profile.Unsigned = json.RawMessage(`{"prev_content":{"membership":"join"}}`)
 	firstSyncFixture(t, e, room, true, "tail", post)
 	e.hs.messagePages = map[string]map[string]fakeMessagePage{room: {
@@ -135,7 +135,7 @@ func TestFirstSyncHistoryBound(t *testing.T) {
 					t.Fatalf("valid boundary: %+v %q", pending, bell)
 				}
 			} else {
-				if pending[0].Kind != config.MailGap || pending[0].From != "own join" || pending[0].To == "" || !strings.Contains(bell, "1 gap") {
+				if pending[0].Kind != config.MailGap || pending[0].From != "room start" || pending[0].To != "$tail" || !strings.Contains(bell, "1 gap") {
 					t.Fatalf("missing gap: %+v %q", pending, bell)
 				}
 				out := e.as("alice", "inbox").ok(t).stdout
@@ -211,6 +211,143 @@ func TestFirstSyncExistingCursorAndRejoin(t *testing.T) {
 			out := e.as("alice", "inbox").ok(t).stdout
 			if !strings.Contains(out, "id="+after) || strings.Contains(out, "id="+before) != existing || strings.Contains(out, "gap") || e.hs.CallCount(messagesRoute) != 0 {
 				t.Fatalf("existing=%t output=%q", existing, out)
+			}
+		})
+	}
+}
+
+// The latest own membership event blocks fallback to an older join, both in
+// the initial timeline and on a history page. Rejected boundaries persist only
+// a full-range gap; self-sent rejoins after leave/ban deliver only later mail.
+// A barrier in the initial timeline must not request its predecessor page.
+func TestFirstSyncMembershipBarriers(t *testing.T) {
+	for _, location := range []string{"initial", "history", "split"} {
+		for _, mode := range []string{"leave-valid-rejoin", "leave-redacted-rejoin", "leave-stripped-rejoin", "leave-malformed-unsigned", "leave-null-unsigned", "leave-ambiguous-previous", "leave-foreign-sender", "leave-profile-update", "leave-missing-id", "leave-missing-membership", "leave-barrier", "ban-valid-rejoin", "ban-barrier"} {
+			t.Run(location+"/"+mode, func(t *testing.T) {
+				e, room := world(t)
+				me := "@alice:test.local"
+				leave := firstSyncJoin(me, "$leave")
+				leave.Content = json.RawMessage(`{"membership":"leave"}`)
+				latest := firstSyncJoin(me, "$latest")
+				latest.Unsigned = json.RawMessage(`{"prev_content":{"membership":"leave"}}`)
+				valid := false
+				switch mode {
+				case "leave-valid-rejoin":
+					valid = true
+				case "leave-redacted-rejoin", "leave-stripped-rejoin":
+					latest.Unsigned = json.RawMessage(`{"redacted_because":{}}`)
+					if mode == "leave-stripped-rejoin" {
+						latest.Content = json.RawMessage(`{}`)
+					}
+				case "leave-malformed-unsigned":
+					latest.Unsigned = json.RawMessage(`[]`)
+				case "leave-null-unsigned":
+					latest.Unsigned = json.RawMessage(`null`)
+				case "leave-ambiguous-previous":
+					latest.Unsigned = json.RawMessage(`{"prev_content":{"membership":42}}`)
+				case "leave-foreign-sender":
+					latest.Sender = "@bob:test.local"
+				case "leave-profile-update":
+					latest.Unsigned = json.RawMessage(`{"prev_content":{"membership":"join"}}`)
+				case "leave-missing-id":
+					latest.EventID = ""
+				case "leave-missing-membership":
+					latest.Content = json.RawMessage(`{}`)
+				case "leave-barrier":
+					latest.Content = json.RawMessage(`{"membership":"leave"}`)
+				case "ban-valid-rejoin":
+					leave.Content = json.RawMessage(`{"membership":"ban"}`)
+					leave.Sender = "@bob:test.local"
+					latest.Unsigned = json.RawMessage(`{"prev_content":{"membership":"ban"}}`)
+					valid = true
+				case "ban-barrier":
+					latest.Content = json.RawMessage(`{"membership":"ban"}`)
+					latest.Sender = "@bob:test.local"
+				}
+				before := firstSyncMessage("$before-leave", "@bob:test.local", ping(0))
+				whileOut := firstSyncMessage("$while-out", "@bob:test.local", ping(1))
+				after := firstSyncMessage("$after", "@bob:test.local", ping(2))
+				older := []matrix.Event{whileOut, leave, before, firstSyncJoin(me, "$old-join")}
+				firstSyncFixture(t, e, room, true, "history", firstSyncJoin(me, "$old-join"), before, leave, whileOut, latest, after)
+				calls := 0
+				switch location {
+				case "history":
+					firstSyncFixture(t, e, room, true, "history", after)
+					older = append([]matrix.Event{latest}, older...)
+					calls = 1
+				case "split":
+					firstSyncFixture(t, e, room, true, "history", latest, after)
+				}
+				e.hs.messagePages = map[string]map[string]fakeMessagePage{room: {
+					"history":   {page: matrix.Page{Chunk: older, End: "forbidden"}},
+					"forbidden": {failure: &fakeFailure{status: 500, errcode: "M_UNKNOWN", message: "scanned past membership barrier"}},
+				}}
+				e.hook("alice", "prompt", `{"session_id":"barrier"}`).ok(t)
+				pending := e.mailbox("alice").Pending()
+				if len(pending) != 1 || e.hs.CallCount(messagesRoute) != calls {
+					t.Fatalf("pending=%+v history requests=%d, want %d", pending, e.hs.CallCount(messagesRoute), calls)
+				}
+				if valid {
+					if pending[0].Kind != config.MailEvent || pending[0].ID != "$after" {
+						t.Fatalf("valid rejoin tail: %+v", pending)
+					}
+				} else if pending[0].Kind != config.MailGap || pending[0].From != "room start" || pending[0].To != "$after" {
+					t.Fatalf("unproven tail must yield only a full-range gap: %+v", pending)
+				}
+			})
+		}
+	}
+}
+
+// Gaps cover the entire dropped range, through its newest event rather than
+// its oldest reached event. Empty/idless tails use the non-empty sync position;
+// an empty initial timeline with paged events uses the newest paged event.
+// The adjacent proven-join control delivers both messages without a gap.
+func TestFirstSyncGapRange(t *testing.T) {
+	for _, mode := range []string{"valid", "complete", "paged", "empty", "empty-paged", "idless", "oversized-tail", "oversized-page"} {
+		t.Run(mode, func(t *testing.T) {
+			e, room := world(t)
+			oldest := firstSyncMessage("$oldest", "@bob:test.local", ping(0))
+			newest := firstSyncMessage("$newest", "@bob:test.local", ping(1))
+			events := []matrix.Event{oldest, newest}
+			limited, prev, wantTo, calls := false, "", "$newest", 0
+			var page matrix.Page
+			switch mode {
+			case "valid":
+				events = append([]matrix.Event{firstSyncJoin("@alice:test.local", "$join")}, events...)
+			case "paged":
+				limited, prev, calls = true, "history", 1
+				page.Chunk = []matrix.Event{firstSyncMessage("$older-history", "@bob:test.local", ping(2))}
+			case "empty":
+				events, wantTo = nil, "sync-position"
+			case "empty-paged":
+				events, limited, prev, calls = nil, true, "history", 1
+				page.Chunk = []matrix.Event{newest, oldest}
+			case "idless":
+				events[len(events)-1].EventID = ""
+				wantTo = "sync-position"
+			case "oversized-tail":
+				events = make([]matrix.Event, backfillPageSize+1)
+				events[0], events[len(events)-1] = oldest, newest
+			case "oversized-page":
+				events, limited, prev, calls = nil, true, "history", 1
+				page.Chunk = make([]matrix.Event, backfillPageSize+1)
+				page.Chunk[0], page.Chunk[len(page.Chunk)-1] = newest, oldest
+			}
+			firstSyncFixture(t, e, room, limited, prev, events...)
+			e.hs.initialDelivery.NextBatch = "sync-position"
+			e.hs.messagePages = map[string]map[string]fakeMessagePage{room: {"history": {page: page}}}
+			e.hook("alice", "prompt", `{"session_id":"range"}`).ok(t)
+			pending := e.mailbox("alice").Pending()
+			if e.hs.CallCount(messagesRoute) != calls {
+				t.Fatalf("history requests=%d, want %d", e.hs.CallCount(messagesRoute), calls)
+			}
+			if mode == "valid" {
+				if len(pending) != 2 || pending[0].Kind != config.MailEvent || pending[0].ID != "$oldest" || pending[1].Kind != config.MailEvent || pending[1].ID != "$newest" {
+					t.Fatalf("proven join control: %+v", pending)
+				}
+			} else if len(pending) != 1 || pending[0].Kind != config.MailGap || pending[0].From != "room start" || pending[0].To != wantTo {
+				t.Fatalf("gap range: %+v, want room start through %s", pending, wantTo)
 			}
 		})
 	}

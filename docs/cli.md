@@ -1259,14 +1259,18 @@ Every consumer (`wait`, `watch`, `inbox`, the hooks) shares one cursor and one *
   **fsyncs** it, and only then saves the cursor. A crash before the fsync leaves the cursor where it was (the batch is synced again); a crash after
   it re-syncs a batch the mailbox already holds, and the mailbox deduplicates it by event id. Irrelevant events never take space.
 - **First sync closes the join window.** With no saved `NextBatch`, joined-room timelines include membership events. Only events strictly
-  after this identity's latest own join, in timeline order, enter the same relevance, subscription, mute, sender and principal classifier and
-  durable mailbox as live events. Own mail stays excluded; mailbox deduplication and receipts still apply. A join-to-join profile update does
-  not start a new window when its previous membership is supplied. Existing cursors, including later rejoins, retain their live-sync behavior.
-  A limited initial timeline pages backward via `/messages` only until the own join is found (stopping on that page). Recovery shares a hard
+  after this identity's latest own membership event, when it is a recognized self-sent join, enter the same relevance, subscription, mute,
+  sender and principal classifier and durable mailbox as live events. Own mail stays excluded; mailbox deduplication and receipts still apply.
+  A leave, ban, redacted, malformed or ambiguous own membership event blocks recovery with a gap; scanning never falls back to an older join.
+  A known join-to-join profile update proves no new join and also blocks recovery. Existing cursors, including later rejoins, retain their
+  live-sync behavior. A limited initial timeline pages backward via `/messages` only until the latest own membership event is found
+  (stopping on that page). Recovery shares a hard
   **20-page budget across all joined rooms**, in sorted room order, with **100 events per page (2000 history events total)**; the initial sync
   requests at most **100 timeline events per room**. Oversized timelines/pages, missing or stalled pagination, exhausted history and a bound
-  reached before the join produce the existing mailbox gap record (`From: own join`), rather than delivering an unproven tail or silently
-  discarding it. A complete timeline without an own join also produces a gap. Read an unresolved stretch with `a2a read`.
+  reached before the join produce the existing mailbox gap record, rather than delivering an unproven tail or silently discarding it.
+  A complete timeline without an own join also produces a gap. With no proven current join, the gap conservatively names the full range
+  from `room start` through the newest dropped event; an empty timeline or missing newest event ID uses the sync position as its non-empty
+  endpoint. Read an unresolved stretch with `a2a read`.
   The initial `/sync`, history, subscription/label lookups and redaction corroboration share a **30-second HTTP deadline per attempt**; a
   shorter caller deadline, including the hook's 5-second budget, wins. Transport errors/timeouts leave the cursor unadvanced for retry.
 - **Receipts on pull.** An entry leaves the mailbox only by a receipt: `a2a inbox` records one for exactly the entries it printed, after the write;

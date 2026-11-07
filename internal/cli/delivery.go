@@ -215,7 +215,7 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 		var gap *backfillGap
 		var err error
 		if since == "" {
-			events, gap, err = s.firstTimeline(ctx, roomID, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, &firstPages)
+			events, gap, err = s.firstTimeline(ctx, roomID, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, resp.NextBatch, &firstPages)
 			if err == nil {
 				events, _, err = s.timelineEvents(ctx, roomID, "", events, false, "", keep)
 			}

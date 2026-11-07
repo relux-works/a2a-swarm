@@ -15,43 +15,67 @@ import (
 const firstSyncMaxPages = 20
 const firstSyncTimeout = 30 * time.Second
 
-// ownJoin uses timeline order, never origin_server_ts. A join-to-join profile
-// update does not establish a new membership boundary.
-func ownJoin(ev matrix.Event, me string) bool {
-	if ev.Type != "m.room.member" || ev.StateKey == nil || *ev.StateKey != me || ev.EventID == "" || ev.Message().Membership != "join" {
-		return false
-	}
-	var unsigned struct {
-		PrevContent struct {
-			Membership string `json:"membership"`
-		} `json:"prev_content"`
-	}
-	if len(ev.Unsigned) > 0 {
-		if err := json.Unmarshal(ev.Unsigned, &unsigned); err != nil {
-			return false
-		}
-	}
-	return unsigned.PrevContent.Membership != "join"
+func ownMembership(ev matrix.Event, me string) bool {
+	return ev.Type == "m.room.member" && ev.StateKey != nil && *ev.StateKey == me
 }
 
-// firstTimeline returns only the tail proven to follow our latest own join.
-// Until that boundary is found, candidates are buffered but never classified:
-// an exhausted budget/history yields a normal mailbox gap, not pre-join mail.
-// /messages is newest first; stop scanning on the join, even mid-page, and
-// never request its predecessor page. Existing-cursor/rejoin syncs bypass this.
-func (s *session) firstTimeline(ctx context.Context, room string, events []matrix.Event, limited bool, prev string, pagesLeft *int) ([]matrix.Event, *backfillGap, error) {
-	oldest := ""
-	if len(events) > 0 {
-		oldest = events[0].EventID
+// ownJoin recognizes an unredacted, self-sent join starting a membership epoch.
+// Read membership directly: Message() suppresses it for redacted events.
+func ownJoin(ev matrix.Event, me string) bool {
+	if !ownMembership(ev, me) || ev.Sender != me || ev.EventID == "" || ev.IsRedacted() {
+		return false
+	}
+	var content struct {
+		Membership string `json:"membership"`
+	}
+	if json.Unmarshal(ev.Content, &content) != nil || content.Membership != "join" {
+		return false
+	}
+	if len(ev.Unsigned) == 0 {
+		return true
+	}
+	var unsigned map[string]json.RawMessage
+	if json.Unmarshal(ev.Unsigned, &unsigned) != nil || unsigned == nil {
+		return false
+	}
+	if raw, supplied := unsigned["prev_content"]; supplied {
+		var previous struct {
+			Membership string `json:"membership"`
+		}
+		if json.Unmarshal(raw, &previous) == nil {
+			switch previous.Membership {
+			case "invite", "leave", "ban", "knock":
+				return true
+			}
+		}
+		return false // A profile update or ambiguous previous membership proves no new join.
+	}
+	return true
+}
+
+// firstTimeline uses server timeline order, never timestamps. The latest own
+// membership event is a barrier: only a recognized join proves its later tail.
+// Any other barrier or exhausted budget/history gaps the whole unproven tail.
+// /messages is newest first; never scan or page past an own membership barrier.
+// Existing-cursor/rejoin syncs bypass this.
+func (s *session) firstTimeline(ctx context.Context, room string, events []matrix.Event, limited bool, prev, position string, pagesLeft *int) ([]matrix.Event, *backfillGap, error) {
+	newest := firstNonEmpty(position, "sync position")
+	haveTail := len(events) > 0
+	if haveTail {
+		newest = firstNonEmpty(events[len(events)-1].EventID, newest)
 	}
 	gap := func() ([]matrix.Event, *backfillGap, error) {
-		return nil, &backfillGap{From: "own join", To: oldest}, nil
+		// No current join is proven, so conservatively name the entire room range.
+		return nil, &backfillGap{From: "room start", To: newest}, nil
 	}
 	if len(events) > backfillPageSize {
 		return gap()
 	}
 	for i := len(events) - 1; i >= 0; i-- {
-		if ownJoin(events[i], s.creds.UserID) {
+		if ownMembership(events[i], s.creds.UserID) {
+			if !ownJoin(events[i], s.creds.UserID) {
+				return gap()
+			}
 			return events[i+1:], nil, nil
 		}
 	}
@@ -66,12 +90,18 @@ func (s *session) firstTimeline(ctx context.Context, room string, events []matri
 		if err != nil {
 			return nil, nil, err
 		}
+		if !haveTail && len(page.Chunk) > 0 {
+			newest = firstNonEmpty(page.Chunk[0].EventID, newest)
+			haveTail = true
+		}
 		if len(page.Chunk) > backfillPageSize {
 			return gap()
 		}
 		for _, ev := range page.Chunk {
-			oldest = ev.EventID
-			if ownJoin(ev, s.creds.UserID) {
+			if ownMembership(ev, s.creds.UserID) {
+				if !ownJoin(ev, s.creds.UserID) {
+					return gap()
+				}
 				out := make([]matrix.Event, 0, len(older)+len(events))
 				for i := len(older) - 1; i >= 0; i-- {
 					out = append(out, older[i])
