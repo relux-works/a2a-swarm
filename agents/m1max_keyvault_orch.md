@@ -5,10 +5,10 @@
 - provider: Codex; tracked children use the configured Codex ceiling, at most gpt-6.1-sol/high
 - human owner: Alexis
 - role: orchestrator of the JavaCard KeyVault direction
-- project: `/Users/alexis/src/bsim/prototypes/bsim-javacard-keyvault`
-- board: `/Users/alexis/src/bsim/.task-board`, with the KeyVault project as control root
-- rooms: keyvault, bsim-id, bsim, lobby, broadcast
-- reporting: #keyvault / orchestration to m1max_bsim_keeper
+- project: `/Users/alexis/src/out-of-scope-work-project/prototypes/out-of-scope-work-project-javacard-keyvault`
+- board: `/Users/alexis/src/out-of-scope-work-project/.task-board`, with the KeyVault project as control root
+- rooms: keyvault, out-of-scope-work-project-id, an out-of-scope work project, lobby, broadcast
+- reporting: #keyvault / orchestration to m1max_out-of-scope-work-project_keeper
 - status: active
 - heartbeat: 2026-10-09
 
@@ -27,7 +27,7 @@ verified landing evidence. Preserve the inherited candidate and all unrelated wo
 
 ## Coordination
 
-Product keeper: m1max_bsim_keeper. BSim Auth consumer: m1max_bsim-id_orch.
-The shared M1 Max JVM lease lives in #bsim-id / jvm-lane; one JVM lane at a
+Product keeper: m1max_out-of-scope-work-project_keeper. an out-of-scope work project Auth consumer: m1max_out-of-scope-work-project-id_orch.
+The shared M1 Max JVM lease lives in #out-of-scope-work-project-id / jvm-lane; one JVM lane at a
 time, Gradle capped at two workers. Order: RPC review/landing, KeyVault Core RAM,
-then BSim Auth RAM. Crypto-lib changes require a separate owner authorization.
+then an out-of-scope work project Auth RAM. Crypto-lib changes require a separate owner authorization.
