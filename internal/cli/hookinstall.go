@@ -254,14 +254,17 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 	name := "hook uninstall"
 	usage := "usage: a2a hook uninstall --runtime claude|codex|muse [--settings PATH]"
 	if install {
-		name, usage = "hook install", "usage: a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH]"
+		name, usage = "hook install", "usage: a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH]"
 	}
 	fs := newFlagSet(name)
 	settings := fs.String("settings", "", "file to change (claude: "+DefaultHookSettings+", codex: "+DefaultCodexHooks+", muse: "+DefaultMuseHooks+")")
 	runtime := fs.String("runtime", "", "agent runtime: "+runtimeNames+" (required)")
 	var agent *string
+	var binary, installed *string
 	if install {
 		agent = fs.String("agent", "", "agent name the hooks deliver for (required)")
+		binary = fs.String("executable", "", "absolute path to this running binary; record its resolved image")
+		installed = fs.String("installed-command", "", "absolute installed symlink to this running binary; retain its upgrade route")
 	}
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -287,12 +290,27 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 			return usageError{err.Error()}
 		}
 	}
+	var selected hookExecutableSelection
+	if install {
+		choice := hookExecutableChoice{binary: *binary, installed: *installed}
+		fs.Visit(func(f *flag.Flag) {
+			choice.binarySet = choice.binarySet || f.Name == "executable"
+			choice.installedSet = choice.installedSet || f.Name == "installed-command"
+		})
+		if err := choice.validate(); err != nil {
+			return err
+		}
+		selected, err = a.selectHookExecutable(choice)
+		if err != nil {
+			return err
+		}
+	}
 	if rt.name == "muse" {
 		name := ""
 		if install {
 			name = *agent
 		}
-		return a.museHookSettings(*settings, name, install)
+		return a.museHookSettings(*settings, name, install, selected)
 	}
 	path := *settings
 	orig, mode, err := readSettings(path)
@@ -319,10 +337,6 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 	}
 	var removed []string
 	if install {
-		exe, err := a.executable()
-		if err != nil {
-			return err
-		}
 		if rt.env {
 			env.set(config.EnvAgent, marshalNoEscape(*agent))
 			root.set("env", env.marshal())
@@ -331,7 +345,7 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 		if err != nil {
 			return err
 		}
-		prefix := shellQuote(exe)
+		prefix := shellQuote(selected.path)
 		if len(pin) > 0 {
 			p, err := a.pathsFor(*agent)
 			if err != nil {
@@ -371,17 +385,20 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 		if err := ownerMergeDenials(root, install); err != nil {
 			return err
 		}
-	} else {
+	}
+	// No settings or companion rules are written before the final observation.
+	if install {
+		if err := selected.check(); err != nil {
+			return err
+		}
+	}
+	if !rt.env {
 		exe, name := "", ""
 		if install {
-			var err error
-			exe, err = a.executable()
-			if err != nil {
-				return err
-			}
+			exe = selected.path
 			name = *agent
 		}
-		if err := ownerCodexRules(path, exe, name, install); err != nil {
+		if err := ownerCodexRules(path, exe, name, install, selected.aliases...); err != nil {
 			return err
 		}
 	}
@@ -440,22 +457,6 @@ func (a *App) hookTrustNote(rt hookRuntime, path string) {
 	a.printf("  1. start codex in %s (answer the project trust prompt with trust: an untrusted project ignores its .codex/);\n", sanitizeLine(where))
 	a.printf("  2. at \"Hooks need review\" choose \"Trust all and continue\" (or review them with /hooks).\n")
 	a.printf("  Repeat after the command changes (a moved a2a binary makes the hooks untrusted again).\n")
-}
-
-// executable is this binary's absolute path with symlinks resolved.
-func (a *App) executable() (string, error) {
-	get := a.exe
-	if get == nil {
-		get = os.Executable
-	}
-	p, err := get()
-	if err != nil {
-		return "", fmt.Errorf("resolve the a2a binary path: %w", err)
-	}
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		p = r
-	}
-	return filepath.Abs(p)
 }
 
 // readSettings returns the file content (nil when missing) and its mode (0600

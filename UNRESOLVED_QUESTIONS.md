@@ -128,3 +128,23 @@ The new isolated fixtures are not executed in this producer round, by explicit
 instruction. They use memory HTTP responses and private temporary stores, no
 server, tmux or a2a processes. Live wake responsiveness, crash/fsync recovery
 and multiprocess behavior remain unverified.
+
+## Hook executable custody: macOS ACL permissions
+
+The executable-selection review identified that image and ancestry permission
+checks use POSIX mode bits. They do not inspect macOS extended ACLs, which can
+permit another account to modify an otherwise mode-safe image or directory.
+This remains unresolved in hook installation and the shared terminal-refresh
+image validator; no permission gate or Git-marker refusal has been relaxed.
+
+A native ACL implementation and dedicated positive/negative platform fixtures
+are needed before claiming ACL-level exclusion. This producer was restricted to
+formatting, vetting and building, with no tests, installations or live process
+changes. Introducing an unvalidated security parser or shell-output heuristic
+would not establish the requested guarantee, so this finding is explicitly
+retained rather than presented as fixed.
+
+Codex owner-DM companion rules deny known selected, resolved and launch spellings.
+Arbitrary undiscovered aliases and later image versions remain outside these
+spelling-based rules; independent host-terminal checks still apply. No live
+Codex rule-engine or existing-hook fleet verification was performed.
