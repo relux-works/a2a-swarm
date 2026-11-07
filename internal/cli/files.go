@@ -148,7 +148,7 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	toNames, mentions, err := addressees(to.String(), s.server)
+	toNames, mentions, err := s.messageAddressees(to.String())
 	if err != nil {
 		return err
 	}

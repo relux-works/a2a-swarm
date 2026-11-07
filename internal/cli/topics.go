@@ -307,7 +307,7 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	toNames, mentions, err := addressees(to.String(), s.server)
+	toNames, mentions, err := s.messageAddressees(to.String())
 	if err != nil {
 		return err
 	}
@@ -482,7 +482,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	toNames, mentions, err := addressees(to.String(), s.server)
+	toNames, mentions, err := s.messageAddressees(to.String())
 	if err != nil {
 		return err
 	}
@@ -549,6 +549,25 @@ func (s *session) sendThreadContent(ctx context.Context, roomID, label string, h
 		fmt.Fprintf(s.app.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}
 	return id, nil
+}
+
+// messageAddressees makes the selected-server convention visible to callers
+// sending messages. Validate the complete list before emitting any warning.
+func (s *session) messageAddressees(to string) (names, mentions []string, err error) {
+	names, mentions, err = addressees(to, s.server)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, target := range splitList(to) {
+		if target == "all" {
+			continue
+		}
+		if _, server, explicit := strings.Cut(target, ":"); !explicit || server == "" {
+			fmt.Fprintf(s.app.Stderr, "a2a: warning [LOCAL_RECIPIENT]: --to shorthand resolves on selected server %q; use full @name:server IDs for cross-server recipients\n", sanitizeLine(s.server))
+			break
+		}
+	}
+	return names, mentions, nil
 }
 
 // addressees turns --to into header names and m.mentions user ids.

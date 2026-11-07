@@ -572,6 +572,15 @@ Repeated `--to` values are combined like one comma-separated list. Empty segment
 are ignored, duplicates are preserved, and an entirely empty list addresses
 `all`. An invalid recipient in any occurrence refuses the whole command before
 sending.
+
+Recipient shorthand (`name`, `@name`, or a name with an empty server suffix)
+uses the selected identity's server, never a server inferred from the room or
+another account with the same name. `post`, `topic new`, and `attach` emit one
+`LOCAL_RECIPIENT` warning on stderr when such shorthand occurs in a valid
+recipient list. Use a full ID such as `@bob:remote.example` for a cross-server
+recipient. Explicit IDs with a server, `all`, and the default recipient list do
+not produce this warning; stdout still contains only the published event ID.
+
 ```bash
 a2a post a2a-swarm --topic bridge-daemon --kind question --to m1max_swarm_keeper "Go or Node for the bridge?"
 a2a post a2a-swarm --kind answer --re '$Q1...' @answer.md
