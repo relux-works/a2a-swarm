@@ -158,6 +158,35 @@ func TestRunCommitGate(t *testing.T) {
 		}
 	}
 	check(pin, base, "")
+	// Descriptor plants change committed blobs while retaining source and vendor.
+	// Each refusal is paired with the original descriptor's restored positive.
+	if err := os.WriteFile(filepath.Join(repo, "skill-build.json"), []byte(clean["skill-build.json"].data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, descriptor := range []struct{ name, data string }{
+		{"swapped-source", strings.ReplaceAll(clean["skill-build.json"].data, "cmd/a2a", "tools/vendorcheck")},
+		{"garbage", "garbage\n"},
+		{"duplicate-selector", strings.ReplaceAll(clean["skill-build.json"].data, `"source_dir":"cmd/a2a"`, `"source_dir":"other","source_dir":"cmd/a2a"`)},
+		{"trailing-object", clean["skill-build.json"].data + "{}"},
+		{"swapped-root", strings.ReplaceAll(clean["skill-build.json"].data, `"build_root":"."`, `"build_root":"cmd"`)},
+		{"unknown-key", strings.ReplaceAll(clean["skill-build.json"].data, `"schema_version":1`, `"schema_version":1,"unknown":true`)},
+	} {
+		t.Logf("descriptor plant=%s (correct worktree descriptor remains)", descriptor.name)
+		planted := cloneFiles(clean)
+		planted["skill-build.json"] = fixtureFile{descriptor.data, "100644"}
+		selected := fixtureCommit(t, repo, planted, pin, "descriptor plant")
+		fixtureGit(t, repo, "", "update-ref", buildRef, selected)
+		check(selected, base, "build_descriptor_invalid: skill-build.json")
+		fixtureGit(t, repo, "", "update-ref", buildRef, pin)
+		check(pin, base, "")
+	}
+	// Equivalent JSON with reordered keys remains a supported descriptor.
+	reordered := cloneFiles(clean)
+	reordered["skill-build.json"] = fixtureFile{`{"targets":{"a2a":{"source_dir":"cmd/a2a","build_root":".","driver":"go-repository-v1"}},"schema_version":1}`, "100644"}
+	reorderedPin := fixtureCommit(t, repo, reordered, pin, "reordered descriptor")
+	fixtureGit(t, repo, "", "update-ref", buildRef, reorderedPin)
+	check(reorderedPin, base, "")
+	fixtureGit(t, repo, "", "update-ref", buildRef, pin)
 	// Export-ignore and *.lock cannot omit the committed embedded lock file.
 	if _, ok := clean["vendor/fixture.invalid/dep/receipt.lock"]; !ok {
 		t.Fatal("ignored-path positive control absent")

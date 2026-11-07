@@ -73,8 +73,8 @@ func run(args []string, out io.Writer) error {
 	if _, err := git(ctx, *repository, nil, "merge-base", "--is-ancestor", *commit, buildRef); err != nil {
 		return errors.New("build_pin_not_on_branch")
 	}
-	if _, ok := selected["skill-build.json"]; !ok {
-		return errors.New("build_descriptor_missing")
+	if err := checkDescriptor(ctx, *repository, selected); err != nil {
+		return err
 	}
 	scratch, err := os.MkdirTemp("", "vendorcheck-")
 	if err != nil {

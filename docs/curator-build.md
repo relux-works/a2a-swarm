@@ -43,6 +43,9 @@ containing the workflow (the initial pin does not contain it). The scheduled
 check detects loss of registered pins, not every rewrite preserving those
 pins or loss of unregistered intermediate commits. It detects violations;
 the owner ruleset prevents them. Do not treat a pending workflow as enforcement.
+The last anchor is checked even without a terminating newline. Missing main
+and anchor-file reads fail with `build_main_unavailable` and
+`build_anchor_file_unavailable: docs/curator-build-pins.txt`, respectively.
 
 ## Committed-tree gate
 
@@ -64,6 +67,14 @@ is an ancestor of `origin/curator-build`. A source change fails with
 still fails with `source_tree_drift: go.mod`. An unretained pin fails with
 `build_pin_not_on_branch`.
 
+The committed `skill-build.json` must declare schema 1 and exactly one target,
+`a2a`, with driver `go-repository-v1`, build root `.` and source `cmd/a2a`.
+JSON key order and whitespace do not matter. Swapped selectors, malformed JSON,
+duplicate or unknown keys, extra targets and trailing JSON fail with
+`build_descriptor_invalid: skill-build.json`; a missing file fails with
+`build_descriptor_missing`. Descriptor validation reads the selected blob
+before vendor generation; a correct worktree file cannot repair a bad commit.
+
 The gate reads Git trees and blobs directly, independent of HEAD, worktree,
 ignore rules and archive filters. It regenerates vendor from the committed
 source with network-disabled Go settings and checks names, bytes and Git
@@ -75,8 +86,8 @@ Timestamps and directory permissions are not Git tree properties.
 The narrow tests exercise the complete CLI with local dependency fixtures:
 source and replace plants, changed HEAD, clean-looking worktree over a bad
 commit, ignored embedded files, missing paths, executable modes, unreachable
-main and unretained pins, plus restored positive controls. They require no
-vendor tree on main. The existing hosted `go` workflow remains unchanged.
+main, unretained pins and invalid committed descriptors, plus restored positive
+controls. They require no vendor tree on main. The existing hosted `go` workflow remains unchanged.
 
 `make curator-command BUILD_REPOSITORY="$BUILD_CHECKOUT" OUTPUT="$ARTIFACT"`
 is a separate maintainer compilation check of that checkout, with offline Go
