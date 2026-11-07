@@ -27,13 +27,16 @@ func hostStateFixture(t *testing.T) Paths {
 	return p
 }
 
-// Proves the Host-enrolled public SaveState path preserves actual data/custody
+// Proves the v2 Host-enrolled public SaveState path preserves actual data/custody
 // and private mode through reload; legacy non-enrolled writing remains valid.
 func TestHostStatePublicSave(t *testing.T) {
 	p := hostStateFixture(t)
 	scope, attachment, now := hostFixture()
 	s := State{NextBatch: "new", Lease: &attachment.Lease}
 	if err := s.EnrollHost(attachment, scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnableHostNotifications(attachment, scope, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := SaveState(p, "member", s); err != nil {
@@ -58,11 +61,60 @@ func TestHostStatePublicMissingNamespace(t *testing.T) {
 	if err := s.EnrollHost(attachment, scope, now); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.EnableHostNotifications(attachment, scope, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := SaveState(p, "member", s); !errors.Is(err, ErrHostStateScope) {
 		t.Fatalf("unprovisioned namespace accepted: %v", err)
 	}
 	if _, err := os.Lstat(p.Base); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("namespace created: %v", err)
+	}
+}
+
+// Main-era v1 enrollment saves still accept an existing 0755 directory. The
+// same namespace refuses v2 admission without changing the v1 file; after the
+// owner provisions private mode, the identical v2 candidate can be saved.
+func TestHostStateV1WriterCompatibility(t *testing.T) {
+	p := hostStateFixture(t)
+	if err := os.Chmod(filepath.Join(p.Base, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scope, attachment, now := hostFixture()
+	s := State{Lease: &attachment.Lease, NextBatch: "v1"}
+	if err := s.EnrollHost(attachment, scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(p, "member", s); err != nil {
+		t.Fatalf("v1 writer compatibility: %v", err)
+	}
+	got, err := LoadState(p, "member")
+	if err != nil || !reflect.DeepEqual(got, s) {
+		t.Fatalf("v1 reload: %v", err)
+	}
+	before, err := os.ReadFile(p.StateFile("member"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnableHostNotifications(attachment, scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(p, "member", s); !errors.Is(err, ErrHostStateScope) {
+		t.Fatalf("v2 accepted nonprivate directory: %v", err)
+	}
+	after, err := os.ReadFile(p.StateFile("member"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("refused v2 upgrade changed the v1 file")
+	}
+	if err := os.Chmod(filepath.Join(p.Base, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(p, "member", s); err != nil {
+		t.Fatalf("private v2 control: %v", err)
+	}
+	got, err = LoadState(p, "member")
+	if err != nil || !reflect.DeepEqual(got, s) {
+		t.Fatalf("v2 reload: %v", err)
 	}
 }
 

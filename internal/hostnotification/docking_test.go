@@ -58,28 +58,107 @@ type dockResult struct {
 // This is a fixture artifact check, not trust discovery. The runner must first
 // accept its counterpart's exact source/test/binary handoff. No helper is found
 // on PATH, guessed from a checkout or admitted by its own declaration.
-func checkDockArtifact(path, digest string) error {
+func openDockArtifact(path, digest string) (*os.File, error) {
 	if !filepath.IsAbs(path) || len(digest) != 64 || strings.ToLower(digest) != digest {
-		return errDockArtifact
+		return nil, errDockArtifact
 	}
 	if _, err := hex.DecodeString(digest); err != nil {
-		return errDockArtifact
+		return nil, errDockArtifact
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Size() < 1 || info.Size() > 64<<20 {
-		return errDockArtifact
+		return nil, errDockArtifact
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return errDockArtifact
+		return nil, errDockArtifact
 	}
-	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Mode().Perm()&0111 == 0 || opened.Size() != info.Size() {
+		f.Close()
+		return nil, errDockArtifact
+	}
 	h := sha256.New()
 	n, err := io.Copy(h, io.LimitReader(f, (64<<20)+1))
 	if err != nil || n != info.Size() || hex.EncodeToString(h.Sum(nil)) != digest {
-		return errDockArtifact
+		f.Close()
+		return nil, errDockArtifact
 	}
-	return nil
+	return f, nil
+}
+
+func checkDockArtifact(path, digest string) error {
+	f, err := openDockArtifact(path, digest)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// Execute the descriptor whose contents were hashed, never the supplied path.
+// The two existing protocol endpoints keep fds 3/4; the artifact is fd 5.
+// An owner-supplied artifact must still be immutable during its execution.
+func dockCommand(ctx context.Context, artifact, wire, control *os.File, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "/dev/fd/5", args...)
+	cmd.ExtraFiles = []*os.File{wire, control, artifact}
+	return cmd
+}
+
+func TestDockPinnedArtifactHelper(t *testing.T) {
+	if os.Getenv("A2A_TEST_DOCK_PINNED_HELPER") != "1" {
+		return
+	}
+	_, _ = os.Stdout.WriteString("descriptor-original\n")
+	os.Exit(0)
+}
+
+// A real inert child still executes the hashed binary after its pathname is
+// replaced. This exercises the same fd layout as the optional docking runner.
+func TestDockArtifactPinnedExecution(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := os.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	path := filepath.Join(t.TempDir(), "fixture.test")
+	output, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(output, h), input)
+	closeErr := output.Close()
+	if copyErr != nil || closeErr != nil {
+		t.Fatalf("copy fixture: %v %v", copyErr, closeErr)
+	}
+	artifact, err := openDockArtifact(path, hex.EncodeToString(h.Sum(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Close()
+	if err := os.Rename(path, path+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'replacement\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	placeholder, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer placeholder.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := dockCommand(ctx, artifact, placeholder, placeholder, "-test.run=^TestDockPinnedArtifactHelper$")
+	cmd.Env = []string{"A2A_TEST_DOCK_PINNED_HELPER=1"}
+	got, err := cmd.CombinedOutput()
+	if err != nil || string(got) != "descriptor-original\n" {
+		t.Fatalf("hashed descriptor execution: %q %v", got, err)
+	}
 }
 
 // Control messages are fixture metadata, never raw stores or peer payloads.
@@ -199,9 +278,11 @@ func TestHostCounterpartDock(t *testing.T) {
 
 func runDockCase(t *testing.T, f *adapterFixture, path, digest, mode string) error {
 	t.Helper()
-	if err := checkDockArtifact(path, digest); err != nil {
+	artifact, err := openDockArtifact(path, digest)
+	if err != nil {
 		return err
 	}
+	defer artifact.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	control, childControl := socketPair(t, syscall.SOCK_STREAM)
@@ -215,10 +296,9 @@ func runDockCase(t *testing.T, f *adapterFixture, path, digest, mode string) err
 		return errDockProcess
 	}
 	defer controlFile.Close()
-	cmd := exec.CommandContext(ctx, path, "-test.run=^TestSourceNotificationDockHelper$", "-test.count=1", "-test.timeout=20s")
+	cmd := dockCommand(ctx, artifact, wireFile, controlFile, "-test.run=^TestSourceNotificationDockHelper$", "-test.count=1", "-test.timeout=20s")
 	cmd.Env = []string{"HOST_NOTIFICATION_DOCK_HELPER=1"}
 	cmd.Dir = t.TempDir()
-	cmd.ExtraFiles = []*os.File{wireFile, controlFile}
 	stdout, stderr := &dockOutput{}, &dockOutput{}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = 2 * time.Second

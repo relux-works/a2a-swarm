@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"reflect"
 	"time"
@@ -126,6 +127,8 @@ func (s State) validateHostNotifications() error {
 // PrepareHostNotification changes the one shared reservation and its exact
 // correlation together. Persist the resulting State before any transport I/O.
 // legacy is the existing caller's migration timestamp, not another throttle.
+// On ErrNotificationSpacing only, the shared ledger preparation is retained;
+// the caller must save it under the same lock before reporting suppression.
 func (s *State) PrepareHostNotification(a HostAttachment, actual HostScope, b HostNotificationBinding, digest string, now, legacy time.Time) (NotificationAttemptKey, error) {
 	var empty NotificationAttemptKey
 	if err := s.CheckHostEnrollment(a, actual, now); err != nil {
@@ -145,6 +148,9 @@ func (s *State) PrepareHostNotification(a HostAttachment, actual HostScope, b Ho
 	}
 	token, err := next.Notification.reserve("host", actual.Session, actual.Generation, now, false)
 	if err != nil {
+		if errors.Is(err, ErrNotificationSpacing) {
+			s.Notification = next.Notification
+		}
 		return empty, err
 	}
 	k := NotificationAttemptKey{Token: token, Session: actual.Session, Generation: actual.Generation, NoticeSHA256: digest, Binding: b}

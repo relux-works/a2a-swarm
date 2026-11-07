@@ -183,6 +183,79 @@ func TestAdapterPersistBeforeTrigger(t *testing.T) {
 	})
 }
 
+// A nonzero legacy timestamp suppresses only the first spacing interval. The
+// migration is saved before refusal, with no wire I/O or attempt; reloading
+// and retrying cannot move that interval forward. The zero-legacy neighbor
+// rings immediately, and both cases admit exactly one trigger.
+func TestAdapterLegacyMigrationSpacing(t *testing.T) {
+	for _, legacyEvidence := range []bool{false, true} {
+		t.Run(fmt.Sprint(legacyEvidence), func(t *testing.T) {
+			withAdapter(t, func(f *adapterFixture) {
+				now := f.clock()
+				var legacy time.Time
+				if legacyEvidence {
+					legacy = now.Add(-time.Minute)
+					before := f.load(t)
+					for retry := 0; retry < 2; retry++ {
+						key, r, err := f.a.Notify(context.Background(), []byte("notice"), limit(), legacy)
+						if !errors.Is(err, config.ErrNotificationSpacing) || key != (config.NotificationAttemptKey{}) || r.Contract != "" {
+							t.Fatalf("migration refusal: key=%+v response=%+v err=%v", key, r, err)
+						}
+						noRequest(t, f.peer)
+						got := f.load(t)
+						if got.Notification.Version != 1 || !got.Notification.NotBefore.Equal(now.Add(config.NotificationEvery)) || got.Notification.Reservation != nil {
+							t.Fatal("suppression failed to persist the one-time migration")
+						}
+						got.Notification = before.Notification
+						if !reflect.DeepEqual(got, before) {
+							t.Fatal("suppression changed custody, attempts or unrelated state")
+						}
+					}
+					f.now.Add(int64(config.NotificationEvery))
+				}
+				calls := 0
+				done := f.serve(func(r Request) (Response, error) {
+					calls++
+					if r.Method != "trigger" {
+						return Response{}, errors.New("expected one trigger")
+					}
+					return acceptedResponse(r), nil
+				})
+				key, r, err := f.a.Notify(context.Background(), []byte("notice"), limit(), legacy)
+				joined(t, done)
+				if err != nil || r.Result != "accepted" || key.Token == "" || calls != 1 {
+					t.Fatalf("post-spacing trigger: calls=%d response=%+v err=%v", calls, r, err)
+				}
+				if _, _, err := f.a.Notify(context.Background(), []byte("notice"), limit(), legacy); !errors.Is(err, config.ErrNotificationSpacing) {
+					t.Fatalf("second trigger was not suppressed: %v", err)
+				}
+				got := f.load(t)
+				if len(got.HostEnrollment.Attempts.Entries) != 1 || got.HostEnrollment.Attempts.Entries[0].State != "accepted" || got.Notification.Reservation != nil {
+					t.Fatal("migration did not lead to exactly one completed attempt")
+				}
+			})
+		})
+	}
+}
+
+// Persistence failure takes precedence over spacing, and cannot grant I/O.
+// The successful migration/write path is the neighboring test above.
+func TestAdapterLegacyMigrationWriteRefusal(t *testing.T) {
+	withAdapter(t, func(f *adapterFixture) {
+		before := f.load(t)
+		if err := os.Chmod(filepath.Join(f.paths.Base, "state"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := f.a.Notify(context.Background(), []byte("notice"), limit(), f.clock().Add(-time.Minute)); !errors.Is(err, config.ErrHostStateScope) {
+			t.Fatalf("failed migration save reported as spacing: %v", err)
+		}
+		noRequest(t, f.peer)
+		if !reflect.DeepEqual(before, f.load(t)) {
+			t.Fatal("failed migration save changed state")
+		}
+	})
+}
+
 // Proves only an original conclusive refusal releases its reservation and a
 // nearby valid successor can trigger, with a different source and transport ID.
 func TestAdapterOriginalRefusal(t *testing.T) {

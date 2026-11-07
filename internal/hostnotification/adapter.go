@@ -95,16 +95,24 @@ func (a *Adapter) Notify(ctx context.Context, notice []byte, deadline, legacy ti
 	digest := sha256.Sum256(notice)
 	var requestID string
 	err := a.control(ctx, deadline, func(deadline time.Time) error {
+		var prepareErr error
 		_, err := config.UpdateStateBy(a.paths, a.name, deadline, func(s *config.State) error {
 			if !a.matches(*s) {
 				return config.ErrHostEnrollment
 			}
-			var err error
-			key, err = s.PrepareHostNotification(a.attachment, a.actual, a.client.binding, hex.EncodeToString(digest[:]), a.clock(), legacy)
-			return err
+			key, prepareErr = s.PrepareHostNotification(a.attachment, a.actual, a.client.binding, hex.EncodeToString(digest[:]), a.clock(), legacy)
+			if errors.Is(prepareErr, config.ErrNotificationSpacing) {
+				// Save migration/clock clamping in this same locked write,
+				// even though no attempt or outward effect is admitted.
+				return nil
+			}
+			return prepareErr
 		})
 		if err != nil {
 			return err
+		}
+		if prepareErr != nil {
+			return prepareErr
 		}
 		requestID, err = NewRequestID()
 		if err != nil {

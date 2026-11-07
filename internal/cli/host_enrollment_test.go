@@ -210,3 +210,57 @@ func TestHostEnrollmentNoLegacyReservation(t *testing.T) {
 		}
 	}
 }
+
+// CLI entry points load the actual persisted v2 envelope. Neither live nor
+// expired custody admits bind or any hook runtime/event, and refusals preserve
+// the file byte-for-byte. Legacy successful controls live beside this test.
+func TestHostNotificationEnrollmentLegacyCLIFences(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, expired := range []bool{false, true} {
+		t.Run(map[bool]string{false: "live", true: "expired"}[expired], func(t *testing.T) {
+			e, room := world(t)
+			e.hook("alice", "prompt", `{}`).ok(t)
+			e.hs.inject(room, "@bob:test.local", toMsg("bob", "request", "pending"))
+			st := enrolledHostState(t, e)
+			a := st.HostEnrollment.Attachment
+			if err := config.WithHostNotificationEnrollment(e.paths(), "alice", time.Now().Add(time.Second), a, a.Scope, e.now, func(string) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			persisted := e.state("alice")
+			if persisted.HostEnrollment == nil || persisted.HostEnrollment.Version != 2 || persisted.HostEnrollment.ReceiptRef == "" {
+				t.Fatal("fixture did not persist v2 enrollment")
+			}
+			before, err := os.ReadFile(e.paths().StateFile("alice"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.extra[EnvSessionID] = a.Scope.Session
+			export := filepath.Join(t.TempDir(), "session-env")
+			e.extra[envClaudeEnvFile] = export
+			if expired {
+				e.now = func() time.Time { return a.Lease.Expires.Add(time.Second) }
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			r := e.runCtx(ctx, "--as", "alice", "bind", "--runtime", "codex", "--owner-pid", "123", "--session-id", a.Scope.Session, "--interval", "1s", "--retry-max", "2s", "--max-wakes-per-hour", "2")
+			if r.code != ExitError || !strings.Contains(r.stderr, config.ErrHostEnrollment.Error()) || r.stdout != "" {
+				t.Fatalf("v2 bind not refused: %+v", r)
+			}
+			for _, runtime := range []string{"codex", "claude", "muse"} {
+				for _, event := range []string{"session-start", "prompt", "stop"} {
+					r := e.hookRT(runtime, "alice", event, `{"session_id":"host-session"}`).ok(t)
+					if r.stdout != "" || r.stderr != "" {
+						t.Fatalf("v2 hook emitted output: %s/%s %+v", runtime, event, r)
+					}
+				}
+			}
+			after, err := os.ReadFile(e.paths().StateFile("alice"))
+			if err != nil || string(before) != string(after) {
+				t.Fatal("v2 CLI refusal changed persisted state")
+			}
+			if _, err := os.Stat(export); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("v2 hook exported a legacy session: %v", err)
+			}
+		})
+	}
+}

@@ -93,14 +93,17 @@ Version2 State uses compact JSON so indentation cannot make a valid ledger
 unreadable. Transport recovery and integrated counterpart validation remain
 required before any Host effect can be enabled.
 
-Host-enrolled state writes use one opened configuration/state-directory pair,
+Version2 Host-enrolled state writes use one opened configuration/state-directory pair,
 a private exclusive temporary, file sync, atomic directory-relative replacement
 and state-directory sync. The configuration directory is synced before the
 file write to retain its state-directory entry. The admitted configuration
 namespace must already exist. The state directory must be private (0700), and
 an existing state file must be regular and 0600; symlink entries refuse.
 The maximum encoded source State is 16 MiB, separate from the Host journal and
-wire limits. Legacy writes without enrollment keep their existing behavior.
+wire limits. Writes without enrollment and main-era version1 enrollment writes
+keep their existing writer behavior, including existing 0755 state directories.
+Upgrading to version2 requires the strict namespace; a failed upgrade preserves
+the version1 file and grants no callback or transport.
 
 An error after replacement is explicitly uncertain: new bytes may exist, but
 the caller must not start transport or infer nonapplication. Returned failures
@@ -186,6 +189,12 @@ go test ./internal/hostnotification -run '^TestHostCounterpartDock$' -count=1 -v
 
 With neither input this check is skipped and docking remains unqualified. A
 partial input pair, invalid executable or mismatched digest fails the check.
+The runner hashes the opened regular-file descriptor and executes that same
+descriptor via inherited fd 5; pathname replacement cannot substitute a later
+executable. The supplier must keep the artifact immutable during the run: an
+open descriptor does not prevent in-place writes by another process. The
+ordinary pinned-execution test replaces the pathname with a different file
+and checks that the original inert helper still runs on the hosted platforms.
 The test owns finite subprocess/socket cleanup and uses the actual Source
 enrollment and transaction with the counterpart's actual private engine. The
 initial cases cover accepted/same-endpoint lookup and original input-not-ready

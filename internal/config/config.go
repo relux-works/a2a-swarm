@@ -576,7 +576,8 @@ func SaveState(p Paths, name string, s State) error {
 		return ErrHostEnrollment
 	}
 	path := p.StateFile(name)
-	if s.HostEnrollment == nil {
+	strict := s.HostEnrollment != nil && s.HostEnrollment.Version == 2
+	if !strict {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return err
 		}
@@ -585,7 +586,7 @@ func SaveState(p Paths, name string, s State) error {
 	if err != nil {
 		return err
 	}
-	if s.HostEnrollment != nil {
+	if strict {
 		return writeHostStateAtomic(p, name, append(data, '\n'))
 	}
 	return writeSecretAtomic(path, name, append(data, '\n'))
