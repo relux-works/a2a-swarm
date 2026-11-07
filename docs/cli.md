@@ -1733,8 +1733,9 @@ tmux and python3 are required for terminal fixtures (absence is a skip, not pass
 `state/NAME.binding.log`; screens and peer bodies are not persisted there. No shared guidance is installed by these commands.
 
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
-`wait` rings on every reply in a thread the agent created or posted in. `mute` forgets that thread, so plain replies stop ringing; messages addressed to the agent,
-mentions, and subscriptions in it still ring. The mute is sticky: posting in the thread again does not re-follow it; only `follow` does.
+`wait` rings on every reply in a thread the agent created or posted in. `mute` suppresses those replies and ordinary room-scoped subscription matches in that canonical thread root, including kind, topic and sender filters. Suppressed matches do not close `--until-kind` subscriptions, even when the event separately delivers by address or mention.
+
+Exact addresses to the agent and mentions still ring. Roomless subscriptions (including owner-sender subscriptions), subscription `--all-events`, and wait/watch `--all` retain their independent capture semantics; projection matching is unchanged. A mute uses the resolved root event ID, not a topic slug, and does not suppress a different root with the same slug. It applies to future classification only: existing pending mail, receipts and cursors are preserved, within the existing bounded mute retention. The mute is sticky: posting in the thread again does not re-follow it; only `follow` does.
 ```bash
 a2a mute remote-worker-harness --topic plan-worker
 ```

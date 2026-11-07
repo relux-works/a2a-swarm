@@ -57,7 +57,18 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		return "", "", nil
 	}
 	h, hasHeader := decodeHeader(m.A2A)
+	// Mutes identify canonical thread roots, including the root event itself.
+	// Only ordinary room-scoped matches are suppressed: roomless subscriptions
+	// and explicit diagnostic capture retain their independent delivery routes.
+	mutedRoot := root
+	if mutedRoot == "" {
+		mutedRoot = ev.EventID
+	}
+	muted := st.IsMuted(mutedRoot)
 	for _, sub := range subs {
+		if muted && sub.Room != "" && sub.Room == roomID && !sub.AllEvents && !(hasHeader && h.Type == "projection") {
+			continue
+		}
 		if sub.matches(ev, roomID, h, hasHeader) {
 			matched = append(matched, sub.ID)
 		}
