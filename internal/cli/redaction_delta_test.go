@@ -313,6 +313,7 @@ func TestDeltaTransactionFalseSuccess(t *testing.T) {
 	}
 }
 
+// Initial post-join redactions require corroboration; neither authority case replays message history.
 func TestDeltaInitialSyncAuthority(t *testing.T) {
 	for _, applied := range []bool{false, true} {
 		t.Run(map[bool]string{false: "powerless", true: "applied"}[applied], func(t *testing.T) {
@@ -339,7 +340,7 @@ func TestDeltaInitialSyncAuthority(t *testing.T) {
 						return nil, err
 					}
 					resp.Body.Close()
-					entity["rooms"] = map[string]any{"join": map[string]any{room: map[string]any{"timeline": map[string]any{"events": []matrix.Event{red}}}}}
+					entity["rooms"] = map[string]any{"join": map[string]any{room: map[string]any{"timeline": map[string]any{"events": []matrix.Event{firstSyncJoin("@alice:test.local", "$join"), red}}}}}
 					raw, _ := json.Marshal(entity)
 					resp.Body = io.NopCloser(strings.NewReader(string(raw)))
 					resp.ContentLength = int64(len(raw))

@@ -20,10 +20,16 @@ const syncFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":
 	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"state":{"lazy_load_members":true,"types":[]},"timeline":{"limit":100,"types":["m.room.message","m.room.redaction"]}}}`
 
-// initialFilter is used for the very first sync: we only need a next_batch.
+// initialFilter is the projector's first-sync baseline: only next_batch is needed.
 const initialFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
 	`"state":{"types":[]},"timeline":{"limit":1,"types":["m.room.message","m.room.redaction"]}}}`
+
+// First delivery needs membership in timeline order to locate our own join.
+// The projector retains its independent initialFilter/baseline behavior.
+const firstDeliveryFilter = `{"presence":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
+	`"room":{"ephemeral":{"not_types":["*"]},"account_data":{"not_types":["*"]},` +
+	`"state":{"types":[]},"timeline":{"limit":100,"types":["m.room.message","m.room.redaction","m.room.member"]}}}`
 
 // relevance explains why an event is relevant to me; "" means not relevant.
 type relevance string

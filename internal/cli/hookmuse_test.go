@@ -373,3 +373,54 @@ func TestMuseNetworkFailurePreservesPending(t *testing.T) {
 		t.Fatalf("surfaced failure repeated or new mail lost: %+v", r)
 	}
 }
+
+// Only Muse's count-only notices require approved inbox execution. Every hook
+// envelope, gap-only notice and long notice retains the legacy runtime bytes
+// and Muse's bounded template; no configuration change is involved.
+func TestMuseInboxApprovalText(t *testing.T) {
+	for _, d := range []doorbell{
+		{total: 1, types: map[string]int{string(relTo): 1}},
+		{gaps: 1},
+		{total: 16, types: map[string]int{string(relTo): 16}, names: []string{strings.Repeat("a", 64), strings.Repeat("b", 64)}, kinds: []string{"question", "system", "decision"}},
+	} {
+		for _, runtime := range []string{"muse", "claude", "codex"} {
+			rt, err := lookupRuntime(runtime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ev := range hookEvents {
+				out, err := hookOutput(rt, ev, d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				text := doorbellText(d)
+				if runtime == "muse" {
+					var envelope struct {
+						SystemMessage      string `json:"systemMessage"`
+						HookSpecificOutput struct {
+							AdditionalContext string `json:"additionalContext"`
+						} `json:"hookSpecificOutput"`
+					}
+					if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+						t.Fatal(err)
+					}
+					text = envelope.SystemMessage
+					if ev.arg != "stop" {
+						text = envelope.HookSpecificOutput.AdditionalContext
+					}
+					if !strings.Contains(text, "`a2a inbox` with per-command approval, outside the default Muse sandbox") || len(text) > doorbellMax {
+						t.Fatalf("Muse %s: %q (%d)", ev.arg, text, len(text))
+					}
+				} else {
+					raw, err := json.Marshal(rt.render(ev, text))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if out != string(raw)+"\n" || strings.Contains(out, "approval") {
+						t.Fatalf("legacy bytes changed: %s", out)
+					}
+				}
+			}
+		}
+	}
+}

@@ -126,6 +126,11 @@ func eventRedactions(room string, events []matrix.Event) []config.Redaction {
 // content decoding. Reads use an atomic mailbox snapshot, never a nested state
 // lock (some existing consumers already hold it). Sync owns durable mutation.
 func (s *session) installRedactionCache() {
+	s.installRedactionCacheContext(context.Background())
+}
+
+// First-sync recovery also bounds corroboration requests made by this filter.
+func (s *session) installRedactionCacheContext(ctx context.Context) {
 	seen := map[config.Redaction]bool{}
 	var mu sync.Mutex
 	s.client.FilterEvents = func(room string, events []matrix.Event) ([]matrix.Event, error) {
@@ -166,7 +171,7 @@ func (s *session) installRedactionCache() {
 			}
 			same := matrix.ValidVerificationID(ev.Sender, '@') && senders[target] == ev.Sender
 			if !same {
-				original, fetchErr := s.client.ObserveRedactionTarget(context.Background(), room, target)
+				original, fetchErr := s.client.ObserveRedactionTarget(ctx, room, target)
 				if fetchErr == nil {
 					same = original.IsRedacted() || (matrix.ValidVerificationID(ev.Sender, '@') && original.Sender == ev.Sender)
 				}

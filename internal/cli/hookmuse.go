@@ -27,6 +27,8 @@ func renderMuseHook(ev hookEvent, text string) any {
 
 const museHookGap = " a2a hook gap: an earlier check failed. Run `a2a read` to check the room history."
 
+const museInboxApproval = " with per-command approval, outside the default Muse sandbox"
+
 // Diagnostics are local, counts-only metadata. An append-only error journal
 // and a successfully surfaced byte offset retain failures across empty hooks,
 // pauses, crashes and concurrent checks. They are not mailbox receipts.

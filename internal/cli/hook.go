@@ -655,10 +655,14 @@ func doorbellOf(items []waitItem, server string, members map[string]bool) doorbe
 // doorbellText renders the template, dropping kinds and sender names from the
 // longer list first (counted as "more") until it fits doorbellMax characters.
 func doorbellText(d doorbell) string {
+	return doorbellTextLimit(d, doorbellMax)
+}
+
+func doorbellTextLimit(d doorbell, limit int) string {
 	names, kinds := len(d.names), len(d.kinds)
 	for {
 		t := d.render(names, kinds)
-		if len(t) <= doorbellMax || (names == 0 && kinds == 0) {
+		if len(t) <= limit || (names == 0 && kinds == 0) {
 			return t
 		}
 		if kinds > names {
@@ -723,7 +727,11 @@ func hookOutput(rt hookRuntime, ev hookEvent, d doorbell) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(rt.render(ev, doorbellText(d))); err != nil {
+	text := doorbellText(d)
+	if rt.name == "muse" {
+		text = strings.ReplaceAll(doorbellTextLimit(d, doorbellMax-len(museInboxApproval)), "`a2a inbox`", "`a2a inbox`"+museInboxApproval)
+	}
+	if err := enc.Encode(rt.render(ev, text)); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
