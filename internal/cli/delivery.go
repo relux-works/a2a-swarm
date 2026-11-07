@@ -180,6 +180,9 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 	var b batch
 	me := s.creds.UserID
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
+		if s.adminRoomExcluded(roomID) {
+			continue
+		}
 		b.entries = append(b.entries, inviteEntry(roomID, since, resp.Rooms.Invite[roomID].InviteState.Events, me, s.server))
 	}
 	byID := map[string]Sub{}
@@ -190,6 +193,9 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 	seen := map[string]bool{}
 	// Iterate rooms in a stable order so output is deterministic.
 	for _, roomID := range sortedKeys(resp.Rooms.Join) {
+		if s.adminRoomExcluded(roomID) {
+			continue
+		}
 		jr := resp.Rooms.Join[roomID]
 		keep := func(ev matrix.Event) bool {
 			if ev.Type == "m.room.redaction" || ev.IsRedacted() {
@@ -275,6 +281,11 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {
 			return nil, err
+		}
+		for _, entry := range mb.Pending() {
+			if s.adminRoomExcluded(entry.Room) {
+				return nil, errors.New("admin-room retained mailbox refused; private owner recovery required")
+			}
 		}
 		return fn(cur, mb)
 	}
@@ -381,6 +392,9 @@ func (s *session) savePosition(ctx context.Context, resp matrix.SyncResponse, de
 		b.redactions = append(b.redactions, eventRedactions(roomID, jr.Timeline.Events)...)
 	}
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
+		if s.adminRoomExcluded(roomID) {
+			continue
+		}
 		b.entries = append(b.entries, inviteEntry(roomID, "", resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
 	}
 	return s.persist(ctx, b, "", resp.NextBatch, deadline)
