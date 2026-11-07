@@ -105,7 +105,7 @@ func TestPrincipalRepairAndPlainMessages(t *testing.T) {
 
 // Host CLI round-trips exact IDs offline, canonicalizes duplicates and leaves
 // the owner pin unchanged. Invalid shorthand cannot overwrite the stored list;
-// clear explicitly disables the policy and the file remains private.
+// clear explicitly disables the policy by removing its private file.
 func TestHostPrincipalsCLI(t *testing.T) {
 	e := newEnv(t) // No identity credentials are provisioned.
 	f := ownerFiles(e.paths(), "worker")
@@ -143,6 +143,9 @@ func TestHostPrincipalsCLI(t *testing.T) {
 		t.Fatal("principal config changed the owner pin")
 	}
 	e.as("worker", "host", "principals", "clear").ok(t)
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("clear did not restore absent-file path: %v", err)
+	}
 	if out := e.as("worker", "host", "principals", "show", "--json").ok(t).stdout; strings.TrimSpace(out) != `{"v":1,"principals":[]}` {
 		t.Fatalf("clear readback = %s", out)
 	}

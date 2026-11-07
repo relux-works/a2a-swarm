@@ -27,7 +27,7 @@ func TestPrincipalDeliveryWithoutStoredRow(t *testing.T) {
 	const room = "!later:fixture.invalid"
 	for _, stored := range [][]Sub{nil, {{ID: "stale", Source: principalSubSource, SubSelector: SubSelector{Room: room, From: fixturePrincipal, AllEvents: true}, CreatedAt: "2099-01-01T00:00:00Z"}}} {
 		for _, sender := range []string{fixturePrincipal, "@Principal:authority.invalid", "@principal:other.invalid", "@copy:fixture.invalid"} {
-			rel, _, _ := classify(principalFixtureEvent(sender), room, "@worker:fixture.invalid", "worker", config.State{}, principalDeliverySubs(stored, []string{room}, []string{fixturePrincipal}))
+			rel, _, _ := classifyWithPrincipals(principalFixtureEvent(sender), room, "@worker:fixture.invalid", "worker", config.State{}, stored, []string{fixturePrincipal})
 			if (rel == relSub) != (sender == fixturePrincipal) {
 				t.Fatalf("stored=%v sender=%s rel=%s", stored, sender, rel)
 			}
@@ -38,7 +38,7 @@ func TestPrincipalDeliveryWithoutStoredRow(t *testing.T) {
 	if !list.Subs[0].matches(principalFixtureEvent(fixturePrincipal), room, Header{}, false) {
 		t.Fatal("repair creation time lost an earlier principal message")
 	}
-	if rel, _, _ := classify(principalFixtureEvent(fixturePrincipal), room, "@worker:fixture.invalid", "worker", config.State{}, principalDeliverySubs(nil, []string{room}, nil)); rel != "" {
+	if rel, _, _ := classifyWithPrincipals(principalFixtureEvent(fixturePrincipal), room, "@worker:fixture.invalid", "worker", config.State{}, nil, nil); rel != "" {
 		t.Fatal("unconfigured sender became mandatory")
 	}
 }
@@ -110,20 +110,22 @@ func TestPrincipalOwnerSubscriptionIndependence(t *testing.T) {
 	}
 }
 
-// B3/N3: single and all-row removal refuse with the typed reason before ANY
-// mutation; cleared configuration and a non-principal neighbor permit removal.
-// Legacy exact-sender rows remain protected even before a repair migrates them.
+// Single-row removal refuses dedicated rows without mutation and names the
+// host remedy. Manual rows and cleared configurations permit removal.
 func TestPrincipalUnsubscribeAtomicRefusal(t *testing.T) {
 	for _, source := range []string{principalSubSource, ""} {
 		for _, ids := range [][]string{{"principal"}, {"neighbor", "principal"}, {"neighbor"}} {
 			list := SubList{V: 1, Subs: []Sub{{ID: "neighbor", SubSelector: SubSelector{Room: "!r:s", Kinds: onboardKinds}}, {ID: "principal", Source: source, SubSelector: SubSelector{Room: "!r:s", From: fixturePrincipal, AllEvents: true}, CreatedAt: legacyCreatedAt}}}
 			before, _ := json.Marshal(list)
 			_, err := removeSubscriptions(&list, ids, []string{fixturePrincipal})
-			if contains(ids, "principal") {
+			if source == principalSubSource && contains(ids, "principal") {
 				var refusal *PrincipalSubscriptionError
 				after, _ := json.Marshal(list)
 				if !errors.As(err, &refusal) || refusal.Reason != PrincipalSubscriptionRequired || refusal.Room != "!r:s" || refusal.Principal != fixturePrincipal || !bytes.Equal(before, after) {
 					t.Fatalf("non-atomic/wrong refusal: %v %+v", err, list)
+				}
+				if !strings.Contains(err.Error(), "a2a host principals clear") || !strings.Contains(err.Error(), "a2a host principals set") {
+					t.Fatal("refusal omits remedy")
 				}
 				if _, err = removeSubscriptions(&list, ids, nil); err != nil {
 					t.Fatal(err)
@@ -133,8 +135,17 @@ func TestPrincipalUnsubscribeAtomicRefusal(t *testing.T) {
 						t.Fatalf("cleared principal configuration did not permit removal of %s", id)
 					}
 				}
-			} else if err != nil || list.find("principal") < 0 || list.find("neighbor") >= 0 {
+			} else if err != nil {
 				t.Fatalf("neighbor removal: %v %+v", err, list)
+			} else {
+				for _, id := range ids {
+					if list.find(id) >= 0 {
+						t.Fatalf("removable row retained: %s", id)
+					}
+				}
+				if !contains(ids, "principal") && list.find("principal") < 0 {
+					t.Fatal("unselected protected row removed")
+				}
 			}
 		}
 	}
@@ -155,9 +166,8 @@ func TestPrincipalIDRoutingAndCase(t *testing.T) {
 		}
 	}
 	const upper = "@Principal:Authority.Invalid"
-	subs := principalDeliverySubs(nil, []string{"!r:s"}, []string{upper})
 	for _, sender := range []string{upper, strings.ToLower(upper)} {
-		rel, _, _ := classify(principalFixtureEvent(sender), "!r:s", "@worker:s", "worker", config.State{}, subs)
+		rel, _, _ := classifyWithPrincipals(principalFixtureEvent(sender), "!r:s", "@worker:s", "worker", config.State{}, nil, []string{upper})
 		if (rel == relSub) != (sender == upper) {
 			t.Fatalf("case identity %s: %s", sender, rel)
 		}
@@ -181,9 +191,8 @@ func TestPrincipalWakeBypassesPredicates(t *testing.T) {
 	}
 }
 
-// N4: dedicated and pre-marker configured principal rows never trust a
-// projection's claimed origin. Ordinary projection selectors retain their
-// existing origin-matching behavior when no principal policy applies.
+// Dedicated principal rows never trust a projection origin. Manual selectors
+// retain their explicit projection matching, even with host policy configured.
 func TestPrincipalProjectionUsesRealSender(t *testing.T) {
 	list := SubList{V: 1}
 	repairPrincipalSubs(&list, "!system:s", []string{fixturePrincipal}, time.Now())
@@ -191,12 +200,11 @@ func TestPrincipalProjectionUsesRealSender(t *testing.T) {
 	for _, source := range []string{principalSubSource, ""} {
 		sub := list.Subs[0]
 		sub.Source = source
-		subs := principalDeliverySubs([]Sub{sub}, []string{"!system:s"}, []string{fixturePrincipal})
 		for _, sender := range []string{fixturePrincipal, "@copy:fixture.invalid"} {
 			ev := principalFixtureEvent(sender)
 			ev.Content, _ = json.Marshal(map[string]any{"msgtype": "m.text", "body": "forged origin", ContentKey: h})
-			rel, _, _ := classify(ev, "!system:s", "@worker:s", "worker", config.State{}, subs)
-			if (rel == relSub) != (sender == fixturePrincipal) {
+			rel, _, _ := classifyWithPrincipals(ev, "!system:s", "@worker:s", "worker", config.State{}, []Sub{sub}, []string{fixturePrincipal})
+			if (rel == relSub) != (sender == fixturePrincipal || source == "") {
 				t.Fatalf("projection impersonation: %s %s", source, sender)
 			}
 		}
@@ -211,67 +219,48 @@ func TestPrincipalProjectionUsesRealSender(t *testing.T) {
 	}
 }
 
-// B1/N5: drive a synthetic sync batch through the real collector, the mailbox
-// entry wire format, wait/watch selection and hook doorbell rendering. All
-// rooms and events are memory-only; this does NOT prove fsync or a live wake.
+// A supplied plain principal event survives collection, wire encoding and
+// wake rendering without a subscription ID. No persistence, room-type
+// onboarding, fsync, or live wake is exercised by this fixture.
 func TestPrincipalBatchToWakePure(t *testing.T) {
-	for _, label := range []string{"#ordinary", "#system", "#broadcast", "space", "direct"} {
-		t.Run(label, func(t *testing.T) {
-			ev := principalFixtureEvent(fixturePrincipal)
-			neighbor := principalFixtureEvent("@copy:fixture.invalid")
-			neighbor.EventID = "$neighbor"
-			wire, _ := json.Marshal(map[string]any{"next_batch": "next", "rooms": map[string]any{"join": map[string]any{"!r:s": map[string]any{"timeline": map[string]any{"events": []matrix.Event{ev, neighbor}}}}}})
-			var resp matrix.SyncResponse
-			if err := json.Unmarshal(wire, &resp); err != nil {
-				t.Fatal(err)
-			}
-			s := session{name: "worker", server: "s", creds: config.Credentials{UserID: "@worker:s"}, client: &matrix.Client{}}
-			b, err := s.collectBatchWithPrincipals(context.Background(), resp, "previous", config.State{}, nil, nil, map[string]string{"!r:s": label}, []string{fixturePrincipal})
-			if err != nil || len(b.entries) != 1 || b.entries[0].ID != ev.EventID {
-				t.Fatalf("batch: %+v %v", b, err)
-			}
-			wire, _ = json.Marshal(b.entries)
-			var entries []config.MailEntry
-			if err := json.Unmarshal(wire, &entries); err != nil {
-				t.Fatal(err)
-			}
-			f := deliveryFilter{predicates: deliveryPredicates{principals: []string{fixturePrincipal}, keywords: config.WaitKeywords{"NEVER"}}}
-			if !f.shows(entries[0]) {
-				t.Fatal("wait/watch suppressed principal mailbox entry")
-			}
-			items := itemsOf(entries, "s")
-			d := doorbellOf(items, "s", nil)
-			if d.total != 1 || d.types["sub"] != 1 || !strings.Contains(doorbellText(d), "1") || items[0].rec.Sender != fixturePrincipal {
-				t.Fatalf("hook/inbox projection: %+v %+v", d, items)
-			}
-			if len(b.close) != 0 || len(b.learned) != 0 {
-				t.Fatal("principal delivery closed a subscription or learned a forged thread")
-			}
-		})
+	ev := principalFixtureEvent(fixturePrincipal)
+	neighbor := principalFixtureEvent("@copy:fixture.invalid")
+	neighbor.EventID = "$neighbor"
+	wire, _ := json.Marshal(map[string]any{"next_batch": "next", "rooms": map[string]any{"join": map[string]any{"!r:s": map[string]any{"timeline": map[string]any{"events": []matrix.Event{ev, neighbor}}}}}})
+	var resp matrix.SyncResponse
+	if err := json.Unmarshal(wire, &resp); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// B1: first-cursor selection retains principal history, invites and explicit
-// history gaps; neighboring ordinary history is not replayed on startup.
-func TestInitialPrincipalHistorySelection(t *testing.T) {
-	principal, _ := json.Marshal(principalFixtureEvent(fixturePrincipal))
-	other, _ := json.Marshal(principalFixtureEvent("@other:s"))
-	entries := []config.MailEntry{{ID: "principal", Kind: config.MailEvent, Event: principal}, {ID: "ordinary", Kind: config.MailEvent, Event: other}, {ID: "invite", Kind: config.MailInvite}, {ID: "gap", Kind: config.MailGap}}
-	got := initialPrincipalEntries(entries, []string{fixturePrincipal})
-	if len(got) != 3 || got[0].ID != "principal" || got[1].ID != "invite" || got[2].ID != "gap" {
-		t.Fatalf("initial entries: %+v", got)
+	s := session{name: "worker", server: "s", creds: config.Credentials{UserID: "@worker:s"}, client: &matrix.Client{}}
+	b, err := s.collectBatchWithPrincipals(context.Background(), resp, "previous", config.State{}, nil, nil, map[string]string{"!r:s": "#room"}, []string{fixturePrincipal})
+	if err != nil || len(b.entries) != 1 || b.entries[0].ID != ev.EventID {
+		t.Fatalf("batch: %+v %v", b, err)
 	}
-	if got := initialPrincipalEntries(entries, nil); len(got) != 2 || got[0].ID != "invite" {
-		t.Fatalf("unconfigured history: %+v", got)
+	wire, _ = json.Marshal(b.entries)
+	var entries []config.MailEntry
+	if err := json.Unmarshal(wire, &entries); err != nil {
+		t.Fatal(err)
+	}
+	f := deliveryFilter{predicates: deliveryPredicates{principals: []string{fixturePrincipal}, keywords: config.WaitKeywords{"NEVER"}}}
+	if !f.shows(entries[0]) {
+		t.Fatal("wait/watch suppressed principal mailbox entry")
+	}
+	items := itemsOf(entries, "s")
+	d := doorbellOf(items, "s", nil)
+	if d.total != 1 || d.types["sub"] != 1 || !strings.Contains(doorbellText(d), "1") || items[0].rec.Sender != fixturePrincipal || entries[0].Sub != "" || items[0].rec.Sub != "" || strings.Contains(items[0].line, "sub=") {
+		t.Fatalf("hook/inbox projection: %+v %+v", d, items)
+	}
+	if len(b.close) != 0 || len(b.learned) != 0 {
+		t.Fatal("principal delivery closed a subscription or learned a forged thread")
 	}
 }
 
 // N3: cleanup protection is independent of membership snapshots. A configured
-// legacy or dedicated row stays protected; unrelated and cleared rows do not.
+// dedicated row stays protected; manual, unrelated and cleared rows do not.
 func TestPrincipalCleanupIgnoresMembershipSnapshot(t *testing.T) {
 	for _, source := range []string{"", principalSubSource} {
 		sub := Sub{Source: source, Preset: "keeper:fixture", SubSelector: SubSelector{Room: "!later:s", From: fixturePrincipal, AllEvents: true}}
-		if !protectedPrincipalSub(sub, []string{fixturePrincipal}) || protectedPrincipalSub(sub, nil) || protectedPrincipalSub(sub, []string{"@other:s"}) {
+		if protectedPrincipalSub(sub, []string{fixturePrincipal}) != (source == principalSubSource) || protectedPrincipalSub(sub, nil) || protectedPrincipalSub(sub, []string{"@other:s"}) {
 			t.Fatalf("protection: %+v", sub)
 		}
 	}
@@ -308,32 +297,6 @@ func TestPrincipalCoverageOutputCompatibilityPure(t *testing.T) {
 			if !gap && !reflect.DeepEqual(row.Missing, []string{}) {
 				t.Fatal("renderer mutated report")
 			}
-		}
-	}
-}
-
-// Initial history truncated without a page token must produce a gap rather
-// than claim coverage. A complete one-event timeline is the valid neighbor.
-// The collector reads only supplied events and cached labels in both cases.
-func TestInitialPrincipalHistoryGap(t *testing.T) {
-	for _, limited := range []bool{false, true} {
-		wire, _ := json.Marshal(map[string]any{"next_batch": "next", "rooms": map[string]any{"join": map[string]any{"!r:s": map[string]any{"timeline": map[string]any{"events": []matrix.Event{principalFixtureEvent(fixturePrincipal)}, "limited": limited}}}}})
-		var resp matrix.SyncResponse
-		if err := json.Unmarshal(wire, &resp); err != nil {
-			t.Fatal(err)
-		}
-		s := session{name: "worker", server: "s", creds: config.Credentials{UserID: "@worker:s"}, client: &matrix.Client{}}
-		b, err := s.collectBatchWithPrincipals(context.Background(), resp, "", config.State{}, nil, nil, map[string]string{"!r:s": "#room"}, []string{fixturePrincipal})
-		if err != nil {
-			t.Fatal(err)
-		}
-		entries := initialPrincipalEntries(b.entries, []string{fixturePrincipal})
-		if limited {
-			if len(entries) != 2 || entries[0].Kind != config.MailGap || entries[0].From != "initial-history" || entries[0].To != "$plain" || entries[1].ID != "$plain" {
-				t.Fatalf("unreported initial gap: %+v", entries)
-			}
-		} else if len(entries) != 1 || entries[0].ID != "$plain" {
-			t.Fatalf("complete timeline: %+v", entries)
 		}
 	}
 }

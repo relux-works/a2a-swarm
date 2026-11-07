@@ -173,16 +173,11 @@ func inviteEntry(roomID, since string, state []matrix.Event, me, server string) 
 // --all accepts) while it pages; they are classified oldest first. all is the
 // set of rooms whose every message counts (wait/watch --all).
 func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string) (batch, error) {
-	configured, err := ownerFiles(s.paths, s.name).principals()
-	if err != nil {
-		return batch{}, err
-	}
-	return s.collectBatchWithPrincipals(ctx, resp, since, st, subs, all, labels, configured)
+	return s.collectBatchWithPrincipals(ctx, resp, since, st, subs, all, labels, s.principals)
 }
 
 func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
 	var b batch
-	subs = principalDeliverySubs(subs, sortedKeys(resp.Rooms.Join), configured)
 	me := s.creds.UserID
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		b.entries = append(b.entries, inviteEntry(roomID, since, resp.Rooms.Invite[roomID].InviteState.Events, me, s.server))
@@ -206,10 +201,10 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 			if ev.Sender == me || ev.ThreadRoot() != "" || all[roomID] {
 				return true
 			}
-			rel, _, _ := classify(ev, roomID, me, s.name, st, subs)
+			rel, _, _ := classifyWithPrincipals(ev, roomID, me, s.name, st, subs, configured)
 			return rel != ""
 		}
-		events, gap, err := s.timelineEventsFrom(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep, since == "" && len(configured) > 0)
+		events, gap, err := s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
 		if err != nil {
 			return b, fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
 		}
@@ -228,7 +223,7 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 					}
 				}
 			}
-			rel, root, matched := classify(ev, roomID, me, s.name, st, active)
+			rel, root, matched := classifyWithPrincipals(ev, roomID, me, s.name, st, active, configured)
 			if root != "" {
 				b.learned = append(b.learned, root)
 				st.AddThread(root)
@@ -251,7 +246,7 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 				}
 			}
 			subID := ""
-			if rel == relSub {
+			if rel == relSub && len(matched) > 0 && !mandatoryPrincipal(ev, configured) {
 				subID = matched[0]
 			}
 			raw, err := json.Marshal(ev)
@@ -349,18 +344,6 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 
 // ingest classifies one sync response from since and persists it.
 func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time) (config.State, error) {
-	// Serialize local host-list changes with classification AND cursor commit.
-	// A set that completes before this batch commits cannot slip between them.
-	var st config.State
-	err := config.WithRuntimeLock(s.paths, s.name, "subscription-policy", deadline, func() error {
-		var err error
-		st, err = s.ingestWithPolicy(ctx, resp, since, subs, all, deadline)
-		return err
-	})
-	return st, err
-}
-
-func (s *session) ingestWithPolicy(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time) (config.State, error) {
 	snap, err := config.LoadState(s.paths, s.name)
 	if err != nil {
 		return snap, err
@@ -375,8 +358,8 @@ func (s *session) ingestWithPolicy(ctx context.Context, resp matrix.SyncResponse
 	return s.persist(ctx, b, since, resp.NextBatch, deadline)
 }
 
-// takePosition is the very first run. Ordinary history is not replayed;
-// configured principal history and pending invites precede the first cursor.
+// takePosition is the very first run. No message history is replayed;
+// pending invites precede the first cursor.
 func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.State, error) {
 	resp, err := s.client.Sync(ctx, "", 0, initialFilter)
 	if err != nil {
@@ -386,32 +369,6 @@ func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.
 }
 
 func (s *session) savePosition(ctx context.Context, resp matrix.SyncResponse, deadline time.Time) (config.State, error) {
-	var st config.State
-	err := config.WithRuntimeLock(s.paths, s.name, "subscription-policy", deadline, func() error {
-		var err error
-		st, err = s.savePositionWithPolicy(ctx, resp, deadline)
-		return err
-	})
-	return st, err
-}
-
-func (s *session) savePositionWithPolicy(ctx context.Context, resp matrix.SyncResponse, deadline time.Time) (config.State, error) {
-	configured, err := ownerFiles(s.paths, s.name).principals()
-	if err != nil {
-		return config.State{}, err
-	}
-	if len(configured) > 0 {
-		// A first cursor must not silently skip principal messages that arrived
-		// during onboarding. Replay accessible history for principals only;
-		// bounded/unavailable history is represented by a durable gap record.
-		b, err := s.collectBatchWithPrincipals(ctx, resp, "", config.State{}, nil, nil, map[string]string{}, configured)
-		if err != nil {
-			return config.State{}, err
-		}
-		b.entries = initialPrincipalEntries(b.entries, configured)
-		b.learned, b.close = nil, nil
-		return s.persist(ctx, b, "", resp.NextBatch, deadline)
-	}
 	var b batch
 	for roomID, jr := range resp.Rooms.Join {
 		if s.client.FilterEvents != nil {
@@ -431,8 +388,9 @@ func (s *session) savePositionWithPolicy(ctx context.Context, resp matrix.SyncRe
 
 // syncNow is the "bring the mailbox up to date" step of inbox and the hooks:
 // one /sync from the cursor with timeout 0 (no long poll), persisted like
-// wait's; the first run takes a position and preserves principal history.
+// wait's; the first run takes a position without replaying message history.
 func (s *session) syncNow(ctx context.Context, st config.State, subs []Sub, deadline time.Time) (config.State, error) {
+	s.principals = s.readDeliveryPrincipals()
 	if st.NextBatch == "" {
 		return s.takePosition(ctx, deadline)
 	}
@@ -459,13 +417,9 @@ const shownHint = "a2a: printed entries stay in the mailbox until received: run 
 // the state lock (so concurrent waits never print the same entry). It receipts
 // nothing. It returns how many it printed.
 func (a *App) showNew(ctx context.Context, s *session, f deliveryFilter, asJSON bool) (int, error) {
-	configured, err := ownerFiles(s.paths, s.name).principals()
-	if err != nil {
-		return 0, err
-	}
-	f.predicates.principals = configured
+	f.predicates.principals = s.principals
 	printed := 0
-	_, err = s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+	_, err := s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
 		var items []waitItem
 		for _, e := range mb.Pending() {
 			if !e.Shown && f.shows(e) {
@@ -601,6 +555,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 		}
 	}
 	for {
+		s.principals = s.readDeliveryPrincipals()
 		if *status != "" && a.Now().Sub(lastHeartbeat) >= *heartbeat {
 			if err := s.writeLivenessSource(ctx, profile, "wait-heartbeat"); err != nil {
 				return err
@@ -751,6 +706,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	for {
+		s.principals = s.readDeliveryPrincipals()
 		if _, err := a.showNew(ctx, s, filter, *asJSON); err != nil {
 			return err
 		}

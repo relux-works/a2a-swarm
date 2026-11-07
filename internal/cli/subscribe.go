@@ -682,6 +682,7 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	var removed []string
+	var kept []Sub
 	err = config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		configured, err := ownerFiles(s.paths, s.name).principals()
 		if err != nil {
@@ -690,9 +691,8 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 		_, _, err = s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
 			var ids []string
 			if *all {
-				for _, sub := range list.Subs {
-					ids = append(ids, sub.ID)
-				}
+				removed, kept = removeAllSubscriptions(list, configured)
+				return len(removed) > 0, nil
 			} else if list.find(pos[0]) < 0 {
 				return false, fmt.Errorf("no subscription %q (see: a2a subs)", sanitizeLine(pos[0]))
 			} else {
@@ -709,7 +709,10 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 	for _, id := range removed {
 		a.printf("%s\tremoved\n", sanitizeLine(id))
 	}
-	if len(removed) == 0 {
+	for _, sub := range kept {
+		a.printf("%s\tkept: %s\n", sanitizeLine(sub.ID), (&PrincipalSubscriptionError{Reason: PrincipalSubscriptionRequired, Room: sub.Room, Principal: sub.From}).Error())
+	}
+	if len(removed) == 0 && len(kept) == 0 {
 		a.printf("no subscriptions\n")
 	}
 	return nil

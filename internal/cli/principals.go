@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -99,10 +100,15 @@ func cmdHostPrincipals(ctx context.Context, a *App, args []string) error {
 	f := ownerFiles(p, name)
 	if args[0] == "show" {
 		ids, err = f.principals()
+	} else if args[0] == "clear" {
+		if err = ctx.Err(); err == nil {
+			err = os.Remove(f.path("principals.json"))
+			if errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
+		}
 	} else {
-		err = config.WithRuntimeLock(p, name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
-			return ownerWrite(ctx, f.path("principals.json"), principalConfig{V: 1, Principals: ids})
-		})
+		err = ownerWrite(ctx, f.path("principals.json"), principalConfig{V: 1, Principals: ids})
 	}
 	if err != nil {
 		return err
@@ -196,7 +202,7 @@ type PrincipalSubscriptionError struct {
 const PrincipalSubscriptionRequired = "principal_subscription_required"
 
 func (e *PrincipalSubscriptionError) Error() string {
-	return fmt.Sprintf("%s: subscription removal/narrowing refused in %s; preserve all-events subscription for %s", e.Reason, sanitizeLine(e.Room), sanitizeLine(e.Principal))
+	return fmt.Sprintf("%s: preserve all-events subscription for %s in %s; to remove it, remove that ID with a2a host principals set <remaining IDs>, or run a2a host principals clear, then retry", e.Reason, sanitizeLine(e.Principal), sanitizeLine(e.Room))
 }
 
 // Protect dedicated rows without a membership snapshot: even a principal who
@@ -206,10 +212,7 @@ func protectedPrincipalSub(sub Sub, configured []string) bool {
 	if !slices.Contains(configured, sub.From) {
 		return false
 	}
-	// Include pre-marker exact-sender rows from the original principal repair.
-	return sub.Source == principalSubSource || sub.AllEvents && sub.Room != "" &&
-		sub.Topic == "" && sub.Product == "" && sub.Subject == "" &&
-		len(sub.Kinds) == 0 && len(sub.subtypeList()) == 0 && sub.Until == "" && sub.UntilKind == ""
+	return sub.Source == principalSubSource
 }
 
 func removeSubscriptions(list *SubList, ids, configured []string) ([]string, error) {
@@ -222,31 +225,30 @@ func removeSubscriptions(list *SubList, ids, configured []string) ([]string, err
 	return ids, nil
 }
 
-// Delivery coverage is derived from host authority for each received room. It
-// needs neither account-data repair nor membership queries: the real sender of
-// the event is sufficient, even if that sender subsequently left the room.
-// Replace persisted policy rows so a stale/cross-host account-data write cannot
-// narrow delivery. These synthetic selectors are not written to Matrix.
-func principalDeliverySubs(subs []Sub, rooms, configured []string) []Sub {
-	out := make([]Sub, 0, len(subs)+len(rooms)*len(configured))
-	for _, sub := range subs {
-		if sub.Source != principalSubSource {
-			if protectedPrincipalSub(sub, configured) {
-				// Pre-marker principal rows must not authenticate a projection
-				// origin either. Leave ordinary projection semantics unchanged.
-				sub.Source = principalSubSource
-			}
-			out = append(out, sub)
+func removeAllSubscriptions(list *SubList, configured []string) (removed []string, kept []Sub) {
+	for _, sub := range list.Subs {
+		if protectedPrincipalSub(sub, configured) {
+			kept = append(kept, sub)
+		} else {
+			removed = append(removed, sub.ID)
 		}
 	}
-	for _, room := range rooms {
-		for _, id := range configured {
-			out = append(out, Sub{ID: "principal:" + room + ":" + id,
-				SubSelector: SubSelector{Room: room, From: id, AllEvents: true},
-				CreatedAt:   legacyCreatedAt, Source: principalSubSource})
-		}
+	list.remove(removed...)
+	return removed, kept
+}
+
+// Host coverage has no subscription ID: it is a local delivery policy, not an
+// account-data row. Manual selectors keep their existing projection semantics.
+func classifyWithPrincipals(ev matrix.Event, room, me, name string, st config.State, subs []Sub, configured []string) (relevance, string, []string) {
+	rel, root, matched := classify(ev, room, me, name, st, subs)
+	if rel == "" && ev.Sender != me && mandatoryPrincipal(ev, configured) {
+		return relSub, "", nil
 	}
-	return out
+	return rel, root, matched
+}
+
+func mandatoryPrincipal(ev matrix.Event, configured []string) bool {
+	return ev.Type == "m.room.message" && slices.Contains(configured, ev.Sender)
 }
 
 func principalMail(e config.MailEntry, configured []string) bool {
@@ -254,17 +256,23 @@ func principalMail(e config.MailEntry, configured []string) bool {
 		return false
 	}
 	var ev matrix.Event
-	return json.Unmarshal(e.Event, &ev) == nil && ev.Type == "m.room.message" && slices.Contains(configured, ev.Sender)
+	return json.Unmarshal(e.Event, &ev) == nil && mandatoryPrincipal(ev, configured)
 }
 
-func initialPrincipalEntries(entries []config.MailEntry, configured []string) []config.MailEntry {
-	var out []config.MailEntry
-	for _, entry := range entries {
-		if entry.Kind != config.MailEvent || principalMail(entry, configured) {
-			out = append(out, entry)
+const principalConfigProblem = "host principals unavailable; delivery continues without host coverage; repair with a2a host principals set <exact MXIDs> or a2a host principals clear"
+
+// One cheap absent-file check, otherwise a plain local read. No policy lock or
+// network operation. Warn once per session, without echoing file contents.
+func (s *session) readDeliveryPrincipals() []string {
+	ids, err := ownerFiles(s.paths, s.name).principals()
+	if err != nil {
+		if !s.principalWarning {
+			fmt.Fprintln(s.app.Stderr, principalConfigProblem)
+			s.principalWarning = true
 		}
+		return nil
 	}
-	return out
+	return ids
 }
 
 func principalTrimGuard(room string, principals []string) error {

@@ -221,6 +221,10 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		noticeError = "invalid own notice telemetry"
 		publication = "unavailable: invalid own notice telemetry"
 	}
+	principalError := ""
+	if _, err := ownerFiles(s.paths, s.name).principals(); err != nil {
+		principalError = principalConfigProblem
+	}
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
@@ -234,7 +238,11 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			SendRefusal       *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
 			Recovery          *config.TerminalRecovery    `json:"recovery,omitempty"`
 			MailAlarm         mailAlarmStatus             `json:"mail_alarm"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st)})
+			PrincipalError    string                      `json:"principal_error,omitempty"`
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), principalError})
+	}
+	if principalError != "" {
+		a.printf("%s\n", principalError)
 	}
 	if recovery != nil {
 		a.printf("recovery=%s at=%s\n", recovery.Reason, recovery.At.Format(time.RFC3339Nano))

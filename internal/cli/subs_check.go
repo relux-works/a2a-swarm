@@ -22,8 +22,9 @@ type roomCoverage struct {
 }
 
 type coverageReport struct {
-	OK    bool           `json:"ok"`
-	Rooms []roomCoverage `json:"rooms"`
+	OK             bool           `json:"ok"`
+	Rooms          []roomCoverage `json:"rooms"`
+	PrincipalError string         `json:"principal_error,omitempty"`
 }
 
 // missingRoomKinds measures current unconditional coverage, not historical
@@ -84,10 +85,7 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	configured, err := ownerFiles(s.paths, s.name).principals()
-	if err != nil {
-		return err
-	}
+	configured, principalErr := ownerFiles(s.paths, s.name).principals()
 	rooms, err := s.client.JoinedRooms(ctx)
 	if err != nil {
 		return fmt.Errorf("read joined rooms: %w", err)
@@ -113,6 +111,11 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 	}
 	slices.Sort(rooms)
 	result := coverageReport{OK: true, Rooms: []roomCoverage{}}
+	if principalErr != nil {
+		configured = nil
+		result.OK = false
+		result.PrincipalError = principalConfigProblem
+	}
 	now := a.Now()
 	for _, id := range rooms {
 		var create struct {
@@ -157,6 +160,9 @@ func (a *App) printCoverage(result coverageReport, asJSON, principalsConfigured 
 			return err
 		}
 	} else {
+		if result.PrincipalError != "" {
+			a.printf("%s\n", result.PrincipalError)
+		}
 		for _, row := range result.Rooms {
 			switch {
 			case len(row.MissingPrincipals) > 0:
@@ -180,6 +186,9 @@ func (a *App) printCoverage(result coverageReport, asJSON, principalsConfigured 
 		}
 	}
 	if !result.OK {
+		if result.PrincipalError != "" {
+			return errors.New(result.PrincipalError)
+		}
 		if !principalsConfigured {
 			return fmt.Errorf("subscription coverage gaps; review missing kinds, then run a2a subs sync to backfill")
 		}

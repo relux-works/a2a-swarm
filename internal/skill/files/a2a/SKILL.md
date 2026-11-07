@@ -176,15 +176,21 @@ The text still carries no verified application authority.
 without independent `host-principal` all-events sender rows. Use `subs sync`
 to repair audit rows. Ordinary and service onboarding repair visited rooms.
 Room-wide owner-DM/manual rows cannot stand in for principal rows. Trim and
-explicit unsubscribe (including `--all`) refuse with
-`principal_subscription_required`; an unsubscribe refusal changes no rows.
+single protected-row unsubscribe refuse with `principal_subscription_required`
+and a host-list remedy. `unsubscribe --all` removes allowed rows and reports
+each protected row it kept, why, and how to change it. Manual rows remain removable.
 There is no `unsubscribe --force`. Host removal of an ID from the principal
 list permits its rows to be removed; leaving ends membership. Owner-DM cleanup
 preserves independent principal coverage. Cross-host account-data races can
 still erase audit rows, but local principal ingestion does not depend on them.
-First-cursor principal history is bounded by accessible server history and
-500 backfill pages; an incomplete scan surfaces a gap. Configuration changes
-do not replay messages already behind a committed cursor. See docs/cli.md.
+Each delivery cycle reads an atomic local host-list snapshot without a policy
+lock. Invalid metadata warns once per session and appears in `subs check` and
+`bind status`; delivery and pending mail continue as with no configured list.
+Host-policy mail has no subscription ID (`sub` is omitted). The accepted
+coverage-start window is everything already behind the committed cursor,
+including initial positioning and a cycle begun before configuration changes
+or with unreadable metadata. It is not replayed; no initial history crawl or
+retroactive backfill occurs. Existing limited-sync recovery remains. See docs/cli.md.
 ```bash
 a2a subscribe --room skill-project-management --kind system --subtype window,landing
 a2a subscribe --subject BUG-260928-2qon2t --until-kind system   # ends on its landing
