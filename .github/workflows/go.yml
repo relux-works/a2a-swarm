@@ -1,5 +1,6 @@
-# Public-repository CI: exclude fork PRs from self-hosted runners, limit token
-# exposure, and cancel superseded PR runs while allowing main runs to finish.
+# Public-repository CI on GitHub-hosted runners only: this repository must not use
+# self-hosted runners. Limit token exposure, skip fork PRs, and cancel superseded
+# PR runs while allowing main runs to finish.
 name: go
 
 on:
@@ -17,12 +18,10 @@ concurrency:
 jobs:
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Self-hosted on the owner's MacBook (repo-level runner m1max-a2a-swarm, agreed in
-    # #gha-runner-m1max): hosted runners cannot start (billing, ruling ac-R8).
-    runs-on: [self-hosted, macOS, relux-a2a]
-    # A hung step must not hold a PR for the 6 h default (2026-10-06: a cache
-    # tar sat 70 min in uninterruptible I/O after the tests had passed).
-    timeout-minutes: 35
+    runs-on: macos-latest
+    # A hung step must not hold a PR for the 6 h default. Hosted runners are
+    # smaller than the machines these budgets were measured on.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -30,23 +29,18 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          # The runner is persistent: ~/go/pkg/mod and the build cache stay on
-          # disk, so archiving them into an Actions cache is pure overhead.
-          cache: false
+          cache: true
+      - name: Install terminal test dependencies
+        run: brew install tmux
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      # internal/cli takes about 860s on main; a PR with added tests hit the
-      # 20m Go test timeout at 1201s on the Mac runner. More tests are coming.
-      # Allow a 28m test watchdog inside a 35m job budget.
-      - run: go test -race -timeout 28m ./...
+      - run: go test -race -timeout 60m ./...
 
   test-linux:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Add capacity while the repo is private and the single Mac runner is queued.
-    # Transitional F1 step: moving off macOS and to public-allowed labels is later.
-    runs-on: [self-hosted, Linux, swarma-ci]
-    timeout-minutes: 35
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -54,7 +48,9 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+      - name: Install terminal test dependencies
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Require terminal test dependencies
         run: |
           for tool in tmux python3; do
@@ -67,7 +63,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          go test -race -timeout 28m -v ./... 2>&1 | tee "$RUNNER_TEMP/go-test-linux.log"
+          go test -race -timeout 60m -v ./... 2>&1 | tee "$RUNNER_TEMP/go-test-linux.log"
           test_status=${PIPESTATUS[0]}
           set -e
           skipped=$(grep -c '^[[:space:]]*--- SKIP:' "$RUNNER_TEMP/go-test-linux.log" || true)
@@ -79,8 +75,8 @@ jobs:
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
     # unrelated launcher/credential fixtures a second time.
-    runs-on: [self-hosted, macOS, relux-a2a]
-    timeout-minutes: 15
+    runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -88,7 +84,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
       - run: go vet -tags sherpa ./...
       - run: go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
       - run: go test -tags sherpa -race ./internal/voice ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict|TestModelCache|TestLocalRunner' -count=1
