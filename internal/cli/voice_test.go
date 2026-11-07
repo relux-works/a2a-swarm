@@ -39,11 +39,11 @@ func voiceWorld(t *testing.T) (*env, string, *fakeVoice) {
 // exact text in its topic, and upload/fetch happen before the only audio send.
 func TestPostVoiceShapeAndTextIdentity(t *testing.T) {
 	e, root, f := voiceWorld(t)
-	plain := e.as("alice", "post", "proj", "--topic", "alpha", "--kind", "decision", "--to", "bob", "Полный текст\nunchanged").ok(t)
+	plain := e.as("alice", "post", "proj", "--topic", "alpha", "--kind", "decision", "--to", "@bob:test.local", "Полный текст\nunchanged").ok(t)
 	if f.calls != 0 {
 		t.Fatal("text-only invoked renderer")
 	}
-	with := e.as("alice", "post", "proj", "--topic", "alpha", "--kind", "decision", "--to", "bob", "--voice", "Полный текст\nunchanged").ok(t)
+	with := e.as("alice", "post", "proj", "--topic", "alpha", "--kind", "decision", "--to", "@bob:test.local", "--voice", "Полный текст\nunchanged").ok(t)
 	if with.stderr != "" {
 		t.Fatal(with.stderr)
 	}
