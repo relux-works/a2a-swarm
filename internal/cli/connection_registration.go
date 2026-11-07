@@ -75,6 +75,10 @@ func updateRegistrationJournal(path string, b config.ConnectionBinding, stage st
 	return os.Rename(tmp, path)
 }
 func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Credentials, string, error) {
+	return a.registerNamedAgentUsing(ctx, name, nil)
+}
+
+func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *session) (config.Credentials, string, error) {
 	empty := config.Credentials{}
 	c, e := a.selectedConnection()
 	if e != nil {
@@ -83,12 +87,12 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 	if a.human {
 		return empty, "", errors.New("agent registration cannot use a human identity")
 	}
-	if !a.authorizeRegistration {
+	if admin == nil && !a.authorizeRegistration {
 		return empty, "", errors.New("named first registration requires explicit --authorize-registration after owner admission")
 	}
 	// Retain the existing caller identity guard even for this first-registration path.
 	for _, bound := range []string{a.as, a.Getenv(config.EnvAgent)} {
-		if bound != "" && bound != name {
+		if admin == nil && bound != "" && bound != name {
 			return empty, "", errors.New("registration does not match this session's identity")
 		}
 	}
@@ -100,7 +104,7 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 	if e != nil {
 		return empty, "", e
 	}
-	if c.RegistrationTokenRef == nil {
+	if admin == nil && c.RegistrationTokenRef == nil {
 		return empty, "", errors.New("selected profile has no registration_token_ref")
 	}
 	for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {
@@ -133,12 +137,15 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 			return empty, "", errors.New("selected credential item exists or is unavailable; no registration attempted")
 		}
 	}
-	bootstrap, e := a.readConnectionSecret(ctx, p, *c.RegistrationTokenRef)
-	if e != nil || bootstrap == "" {
-		_ = stage("bootstrap-unavailable")
-		return empty, "", errors.New("selected bootstrap item unavailable; no registration attempted")
+	var bootstrap string
+	if admin == nil {
+		bootstrap, e = a.readConnectionSecret(ctx, p, *c.RegistrationTokenRef)
+		if e != nil || bootstrap == "" {
+			_ = stage("bootstrap-unavailable")
+			return empty, "", errors.New("selected bootstrap item unavailable; no registration attempted")
+		}
+		a.secrets.Add(bootstrap)
 	}
-	a.secrets.Add(bootstrap)
 	var raw [32]byte
 	if _, e = rand.Read(raw[:]); e != nil {
 		return empty, "", e
@@ -156,8 +163,21 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 	if e = stage("remote-outcome-pending"); e != nil {
 		return empty, "", e
 	}
+	if admin != nil {
+		cleanup := &adminRegistrationCleanup{session: admin}
+		defer cleanup.finish()
+		bootstrap, e = a.issueAdminRegistrationToken(ctx, admin, cleanup)
+		if e != nil {
+			_ = stage("admin-issue-refused")
+			return empty, "", e
+		}
+	}
 	client := matrix.New(c.URL, "")
 	client.HTTP = a.HTTP
+	if admin != nil {
+		client = client.ForAdminRegistration()
+		client.BeforeRequest = admin.checkConnection
+	}
 	resp, e := client.Register(ctx, name, password, bootstrap, "a2a "+name)
 	if e != nil {
 		state := "remote-outcome-ambiguous"
@@ -167,6 +187,9 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 		}
 		if se := stage(state); se != nil {
 			return empty, "", errors.New("registration outcome pending; recovery journal update failed")
+		}
+		if admin != nil {
+			return empty, "", adminRegistrationError("register", e)
 		}
 		return empty, "", fmt.Errorf("registration %s; owner recovery required (no automatic retry)", state)
 	}

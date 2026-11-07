@@ -161,15 +161,17 @@ func (a *App) pinnedArgs(name string) ([]string, error) {
 	}
 	return []string{"--profile", a.profile, "--connection-fingerprint", b.Fingerprint()}, nil
 }
-func cmdConnection(_ context.Context, a *App, args []string) error {
+func cmdConnection(ctx context.Context, a *App, args []string) error {
 	if len(args) == 0 {
-		return usagef("usage: a2a connection list|show NAME|add NAME --file FILE|use NAME")
+		return usagef("usage: a2a connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room")
 	}
 	p, e := config.ResolvePaths(a.Getenv)
 	if e != nil {
 		return e
 	}
 	switch args[0] {
+	case "register":
+		return cmdAdminRoomRegister(ctx, a, args[1:])
 	case "list", "show":
 		r, e := config.LoadConnections(p)
 		if e != nil {

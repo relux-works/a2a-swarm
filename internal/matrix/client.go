@@ -27,12 +27,14 @@ const maxErrorBody = 64 << 10
 
 // Client talks to one homeserver as one user (or anonymously for registration).
 type Client struct {
-	BaseURL       string
-	Token         string
-	HTTP          *http.Client
-	BeforeRequest func() error                           // Optional immutable connection binding guard.
-	FilterEvents  func(string, []Event) ([]Event, error) // Optional local redaction cache, before consumers decode content.
-	directOnly    bool
+	BaseURL           string
+	Token             string
+	HTTP              *http.Client
+	BeforeRequest     func() error                           // Optional immutable connection binding guard.
+	FilterEvents      func(string, []Event) ([]Event, error) // Optional local redaction cache, before consumers decode content.
+	ProtectedRoom     string                                 // Configured admin room: ordinary history and delivery are excluded.
+	adminRegistration bool
+	directOnly        bool
 }
 
 // WithoutRedirects returns a scoped copy for operations whose response must
@@ -145,6 +147,17 @@ func (c *Client) doResponse(ctx context.Context, method, path string, query url.
 // Other statuses are turned into *Error (or ErrAuth) and the body is closed.
 // size is the body length, or -1 when there is no body.
 func (c *Client) send(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, size int64) (*http.Response, error) {
+	if c.ProtectedRoom != "" {
+		for _, version := range []string{v3, v1} {
+			prefix := version + "/rooms/" + seg(c.ProtectedRoom) + "/"
+			if strings.HasPrefix(path, prefix) {
+				rest := strings.TrimPrefix(path, prefix)
+				if strings.HasPrefix(rest, "event/") || strings.HasPrefix(rest, "relations/") || rest == "messages" || rest == "threads" {
+					return nil, errors.New("admin-room history read refused")
+				}
+			}
+		}
+	}
 	if c.BeforeRequest != nil {
 		if err := c.BeforeRequest(); err != nil {
 			return nil, err
@@ -222,7 +235,7 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 				me.control = v
 			}
 		}
-		if resp.StatusCode == http.StatusUnauthorized && (me.ErrCode == "M_UNKNOWN_TOKEN" || me.ErrCode == "M_MISSING_TOKEN") {
+		if !c.adminRegistration && resp.StatusCode == http.StatusUnauthorized && (me.ErrCode == "M_UNKNOWN_TOKEN" || me.ErrCode == "M_MISSING_TOKEN") {
 			return nil, fmt.Errorf("%w (%s)", ErrAuth, me.ErrCode)
 		}
 		return nil, me
@@ -794,6 +807,8 @@ func (c *Client) Sync(ctx context.Context, since string, timeout time.Duration, 
 	defer cancel()
 	var out SyncResponse
 	err := c.doBulk(ctx, http.MethodGet, v3+"/sync", q, nil, &out)
+	delete(out.Rooms.Join, c.ProtectedRoom)
+	delete(out.Rooms.Invite, c.ProtectedRoom)
 	return out, err
 }
 

@@ -253,6 +253,9 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve --system: %w", err)
 	}
+	if s.adminRoomExcluded(systemRoom) {
+		return fmt.Errorf("admin-room projection target refused")
+	}
 	// Resolve once before sync or durable state changes. Only these pinned IDs
 	// authorize admission; sync's aliases, names and product state cannot do so.
 	allowed := map[string]bool{}
@@ -300,7 +303,7 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		for _, roomID := range sortedKeys(resp.Rooms.Join) {
-			if !allowed[roomID] || roomID == systemRoom {
+			if !allowed[roomID] || roomID == systemRoom || s.adminRoomExcluded(roomID) {
 				continue
 			}
 			tl := resp.Rooms.Join[roomID].Timeline
@@ -347,7 +350,7 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 // acceptInvites admits only the actual room IDs pinned by project config.
 func (s *session) acceptInvites(ctx context.Context, a *App, resp matrix.SyncResponse, allowed map[string]bool) error {
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
-		if !allowed[roomID] {
+		if !allowed[roomID] || s.adminRoomExcluded(roomID) {
 			continue
 		}
 		if _, err := s.client.Join(ctx, roomID); err != nil {
