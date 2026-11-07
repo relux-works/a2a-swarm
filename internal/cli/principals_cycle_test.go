@@ -155,31 +155,27 @@ func TestPrincipalNoConfigDeliveryEquality(t *testing.T) {
 	}
 }
 
-// First positioning ignores both complete and limited principal timelines
-// (even with a prev_batch token); it retains invites and commits the cursor.
-// The transport rejects any attempt to crawl /messages.
-func TestPrincipalFirstCursorDoesNotReplay(t *testing.T) {
-	for _, tc := range []struct {
-		limited bool
-		token   string
-	}{{false, ""}, {true, ""}, {true, "older-page"}} {
+// First positioning applies principal coverage only after the own join,
+// retains invites and commits the cursor. Pre-join principal mail is excluded.
+func TestPrincipalFirstCursorJoinBoundary(t *testing.T) {
+	for _, limited := range []bool{false, true} {
 		a, p, _, _ := principalCycleApp(t, "")
 		s := principalCycleSession(a, p)
-		s.principals = []string{fixturePrincipal}
-		resp := principalCycleResponse(principalFixtureEvent(fixturePrincipal))
+		if err := ownerWrite(context.Background(), ownerFiles(p, "worker").path("principals.json"), principalConfig{V: 1, Principals: []string{fixturePrincipal}}); err != nil {
+			t.Fatal(err)
+		}
+		before := principalFixtureEvent(fixturePrincipal)
+		before.EventID = "$before"
+		after := principalFixtureEvent(fixturePrincipal)
+		after.EventID = "$after"
+		resp := principalCycleResponse(before, firstSyncJoin("@worker:fixture.invalid", "$join"), after)
 		jr := resp.Rooms.Join["!room:fixture.invalid"]
-		jr.Timeline.Limited, jr.Timeline.PrevBatch = tc.limited, tc.token
+		jr.Timeline.Limited, jr.Timeline.PrevBatch = limited, "must-not-page"
 		resp.Rooms.Join["!room:fixture.invalid"] = jr
-		resp.Rooms.Invite = make(map[string]struct {
-			InviteState struct {
-				Events []matrix.Event `json:"events"`
-			} `json:"invite_state"`
-		})
-		resp.Rooms.Invite["!invite:fixture.invalid"] = struct {
-			InviteState struct {
-				Events []matrix.Event `json:"events"`
-			} `json:"invite_state"`
-		}{}
+		inviteRaw := []byte(`{"!invite:fixture.invalid":{"invite_state":{"events":[]}}}`)
+		if err := json.Unmarshal(inviteRaw, &resp.Rooms.Invite); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := s.savePosition(context.Background(), resp, time.Time{}); err != nil {
 			t.Fatal(err)
 		}
@@ -188,8 +184,8 @@ func TestPrincipalFirstCursorDoesNotReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 		pending := mb.Pending()
-		if len(pending) != 1 || pending[0].Kind != config.MailInvite {
-			t.Fatalf("initial history replayed: %+v", pending)
+		if len(pending) != 2 || pending[0].Kind != config.MailInvite || pending[1].ID != "$after" {
+			t.Fatalf("join boundary: %+v", pending)
 		}
 		st, err := config.LoadState(p, "worker")
 		if err != nil || st.NextBatch != "next" {

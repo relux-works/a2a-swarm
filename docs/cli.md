@@ -1258,6 +1258,21 @@ Every consumer (`wait`, `watch`, `inbox`, the hooks) shares one cursor and one *
   they arrive, so a flood never pushes a relevant event out of reach), appends the relevant events, invites and gap records to the mailbox,
   **fsyncs** it, and only then saves the cursor. A crash before the fsync leaves the cursor where it was (the batch is synced again); a crash after
   it re-syncs a batch the mailbox already holds, and the mailbox deduplicates it by event id. Irrelevant events never take space.
+- **First sync closes the join window.** With no saved `NextBatch`, joined-room timelines include membership events. Only events strictly
+  after this identity's latest own membership event, when it is a recognized self-sent join, enter the same relevance, subscription, mute,
+  sender and principal classifier and durable mailbox as live events. Own mail stays excluded; mailbox deduplication and receipts still apply.
+  A leave, ban, redacted, malformed or ambiguous own membership event blocks recovery with a gap; scanning never falls back to an older join.
+  A known join-to-join profile update proves no new join and also blocks recovery. Existing cursors, including later rejoins, retain their
+  live-sync behavior. A limited initial timeline pages backward via `/messages` only until the latest own membership event is found
+  (stopping on that page). Recovery shares a hard
+  **20-page budget across all joined rooms**, in sorted room order, with **100 events per page (2000 history events total)**; the initial sync
+  requests at most **100 timeline events per room**. Oversized timelines/pages, missing or stalled pagination, exhausted history and a bound
+  reached before the join produce the existing mailbox gap record, rather than delivering an unproven tail or silently discarding it.
+  A complete timeline without an own join also produces a gap. With no proven current join, the gap conservatively names the full range
+  from `room start` through the newest dropped event; an empty timeline or missing newest event ID uses the sync position as its non-empty
+  endpoint. Read an unresolved stretch with `a2a read`.
+  The initial `/sync`, history, subscription/label lookups and redaction corroboration share a **30-second HTTP deadline per attempt**; a
+  shorter caller deadline, including the hook's 5-second budget, wins. Transport errors/timeouts leave the cursor unadvanced for retry.
 - **Receipts on pull.** An entry leaves the mailbox only by a receipt: `a2a inbox` records one for exactly the entries it printed, after the write;
   `a2a ack <id...>|all-shown` records one explicitly. Nothing else receipts: `wait` and `watch` mark what they printed as **shown** (so the next
   `wait` blocks for something new instead of printing it again), the hooks only ring. A consumer that dies after printing loses nothing:
@@ -1303,7 +1318,7 @@ checking that timeout, and individual requests retain their existing bounds. Can
 `--timeout 0` keeps retrying temporary failures until canceled or an event arrives. Authentication,
 configuration, permanent transport/API errors and malformed successful sync responses still fail promptly. Backfill and local delivery failures
 retain their existing refusal behavior. Retries emit no new result type or outage notification.
-The very first run takes a position plus pending invites. Message history, including principal history, is not replayed. `--room` limits ordinary rooms that can ring; principal messages bypass it. Relevant events
+The very first run retains pending invites and performs the bounded post-join recovery in the delivery contract above, including principal mail under the same rules. Earlier history is not replayed. `--room` limits ordinary rooms that can ring; principal messages bypass it. Relevant events
 in other rooms are still persisted (the next wait without that filter, or `inbox`, shows them). `--all` adds every message of the `--room` rooms that
 this wait syncs; for durable room-wide delivery that every consumer sees, use `a2a subscribe --room R --all-events`.
 Excerpts are one line, stripped of control characters, and never longer than 200 characters.
@@ -1506,7 +1521,7 @@ dropped from the longer list first and counted as `K more`.
 How the doorbell works:
 - It brings the mailbox up to date without a long poll: one `/sync` from the cursor with timeout 0 (plus the usual backfill), classified and
   persisted exactly like `wait`'s (before the cursor moves). It reads the subscriptions (expired ones are ignored, not pruned). The first run without
-  a cursor takes a position plus pending invites, without replaying message history. It then counts the unreceived mailbox entries. It never receipts anything.
+  a cursor retains pending invites and performs bounded post-join recovery as described in the delivery contract. It then counts the unreceived mailbox entries. It never receipts anything.
 - Rung set: per `session_id` (bounded to 64 sessions and 100 ids each) the state records which unreceived entries the doorbell announced, after a
   successful write. A hook rings only when some unreceived entry is not in that set; otherwise it prints nothing. Received entries leave the set.
 - Stop loop guard: consecutive blocking Stops per `session_id`. When `stop_hook_active` is true and 3 blocks happened in a row, the hook prints
@@ -1797,9 +1812,9 @@ context. Stop emits a terminal `systemMessage`; it does not block stopping,
 acknowledge model receipt, or consume the next Start/Prompt context notice.
 Shell, hook and inbox session propagation and Start/Prompt model receipt remain
 unqualified; installation exports no project environment and commands pin `--as`.
-Read the messages with `a2a inbox`, which works only outside the default Muse
-sandbox. The first addressed event before first sync may be missing. Both limits
-are tracked in issue #278.
+Run `a2a inbox` with Muse's per-command approval, outside the default Muse sandbox: the default sandbox cannot open the identity state lock.
+Muse doorbells and hook context/Stop text include that instruction. a2a does not change Muse's sandbox configuration.
+Messages sent after the identity joined but before its first sync use the bounded post-join recovery in the delivery contract above (issue #278).
 
 Idle wake is unsupported for Muse (issue #274). Hooks run only at those
 lifecycle events; installation does not create a terminal/native consumer.
@@ -2307,13 +2322,10 @@ text omits `sub=`, and JSON omits `sub`. No subscription ID is invented; there
 is no account-data subscription to look up or unsubscribe for this delivery.
 Ordinary subscription delivery continues to show its real stored ID.
 
-**Accepted coverage-start window:** coverage begins at the current committed
-cursor using the cycle's starting host-list snapshot. Messages already behind
-that cursor are not replayed. This includes messages before the first cursor
-(initial positioning), before configuration or upgrade, and messages consumed
-by a cycle that started before a host-list change or while the list was
-unreadable. There is no initial principal-history crawl, retroactive backfill,
-or stale-history wake flood. Existing limited-sync gap recovery between the
+**Accepted coverage-start window:** coverage uses the cycle's starting host-list snapshot. With no committed cursor, the bounded
+post-join first-sync recovery above also applies to actual principal senders; it never delivers pre-join history. Once a cursor exists,
+messages already behind it are not replayed, including messages consumed before configuration or upgrade, by a cycle that started before
+a host-list change, or while the list was unreadable. There is no separate principal-history crawl or retroactive policy replay. Existing limited-sync gap recovery between the
 current cursor and a later sync remains unchanged for all mail; it is not a
 coverage-start replay. Server retention, redaction and history visibility still
 limit what ordinary gap recovery can retrieve.

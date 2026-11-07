@@ -191,6 +191,7 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 	}
 	closed := map[string]bool{}
 	seen := map[string]bool{}
+	firstPages := firstSyncMaxPages
 	// Iterate rooms in a stable order so output is deterministic.
 	for _, roomID := range sortedKeys(resp.Rooms.Join) {
 		if s.adminRoomExcluded(roomID) {
@@ -210,7 +211,17 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 			rel, _, _ := classifyWithPrincipals(ev, roomID, me, s.name, st, subs, configured)
 			return rel != ""
 		}
-		events, gap, err := s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
+		var events []matrix.Event
+		var gap *backfillGap
+		var err error
+		if since == "" {
+			events, gap, err = s.firstTimeline(ctx, roomID, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, resp.NextBatch, &firstPages)
+			if err == nil {
+				events, _, err = s.timelineEvents(ctx, roomID, "", events, false, "", keep)
+			}
+		} else {
+			events, gap, err = s.timelineEvents(ctx, roomID, since, jr.Timeline.Events, jr.Timeline.Limited, jr.Timeline.PrevBatch, keep)
+		}
 		if err != nil {
 			return b, fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
 		}
@@ -369,40 +380,86 @@ func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since st
 	return s.persist(ctx, b, since, resp.NextBatch, deadline)
 }
 
-// takePosition is the very first run. No message history is replayed;
-// pending invites precede the first cursor.
+// takePosition is the very first run. Only history after the identity's own
+// join is eligible; the initial sync and recovery share one HTTP deadline.
 func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.State, error) {
-	resp, err := s.client.Sync(ctx, "", 0, initialFilter)
+	return s.takePositionAll(ctx, deadline, nil)
+}
+
+func (s *session) takePositionAll(ctx context.Context, deadline time.Time, all map[string]bool) (config.State, error) {
+	ctx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
+	defer cancel()
+	resp, err := s.client.Sync(ctx, "", 0, firstDeliveryFilter)
 	if err != nil {
 		return config.State{}, err
 	}
-	return s.savePosition(ctx, resp, deadline)
+	return s.savePositionAll(ctx, resp, deadline, all)
 }
 
 func (s *session) savePosition(ctx context.Context, resp matrix.SyncResponse, deadline time.Time) (config.State, error) {
-	var b batch
-	for roomID, jr := range resp.Rooms.Join {
-		if s.client.FilterEvents != nil {
-			events, err := s.client.FilterEvents(roomID, jr.Timeline.Events)
-			if err != nil {
-				return config.State{}, err
-			}
-			jr.Timeline.Events = events
-		}
-		b.redactions = append(b.redactions, eventRedactions(roomID, jr.Timeline.Events)...)
+	return s.savePositionAll(ctx, resp, deadline, nil)
+}
+
+func (s *session) savePositionAll(ctx context.Context, resp matrix.SyncResponse, deadline time.Time, all map[string]bool) (config.State, error) {
+	ctx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
+	defer cancel()
+	snap, err := config.LoadState(s.paths, s.name)
+	if err != nil || snap.NextBatch != "" {
+		return snap, err // Another consumer already established this identity's cursor.
 	}
-	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
+	// Preserve initial redaction learning, including for already retained mail,
+	// without treating pre-join messages as delivery candidates.
+	var redactions []config.Redaction
+	if s.client.FilterEvents != nil {
+		// Scope the callback to this scan without mutating the caller's client.
+		bounded := *s
+		client := *s.client
+		bounded.client = &client
+		s = &bounded
+		s.installRedactionCacheContext(ctx)
+	}
+	for _, roomID := range sortedKeys(resp.Rooms.Join) {
 		if s.adminRoomExcluded(roomID) {
 			continue
 		}
-		b.entries = append(b.entries, inviteEntry(roomID, "", resp.Rooms.Invite[roomID].InviteState.Events, s.creds.UserID, s.server))
+		jr := resp.Rooms.Join[roomID]
+		if len(jr.Timeline.Events) > backfillPageSize {
+			continue // The bounded collector will report this malformed tail as a gap.
+		}
+		if s.client.FilterEvents != nil {
+			jr.Timeline.Events, err = s.client.FilterEvents(roomID, jr.Timeline.Events)
+			if err != nil {
+				return snap, err
+			}
+			resp.Rooms.Join[roomID] = jr
+		}
+		redactions = append(redactions, eventRedactions(roomID, jr.Timeline.Events)...)
 	}
+	s.principals = s.readDeliveryPrincipals()
+	list, err := s.getSubs(ctx)
+	if err != nil {
+		return snap, err
+	}
+	var subs []Sub
+	for _, sub := range list.Subs {
+		if !sub.expiredAt(s.app.Now()) {
+			subs = append(subs, sub)
+		}
+	}
+	b, err := s.collectBatch(ctx, resp, "", snap, subs, all, map[string]string{})
+	if err != nil {
+		return snap, err
+	}
+	if err := ctx.Err(); err != nil {
+		return snap, err // A timed-out scan must not commit a partial baseline.
+	}
+	b.redactions = append(b.redactions, redactions...)
 	return s.persist(ctx, b, "", resp.NextBatch, deadline)
 }
 
 // syncNow is the "bring the mailbox up to date" step of inbox and the hooks:
 // one /sync from the cursor with timeout 0 (no long poll), persisted like
-// wait's; the first run takes a position without replaying message history.
+// wait's; the first run recovers only bounded post-join message history.
 func (s *session) syncNow(ctx context.Context, st config.State, subs []Sub, deadline time.Time) (config.State, error) {
 	s.principals = s.readDeliveryPrincipals()
 	if st.NextBatch == "" {
@@ -562,11 +619,13 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	}
 	if st.NextBatch == "" {
 		if st, err = waitRetry(ctx, s, deadline, func() (config.State, error) {
-			resp, err := s.waitSync(ctx, "", 0, initialFilter)
+			initialCtx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
+			defer cancel()
+			resp, err := s.waitSync(initialCtx, "", 0, firstDeliveryFilter)
 			if err != nil {
 				return config.State{}, err
 			}
-			return s.savePosition(ctx, resp, time.Time{})
+			return s.savePositionAll(initialCtx, resp, time.Time{}, filter.allRooms())
 		}); err != nil {
 			return err
 		}
@@ -721,7 +780,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		return stopped(err)
 	}
 	if st.NextBatch == "" {
-		if st, err = s.takePosition(ctx, time.Time{}); err != nil {
+		if st, err = s.takePositionAll(ctx, time.Time{}, filter.allRooms()); err != nil {
 			return stopped(err)
 		}
 	}
