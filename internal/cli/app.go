@@ -124,7 +124,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
+		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room   named Matrix routing", cmdConnection},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
@@ -235,6 +235,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			// Fetch parses usage/help before consulting connection or identity state.
 			if c.name != "fetch" {
 				if err := a.connectionPreflight(c.name, rest[1:]); err != nil {
+					if c.name == "connection" && len(rest) > 1 && rest[1] == "register" {
+						return a.fail(adminRegistrationError("configuration", err))
+					}
 					return a.fail(err)
 				}
 				if c.name != "owner-dm" {
@@ -527,12 +530,15 @@ func (a *App) sessionAs(name string) (*session, error) {
 			if e != nil {
 				return e
 			}
-			if fresh.Fingerprint() != binding.Fingerprint() {
+			if fresh.Fingerprint() != binding.Fingerprint() || !sameAdminPolicy(selected.AdminRegistration, binding.Connection.AdminRegistration) {
 				return errors.New("selected connection changed; explicit migration required")
 			}
 			_, e = a.namedMetadata(p, name)
 			return e
 		}
+	}
+	if selected, _ := a.selectedConnection(); selected != nil && selected.AdminRegistration != nil {
+		c.ProtectedRoom = selected.AdminRegistration.RoomID
 	}
 	c.BeforeRequest = s.checkBinding
 	s.installRedactionCache()

@@ -2846,3 +2846,76 @@ CI should run the plain Go `TestMailAlarm*` cases and the opt-in dedupe control:
 The control must fail on the dedupe assertion with the gate removed and pass its
 independent destination control. No test, tmux or live messaging is needed to
 configure or inspect this feature.
+
+### Admin-room account registration
+
+`a2a --as ADMIN connection register NAME --via-admin-room` creates one new
+agent account on the selected named connection using that connection's explicitly
+configured administrator session. `--as` is required and must agree with the
+session's `A2A_AGENT`, when set. The normal named-registration credential store
+and recovery journal handle the new account's password and access token. The
+registration token stays in process memory: it is never written to
+`registration_token_ref`, credentials, state, argv, logs or CLI output, and is
+never included in the posted command. Existing owner-issued-token registration
+continues to use its existing route.
+
+The public connection entry must contain all of these prerequisites, for example:
+
+```json
+"admin_registration": {
+  "method": "tuwunel-v1.9.4-admin-room",
+  "admin_user_id": "@admin:example.org",
+  "server_bot_user_id": "@server:example.org",
+  "room_id": "!admin-room:example.org",
+  "expected_members": ["@admin:example.org", "@server:example.org"],
+  "reply_deadline_seconds": 15
+}
+```
+
+This dialect is source-verified against Tuwunel v1.9.4, commit
+[`f473d9a4a8342514302884041e0ccfea1ad503fc`](https://github.com/matrix-construct/tuwunel/tree/f473d9a4a8342514302884041e0ccfea1ad503fc).
+It sends exactly `!admin token issue --once --max-age 5m`. It accepts only the
+pinned complete `m.notice` token response, either directly replying to the
+command or in a thread rooted at it, from the configured bot in the exact room
+before the configured deadline (1–30 seconds). Attachments, extra plaintext,
+ambiguous replies and other formats refuse. A real disposable Tuwunel test is
+required before landing; fake-server tests do not qualify an installed server.
+
+Before issue, the CLI verifies the selected session with the server, the room's
+local server-qualified ID and bot-created state, explicit `m.federate: false`,
+and exactly the configured joined members, including the administrator and bot.
+Invites, knocks, extra members, broad or room-specific subscriptions, retained
+relevant mailbox entries, and an overlapping owner-DM route refuse. Membership
+is a point-in-time observation; it does not lock the room against changes by
+another administrator. No local power-level check grants server administration
+rights. A server refusal reports a fixed stage, recognized Matrix errcode and
+HTTP status without server text; unknown errcodes use `SERVER_ERROR`. A local
+refusal or deadline has `LOCAL_REFUSAL` and HTTP 0, which is not a server status.
+A server that silently ignores a command can only be reported as a deadline,
+not as a fabricated server denial.
+
+The server posts the secret token in its reply. Admin-room readers and server
+operators can read it; the room must not federate. Its single use and maximum
+five-minute validity limit exposure. Token expiry invalidates the token; it does
+not delete history. History may retain the expired token until redaction, and
+server copies may remain even after redaction. On failed registration, a token
+can remain unused and valid until its deadline. There is one issue attempt and
+one registration flow per invocation, without automatic reissue for expired or
+used tokens. A failed or ambiguous registration retains the normal recovery
+journal and blocks an automatic fresh attempt for that destination.
+
+The CLI attempts to redact the reply and command with one shared five-second
+cleanup budget, including after registration failure. This narrow client path
+does not require a general redaction CLI. Cleanup failure keeps the registration
+outcome and emits a fixed warning: rotation is not needed, but the single-use
+token remains in room history until expiry and may still be unused. Expiry
+limits validity, not history retention.
+
+Ordinary `read` refuses the entire configured admin room, including JSON,
+single-event, topic and `--verification-input` reads; this also prevents bot
+replies escaping through thread, file and fetch readers. Ordinary sync excludes
+that room from mailbox delivery, inbox, doorbell and projection. Archive skips
+it, and owner-DM mirroring cannot target it. A retained mailbox entry from this
+room causes delivery to refuse for private owner recovery; it is never printed.
+These exclusions apply to the selected connection's configured room. Unrelated
+rooms retain normal read, delivery, projection and archive behavior.
