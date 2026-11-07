@@ -556,6 +556,9 @@ func LoadState(p Paths, name string) (State, error) {
 	if err := unmarshalState(data, &s); err != nil {
 		return State{}, fmt.Errorf("%s is not valid state JSON: %w", path, err)
 	}
+	if err := s.validateHostNotifications(); err != nil {
+		return State{}, err
+	}
 	return s, nil
 }
 
@@ -569,16 +572,21 @@ func SaveState(p Paths, name string, s State) error {
 	if err != nil {
 		return err
 	}
-	if old.HostEnrollment != nil && (s.HostEnrollment == nil || !s.HostEnrollment.same(*old.HostEnrollment)) {
+	if !validHostNotificationWrite(old, s) {
 		return ErrHostEnrollment
 	}
 	path := p.StateFile(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	if s.HostEnrollment == nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
 	}
 	data, err := marshalState(s)
 	if err != nil {
 		return err
+	}
+	if s.HostEnrollment != nil {
+		return writeHostStateAtomic(p, name, append(data, '\n'))
 	}
 	return writeSecretAtomic(path, name, append(data, '\n'))
 }
