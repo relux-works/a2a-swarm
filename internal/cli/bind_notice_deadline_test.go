@@ -43,6 +43,8 @@ func noticeDeadlineFixture(t *testing.T) (*env, *App, *session) {
 	return e, a, s
 }
 
+// Stalled resolve/PUT requests remain bounded while same-identity state writers
+// can acquire the lock; completion preserves their edits, notice evidence and mail.
 func TestNoticePublicationNetworkBound(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"put-default", "resolve-default", "put-deadline", "resolve-deadline", "put-cancel", "resolve-cancel", "consumer-deadline"} {
@@ -51,6 +53,7 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 			before := e.state("alice")
 			mail := e.mailbox("alice").Pending()
 			entered, release := make(chan struct{}), make(chan struct{})
+			requestFinished := make(chan struct{})
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				statusPUT := r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/state/"+StatusEventType+"/")
 				resolve := strings.Contains(r.URL.Path, "/directory/room/")
@@ -62,6 +65,7 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 					e.hs.srv.Config.Handler.ServeHTTP(w, r)
 					return
 				}
+				defer close(requestFinished)
 				if statusPUT {
 					var record config.AgentStatus
 					if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
@@ -134,8 +138,8 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("setup: server never accepted request")
 			}
-			// While a status PUT is outstanding, a second writer must wait on this
-			// identity's actual file lock. A resolve stall happens before that lock.
+			// HTTP runs outside this identity's actual file lock. Require a
+			// successful mutation before the stalled request finishes.
 			acquired = make(chan error, 1)
 			writerStarted := make(chan struct{})
 			go func() {
@@ -144,13 +148,19 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 				acquired <- err
 			}()
 			<-writerStarted
-			if !strings.HasPrefix(kind, "resolve-") {
-				select {
-				case err := <-acquired:
-					writerReturned = true
-					t.Errorf("state lock not held during accepted PUT: %v", err)
-				case <-time.After(75 * time.Millisecond):
+			select {
+			case err := <-acquired:
+				writerReturned = true
+				if err != nil {
+					t.Errorf("state mutation failed during publication HTTP: %v", err)
 				}
+				select {
+				case <-requestFinished:
+					t.Error("state mutation completed only after publication HTTP")
+				default:
+				}
+			case <-time.After(150 * time.Millisecond):
+				t.Error("state lock unavailable during publication HTTP")
 			}
 			if strings.Contains(kind, "cancel") {
 				cancel()

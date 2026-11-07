@@ -291,7 +291,7 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 			}))
 			defer srv.Close()
 			s.client.BaseURL = srv.URL
-			a.publishTerminalNotice(context.Background(), s, "deadline")
+			publicationErr := s.publishTerminalNotice(context.Background(), "deadline")
 			select {
 			case err := <-writerDone:
 				if err != nil {
@@ -321,12 +321,12 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 					t.Fatal("queued desired notice not retryable")
 				}
 			case "put-heartbeat":
-				if st.Liveness.Detail != "concurrent heartbeat" {
-					t.Fatal("queued heartbeat lost")
+				if publicationErr == nil || publicationErr.Error() != "own status changed during publication" || st.Liveness.Detail != "concurrent heartbeat" || !st.NoticeWriteUncertain || st.Terminal.NoticePublication == "published" {
+					t.Fatalf("concurrent heartbeat lost or stale status acknowledged: %v", publicationErr)
 				}
 			case "put-fence":
-				if st.OwnStatusWrite == nil || st.OwnStatusWrite.Token != "successor" || !st.NoticeWriteUncertain || st.Terminal.NoticePublication == "published" {
-					t.Fatal("stale completion changed successor publication")
+				if publicationErr == nil || publicationErr.Error() != "own status publication superseded" || st.OwnStatusWrite == nil || st.OwnStatusWrite.Token != "successor" || !st.NoticeWriteUncertain || st.Terminal.NoticePublication == "published" {
+					t.Fatalf("stale completion changed successor publication: %v", publicationErr)
 				}
 				if _, err := config.UpdateState(s.paths, s.name, func(st *config.State) error { st.OwnStatusWrite.Until = time.Now().Add(-time.Second); return nil }); err != nil {
 					t.Fatal(err)

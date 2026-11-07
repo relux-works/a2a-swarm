@@ -16,7 +16,8 @@ import (
 
 // Independent opt-in B1 controls preserve all 40 accepted CR5 plants verbatim.
 // A missing network budget is exempted only for otherwise live callers; earlier
-// caller deadlines and the state-lock gate stay present. Only an intended
+// caller deadlines and pre-HTTP state-lock acquisition stay bounded; HTTP must
+// leave the state lock available to other writers. Only an intended
 // assertion plus a passing actual publication is credited, never a timeout,
 // panic, build error, skip, missing test, or cleanup failure.
 func TestNoticePublicationDeadlineNarrowingPlants(t *testing.T) {
