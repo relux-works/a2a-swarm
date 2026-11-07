@@ -200,6 +200,9 @@ func (a *App) ownerMirrorStop(parent context.Context, runtime string, in hookInp
 	if err != nil {
 		return
 	}
+	if s.adminRoomExcluded(c.Room) {
+		return
+	}
 	s.client = s.client.WithoutRedirects()
 	// Paused hooks retain their existing kill-switch semantics.
 	state, err := config.LoadState(s.paths, s.name)

@@ -17,7 +17,7 @@ func (a *App) selectedStore() (string, error) {
 		return "", e
 	}
 	if c != nil {
-		if runtime.GOOS != "darwin" && a.keychain == nil && a.connectionSecretStore == nil {
+		if c.Store.Backend == "keychain" && runtime.GOOS != "darwin" && a.keychain == nil && a.connectionSecretStore == nil {
 			return "", fmt.Errorf("keychain secret store requires macOS")
 		}
 		return c.Store.Backend, nil
@@ -54,17 +54,24 @@ func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) 
 	if c, e := a.selectedConnection(); e != nil {
 		return config.Credentials{}, e
 	} else if c != nil {
+		store, e := a.selectedStore()
+		if e != nil {
+			return config.Credentials{}, e
+		}
 		creds, e := a.namedMetadata(p, name)
 		if e != nil {
 			return config.Credentials{}, e
 		}
-		creds.AccessToken, e = a.readConnectionSecret(ctx, p, config.SecretReference{Service: c.Store.AccessTokenService, Account: creds.UserID})
-		if e != nil {
-			return config.Credentials{}, e
+		if store == "keychain" {
+			creds.AccessToken, e = a.readConnectionSecret(ctx, p, config.SecretReference{Service: c.Store.AccessTokenService, Account: creds.UserID})
+			if e != nil {
+				return config.Credentials{}, e
+			}
 		}
 		if creds.AccessToken == "" {
 			return config.Credentials{}, fmt.Errorf("missing selected access token")
 		}
+		a.secrets.Add(creds.AccessToken)
 		return creds, nil
 	}
 	store, err := a.selectedStore()
