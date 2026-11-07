@@ -41,6 +41,12 @@ when no live owned consumer can carry it. Notification does not receipt mail.
 See [shared notification spacing](docs/cli.md#shared-30-second-notification-spacing)
 for uncertainty, clock/restart and diagnostic limits.
 
+The internal optional Host work-reference adapter retains correlation in that
+same state file before its one STREAM request. Lost replies remain UNKNOWN;
+explicit lookup can reconcile the retained attempt without resending it.
+The adapter has no CLI backend selection or live activation route. See
+[the Host enrollment contract](docs/host-enrollment.md).
+
 ## Tools
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |

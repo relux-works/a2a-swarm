@@ -54,13 +54,17 @@ func unmarshalState(data []byte, s *State) error {
 			delete(members, name)
 		}
 	}
+	if len(members) == 0 {
+		members = nil
+	}
 	s.opaque = members
 	return nil
 }
 
 func marshalState(s State) ([]byte, error) {
+	compact := s.HostEnrollment != nil && s.HostEnrollment.Version == 2
 	if len(s.opaque) == 0 {
-		return json.MarshalIndent(s, "", "  ")
+		return encodeStateJSON(s, compact)
 	}
 	known, err := json.Marshal(s)
 	if err != nil {
@@ -77,5 +81,13 @@ func marshalState(s State) ([]byte, error) {
 			members[name] = value
 		}
 	}
-	return json.MarshalIndent(members, "", "  ")
+	return encodeStateJSON(members, compact)
+}
+
+// Host v2 counts the compact retained ledger; legacy and v1 keep their formatting.
+func encodeStateJSON(value any, compact bool) ([]byte, error) {
+	if compact {
+		return json.Marshal(value)
+	}
+	return json.MarshalIndent(value, "", "  ")
 }

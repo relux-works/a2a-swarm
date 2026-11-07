@@ -47,7 +47,7 @@ func (n *Notification) Prepare(now, legacy time.Time) error {
 		return errors.New("invalid notification ledger")
 	}
 	if r := n.Reservation; r != nil {
-		if len(r.Token) != 32 || (r.Path != "hook" && r.Path != "native" && r.Path != "terminal") || r.Session == "" || r.At.IsZero() || r.Previous.IsZero() || len(r.Session) > 200 || len(r.Generation) > 128 {
+		if len(r.Token) != 32 || (r.Path != "hook" && r.Path != "native" && r.Path != "terminal" && r.Path != "host") || r.Session == "" || r.At.IsZero() || r.Previous.IsZero() || len(r.Session) > 200 || len(r.Generation) > 128 {
 			return errors.New("invalid notification reservation")
 		}
 		if _, err := hex.DecodeString(r.Token); err != nil {
@@ -69,6 +69,12 @@ func (n *Notification) Reserve(path, session, generation string, now time.Time, 
 	if (path != "hook" && path != "native" && path != "terminal") || session == "" || len(session) > 200 || len(generation) > 128 || now.IsZero() {
 		return "", errors.New("invalid notification scope")
 	}
+	return n.reserve(path, session, generation, now, bypass)
+}
+
+// reserve is shared by the admitted Host transaction and legacy Reserve. Host
+// is deliberately absent from the public legacy path selector.
+func (n *Notification) reserve(path, session, generation string, now time.Time, bypass bool) (string, error) {
 	if err := n.Prepare(now, time.Time{}); err != nil {
 		return "", err
 	}
