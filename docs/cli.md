@@ -1082,11 +1082,12 @@ their content policies and explicit missing-room policies remain distinct.
 `--json` prints one JSON object per event instead (same selection and order):
 `{type, room, room_id, event_id, sender, at, kind, subtype, subject, topic, title, root, to, re, reply_by, trunk, sub_request, body, attachment}`. `type` is `topic` for a topic root,
 otherwise `message`; `topic` is the slug; `root` is the thread root event id; `body` is the full text without the header lines.
-For display and delivery, `root` uses the explicit Matrix `m.thread` relation
-first, then a decoded a2a header's `topic` when no thread relation exists.
-A plain `m.in_reply_to` names a reply target, not a topic root. Projection origin
-metadata does not establish a local thread. This fallback does not change
-`read --topic` relation-list selection or `post --re` routing validation.
+`read --json`'s `root` comes only from `ev.ThreadRoot()`: the explicit Matrix
+`m.thread` relation, never the a2a header's `topic` or a plain `m.in_reply_to`.
+Delivery's `deliveryTopicRoot` also accepts a plain `m.in_reply_to` when its
+target has learned thread membership in the same room; it never uses the header.
+Projection origin metadata does not establish a local thread. These rules do
+not change `read --topic` relation-list selection or `post --re` routing validation.
 Empty fields are omitted.
 ```bash
 a2a read a2a-swarm --topic bridge-daemon --last 50
@@ -2236,8 +2237,13 @@ Unknown and cross-room reply targets cannot inherit thread membership. Learning
 is chronological, includes suppressed/unmatched events, and persists with the
 cursor; it does not follow a thread or lift a mute. The local membership cache
 retains up to 2,000 room/event/root entries; missing or evicted membership is
-unknown, without a network lookup or header fallback. Legacy `threads`/`muted`
-lists alone do not prove room membership. The root event itself is muted by its
+unknown, without a network lookup or header fallback. A plain reply directly to
+a muted root therefore still rings an otherwise matching room subscription
+until an `m.thread` child naming that root has been observed in the same room;
+it also rings after that root's membership is evicted. Observing the root event
+alone does not establish this membership. Unknown membership deliberately
+fails open toward delivery. Legacy `threads`/`muted` lists alone do not prove
+room membership. The root event itself is muted by its
 event ID. `read --json`'s `root` is `m.relates_to.event_id` only when `rel_type` is
 `m.thread`; header fields such as the topic slug and reply ID remain display
 metadata.

@@ -363,6 +363,235 @@ func eventContent(t *testing.T, ev matrix.Event) map[string]any {
 	return c
 }
 
+func plainReplyDecision(target string) map[string]any {
+	c := kindMsg("bob", "decision", "plain reply")
+	c["m.relates_to"] = map[string]any{"m.in_reply_to": map[string]any{"event_id": target}}
+	return c
+}
+
+// A direct reply to a muted root rings while membership is unknown, even after
+// observing the root itself. Observing a same-room m.thread child suppresses
+// the identical reply shape; neither suppression nor admission creates receipts.
+func TestMuteDirectRootReplyNeedsLearnedMembership(t *testing.T) {
+	for _, learned := range []bool{false, true} {
+		name := "unknown-root"
+		if learned {
+			name = "learned-root"
+		}
+		t.Run(name, func(t *testing.T) {
+			e, room := subWorld(t)
+			_, s := notificationApp(t, e)
+			ctx := context.Background()
+			st, err := s.takePosition(ctx, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows := []Sub{{ID: "room", SubSelector: SubSelector{Room: room, Kinds: []string{"decision"}}}}
+			root := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "decision", "muted root"))
+			notificationState(t, e, func(cur *config.State) { cur.Mute(root) })
+			st, err = s.syncNow(ctx, st, rows, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(e.state("alice").ThreadEvents) != 0 || len(e.mailbox("alice").Pending()) != 0 {
+				t.Fatal("observing the muted root learned membership or admitted mail")
+			}
+			if learned {
+				child := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, root, root)))
+				st, err = s.syncNow(ctx, st, rows, time.Time{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				current := e.state("alice")
+				if current.ThreadEventRoot(room, root) != root || current.ThreadEventRoot(room, child) != root || len(e.mailbox("alice").Pending()) != 0 {
+					t.Fatal("suppressed m.thread child did not establish same-room root membership")
+				}
+			}
+			reply := e.hs.inject(room, "@bob:test.local", plainReplyDecision(root))
+			if _, err := s.syncNow(ctx, st, rows, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			entries := e.mailbox("alice").Pending()
+			bell := doorbellOf(itemsOf(entries, s.server), s.server, nil)
+			if learned {
+				if len(entries) != 0 || bell.total != 0 || e.state("alice").ThreadEventRoot(room, reply) != root {
+					t.Fatalf("learned root reply was not suppressed/learned: %+v %+v", entries, bell)
+				}
+			} else if len(entries) != 1 || entries[0].ID != reply || entries[0].Sub != "room" || bell.total != 1 || bell.types["sub"] != 1 || len(e.state("alice").ThreadEvents) != 0 {
+				t.Fatalf("unknown root reply must ring without learning membership: %+v %+v", entries, bell)
+			}
+			if e.received("alice", root) || e.received("alice", reply) {
+				t.Fatal("admission/suppression created receipts")
+			}
+		})
+	}
+}
+
+// syncNow persists no membership for a header-only muted-topic claim: it and
+// its later plain reply ring the room subscription. The same claim with a real
+// m.thread relation learns membership and suppresses both events across cycles.
+func TestMuteHeaderClaimCannotPoisonPersistedMembership(t *testing.T) {
+	for _, relation := range []string{"", "$muted"} {
+		name := "header-only"
+		if relation != "" {
+			name = "server-thread"
+		}
+		t.Run(name, func(t *testing.T) {
+			e, room := subWorld(t)
+			_, s := notificationApp(t, e)
+			ctx := context.Background()
+			st, err := s.takePosition(ctx, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			notificationState(t, e, func(cur *config.State) { cur.Mute("$muted") })
+			rows := []Sub{{ID: "room", SubSelector: SubSelector{Room: room, Kinds: []string{"decision"}}}}
+			claim := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, "$muted", relation)))
+			st, err = s.syncNow(ctx, st, rows, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(ids ...string) {
+				t.Helper()
+				entries := e.mailbox("alice").Pending()
+				if len(entries) != len(ids) {
+					t.Fatalf("pending=%+v, want IDs %v", entries, ids)
+				}
+				for i, id := range ids {
+					if entries[i].ID != id || entries[i].Sub != "room" || entries[i].Rel != string(relSub) {
+						t.Fatalf("pending[%d]=%+v, want subscription event %s", i, entries[i], id)
+					}
+				}
+				bell := doorbellOf(itemsOf(entries, s.server), s.server, nil)
+				if bell.total != len(ids) || bell.types["sub"] != len(ids) {
+					t.Fatalf("wrong subscription ring: %+v", bell)
+				}
+			}
+			current := e.state("alice")
+			if relation == "" {
+				check(claim)
+				if len(current.ThreadEvents) != 0 {
+					t.Fatalf("header claim persisted membership: %+v", current.ThreadEvents)
+				}
+			} else {
+				check()
+				if current.ThreadEventRoot(room, claim) != "$muted" || current.ThreadEventRoot(room, "$muted") != "$muted" {
+					t.Fatal("real server relation did not persist membership")
+				}
+			}
+			reply := e.hs.inject(room, "@bob:test.local", plainReplyDecision(claim))
+			if _, err := s.syncNow(ctx, st, rows, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			current = e.state("alice")
+			if relation == "" {
+				check(claim, reply)
+				if len(current.ThreadEvents) != 0 {
+					t.Fatalf("reply to header-only claim persisted membership: %+v", current.ThreadEvents)
+				}
+			} else {
+				check()
+				if current.ThreadEventRoot(room, reply) != "$muted" {
+					t.Fatal("plain reply did not inherit persisted server membership")
+				}
+			}
+			if e.received("alice", claim) || e.received("alice", reply) {
+				t.Fatal("admission/suppression created receipts")
+			}
+		})
+	}
+}
+
+// wait and watch suppress a learned muted plain reply normally but deliver it
+// under --all. An unmuted subscribed neighbor rings in both modes; the actual
+// consumers print and mark shown without receipting either event.
+func TestMuteLearnedReplyWaitWatchAll(t *testing.T) {
+	for _, mode := range []string{"wait", "watch"} {
+		for _, all := range []bool{false, true} {
+			name := mode + "/ordinary"
+			if all {
+				name = mode + "/all"
+			}
+			t.Run(name, func(t *testing.T) {
+				e, room := subWorld(t)
+				a, s := notificationApp(t, e)
+				ctx, cancel := context.WithTimeout(context.Background(), testDeadline)
+				defer cancel()
+				a.ctx = ctx
+				st, err := s.takePosition(ctx, time.Time{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				row, _ := e.subscribe("alice", "--room", "proj", "--kind", "decision")
+				notificationState(t, e, func(cur *config.State) { cur.Mute("$muted") })
+				child := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, "$muted", "$muted")))
+				if _, err := s.syncNow(ctx, st, e.serverSubs("alice").Subs, time.Time{}); err != nil {
+					t.Fatal(err)
+				}
+				if e.state("alice").ThreadEventRoot(room, child) != "$muted" || len(e.mailbox("alice").Pending()) != 0 {
+					t.Fatal("fixture did not learn suppressed child membership")
+				}
+				reply := e.hs.inject(room, "@bob:test.local", plainReplyDecision(child))
+				neighbor := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, "$neighbor", "$neighbor")))
+				var output bytes.Buffer
+				a.Stdout = &output
+				polls := 0
+				base := s.client.HTTP.Transport
+				a.HTTP = &http.Client{Transport: muteRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(r.URL.Path, "/sync") {
+						polls++
+						if polls == 2 {
+							if mode != "watch" {
+								t.Fatal("wait did not ring on the unmuted control")
+							}
+							cancel()
+							return nil, context.Canceled
+						}
+					}
+					return base.RoundTrip(r)
+				})}
+				args := []string{"--room", "proj", "--json"}
+				if all {
+					args = append(args, "--all")
+				}
+				if mode == "wait" {
+					err = cmdWait(ctx, a, append(args, "--timeout", "0"))
+				} else {
+					err = cmdWatch(ctx, a, args)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []string{neighbor}
+				if all {
+					want = []string{reply, neighbor}
+				}
+				lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+				entries := e.mailbox("alice").Pending()
+				if len(lines) != len(want) || len(entries) != len(want) {
+					t.Fatalf("wrong delivery: output=%q pending=%+v", output.String(), entries)
+				}
+				for i, id := range want {
+					var rec EventRecord
+					if err := json.Unmarshal([]byte(lines[i]), &rec); err != nil {
+						t.Fatal(err)
+					}
+					wantRel, wantSub := string(relSub), row
+					if id == reply {
+						wantRel, wantSub = string(relAll), ""
+					}
+					if rec.EventID != id || rec.Type != wantRel || entries[i].ID != id || entries[i].Rel != wantRel || entries[i].Sub != wantSub || !entries[i].Shown {
+						t.Fatalf("wrong printed/shown entry: %+v %+v", rec, entries[i])
+					}
+				}
+				if strings.Contains(output.String(), child) || e.received("alice", reply) || e.received("alice", neighbor) {
+					t.Fatal("consumer replayed suppressed child or created receipts")
+				}
+			})
+		}
+	}
+}
+
 // Repeated policy changes defer normally without partial mail, receipts,
 // cursor advancement or one-shot closure. Once policy stabilizes,
 // the same cursor delivers the neighbor and closes the row normally.
@@ -545,45 +774,76 @@ func TestMuteContentionConsumersContinue(t *testing.T) {
 	}
 }
 
-// An initial sync exhausted by mute contention defers with an empty cursor;
-// the same session retries initial membership recovery and admits post-join
-// mail. This verifies the common first-sync path, not a process restart.
+// cmdWait survives three invalidated first-sync admissions with an empty cursor
+// and no partial mail/membership/one-shot closure. Its next poll repeats initial
+// membership recovery and rings only the unmuted post-join subscription control.
 func TestMuteContentionFirstSyncRetries(t *testing.T) {
 	e, room := subWorld(t)
 	a, s := notificationApp(t, e)
-	id := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local post-join control", nil))
+	ctx, cancel := context.WithTimeout(context.Background(), testDeadline)
+	defer cancel()
+	a.ctx = ctx
+	row, _ := e.subscribe("alice", "--room", "proj", "--kind", "decision", "--until-kind", "decision")
+	muted := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, "$muted", "$muted")))
+	id := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, "$neighbor", "$neighbor")))
+	mutedEvent, ok := e.hs.eventByID(muted)
+	if !ok {
+		t.Fatal("missing muted post-join fixture")
+	}
 	ev, ok := e.hs.eventByID(id)
 	if !ok {
 		t.Fatal("missing post-join fixture")
 	}
 	before := firstSyncMessage("$before", "@bob:test.local", msg("@alice:test.local pre-join control", nil))
-	firstSyncFixture(t, e, room, false, "", before, firstSyncJoin("@alice:test.local", "$join"), ev)
-	attempts := 0
+	firstSyncFixture(t, e, room, false, "", before, firstSyncJoin("@alice:test.local", "$join"), mutedEvent, ev)
+	if st := e.state("alice"); st.NextBatch != "" || len(st.ThreadEvents) != 0 {
+		t.Fatal("fixture already has a cursor or learned membership")
+	}
+	attempts, polls := 0, 0
 	a.beforeDeliver = func() {
-		roots := []string{"$mute-1", "$mute-2", "$mute-3"}
-		notificationState(t, e, func(cur *config.State) { cur.Mute(roots[attempts]) })
 		attempts++
+		if attempts <= 3 {
+			roots := []string{"$muted", "$mute-2", "$mute-3"}
+			notificationState(t, e, func(cur *config.State) { cur.Mute(roots[attempts-1]) })
+		} else if attempts != 4 {
+			t.Fatal("unexpected extra initial admission")
+		}
 	}
-	st, err := s.takePosition(context.Background(), time.Time{})
-	if err != nil || st.NextBatch != "" || attempts != 3 || len(e.mailbox("alice").Pending()) != 0 {
-		t.Fatalf("initial contention did not defer: %+v %v", st, err)
+	base := s.client.HTTP.Transport
+	a.HTTP = &http.Client{Transport: muteRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/sync") {
+			polls++
+			if polls > 2 {
+				t.Fatal("cmdWait did not ring after initial retry")
+			}
+			if r.URL.Query().Get("since") != "" || r.URL.Query().Get("filter") != firstDeliveryFilter {
+				t.Fatal("initial retry lost the empty cursor or membership recovery filter")
+			}
+			if polls == 2 {
+				current := e.state("alice")
+				if attempts != 3 || current.NextBatch != "" || len(current.ThreadEvents) != 0 || len(e.mailbox("alice").Pending()) != 0 || e.serverSubs("alice").find(row) < 0 {
+					t.Fatal("first-sync contention did not defer atomically to the next poll")
+				}
+			}
+		}
+		return base.RoundTrip(r)
+	})}
+	var output bytes.Buffer
+	a.Stdout = &output
+	if err := cmdWait(ctx, a, []string{"--timeout", "0", "--json"}); err != nil {
+		t.Fatalf("cmdWait exited with an error during initial contention/retry: %v", err)
 	}
-	if deliverySyncFilter(st.NextBatch) != firstDeliveryFilter {
-		t.Fatal("retry omitted membership events")
+	if attempts != 4 || polls != 2 || e.state("alice").NextBatch == "" || e.serverSubs("alice").find(row) >= 0 {
+		t.Fatalf("initial retry failed: attempts=%d polls=%d", attempts, polls)
 	}
-	a.beforeDeliver = nil
-	resp, err := s.client.Sync(context.Background(), st.NextBatch, 0, deliverySyncFilter(st.NextBatch))
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err = s.ingest(context.Background(), resp, st.NextBatch, nil, nil, time.Time{})
-	if err != nil || st.NextBatch == "" {
-		t.Fatalf("initial retry failed: %+v %v", st, err)
-	}
-	if entries := e.mailbox("alice").Pending(); len(entries) != 1 || entries[0].ID != id {
+	if entries := e.mailbox("alice").Pending(); len(entries) != 1 || entries[0].ID != id || entries[0].Sub != row || !entries[0].Shown {
 		t.Fatalf("initial retry lost post-join control or admitted pre-join mail: %+v", entries)
 	}
-	if e.received("alice", id) {
-		t.Fatal("initial admission created receipt")
+	var rec EventRecord
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.EventID != id || rec.Type != "sub" || rec.Sub != row || e.received("alice", id) || e.received("alice", muted) || e.received("alice", before.EventID) {
+		t.Fatalf("initial retry rang the wrong event or created receipts: %q", output.String())
 	}
 }
