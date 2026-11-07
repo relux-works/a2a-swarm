@@ -78,7 +78,7 @@ func eventRecord(typ, room, roomID string, ev matrix.Event, server string, excer
 		EventID:  ev.EventID,
 		Sender:   localpartIfLocal(ev.Sender, server),
 		At:       time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339),
-		Root:     ev.ThreadRoot(),
+		Root:     eventTopicRoot(ev),
 	}
 	text := m.Body
 	if h, ok := decodeHeader(m.A2A); ok {

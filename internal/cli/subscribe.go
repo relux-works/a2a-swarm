@@ -247,7 +247,7 @@ func (sub Sub) matches(ev matrix.Event, roomID string, h Header, hasHeader bool)
 		// the origin's kind, subtype, subject and sender from its header.
 		return false
 	}
-	if sub.Topic != "" && ev.ThreadRoot() != sub.Topic {
+	if sub.Topic != "" && eventTopicRoot(ev) != sub.Topic {
 		return false
 	}
 	if sub.From != "" && ev.Sender != sub.From && !(projected && sub.Source != principalSubSource && originSender(sub.From, h.From)) {

@@ -42,6 +42,19 @@ const (
 	relAll     relevance = "all"
 )
 
+// eventTopicRoot is shared by read records and delivery. An explicit Matrix
+// thread takes precedence; plain replies may carry their topic only in the
+// a2a header. Projection origin metadata does not create a local thread.
+func eventTopicRoot(ev matrix.Event) string {
+	if root := ev.ThreadRoot(); root != "" {
+		return root
+	}
+	if h, ok := decodeHeader(ev.Message().A2A); ok && h.Type != "projection" {
+		return h.Topic
+	}
+	return ""
+}
+
 // classify decides whether a timeline event concerns this agent. It is pure:
 // the caller updates the thread list from the returned learnedRoot. matched
 // lists the subscriptions that deliver the event, whatever its relevance, so
@@ -51,7 +64,7 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		return "", "", nil
 	}
 	m := ev.Message()
-	root := ev.ThreadRoot()
+	root := eventTopicRoot(ev)
 	if ev.Sender == me {
 		// My own message: a reply joins me to its thread; a topic root I sent is a thread I own.
 		if root != "" {
@@ -171,7 +184,7 @@ func eventLine(rel relevance, room string, ev matrix.Event, server, subID string
 		}
 		text = stripHeaderBody(text)
 	}
-	if root := ev.ThreadRoot(); root != "" {
+	if root := eventTopicRoot(ev); root != "" {
 		parts = append(parts, "root="+root)
 	}
 	return sanitizeLine(strings.Join(parts, " ")) + ": " + snippet(text, SnippetMax)
