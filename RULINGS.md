@@ -491,7 +491,7 @@ Backups: `refs/backup/stale-260929/*`, patches in `.temp/critical-260922/archive
 - *No global rollback:* F1 (move/create atomicity), F3, the integration-base fix and the reviewer-freshness task stay live.
 - *Workaround until the fix lands:*
   - (a) Land through the PR path plus close-landed, which does not call integrate. tb-critical-fixes does this.
-  - (b) Otherwise, run THAT ONE `worktree integrate` of an accepted leaf with the previous build by its explicit path: /Users/iv/.curator/cache/build/go-v1/0348fd5914b7290ee5798c87126344681a2db4e6ba031937288b158536ce79ba/bin/task-board (cache key 0348fd59, verified present and without lane B's check). Announce it in #skill-project-management. No other command runs on the old binary.
+  - (b) Otherwise, run THAT ONE `worktree integrate` of an accepted leaf with the previous build by its explicit path: $HOME/.curator/cache/build/go-v1/0348fd5914b7290ee5798c87126344681a2db4e6ba031937288b158536ce79ba/bin/task-board (cache key 0348fd59, verified present and without lane B's check). Announce it in #skill-project-management. No other command runs on the old binary.
 - *Fix:* tb-critical-fixes takes it as critical. When the policy source is absent from the authoritative tree, it compares against the loaded config (the no-path branch), with a regression test on an untracked config.
   - It lands ahead of everything, and tb-critical-fixes may stack it on the historical-diagnostics task in one window.
   - Swap #4 follows at once under the standing go, batching the agents-management pin task if it is ready.
