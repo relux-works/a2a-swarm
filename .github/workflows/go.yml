@@ -45,7 +45,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Add capacity while the repo is private and the single Mac runner is queued.
     # Transitional F1 step: moving off macOS and to public-allowed labels is later.
-    runs-on: [self-hosted, Linux, relux-generic]
+    runs-on: [self-hosted, Linux, swarma-ci]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
