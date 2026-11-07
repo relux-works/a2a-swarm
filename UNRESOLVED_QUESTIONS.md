@@ -93,11 +93,25 @@ The older recovery descriptions above are historical and conflict with current
 bind documentation/source; reconciling those unrelated recovery decisions is
 outside this producer slice.
 ## Principal coverage: explicit subscription removal
+## Principal coverage: account-data concurrency and history limits
 
-The principal subscription slice protects `subs check`, plain/preset sync and
-preset cleanup, and refuses new trim records in rooms with joined configured
-principals. Explicit `unsubscribe` (including `--all`), leave and owner-DM
-unbind/unset retain their existing removal contracts. Should those explicit
-operations also refuse removal of the last principal all-events selector, or
-remain operator-controlled escape paths? They are outside this slice; while
-still joined, `subs check` detects a resulting gap and sync repairs it.
+The former explicit-removal question is resolved: unsubscribe, including
+`--all`, atomically refuses configured principal rows with
+`principal_subscription_required`. No force flag exists. Host removal of an ID
+or departure of the agent from the room ends protection. Owner-DM cleanup owns
+only its own room-wide row and maintains separate principal coverage.
+
+Cross-host account-data writers still have no compare-and-swap in the existing
+client. Dedicated audit rows can be lost by a competing get/modify/put. Should
+future server support provide conditional writes, or should a single writer
+own subscription storage? Delivery no longer waits on this decision: every
+batch derives mandatory selectors from the local host list, without a network
+repair or membership snapshot. Host lists/cursors are not synchronized across
+hosts. Configure each participating identity/connection on its host.
+
+History already behind a cursor when a principal is configured is not replayed.
+First-cursor principal history is backfilled up to 500 pages of 100 events per
+room, with a durable gap on an incomplete scan. Server retention/redaction,
+membership history visibility and pre-join events can make content unavailable.
+Live wake responsiveness, fsync/crash recovery and concurrent process behavior
+are not verified by the pure regression fixtures in this repair.

@@ -2,14 +2,29 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
+
+const principalSubSource = "host-principal"
+
+// IDs are exact, case-sensitive identities, including historical localparts.
+// Validate routing syntax but never lowercase a different identity into authority.
+func validPrincipalID(id string) bool {
+	if !ownerMXID.MatchString(id) || len(id) > 255 || !utf8.ValidString(id) || strings.ContainsAny(id, "\x00\r\n\t") {
+		return false
+	}
+	_, server, _ := strings.Cut(id[1:], ":")
+	return config.ValidateMatrixRouting("https://principal.invalid", server) == nil
+}
 
 // Principal authority is host-local and per identity, beside the owner pin.
 // Matrix membership only determines where an already configured ID is present.
@@ -31,7 +46,7 @@ func (f ownerDMFiles) principals() ([]string, error) {
 		return nil, errors.New("invalid host principals configuration")
 	}
 	for _, id := range c.Principals {
-		if !ownerMXID.MatchString(id) {
+		if !validPrincipalID(id) {
 			return nil, errors.New("host principals require exact Matrix user IDs")
 		}
 	}
@@ -59,7 +74,7 @@ func cmdHostPrincipals(ctx context.Context, a *App, args []string) error {
 			return usagef("%s", principalsUsage)
 		}
 		for _, id := range args[1:] {
-			if !ownerMXID.MatchString(id) {
+			if !validPrincipalID(id) {
 				return usagef("host principals require exact Matrix user IDs")
 			}
 			ids = append(ids, id)
@@ -129,11 +144,13 @@ func (s *session) roomPrincipals(ctx context.Context, room string, configured []
 	return joined, nil
 }
 
+// Principal rows belong to this policy, never to a DM, preset or manual row.
 // Coverage must last: temporary and one-shot rows cannot protect a principal.
 // From is compared byte for byte; no display names or message text are used.
 func coversPrincipal(sub Sub, room, principal string, now time.Time) bool {
-	if sub.validate() != nil || !sub.AllEvents || sub.Room != room ||
-		(sub.From != "" && sub.From != principal) || len(sub.Kinds) > 0 ||
+	if sub.Source != principalSubSource || sub.Preset != "" ||
+		sub.validate() != nil || !sub.AllEvents || sub.Room != room ||
+		sub.From != principal || len(sub.Kinds) > 0 ||
 		sub.Topic != "" || sub.Product != "" || sub.Subject != "" ||
 		len(sub.subtypeList()) > 0 || sub.Until != "" || sub.UntilKind != "" {
 		return false
@@ -163,7 +180,7 @@ func repairPrincipalSubs(list *SubList, room string, principals []string, now ti
 	for _, id := range missing {
 		list.Subs = append(list.Subs, Sub{ID: newSubID(*list),
 			SubSelector: SubSelector{Room: room, From: id, AllEvents: true},
-			CreatedAt:   now.UTC().Truncate(time.Millisecond).Format(createdAtLayout)})
+			CreatedAt:   legacyCreatedAt, Source: principalSubSource})
 	}
 	return len(missing) > 0
 }
@@ -179,7 +196,75 @@ type PrincipalSubscriptionError struct {
 const PrincipalSubscriptionRequired = "principal_subscription_required"
 
 func (e *PrincipalSubscriptionError) Error() string {
-	return fmt.Sprintf("%s: trim refused in %s; preserve all-events subscription for %s", e.Reason, sanitizeLine(e.Room), sanitizeLine(e.Principal))
+	return fmt.Sprintf("%s: subscription removal/narrowing refused in %s; preserve all-events subscription for %s", e.Reason, sanitizeLine(e.Room), sanitizeLine(e.Principal))
+}
+
+// Protect dedicated rows without a membership snapshot: even a principal who
+// has left may have an undelivered message. Clearing host configuration is the
+// explicit opt-out. No unsubscribe --force escape hatch exists.
+func protectedPrincipalSub(sub Sub, configured []string) bool {
+	if !slices.Contains(configured, sub.From) {
+		return false
+	}
+	// Include pre-marker exact-sender rows from the original principal repair.
+	return sub.Source == principalSubSource || sub.AllEvents && sub.Room != "" &&
+		sub.Topic == "" && sub.Product == "" && sub.Subject == "" &&
+		len(sub.Kinds) == 0 && len(sub.subtypeList()) == 0 && sub.Until == "" && sub.UntilKind == ""
+}
+
+func removeSubscriptions(list *SubList, ids, configured []string) ([]string, error) {
+	for _, sub := range list.Subs {
+		if slices.Contains(ids, sub.ID) && protectedPrincipalSub(sub, configured) {
+			return nil, &PrincipalSubscriptionError{Reason: PrincipalSubscriptionRequired, Room: sub.Room, Principal: sub.From}
+		}
+	}
+	list.remove(ids...)
+	return ids, nil
+}
+
+// Delivery coverage is derived from host authority for each received room. It
+// needs neither account-data repair nor membership queries: the real sender of
+// the event is sufficient, even if that sender subsequently left the room.
+// Replace persisted policy rows so a stale/cross-host account-data write cannot
+// narrow delivery. These synthetic selectors are not written to Matrix.
+func principalDeliverySubs(subs []Sub, rooms, configured []string) []Sub {
+	out := make([]Sub, 0, len(subs)+len(rooms)*len(configured))
+	for _, sub := range subs {
+		if sub.Source != principalSubSource {
+			if protectedPrincipalSub(sub, configured) {
+				// Pre-marker principal rows must not authenticate a projection
+				// origin either. Leave ordinary projection semantics unchanged.
+				sub.Source = principalSubSource
+			}
+			out = append(out, sub)
+		}
+	}
+	for _, room := range rooms {
+		for _, id := range configured {
+			out = append(out, Sub{ID: "principal:" + room + ":" + id,
+				SubSelector: SubSelector{Room: room, From: id, AllEvents: true},
+				CreatedAt:   legacyCreatedAt, Source: principalSubSource})
+		}
+	}
+	return out
+}
+
+func principalMail(e config.MailEntry, configured []string) bool {
+	if e.Kind != config.MailEvent || len(configured) == 0 {
+		return false
+	}
+	var ev matrix.Event
+	return json.Unmarshal(e.Event, &ev) == nil && ev.Type == "m.room.message" && slices.Contains(configured, ev.Sender)
+}
+
+func initialPrincipalEntries(entries []config.MailEntry, configured []string) []config.MailEntry {
+	var out []config.MailEntry
+	for _, entry := range entries {
+		if entry.Kind != config.MailEvent || principalMail(entry, configured) {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func principalTrimGuard(room string, principals []string) error {

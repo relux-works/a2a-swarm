@@ -86,6 +86,7 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 		in[id] = true
 	}
 	a.printf("rooms:\n")
+	var principalRooms []onboardRoom
 	for _, r := range rooms {
 		if in[r.id] {
 			a.printf("already in %s %s\n", r.label, r.id)
@@ -102,11 +103,24 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 			if err := s.subscribeRoom(ctx, a, r.id, r.label, a.Now()); err != nil {
 				return err
 			}
+		} else {
+			principalRooms = append(principalRooms, onboardRoom{id: r.id, label: r.label, state: "joined"})
 		}
+	}
+	if err := s.ensureOnboardingPrincipals(ctx, principalRooms, a.Now()); err != nil {
+		return err
 	}
 	for _, preset := range presets {
 		if preset == "service" {
-			a.printf("subscriptions (%s): none (service preset)\n", preset)
+			configured, err := ownerFiles(s.paths, s.name).principals()
+			if err != nil {
+				return err
+			}
+			if len(configured) > 0 {
+				a.printf("subscriptions (%s): host principals only (service preset)\n", preset)
+			} else {
+				a.printf("subscriptions (%s): none (service preset)\n", preset)
+			}
 			continue
 		}
 		tag := presetTag(preset, product, resource)
@@ -304,6 +318,10 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 	if err != nil {
 		return err
 	}
+	configured, err := ownerFiles(s.paths, s.name).principals()
+	if err != nil {
+		return err
+	}
 	principalRooms, err := s.principalRooms(ctx)
 	if err != nil {
 		return err
@@ -335,13 +353,9 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 					}
 				}
 				if match < 0 || kept[match] {
-					// Retain a row that protects any joined host principal,
-					// even when an older preset attached its own tag to it.
-					protected := false
-					for _, id := range principalRooms[cur.Room] {
-						protected = protected || coversPrincipal(cur, cur.Room, id, now)
-					}
-					if protected {
+					// Membership may have changed after principalRooms was read.
+					// Never use that snapshot to authorize principal-row deletion.
+					if protectedPrincipalSub(cur, configured) {
 						keep = append(keep, cur)
 						continue
 					}
