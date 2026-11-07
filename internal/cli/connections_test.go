@@ -518,7 +518,9 @@ func TestNamedHookPinGrammar(t *testing.T) {
 	a := f.app()
 	a.profile = "alpha"
 	a.as = "alice"
-	a.exe = func() (string, error) { return "/synthetic/a2a", nil }
+	a.hookSelection = func(hookExecutableChoice) (hookExecutableSelection, error) {
+		return hookExecutableSelection{path: "/synthetic/a2a", check: func() error { return nil }}, nil
+	}
 	settings := filepath.Join(f.root, "hooks.json")
 	args := []string{"--agent", "alice", "--runtime", "codex", "--settings", settings}
 	if e := cmdHookInstall(a, args, true); e != nil {

@@ -91,7 +91,7 @@ func museHookGroup(prefix, name string, ev hookEvent) json.RawMessage {
 	}{[]museHookCommand{{"command", prefix + " --as " + name + " hook " + ev.arg + " --runtime muse", museCommandTimeout}}})
 }
 
-func (a *App) museHookSettings(path, name string, install bool) error {
+func (a *App) museHookSettings(path, name string, install bool, selected hookExecutableSelection) error {
 	if a.as != "" || a.Getenv(config.EnvAgent) != "" {
 		selected, err := a.identity()
 		if err != nil {
@@ -136,11 +136,7 @@ func (a *App) museHookSettings(path, name string, install bool) error {
 	}
 	prefix := ""
 	if install {
-		exe, err := a.executable()
-		if err != nil {
-			return err
-		}
-		prefix = shellQuote(exe)
+		prefix = shellQuote(selected.path)
 		pin, err := a.pinnedArgs(name)
 		if err != nil {
 			return err
@@ -162,6 +158,11 @@ func (a *App) museHookSettings(path, name string, install bool) error {
 	removed, err := mergeMuseHooks(root, name, prefix, install)
 	if err != nil {
 		return err
+	}
+	if install {
+		if err := selected.check(); err != nil {
+			return err
+		}
 	}
 	out := root.marshal()
 	var before, after bytes.Buffer
