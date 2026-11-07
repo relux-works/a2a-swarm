@@ -71,39 +71,86 @@ func alarmPolicy(s *session, st config.State) (config.MailAlarmConfig, []config.
 	return c, targets, ""
 }
 
+// Alarm routes are metadata only; outbox IDs and message content stay private.
+type alarmStatusTarget struct {
+	Role   string `json:"role"`
+	Target string `json:"target,omitempty"`
+	Room   string `json:"room"`
+	Topic  string `json:"topic,omitempty"`
+}
+
+type alarmRouteStatus struct {
+	State       string              `json:"state"`
+	Reason      string              `json:"reason,omitempty"`
+	Targets     []alarmStatusTarget `json:"targets"`
+	Outstanding bool                `json:"outstanding"`
+	Pending     int                 `json:"pending"`
+	Held        int                 `json:"held"`
+}
+
 type mailAlarmStatus struct {
-	State       string                 `json:"state"`
-	Reason      string                 `json:"reason,omitempty"`
+	alarmRouteStatus
 	Threshold   int                    `json:"threshold_minutes"`
-	Outstanding bool                   `json:"outstanding"`
-	Pending     int                    `json:"pending"`
-	Held        int                    `json:"held"`
 	LastAlert   time.Time              `json:"last_alert_time"`
 	Config      config.MailAlarmConfig `json:"config"`
+	StuckNotice alarmRouteStatus       `json:"stuck_notice"`
 }
 
 func alarmStatus(s *session, st config.State) mailAlarmStatus {
-	c, _, reason := alarmPolicy(s, st)
-	out := mailAlarmStatus{State: "armed", Reason: reason, Threshold: c.Minutes, Outstanding: st.MailAlarm.Active || len(st.MailAlarm.Jobs) > 0, Pending: len(st.MailAlarm.Jobs), LastAlert: st.MailAlarm.LastAlert, Config: c}
+	c, targets, reason := alarmPolicy(s, st)
+	return alarmStatusForPolicy(s.name, st, c, targets, reason)
+}
+
+func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmConfig, targets []config.MailAlarmJob, reason string) mailAlarmStatus {
+	out := mailAlarmStatus{
+		alarmRouteStatus: alarmRouteStatus{State: "armed", Reason: reason, Targets: []alarmStatusTarget{}, Outstanding: st.MailAlarm.Active},
+		Threshold:        c.Minutes, LastAlert: st.MailAlarm.LastAlert, Config: c,
+		StuckNotice: alarmRouteStatus{State: "disabled", Reason: "no owner or lead destinations", Targets: []alarmStatusTarget{}},
+	}
 	if reason != "" {
 		out.State = "disabled"
 	}
-	if st.MailAlarm.Invalid {
-		out.State = "error"
-		out.Reason = "invalid alarm state; held until addressed stale set drains"
+	for _, target := range targets {
+		role := "operator"
+		if target.Target == "" {
+			role = "owner"
+		}
+		route := alarmStatusTarget{Role: role, Target: target.Target, Room: target.Room, Topic: target.Topic}
+		out.Targets = append(out.Targets, route)
+		if role == "owner" {
+			out.StuckNotice.Targets = append(out.StuckNotice.Targets, route)
+			out.StuckNotice.State, out.StuckNotice.Reason = "armed", ""
+		}
 	}
-	if c.Invalid || !validAlarmConfig(c) {
-		out.State = "error"
+	if validAlarmConfig(c) && c.Lead != "" {
+		out.StuckNotice.Targets = append(out.StuckNotice.Targets, alarmStatusTarget{Role: "lead", Target: c.Lead, Room: c.LeadRoom, Topic: c.LeadTopic})
+		if out.StuckNotice.State != "armed" {
+			out.StuckNotice.State, out.StuckNotice.Reason = "partial", "lead armed; owner destination unavailable"
+		}
+	}
+	if st.MailAlarm.Invalid {
+		out.State, out.Reason = "error", "invalid alarm state; held until addressed stale set drains"
+		out.StuckNotice.State, out.StuckNotice.Reason = "error", "invalid alarm state"
+	}
+	if !validAlarmConfig(c) {
+		out.State, out.Reason = "error", "invalid config"
+		out.StuckNotice.State, out.StuckNotice.Reason = "error", "invalid config"
 	}
 	for _, j := range st.MailAlarm.Jobs {
-		if !validAlarmJob(j, s.name) {
-			out.State, out.Reason = "error", "invalid queued alarm"
+		route := &out.alarmRouteStatus
+		if j.Kind == strandedAlarmKind {
+			route = &out.StuckNotice
+		}
+		route.Pending++
+		route.Outstanding = true
+		if !validAlarmJob(j, identity) {
+			route.State, route.Reason = "error", "invalid queued alarm"
 		} else if j.Failure != "" {
-			out.State, out.Reason = "error", alarmFailureReason(j.Failure)
+			route.State, route.Reason = "error", alarmFailureReason(j.Failure)
 		}
 		if j.Kind != strandedAlarmKind && j.Uncertain >= 2 {
-			out.Held++
-			out.State, out.Reason = "error", "ambiguous alarm delivery; held"
+			route.Held++
+			route.State, route.Reason = "error", "ambiguous alarm delivery; held"
 		}
 	}
 	return out
@@ -179,6 +226,13 @@ func cmdMailAlarm(ctx context.Context, a *App, args []string) error {
 }
 func (a *App) printAlarmStatus(s mailAlarmStatus) {
 	a.printf("mail-alarm=%s threshold=%dm outstanding=%t pending=%d held=%d last_alert=%s reason=%s\n", s.State, s.Threshold, s.Outstanding, s.Pending, s.Held, s.LastAlert.UTC().Format(time.RFC3339), s.Reason)
+	for _, route := range s.Targets {
+		a.printf("  stale-mail-target=%s target=%s room=%s topic=%s\n", route.Role, route.Target, route.Room, route.Topic)
+	}
+	a.printf("stuck-notice=%s outstanding=%t pending=%d reason=%s\n", s.StuckNotice.State, s.StuckNotice.Outstanding, s.StuckNotice.Pending, s.StuckNotice.Reason)
+	for _, route := range s.StuckNotice.Targets {
+		a.printf("  stuck-notice-target=%s target=%s room=%s topic=%s\n", route.Role, route.Target, route.Room, route.Topic)
+	}
 }
 
 // Only existing classification and timestamps cross this boundary; no peer text.

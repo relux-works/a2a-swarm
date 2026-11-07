@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -41,8 +40,8 @@ func TestPrincipalCoverageSelectors(t *testing.T) {
 	}{
 		{"sender-all-events", func(*Sub) {}, true},
 		{"room-all-events", func(s *Sub) { s.From = "" }, false},
-		{"manual-row", func(s *Sub) { s.Source = "" }, false},
-		{"preset-owned", func(s *Sub) { s.Preset = "keeper:fixture" }, false},
+		{"manual-row", func(s *Sub) { s.Source = "" }, true},
+		{"preset-owned", func(s *Sub) { s.Preset = "keeper:fixture" }, true},
 		{"no-all-events", func(s *Sub) { s.AllEvents = false }, false},
 		{"room", func(s *Sub) { s.Room = "!other:fixture.invalid" }, false},
 		{"global", func(s *Sub) { s.Room = "" }, false},
@@ -231,31 +230,26 @@ func TestPrincipalCheckAndSync(t *testing.T) {
 	}
 }
 
-// Trim refuses with the typed principal reason and preserves policy/server
-// bytes. A neighboring ordinary room still accepts and preserves its trim.
-func TestPrincipalTrimRefusal(t *testing.T) {
-	var refusal *PrincipalSubscriptionError
-	if err := principalTrimGuard("!room:fixture.invalid", []string{fixturePrincipal}); !errors.As(err, &refusal) || refusal.Reason != PrincipalSubscriptionRequired || refusal.Principal != fixturePrincipal {
-		t.Fatalf("typed refusal = %#v", err)
-	}
-	if err := principalTrimGuard("!ordinary:fixture.invalid", nil); err != nil {
-		t.Fatalf("ordinary trim refused: %v", err)
-	}
+// Kind trim records preserve separate principal rows and never write account
+// data. Sync retains principal coverage and both ordinary/principal-room trims.
+func TestPrincipalTrimPreservesCoverage(t *testing.T) {
 	e, room, ordinary := principalWorld(t)
 	e.as("worker", "subs", "sync").ok(t)
 	e.as("worker", "subs", "trim", "--room", ordinary, "--drop", "decision", "--reason", "ordinary filter").ok(t)
 	e.as("worker", "host", "principals", "set", fixturePrincipal).ok(t)
 	e.as("worker", "subs", "sync").ok(t)
-	before := memberFiles(t, e.dir)
 	remote := e.serverSubs("worker")
 	puts := e.hs.CallCount(accountDataPut)
-	e.as("worker", "subs", "trim", "--room", room, "--drop", "decision", "--reason", "cleanup").failsWith(t, ExitError, PrincipalSubscriptionRequired)
-	if !reflect.DeepEqual(before, memberFiles(t, e.dir)) || !reflect.DeepEqual(remote, e.serverSubs("worker")) || puts != e.hs.CallCount(accountDataPut) {
-		t.Fatal("refused trim changed policy or subscriptions")
+	e.as("worker", "subs", "trim", "--room", room, "--drop", "decision", "--reason", "kind filter").ok(t)
+	if !reflect.DeepEqual(remote, e.serverSubs("worker")) || puts != e.hs.CallCount(accountDataPut) {
+		t.Fatal("kind trim changed server subscriptions")
 	}
 	e.as("worker", "subs", "sync").ok(t)
+	if missing := missingRoomPrincipals(room, []string{fixturePrincipal}, e.serverSubs("worker"), time.Now()); len(missing) != 0 {
+		t.Fatalf("trim lost principal coverage: %v", missing)
+	}
 	policy, err := config.LoadSubscriptionPolicy(e.paths(), "worker")
-	if err != nil || !reflect.DeepEqual(policy.Trims[ordinary].Dropped, []string{"decision"}) || len(policy.Trims[room].Dropped) != 0 {
+	if err != nil || !reflect.DeepEqual(policy.Trims[ordinary].Dropped, []string{"decision"}) || !reflect.DeepEqual(policy.Trims[room].Dropped, []string{"decision"}) {
 		t.Fatalf("trim policy = %+v (%v)", policy, err)
 	}
 }

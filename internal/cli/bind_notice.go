@@ -237,8 +237,9 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			SendRefusal       *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
 			Recovery          *config.TerminalRecovery    `json:"recovery,omitempty"`
 			MailAlarm         mailAlarmStatus             `json:"mail_alarm"`
+			Refresh           string                      `json:"refresh"`
 			PrincipalError    string                      `json:"principal_error,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), principalError})
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError})
 	}
 	if principalError != "" {
 		a.printf("%s\n", principalError)
@@ -250,6 +251,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		a.printf("send_refusal=%s at=%s\n", sendRefusal.Reason, sendRefusal.At.Format(time.RFC3339Nano))
 	}
 	a.printAlarmStatus(alarmStatus(s, st))
+	a.printf("refresh=%s\n", terminalRefreshStatus(st.Terminal))
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if readiness != nil {
 		a.printf("readiness=%s reason=%s version=%s since=%s unknown_keys=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano), readiness.UnknownKeys)

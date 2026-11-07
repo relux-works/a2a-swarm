@@ -95,7 +95,8 @@ func refreshReservation(path string) config.Notification {
 
 // The production gate refuses every live/uncertain journal, reservation and
 // lost-authority variant; historical completed/refused-send fields are safe.
-// The exec spy also proves both lock scopes and state/mailbox preservation.
+// The exec spy also proves both lock scopes and preservation of all state
+// except the new refresh diagnostic; mailbox bytes remain unchanged.
 func TestTerminalRefreshSafePoint(t *testing.T) {
 	isolateBindTest(t)
 	cases := []struct {
@@ -177,7 +178,7 @@ func TestTerminalRefreshSafePoint(t *testing.T) {
 			if calls != map[bool]int{true: 1, false: 0}[tc.safe] {
 				t.Fatalf("unsafe re-exec gate: calls=%d safe=%t", calls, tc.safe)
 			}
-			if !reflect.DeepEqual(before, e.state("alice")) || !bytes.Equal(mail, []byte(readFile(t, s.paths.MailboxFile(s.name)))) {
+			if !reflect.DeepEqual(withoutRefreshDiagnostic(before), withoutRefreshDiagnostic(e.state("alice"))) || !bytes.Equal(mail, []byte(readFile(t, s.paths.MailboxFile(s.name)))) {
 				t.Fatal("re-exec changed binding, lease or mailbox")
 			}
 		})
@@ -263,7 +264,7 @@ func TestTerminalRefreshFiles(t *testing.T) {
 }
 
 // An unchanged file and a changing/not-yet-stable observation do not exec.
-// Failed exec preserves old state and CLOEXEC, logs only a fixed reason, and
+// Failed exec preserves state except refresh diagnostics and CLOEXEC, logs only a fixed reason, and
 // retries once only after a new fingerprint (including same-inode byte change).
 func TestTerminalRefreshFailureAndStability(t *testing.T) {
 	isolateBindTest(t)
@@ -341,7 +342,7 @@ func TestTerminalRefreshFailureAndStability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(before, e.state("alice")) {
+	if !reflect.DeepEqual(withoutRefreshDiagnostic(before), withoutRefreshDiagnostic(e.state("alice"))) {
 		t.Fatal("failed exec changed binding or lease")
 	}
 	if log.String() != strings.Repeat("binding re-exec refused: exec failed\n", 2) {
@@ -567,9 +568,60 @@ func TestTerminalRefreshSymlinkTargets(t *testing.T) {
 			if change == "replace-target" || change == "retarget" {
 				want = 1
 			}
-			if calls != want || !reflect.DeepEqual(before, e.state("alice")) {
+			if calls != want || !reflect.DeepEqual(withoutRefreshDiagnostic(before), withoutRefreshDiagnostic(e.state("alice"))) {
 				t.Fatalf("wrong symlink refresh effects: execs=%d want=%d", calls, want)
 			}
 		})
 	}
+}
+
+// Two changed candidate fingerprints each reach stabilization and cooldown
+// diagnostics. A settled current-image neighbor clears the changed token.
+// Tiny inert files and seams exercise poll without starting a probe or exec.
+func TestTerminalRefreshPollDiagnostics(t *testing.T) {
+	isolateBindTest(t)
+	a, s, _ := refreshApp(t)
+	path := filepath.Join(t.TempDir(), "candidate")
+	if err := os.WriteFile(path, []byte("inert-candidate"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	r := &terminalRefresh{
+		path: path, current: terminalExecutable{Image: "loaded-image"},
+		now: func() time.Time { return now },
+		observe: func(path string) (terminalExecutable, error) {
+			info, err := os.Stat(path)
+			if err != nil {
+				return terminalExecutable{}, err
+			}
+			return executableMetadata(info), nil
+		},
+		safety: func(context.Context, *App, *session, string) (string, bool, error) {
+			t.Fatal("cooldown started an authority check")
+			return "", false, nil
+		},
+		probe: func(context.Context, string, []string) error { t.Fatal("diagnostic started a probe"); return nil },
+		exec:  func(string, []string, []string) error { t.Fatal("diagnostic executed candidate"); return nil },
+	}
+	assertStatus := func(want string) {
+		t.Helper()
+		st, err := config.LoadState(s.paths, s.name)
+		if err != nil || terminalRefreshStatus(st.Terminal) != want {
+			t.Fatalf("poll diagnostic want=%s state=%+v err=%v", want, st.Terminal, err)
+		}
+	}
+	for _, content := range []string{"first-replacement", "second-longer-replacement"} {
+		if err := os.WriteFile(path, []byte(content), 0700); err != nil {
+			t.Fatal(err)
+		}
+		r.poll(context.Background(), a, s, "refresh-gen", nil)
+		assertStatus("changed_stabilizing")
+		now = now.Add(2 * time.Second)
+		r.nextSafety = now.Add(30 * time.Second)
+		r.poll(context.Background(), a, s, "refresh-gen", nil)
+		assertStatus("changed_cooldown")
+	}
+	r.current = r.seen
+	r.poll(context.Background(), a, s, "refresh-gen", nil)
+	assertStatus("current")
 }

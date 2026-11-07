@@ -150,12 +150,11 @@ func (s *session) roomPrincipals(ctx context.Context, room string, configured []
 	return joined, nil
 }
 
-// Principal rows belong to this policy, never to a DM, preset or manual row.
-// Coverage must last: temporary and one-shot rows cannot protect a principal.
-// From is compared byte for byte; no display names or message text are used.
+// Any permanent exact-sender all-events row provides coverage, regardless of
+// who created it. Temporary and one-shot rows cannot protect a principal.
+// From is compared byte for byte; display abbreviations never enter this check.
 func coversPrincipal(sub Sub, room, principal string, now time.Time) bool {
-	if sub.Source != principalSubSource || sub.Preset != "" ||
-		sub.validate() != nil || !sub.AllEvents || sub.Room != room ||
+	if sub.validate() != nil || !sub.AllEvents || sub.Room != room ||
 		sub.From != principal || len(sub.Kinds) > 0 ||
 		sub.Topic != "" || sub.Product != "" || sub.Subject != "" ||
 		len(sub.subtypeList()) > 0 || sub.Until != "" || sub.UntilKind != "" {
@@ -273,13 +272,6 @@ func (s *session) readDeliveryPrincipals() []string {
 		return nil
 	}
 	return ids
-}
-
-func principalTrimGuard(room string, principals []string) error {
-	if len(principals) > 0 {
-		return &PrincipalSubscriptionError{Reason: PrincipalSubscriptionRequired, Room: room, Principal: principals[0]}
-	}
-	return nil
 }
 
 func (s *session) ensureRoomPrincipals(ctx context.Context, room string, now time.Time) error {
