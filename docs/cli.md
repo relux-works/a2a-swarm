@@ -1971,8 +1971,12 @@ fresh idle qualification. Its loaded image becomes the baseline, preventing exec
 identity, generation and inherited lock descriptor; the allowlisted environment above is reapplied.
 The inherited descriptor identifies a re-exec start. That image adopts the same consumer lock before loading credentials.
 Transient cooldown, locked-Keychain, other typed Keychain availability/interaction refusals and unavailable-companion failures
-retry with exponential backoff from the binding's interval up to its retry-max (at most 5 minutes per sleep), until recovery,
-cancellation or loss of binding/connection authority. The lock, PID, birth and generation stay owned; it does not spawn a replacement.
+retry with exponential backoff from the binding's interval up to its retry-max (at most 5 minutes per sleep), for at most
+30 minutes from the first transient refusal, or until recovery, cancellation or loss of binding/connection authority.
+The final sleep is capped by the remaining startup budget. At the deadline, startup records the closed status token
+`startup_credentials_unavailable`, logs `binding exit: startup credentials unavailable`, and exits, releasing the consumer
+lock through the normal exit path so a later hook-started image can take over.
+Until then the lock, PID, birth and generation stay owned; it does not spawn a replacement.
 No lease renewal, pane action or authenticated request runs before credentials recover. Retained notice evidence still ages into
 stranded suspicion and queues the existing owner/lead alarm locally. Alarm delivery needs credentials and resumes after recovery;
 missing alarm destinations retain the ordinary own-room reporting fallback. Missing credentials/items, identity mismatch and other

@@ -156,7 +156,7 @@ func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 	}
 	switch b.NoticeReport.Outcome {
 	case "unavailable: alarm acknowledgement missing", "unavailable: invalid alarm state", "queued via mail-alarm", "published via mail-alarm", "unavailable: alarm destination missing", "unavailable: invalid alarm config", "pending", "published", "unavailable: system incident report failed",
-		"incident route not configured", "unavailable: incident route", "unavailable: pinned incident route changed":
+		"incident route not configured", "unavailable: credentials", "unavailable: incident route", "unavailable: pinned incident route changed":
 		return b.NoticeReport.Outcome
 	default:
 		return "unavailable: invalid report state"

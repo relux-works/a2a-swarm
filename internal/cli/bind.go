@@ -358,7 +358,19 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 
 func runBoundChild(ctx context.Context, a *App, generation string, inherited int) error {
 	reason := "startup unavailable"
-	defer func() { fmt.Fprintln(a.Stderr, "binding exit: "+reason) }()
+	// Ordinary credential refusals historically returned before exit logging.
+	// Re-exec owns a live binding already, so its startup always logs an exit.
+	logExit := inherited != 0
+	defer func() {
+		if logExit {
+			fmt.Fprintln(a.Stderr, "binding exit: "+reason)
+		}
+	}()
+	s, err := a.boundChildSession(inherited)
+	if err != nil {
+		return err
+	}
+	logExit = true
 	var ready *os.File
 	if inherited == 0 {
 		ready = os.NewFile(3, "binding-ready")
@@ -367,7 +379,7 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 		}
 		defer ready.Close()
 	}
-	return a.withBoundChildSession(ctx, generation, inherited, func(s *session, initial config.TerminalBinding, lock *os.File) error {
+	err = a.withBoundChildStartup(ctx, s, generation, inherited, func(s *session, initial config.TerminalBinding, lock *os.File) error {
 		refresh := newTerminalRefresh(ctx)
 		// Retain the original control transaction around final authority, lease
 		// acquisition and readiness. Credentials may have taken minutes to recover.
@@ -382,7 +394,7 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 			b := st.Terminal
 			if st.HostEnrollment != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != initial.DaemonBirth || b.Host != machineLabel() {
 				reason = "stale consumer"
-				return errors.New("binding stale consumer")
+				return errBindingStaleConsumer
 			}
 			initial = *b
 			if err := a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
@@ -406,6 +418,12 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 		reason, runErr = a.runTerminalWithRefresh(ctx, s, generation, initial, func() { refresh.poll(ctx, a, s, generation, lock) })
 		return runErr
 	})
+	if errors.Is(err, errBindingStaleConsumer) {
+		reason = "stale consumer"
+	} else if errors.Is(err, errStartupCredentialsUnavailable) {
+		reason = "startup credentials unavailable"
+	}
+	return err
 }
 
 func cmdUnbind(ctx context.Context, a *App, args []string) error {
