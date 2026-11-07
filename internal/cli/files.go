@@ -86,6 +86,7 @@ func attachmentForFetch(ev matrix.Event) (*Attachment, error) {
 func cmdAttach(ctx context.Context, a *App, args []string) error {
 	const use = "usage: a2a attach <room> --topic <slug|$event_id> <file> [--kind K] [--to a,b] [--pin] [caption text|@file|-]"
 	fset := newFlagSet("attach")
+	result := addResultFlags(fset)
 	topic := fset.String("topic", "", "topic slug or root event id")
 	kind := fset.String("kind", "notice", "message kind")
 	var to stringList
@@ -98,6 +99,11 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	if len(pos) < 2 {
 		return usagef(use)
 	}
+	resultFile, err := result.prepare(fset)
+	if err != nil {
+		return err
+	}
+	defer resultFile.close()
 	if *topic == "" {
 		return usagef("--topic is required (%s)", use)
 	}
@@ -235,13 +241,13 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	if err := s.rememberThread(root); err != nil {
 		fmt.Fprintf(a.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
 	}
-	a.printf("%s\n", id)
+	resultErr := result.emit(a, resultFile, PublishResult{id, roomID, root, root})
 	if *pin {
 		if _, err := s.pin(ctx, roomID, id, true); err != nil {
-			return fmt.Errorf("attach: sent %s but could not pin it: %w", id, err)
+			return errors.Join(resultErr, fmt.Errorf("attach: sent %s but could not pin it: %w", id, err))
 		}
 	}
-	return nil
+	return resultErr
 }
 
 // jsonObjectFile only buffers candidate objects; other media keep the existing
@@ -310,7 +316,19 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	var bare *matrix.MXC
+	batch := len(pos) >= 3
 	switch {
+	case batch:
+		if len(pos)-1 > inboxMax || *out == "" || *want != "" {
+			return usagef("%s; batch fetch requires 2..50 events and -o DIR; --sha256 is for a bare mxc URI only", use)
+		}
+		seen := map[string]bool{}
+		for _, id := range pos[1:] {
+			if !strings.HasPrefix(id, "$") || len(id) > 512 || sanitizeLine(id) != id || strings.ContainsAny(id, " \t\r\n") || seen[id] {
+				return usagef("%s; batch fetch requires distinct event ids ($..., at most 512 bytes)", use)
+			}
+			seen[id] = true
+		}
 	case len(pos) == 1 && strings.HasPrefix(pos[0], "mxc:"):
 		m, err := matrix.ParseMXC(pos[0])
 		if err != nil {
@@ -341,9 +359,18 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	if batch {
+		return fetchBatch(ctx, a, s, pos, *out)
+	}
+	return fetchOne(ctx, a, s, pos, bare, *want, *out, nil, nil)
+}
+
+// fetchOne keeps the original single-file path and output. Batch calls share
+// every integrity/decoding gate, but publish through a pinned directory handle.
+func fetchOne(ctx context.Context, a *App, s *session, pos []string, bare *matrix.MXC, want, out string, batchDir *os.Root, result *fetchResult) error {
 	var att Attachment
 	if bare != nil {
-		att = Attachment{Name: bare.MediaID, MXC: bare.String(), SHA256: *want, Size: -1}
+		att = Attachment{Name: bare.MediaID, MXC: bare.String(), SHA256: want, Size: -1}
 	} else {
 		roomID, _, err := s.resolveRoom(ctx, pos[0])
 		if err != nil {
@@ -363,6 +390,9 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		}
 		ev, err := s.client.GetFetchEvent(ctx, roomID, pos[1])
 		if err != nil {
+			if isNotFound(err) {
+				markFetch(result, "event_not_found")
+			}
 			return mediaObservationRefusal(ctx, err, handle)
 		}
 		if ev.IsRedacted() {
@@ -393,7 +423,12 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 			if observed.Sender != ev.Sender || observed.Type != ev.Type {
 				return &inboundmedia.Refusal{Code: inboundmedia.ContextInvalid, Handle: handle}
 			}
-			result, err := inboundmedia.Fetch(ctx, s.client, observed, handle, *out)
+			// Native media has no trusted expected hash and requires a caller-selected
+			// output path. It cannot satisfy the verified-attachment batch contract.
+			if batchDir != nil {
+				return &inboundmedia.Refusal{Code: inboundmedia.OutputRequired, Handle: handle}
+			}
+			result, err := inboundmedia.Fetch(ctx, s.client, observed, handle, out)
 			if err != nil {
 				return err
 			}
@@ -426,10 +461,12 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 
 	// Structural validation precedes even media config. The returned descriptor
 	// contains exactly the validated selected values; never decode it again.
+	markFetch(result, "encoding_invalid")
 	descriptor, err := parseAttachmentEncoding(att.Encoding, attachmentMaxLimit)
 	if err != nil {
 		return err
 	}
+	markFetch(result, "media_config_error")
 	max, err := s.client.MediaConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch: media config: %w", err)
@@ -438,6 +475,7 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
+	markFetch(result, "size_invalid")
 	if bare == nil && att.Size > limit {
 		return fmt.Errorf("fetch: declared size %d is over the server's upload limit of %d bytes", att.Size, limit)
 	}
@@ -454,34 +492,64 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	if decode {
 		name = descriptor.Original.Name
 	}
-	target := *out
+	target := out
+	var batchOutput *privateOutput
+	if batchDir != nil {
+		markFetch(result, "unsafe_name")
+		if len(name) > 255 {
+			return fmt.Errorf("batch fetch: attachment name exceeds 255 bytes")
+		}
+		// Names are printed verbatim in the single-line batch result.
+		if strings.ContainsAny(name, "\u2028\u2029") {
+			return fmt.Errorf("batch fetch: attachment name contains a line separator")
+		}
+		if err := safeFileName(name); err != nil {
+			return err
+		}
+		target = name
+		result.Name = name
+		markFetch(result, "output_error")
+		batchOutput, err = preparePrivateOutputAt(batchDir, name)
+		if err != nil {
+			return err
+		}
+		defer batchOutput.close()
+	}
 	if target == "" {
 		if err := safeFileName(name); err != nil {
 			return err
 		}
 		target = name
 	}
-	if _, err := os.Lstat(target); err == nil {
-		return fmt.Errorf("%s already exists; refusing to overwrite", sanitizeLine(target))
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("fetch: %w", err)
+	if batchDir == nil {
+		if _, err := os.Lstat(target); err == nil {
+			return fmt.Errorf("%s already exists; refusing to overwrite", sanitizeLine(target))
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("fetch: %w", err)
+		}
 	}
 	if bare == nil {
 		limit = att.Size
 	}
 
+	markFetch(result, "download_error")
 	rc, err := s.client.Download(ctx, att.MXC)
 	if err != nil {
 		return fmt.Errorf("fetch: download: %w", err)
 	}
 	defer rc.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".a2a-fetch-*")
-	if err != nil {
-		return fmt.Errorf("fetch: %w", err)
+	var tmp *os.File
+	if batchOutput != nil {
+		tmp = batchOutput.tmp
+	} else {
+		tmp, err = os.CreateTemp(filepath.Dir(target), ".a2a-fetch-*")
+		if err != nil {
+			return fmt.Errorf("fetch: %w", err)
+		}
 	}
 	done := false
 	defer func() {
-		if !done {
+		if !done && batchDir == nil {
 			tmp.Close()
 			os.Remove(tmp.Name())
 		}
@@ -493,18 +561,24 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("fetch: download: %w", err)
 	}
 	if n > limit {
+		markFetch(result, "size_mismatch")
 		return fmt.Errorf("fetch: the server sent more than %d bytes; refused", limit)
 	}
 	if bare == nil && n != att.Size {
+		markFetch(result, "size_mismatch")
 		return fmt.Errorf("fetch: size mismatch: got %d bytes, want %d", n, att.Size)
 	}
 	if got := hexSum(sum); got != att.SHA256 {
+		markFetch(result, "sha256_mismatch")
 		return fmt.Errorf("fetch: sha256 mismatch: got %s, want %s", got, sanitizeLine(att.SHA256))
 	}
 	if decode {
+		markFetch(result, "encoding_invalid")
 		// Stored-byte integrity is established before constructing a gzip reader.
 		encoded := tmp
-		defer func() { encoded.Close(); os.Remove(encoded.Name()) }()
+		if batchDir == nil {
+			defer func() { encoded.Close(); os.Remove(encoded.Name()) }()
+		}
 		if _, err := encoded.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("fetch: %w", err)
 		}
@@ -515,9 +589,19 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		}
 		gz.Multistream(false)
 		defer gz.Close()
-		decoded, err := os.CreateTemp(filepath.Dir(target), ".a2a-fetch-*")
-		if err != nil {
-			return fmt.Errorf("fetch: %w", err)
+		var decoded *os.File
+		if batchDir != nil {
+			batchOutput, err = preparePrivateOutputAt(batchDir, name)
+			if err != nil {
+				return err
+			}
+			defer batchOutput.close()
+			decoded = batchOutput.tmp
+		} else {
+			decoded, err = os.CreateTemp(filepath.Dir(target), ".a2a-fetch-*")
+			if err != nil {
+				return fmt.Errorf("fetch: %w", err)
+			}
 		}
 		tmp = decoded
 		sum = sha256.New()
@@ -539,25 +623,44 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 			return fmt.Errorf("fetch: original size mismatch: got %d bytes, want %d", n, original.Size)
 		}
 		if got := hexSum(sum); got != original.SHA256 {
+			markFetch(result, "sha256_mismatch")
 			return fmt.Errorf("fetch: original sha256 mismatch: got %s, want %s", got, sanitizeLine(original.SHA256))
 		}
 	}
 
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("fetch: %w", err)
-	}
-	if err := placeNoClobber(tmp.Name(), target); err != nil {
-		return err
+	markFetch(result, "output_error")
+	if batchDir != nil {
+		if err := batchOutput.publish(); err != nil {
+			return err
+		}
+	} else {
+		if err := tmp.Close(); err != nil {
+			return fmt.Errorf("fetch: %w", err)
+		}
+		if err := placeNoClobber(tmp.Name(), target); err != nil {
+			return err
+		}
 	}
 	done = true
 	if descriptor != nil && !decode {
-		label := descriptor.Version
-		if descriptor.Version == attachmentEncodingVersion {
-			label += "/" + descriptor.Coding
+		if result != nil {
+			// Batch results have a fixed diagnostic contract: neither opaque
+			// peer metadata nor output paths may bypass credential scrubbing.
+			fmt.Fprintln(a.Stderr, "a2a: attachment encoding not supported; saved the stored bytes")
+		} else {
+			// Retain the existing single-file warning bytes explicitly.
+			label := descriptor.Version
+			if descriptor.Version == attachmentEncodingVersion {
+				label += "/" + descriptor.Coding
+			}
+			fmt.Fprintf(a.Stderr, "a2a: attachment encoding %s not supported; saved the stored bytes as %s\n", sanitizeLine(label), sanitizeLine(target))
 		}
-		fmt.Fprintf(a.Stderr, "a2a: attachment encoding %s not supported; saved the stored bytes as %s\n", sanitizeLine(label), sanitizeLine(target))
 	}
-	a.printf("%s\n", sanitizeLine(target))
+	if result != nil {
+		result.Name, result.SHA256, result.Size, result.Status = target, hexSum(sum), n, "ok"
+	} else {
+		a.printf("%s\n", sanitizeLine(target))
+	}
 	return nil
 }
 
