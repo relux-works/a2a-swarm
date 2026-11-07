@@ -125,7 +125,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME   named Matrix routing", cmdConnection},
-		{"voice", "voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
+		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
@@ -229,7 +229,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		if c.name == rest[0] {
 			// This anonymous public read has its own routing-only preflight. It
 			// must not consult credentials, secret stores or owner-DM state.
-			if c.name == "availability" {
+			if c.name == "availability" || c.name == "voice" && len(rest) > 1 && rest[1] == "status" {
 				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// Fetch parses usage/help before consulting connection or identity state.

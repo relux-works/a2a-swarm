@@ -9,6 +9,8 @@ import (
 	sherpa "github.com/k2-fsa/sherpa-onnx-go-macos"
 )
 
+const nativeSynthesis = true
+
 // Worker runs native inference in a reapable subprocess: CGO Generate itself
 // has no context cancellation. Parent bounds its lifetime and discards diagnostics.
 func Worker(args []string, input io.Reader) int {

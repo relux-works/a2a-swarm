@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/voice"
 )
@@ -43,9 +45,76 @@ func (f voicePostFailure) Error() string {
 	}
 }
 
+// voiceStatusPaths selects only public routing metadata. In particular, status
+// must work without credential metadata, a secret backend or owner-DM state.
+func (a *App) voiceStatusPaths() (config.Paths, error) {
+	p, err := config.ResolvePaths(a.Getenv)
+	if err != nil {
+		return p, errors.New("voice status: cannot resolve configuration")
+	}
+	r, err := config.LoadConnections(p)
+	if err != nil {
+		return p, errors.New("voice status: invalid connection registry")
+	}
+	if r == nil {
+		if a.profile != "" || a.connectionFingerprint != "" {
+			return p, usagef("voice status: profile selection requires connections.json")
+		}
+		return p, nil
+	}
+	label := a.profile
+	if label == "" {
+		label = r.Current
+	}
+	c, ok := r.Profiles[label]
+	if !ok {
+		return p, usagef("voice status: unknown connection profile")
+	}
+	name := a.as
+	if name == "" {
+		name = a.Getenv(config.EnvAgent)
+	}
+	if a.connectionFingerprint != "" {
+		b, err := c.Binding(name, a.human)
+		if err != nil || b.Fingerprint() != a.connectionFingerprint {
+			return p, errors.New("voice status: selected connection fingerprint changed")
+		}
+	}
+	p, err = c.Paths(p, name, a.human)
+	if err != nil {
+		return p, errors.New("voice status: cannot resolve selected configuration")
+	}
+	return p, nil
+}
+
+func cmdVoiceStatus(a *App, args []string) error {
+	fs := newFlagSet("voice status")
+	asJSON := fs.Bool("json", false, "print local voice status as JSON")
+	rest, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usagef("voice status takes flags only")
+	}
+	p, err := a.voiceStatusPaths()
+	if err != nil {
+		return err
+	}
+	s := voice.Inspect(p.Base)
+	if *asJSON {
+		return json.NewEncoder(a.Stdout).Encode(s)
+	}
+	_, err = fmt.Fprintf(a.Stdout, "voice status: config=%s native=%s model=%s encoder=%s cap=%ds synthesis=%s last_attempt=%s\n", s.Config, s.Native, s.Model, s.Encoder, s.MaxSeconds, s.Synthesis, s.LastAttempt)
+	return err
+}
+
 func cmdVoice(ctx context.Context, a *App, args []string) error {
+	if len(args) > 0 && args[0] == "status" {
+		return cmdVoiceStatus(a, args[1:])
+	}
 	if len(args) == 0 {
-		return usagef("usage: a2a voice config --enable | voice install")
+		return usagef("usage: a2a voice status [--json] | voice config --enable | voice install")
 	}
 	p, err := a.paths()
 	if err != nil {
