@@ -106,6 +106,19 @@ func cmdSubsTrim(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
+		if !*clear {
+			configured, err := ownerFiles(s.paths, s.name).principals()
+			if err != nil {
+				return err
+			}
+			principals, err := s.roomPrincipals(ctx, id, configured)
+			if err != nil {
+				return err
+			}
+			if err := principalTrimGuard(id, principals); err != nil {
+				return err
+			}
+		}
 		if *clear {
 			delete(policy.Trims, id)
 		} else {

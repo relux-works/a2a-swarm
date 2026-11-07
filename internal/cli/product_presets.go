@@ -304,6 +304,10 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 	if err != nil {
 		return err
 	}
+	principalRooms, err := s.principalRooms(ctx)
+	if err != nil {
+		return err
+	}
 	desired := make([]Sub, 0, len(sels))
 	for _, x := range sels {
 		kinds := withoutTrim(x.kinds, policy.Trims[x.room])
@@ -331,6 +335,16 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 					}
 				}
 				if match < 0 || kept[match] {
+					// Retain a row that protects any joined host principal,
+					// even when an older preset attached its own tag to it.
+					protected := false
+					for _, id := range principalRooms[cur.Room] {
+						protected = protected || coversPrincipal(cur, cur.Room, id, now)
+					}
+					if protected {
+						keep = append(keep, cur)
+						continue
+					}
 					messages = append(messages, "removed "+cur.ID)
 					changed = true
 					continue
@@ -349,6 +363,13 @@ func (s *session) reconcilePresetSubsWithPolicy(ctx context.Context, tag string,
 			list.Subs = append(list.Subs, want)
 			messages = append(messages, "added "+want.ID)
 			changed = true
+		}
+		for _, room := range sortedKeys(principalRooms) {
+			before := len(list.Subs)
+			changed = repairPrincipalSubs(list, room, principalRooms[room], now) || changed
+			for _, sub := range list.Subs[before:] {
+				messages = append(messages, "added "+sub.ID+" (host principal)")
+			}
 		}
 		return changed, nil
 	})
@@ -400,6 +421,17 @@ func cmdSubsPresetSync(ctx context.Context, a *App, args []string) error {
 	}
 	for _, p := range presets {
 		if p == "service" {
+			// Keep the sessionless no-configuration path unchanged.
+			configured, err := ownerFiles(s.paths, s.name).principals()
+			if err != nil {
+				return err
+			}
+			if len(configured) == 0 {
+				continue
+			}
+			if err := s.reconcilePresetSubs(ctx, "service", nil, a.Now()); err != nil {
+				return err
+			}
 			continue
 		}
 		_, sels, err := productPresetPlan(ctx, s, p, *product, project, *resource, false)

@@ -74,3 +74,13 @@ classify arbitrary projection, broadcast or status rooms. The explicit global
 checks may refuse valid room-version-12 creator/default-omission cases. Live
 membership, permission, subscriber receipt, provider behavior and transaction
 retention remain unknown. Binding-log rotation is not established here.
+
+## Principal coverage: explicit subscription removal
+
+The principal subscription slice protects `subs check`, plain/preset sync and
+preset cleanup, and refuses new trim records in rooms with joined configured
+principals. Explicit `unsubscribe` (including `--all`), leave and owner-DM
+unbind/unset retain their existing removal contracts. Should those explicit
+operations also refuse removal of the last principal all-events selector, or
+remain operator-controlled escape paths? They are outside this slice; while
+still joined, `subs check` detects a resulting gap and sync repairs it.
