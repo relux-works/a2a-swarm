@@ -232,7 +232,7 @@ func TestNoticePublicationCacheLifecycle(t *testing.T) {
 
 // State writers finish while status HTTP is in flight. Publication merges
 // only its own result, preserving replacement, notice, heartbeat and mail edits.
-// An overlapping writer refuses without HTTP; a superseded completion cannot
+// An overlapping automatic writer skips without HTTP; a superseded completion cannot
 // clear its successor fence, and expiry permits one acknowledged reconciliation.
 func TestNoticePublicationConcurrentMutation(t *testing.T) {
 	isolateBindTest(t)
@@ -251,7 +251,7 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 				if put == strings.HasPrefix(kind, "put-") {
 					once.Do(func() {
 						if kind == "put-fence" {
-							if err := s.publishTerminalNotice(context.Background(), "deadline"); err == nil || !strings.Contains(err.Error(), "pending") {
+							if err := s.publishTerminalNotice(context.Background(), "deadline"); err != nil || puts.Load() != 1 {
 								t.Errorf("overlapping status writer bypassed reservation: %v", err)
 							}
 						}

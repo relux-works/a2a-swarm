@@ -12,10 +12,52 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
+// ErrOwnStatusPending is a local refusal, before any preparation or HTTP.
+var ErrOwnStatusPending = errors.New("own status publication already pending")
+
+// retryOwnStatus polls local contention without holding a lock. Waiting and
+// publication share one RPC budget (or the caller's earlier deadline).
+func (s *session) retryOwnStatus(ctx context.Context, prepare func(*config.State) (config.AgentStatus, bool, error), finish func(*config.State, error)) error {
+	ctx, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
+	defer cancel()
+	pending := false
+	for {
+		prepared := false
+		err := s.writeOwnStatus(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
+			prepared = true
+			return prepare(st)
+		}, finish)
+		// The deadline can fall between polls or during state-lock acquisition.
+		// Preserve a prior pending refusal only if no preparation/HTTP began;
+		// an actual publication timeout must retain its own error/uncertainty.
+		if pending && !prepared && errors.Is(ctx.Err(), context.DeadlineExceeded) && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, config.ErrLockTimeout)) {
+			return ErrOwnStatusPending
+		}
+		if !errors.Is(err, ErrOwnStatusPending) {
+			return err
+		}
+		pending = true
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return ErrOwnStatusPending
+			}
+			return err
+		}
+	}
+}
+
 // writeOwnStatus reserves one bounded attempt under the state lock, performs
 // HTTP on a private snapshot, then commits only status knowledge. Mail and
 // binding writers can progress throughout the request. A concurrent status
-// writer refuses locally; a crashed writer's fence expires at its RPC deadline.
+// writer returns ErrOwnStatusPending without changing state: automatic writers
+// skip until their next cycle, explicit writers use retryOwnStatus. A crashed
+// writer's fence expires at its RPC deadline.
 func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State) (config.AgentStatus, bool, error), finish func(*config.State, error)) error {
 	deadline := time.Now().Add(nativeRPCTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -34,7 +76,7 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 			return err
 		}
 		if st.OwnStatusWrite != nil && time.Now().Before(st.OwnStatusWrite.Until) {
-			return errors.New("own status publication already pending")
+			return ErrOwnStatusPending
 		}
 		var err error
 		record, send, err = prepare(st)
@@ -47,6 +89,9 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 		return nil
 	})
 	if err != nil || !send {
+		if errors.Is(err, ErrOwnStatusPending) && s.app.afterOwnStatusPending != nil {
+			s.app.afterOwnStatusPending()
+		}
 		return err
 	}
 	// Persist uncertainty before HTTP, while letting pre-send failures and

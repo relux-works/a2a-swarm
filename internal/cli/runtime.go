@@ -321,7 +321,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 			profile.Detail = preserve.Detail
 			profile.Doorbell = preserve.Doorbell
 		}
-		if err := s.writeLivenessSource(ctx, profile, preserveSource); err != nil {
+		if err := s.writeLivenessSource(ctx, profile, preserveSource); err != nil && !errors.Is(err, ErrOwnStatusPending) {
 			return err
 		}
 		a.printf("%s bound generation=%s session=%s; launcher must export A2A_SESSION_ID=%s\n", s.name, binding.Generation, binding.SessionID, binding.SessionID)
@@ -628,7 +628,7 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 		if err == nil && current.Runtime != nil && current.Runtime.Generation == generation && current.Liveness != nil {
 			profile := *current.Liveness
 			profile.Doorbell = "none"
-			if err := s.writeLivenessSource(stopCtx, profile, current.LivenessSource); err != nil {
+			if err := s.retryLivenessSource(stopCtx, profile, current.LivenessSource); err != nil {
 				fmt.Fprintln(a.Stderr, "native consumer disarm:", a.secrets.Scrub(sanitizeLine(err.Error())))
 			}
 		}
@@ -674,10 +674,13 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 				}
 			}
 			if err := s.writeLivenessSource(ctx, profile, source); err != nil {
-				return err
+				if !errors.Is(err, ErrOwnStatusPending) {
+					return err
+				}
+			} else {
+				lastHeartbeat = a.Now()
+				lastOutcome = st.Wake.Outcome
 			}
-			lastHeartbeat = a.Now()
-			lastOutcome = st.Wake.Outcome
 		}
 		// A cooldown can expire during probes or heartbeat publication after
 		// dispatch refused it. Recheck admission before starting a long poll;

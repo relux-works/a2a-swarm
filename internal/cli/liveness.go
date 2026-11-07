@@ -155,17 +155,29 @@ func cmdStatusRecord(ctx context.Context, a *App, args []string) error {
 }
 
 func (s *session) writeLiveness(ctx context.Context, record config.AgentStatus) error {
-	return s.writeLivenessSource(ctx, record, "manual")
+	return s.retryLivenessSource(ctx, record, "manual")
 }
 
 func (s *session) writeLivenessSource(ctx context.Context, record config.AgentStatus, source string) error {
+	return s.writeLivenessSourceMode(ctx, record, source, false)
+}
+
+func (s *session) retryLivenessSource(ctx context.Context, record config.AgentStatus, source string) error {
+	return s.writeLivenessSourceMode(ctx, record, source, true)
+}
+
+func (s *session) writeLivenessSourceMode(ctx context.Context, record config.AgentStatus, source string, retry bool) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
 	if err := statusValid(record); err != nil {
 		return err
 	}
-	return s.writeOwnStatus(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
+	write := s.writeOwnStatus
+	if retry {
+		write = s.retryOwnStatus
+	}
+	return write(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
 		if err := s.checkConnection(); err != nil {
 			return record, false, err
 		}
