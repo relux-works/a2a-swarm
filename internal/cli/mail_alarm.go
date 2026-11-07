@@ -468,6 +468,7 @@ func (a *App) finishMailAlarm(s *session, generation string, job config.MailAlar
 				continue
 			}
 			if success {
+				acknowledgeStrandedAlarm(st, job)
 				st.MailAlarm.LastAlert = a.Now()
 				st.MailAlarm.Jobs = slices.Delete(st.MailAlarm.Jobs, i, i+1)
 				updateStrandedAlarmOutcome(st)

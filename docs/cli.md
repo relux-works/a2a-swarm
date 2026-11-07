@@ -1687,7 +1687,7 @@ Only absent `own_room` configuration selects the mail-alarm fallback. A configur
 nonmembership, denied or unknown access remains locally unavailable with zero incident sends and no fallback. A missing canonical alias or unrecognized power-level availability also refuses. No room is created or joined.
 There is no global `#system` fallback; that room remains projection-only and the projector remains OFF.
 Existing project system subscriptions provide the protocol audience; a successful send does not establish any particular subscriber's receipt.
-This works without an own liveness record or new mail. Unavailable routes retry after `--retry-max`.
+This works without an own liveness record or new mail. Unavailable routes retry after `--retry-max`. Each alert audience needs a persisted ACK for its exact transaction before the report says published. Missing/dropped outbox jobs, including after corruption and drain, report `unavailable: alarm acknowledgement missing`; they never imply delivery or silently create replacement transactions. Unchanged report/log outcomes do not rewrite state.
 Report diagnostics log only changes of the fixed outcome (`binding incident report: OUTCOME`). The last logged outcome is persisted
 with the episode, so retries and consumer restarts do not repeat the same line. Log rotation is unchanged. Power checks can fail closed when needed defaults are omitted; room-version-12
 creator power without a `users` entry is not inferred, so valid rooms can be refused. Live server behavior remains unverified.
@@ -1762,11 +1762,11 @@ not a claim of full RFC3339 leap-second support. Emitters continue to write uppe
 
 The own identity's self-written status key exposes the same facts under `own_notice`; `who` and `status get` render the published
 observation, never another lane's local files. With an existing liveness record, notice publication preserves its heartbeat,
-runtime/hooks and other liveness fields. Without one, it publishes a metadata-only `state=unknown`, version-1 record with zero heartbeat
-and no runtime/hooks/doorbell claims. The separate private `notice_status` ACK does not opt the lane into liveness or hook heartbeats.
-Both readers show liveness as unknown for that record, alongside SUSPECTED-DEAF, clear or unknown notice evidence. Existing `#status`
-membership and its power-zero own-state policy are still required; absent/denied routing is reported locally and retried, never repaired
-by creating/joining rooms or escalating power. Older readers need updating to understand notice-only unknown records. Bind JSON `publication` distinguishes pending, published and unavailable for these facts;
+runtime/hooks and other liveness fields. Without one, automatic hooks and consumers make no status-room resolution or PUT and create
+no publication retry schedule; notice evidence and alerts remain local/independently routed. Existing legacy metadata-only `state=unknown`
+events remain readable with unknown liveness and no heartbeat claims. A matching opted-in session turn or a submitted notice clears the
+published episode. Existing `#status` membership and its power-zero own-state policy are still required; absent/denied routing for an
+opted-in lane is reported locally and retried, never repaired by creating/joining rooms or escalating power. Bind JSON `publication` distinguishes pending, published and unavailable for these facts;
 a consumer/dispatch failure publishes unknown when the own publisher is available, and a failed write reports unavailable locally without
 claiming remote visibility. Who's heartbeat freshness is independent of notice observation freshness. Missing legacy notice metadata is unknown;
 malformed notice facts are unknown with a bounded `notice_error`, never fresh suspected facts or raw payload. Invalid local notice metadata
@@ -1776,7 +1776,11 @@ Failed automatic notice publication uses the binding's explicit `--interval` and
 subsequent eligible failures double that delay up to the maximum. The identity persists this schedule across hooks, dispatch, process reload
 and replacement bindings; changed observations remain local until eligibility. Cooldown sends no status-room resolution or PUT and reports
 `unavailable: own liveness publication retry pending`. A due attempt resolves the current status room and sends at most one PUT within the
-original shared lock/deadline. Certain-equal acknowledged observations remain zeroHTTP, including notice-only records. Missing liveness no longer suppresses publication. Manual status and legitimate heartbeat writers
+original capped deadline. Certain-equal acknowledged observations remain zeroHTTP. A short state transaction reserves each writer;
+room resolution and PUT run without control/state locks, followed by a token-checked result merge that preserves concurrent mail and binding edits.
+An overlapping status writer refuses locally; a crashed writer's reservation expires at its RPC deadline, retaining uncertainty until reconciliation.
+Hook Prompt/Stop deliver mail, persist the rung/Stop acknowledgement and release delivery locks first. Status uses only the hook budget remaining
+afterward, and failures/pending retries emit no hook diagnostic or change mail receipts. Manual status and legitimate heartbeat writers
 retain their usual behavior; an actual own-status ACK clears the obsolete notice retry schedule and uncertainty. Own-status PUT and its room resolution never follow HTTP redirects, even redirects back to the original URL. A resolution redirect is a pre-send failure and preserves prior certainty; a PUT redirect leaves the write uncertain. Only a direct genuine 2xx ACK advances the acknowledged record. For own-status writes and their room resolution, success requires a complete body read to EOF without read error or cancellation, matching Content-Length when declared, and exactly one JSON object (surrounding JSON whitespace is allowed). The PUT object requires a nonempty string `event_id`; resolution requires a nonempty string `room_id`. Missing IDs, malformed or trailing JSON, partial bodies and interrupted reads provide no ACK. A failed resolution preserves prior knowledge; an invalid post-send response leaves the write uncertain and cannot clear notice cooldown. Only a direct response to the original PUT URL, with no redirect followed and a completely read body below the 64KiB error cap
 within the deadline, can establish a decoded HTTP403/`M_FORBIDDEN` rejection of that attempt: it preserves the exact prior ACK and restores PRE-attempt uncertainty, including uncertainty from an
 earlier possibly-applied send. Partial, limit-hit, read-failed, expired or redirected responses and other post-send failures remain uncertain. Clock rollback cannot make a persisted retry eligible early;

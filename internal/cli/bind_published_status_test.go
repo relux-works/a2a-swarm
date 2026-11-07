@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ import (
 )
 
 // Both readers use acknowledged self-publication: presence-only is unknown;
-// notice-only can be suspected/clear/unknown without fabricating liveness;
+// legacy notice-only events can be suspected/clear/unknown without liveness;
 // a genuine old heartbeat stays stale when notice telemetry changes.
 func TestPublishedNoticeStatusReaders(t *testing.T) {
 	e, a, s, _ := strandedFallbackFixture(t)
@@ -29,28 +30,22 @@ func TestPublishedNoticeStatusReaders(t *testing.T) {
 		}
 	}
 	check("unknown", "unknown", "own notice unknown")
-	if err := s.publishTerminalNotice(context.Background(), "gen"); err != nil {
-		t.Fatal(err)
-	}
+	publishLegacyNoticeForReader(t, s, e.state("alice").Terminal.OwnNotice)
 	check("unknown", "unknown", "SUSPECTED-DEAF")
 	st := e.state("alice")
-	if st.Liveness != nil || st.NoticeStatus == nil || !st.NoticeStatus.HeartbeatAt.IsZero() {
+	if st.Liveness != nil || st.NoticeStatus != nil {
 		t.Fatal("notice publication invented liveness")
 	}
 	b := *st.Terminal
 	if err := a.observeTerminalNotice(s, "gen", b, "empty"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.publishTerminalNotice(context.Background(), "gen"); err != nil {
-		t.Fatal(err)
-	}
+	publishLegacyNoticeForReader(t, s, e.state("alice").Terminal.OwnNotice)
 	check("unknown", "unknown", "own notice clear")
 	if err := a.observeTerminalNotice(s, "gen", *e.state("alice").Terminal, "unknown"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.publishTerminalNotice(context.Background(), "gen"); err != nil {
-		t.Fatal(err)
-	}
+	publishLegacyNoticeForReader(t, s, e.state("alice").Terminal.OwnNotice)
 	check("unknown", "unknown", "own notice unknown")
 	for _, state := range []string{"idle", "blocked", "waiting-human", "working"} {
 		e.as("alice", statusArgs(state)...).ok(t)
@@ -74,6 +69,69 @@ func TestPublishedNoticeStatusReaders(t *testing.T) {
 	check("stopping", "clock", "SUSPECTED-DEAF")
 }
 
+// Seed a self-authored legacy notice-only event to exercise reader compatibility;
+// automatic writers now require a locally opted-in liveness record.
+func publishLegacyNoticeForReader(t *testing.T, s *session, notice config.OwnNoticeObservation) {
+	t.Helper()
+	room, _, err := s.resolveRoom(context.Background(), StatusRoom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := config.AgentStatus{Name: s.name, State: "unknown", Host: "host-a", Version: 1, OwnNotice: notice}
+	if _, err := s.client.PutState(context.Background(), room, StatusEventType, s.creds.UserID, record); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Without liveness, fresh observations, suspicion and clears never resolve/PUT
+// status. Hooks preserve that opt-out. Opting in is the adjacent valid control.
+func TestNoticeWithoutLivenessMakesNoRequests(t *testing.T) {
+	e, a, s, _ := strandedFallbackFixture(t)
+	requests := 0
+	base := s.client.HTTP.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	s.client.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return base.RoundTrip(r)
+	})}
+	for _, input := range []string{"nonempty", "empty", "unknown"} {
+		for i := 0; i < 3; i++ {
+			now := a.Now().Add(time.Second)
+			a.Now = func() time.Time { return now }
+			if err := a.observeTerminalNotice(s, "gen", *e.state("alice").Terminal, input); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.publishTerminalNotice(context.Background(), "gen"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	before := e.state("alice")
+	if err := a.hookLiveness(context.Background(), hookEvent{arg: "prompt"}, hookInput{SessionID: "session-a"}); err != nil {
+		t.Fatal(err)
+	}
+	st := e.state("alice")
+	if !reflect.DeepEqual(before, st) {
+		t.Fatal("hook changed an unconfigured lane")
+	}
+	if requests != 0 || st.Liveness != nil || st.NoticeStatus != nil || st.NoticeRetry != nil {
+		t.Fatal("unconfigured lane gained publication/retry work", requests)
+	}
+	e.as("alice", "status", "init").ok(t)
+	e.as("alice", statusArgs("working")...).ok(t)
+	if err := a.observeTerminalNotice(s, "gen", *e.state("alice").Terminal, "empty"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.publishTerminalNotice(context.Background(), "gen"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || e.state("alice").Terminal.NoticePublication != "published" {
+		t.Fatal("opted-in neighbor did not publish")
+	}
+}
+
 // Prompt/Stop for this session and a submitted notice clear the published
 // episode. Foreign sessions/hosts and paused hooks cannot clear it. No tmux
 // invocation or actual keypress is exercised by the supplied SendResult.
@@ -82,6 +140,7 @@ func TestPublishedNoticeRecovery(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, _ := strandedFallbackFixture(t)
 			e.as("alice", "status", "init").ok(t)
+			e.as("alice", statusArgs("blocked")...).ok(t)
 			var expected config.TerminalBinding
 			notificationState(t, e, func(st *config.State) {
 				b := st.Terminal
@@ -145,8 +204,8 @@ func TestPublishedNoticeRecovery(t *testing.T) {
 				}
 			}
 			after := e.state("alice")
-			if after.Liveness != nil || !reflect.DeepEqual(before, e.mailbox("alice").Pending()) {
-				t.Fatal("recovery invented liveness/receipts")
+			if after.Liveness == nil || !reflect.DeepEqual(before, e.mailbox("alice").Pending()) {
+				t.Fatal("recovery lost liveness or changed receipts")
 			}
 			if !forbidden {
 				a.sendMailAlarm(context.Background(), s, "gen")
@@ -166,6 +225,7 @@ func TestPublishedNoticeRecovery(t *testing.T) {
 func TestPublishedNoticeReaderRefusals(t *testing.T) {
 	e, _, s, _ := strandedFallbackFixture(t)
 	e.as("alice", "status", "init").ok(t)
+	e.as("alice", statusArgs("working")...).ok(t)
 	if err := s.publishTerminalNotice(context.Background(), "gen"); err != nil {
 		t.Fatal(err)
 	}
@@ -245,19 +305,24 @@ func TestNoticeOnlyStatusContract(t *testing.T) {
 	}
 }
 
-// Failed notice-only publication cannot create visible suspicion or a local
+// Failed opted-in publication cannot create visible suspicion or a local
 // ACK. A failed recovery keeps the old remote suspicion until a later matching
-// hook retries the clear; neither path creates or refreshes a heartbeat.
+// hook retries the clear; the manual blocked heartbeat remains unchanged.
 func TestPublishedNoticeFailureAndRecoveryRetry(t *testing.T) {
 	e, a, s, _ := strandedFallbackFixture(t)
 	e.as("alice", "status", "init").ok(t)
+	notice := e.state("alice").Terminal.OwnNotice
+	notificationState(t, e, func(st *config.State) { st.Terminal.OwnNotice = config.OwnNoticeObservation{} })
+	e.as("alice", statusArgs("blocked")...).ok(t)
+	notificationState(t, e, func(st *config.State) { st.Terminal.OwnNotice = notice })
+	heartbeat := e.state("alice").Liveness.HeartbeatAt
 	stateRoute := "PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"
 	e.hs.fail(stateRoute, 500, "M_UNKNOWN", "synthetic unavailable")
 	if err := s.publishTerminalNotice(context.Background(), "gen"); err == nil {
 		t.Fatal("failed PUT claimed success")
 	}
 	st := e.state("alice")
-	if st.NoticeStatus != nil || st.Liveness != nil || !st.NoticeWriteUncertain || st.NoticeRetry == nil {
+	if st.NoticeStatus != nil || st.Liveness == nil || !st.Liveness.HeartbeatAt.Equal(heartbeat) || !st.NoticeWriteUncertain || st.NoticeRetry == nil {
 		t.Fatal("failed PUT fabricated ACK/liveness or lost retry")
 	}
 	for _, args := range [][]string{{"who", "--stale-after", "3m"}, {"status", "get", "alice"}} {
@@ -300,7 +365,7 @@ func TestPublishedNoticeFailureAndRecoveryRetry(t *testing.T) {
 			t.Fatal("clear retry lost", out)
 		}
 	}
-	if e.state("alice").Liveness != nil {
-		t.Fatal("retry invented heartbeat")
+	if !e.state("alice").Liveness.HeartbeatAt.Equal(heartbeat) {
+		t.Fatal("retry refreshed blocked heartbeat")
 	}
 }

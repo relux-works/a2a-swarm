@@ -147,7 +147,7 @@ func cmdStatusRecord(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error { return s.writeLiveness(ctx, record) }); err != nil {
+	if err := s.writeLiveness(ctx, record); err != nil {
 		return err
 	}
 	a.printf("%s %s heartbeat=%s hooks=%s\n", s.name, record.State, record.HeartbeatEvery, record.Hooks)
@@ -165,16 +165,9 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 	if err := statusValid(record); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(nativeRPCTimeout)
-	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
-		deadline = callerDeadline
-	}
-	writeCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	var publicationErr error
-	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	return s.writeOwnStatus(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
 		if err := s.checkConnection(); err != nil {
-			return err
+			return record, false, err
 		}
 		if (source == "wait-heartbeat" || source == "wait-disarm" || (source == "wait" && manualWakeGate(*st) != "")) && st.Liveness != nil {
 			doorbell, every := record.Doorbell, record.HeartbeatEvery
@@ -206,24 +199,18 @@ func (s *session) writeLivenessSource(ctx context.Context, record config.AgentSt
 			record.OwnNotice = st.Terminal.OwnNotice
 		}
 		if err := noticeValid(record.OwnNotice); err != nil {
-			return err
+			return record, false, err
 		}
-		err := s.putOwnStatus(writeCtx, st, record)
+		return record, true, nil
+	}, func(st *config.State, err error) {
 		if err != nil {
-			// Commit the shared owner's uncertainty even when the caller fails.
-			publicationErr = err
-			return nil
+			return
 		}
 		st.LivenessSource = source
 		if st.Terminal != nil && manualWakeGate(*st) != "" {
 			st.Terminal.Idle = nil
 		}
-		return nil
 	})
-	if err != nil {
-		return err
-	}
-	return publicationErr
 }
 
 type whoRow struct {
