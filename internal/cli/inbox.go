@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -44,9 +45,15 @@ const inboxUsage = "usage: a2a inbox [--limit N] [--json]  (N from 1 to 50)"
 
 // cmdInbox: a2a inbox [--limit N] [--json]
 func cmdInbox(ctx context.Context, a *App, args []string) error {
+	if len(args) > 0 && args[0] == "show" {
+		return cmdInboxShow(a, args[1:])
+	}
 	fs := newFlagSet("inbox")
 	limit := fs.Int("limit", inboxMax, "most events to print (1..50)")
 	asJSON := fs.Bool("json", false, "one JSON object per event (EventRecord with body) instead of the frame")
+	outPath := fs.String("out", "", "save full bodies in a new private untrusted frame")
+	summary := fs.Bool("summary", false, "print bounded counts and event excerpts (requires --out)")
+	width := fs.Int("width", 160, "summary excerpt characters (1..2000; requires --summary)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -56,6 +63,28 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	}
 	if *limit < 1 || *limit > inboxMax {
 		return usagef("--limit must be between 1 and %d; %s", inboxMax, inboxUsage)
+	}
+	save := flagPresent(fs, "out")
+	if *summary && !save || flagPresent(fs, "width") && !*summary {
+		return usagef("--summary requires --out; --width requires --summary")
+	}
+	if *width < 1 || *width > inboxBodyMax {
+		return usagef("--width must be between 1 and %d", inboxBodyMax)
+	}
+	if save && *asJSON {
+		return usagef("--out cannot be combined with --json")
+	}
+	var saved *privateOutput
+	if save {
+		saved, err = preparePrivateOutput(*outPath)
+		if err != nil {
+			return err
+		}
+		defer saved.close()
+		*outPath, err = filepath.Abs(*outPath)
+		if err != nil {
+			return err
+		}
 	}
 	s, err := a.session()
 	if err != nil {
@@ -73,9 +102,9 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	}
 	const lost = "; nothing was acknowledged, the next inbox prints these entries again"
 	printed := false
-	_, err = s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+	_, err = s.lockedDeliver(ctx, time.Time{}, false, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
 		pending := mb.Pending()
-		if len(pending) == 0 {
+		if len(pending) == 0 && !save {
 			return nil, nil
 		}
 		shown := itemsOf(pending[:min(*limit, len(pending))], s.server)
@@ -89,8 +118,43 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 		} else {
 			out = inboxFrame(shown, s.server, more)
 		}
-		if _, err := io.WriteString(a.Stdout, out); err != nil {
-			return nil, fmt.Errorf("write output: %w%s", err, lost)
+		if save {
+			records, data, err := savedInboxFrame(a, shown, s.server)
+			if err != nil {
+				return nil, fmt.Errorf("save inbox: %w%s", err, lost)
+			}
+			if *summary {
+				out, err = inboxSummary(records, *width, more)
+				if err != nil {
+					return nil, fmt.Errorf("%w%s", err, lost)
+				}
+			} else if len(shown) == 0 {
+				out = "no new peer events\n"
+			} else {
+				out = a.secrets.Scrub(out)
+			}
+			if err := saved.commit(data); err != nil {
+				return nil, fmt.Errorf("save inbox: %w%s", err, lost)
+			}
+			if err := writeCLIOutput(a.Stdout, out); err != nil {
+				return nil, fmt.Errorf("%w%s", err, lost)
+			}
+			printed = true
+			if a.afterPrint != nil {
+				if err := a.afterPrint(); err != nil {
+					return nil, fmt.Errorf("%w%s", err, lost)
+				}
+			}
+			cur.LastInbox = *outPath
+			_, err = mb.Receive(itemIDs(shown))
+			return nil, err
+		}
+		n, writeErr := io.WriteString(a.Stdout, out)
+		if writeErr == nil && n != len(out) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr != nil {
+			return nil, fmt.Errorf("write output: %w%s", writeErr, lost)
 		}
 		if f, ok := a.Stdout.(interface{ Flush() error }); ok {
 			if err := f.Flush(); err != nil {

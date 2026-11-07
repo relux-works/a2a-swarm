@@ -508,6 +508,43 @@ framing is preserved.
 a2a topic new a2a-swarm bridge-daemon "Bridge daemon for managed sessions" --to m1max_swarm_keeper --kind proposal --body @proposal.md
 ```
 
+#### Publication results: `--json` and `--id-file PATH`
+
+`topic new`, `post` and `attach` accept these opt-in flags. Without them, stdout
+is byte-identical to the existing output: the event id and one newline.
+`--json` prints exactly one compact JSON object and a newline, with these four
+string fields in this order, always present:
+
+```json
+{"event_id":"$sent","room_id":"!room:example.invalid","topic_root":"$root","reply_to":"$root"}
+```
+
+`event_id` identifies the successfully sent message. `room_id` is the resolved
+Matrix room. `topic_root` is the resolved thread root; for `topic new` it equals
+`event_id`. `reply_to` is the effective Matrix reply target: the explicit
+`post --re` target when supplied, otherwise the root for `post` and `attach`,
+and an empty string for `topic new`. This object reports the existing send; it
+does not add sends, verify a reply target, or change thread-follow behavior.
+
+`--id-file PATH` writes just the event id and a newline to a new mode `0600`
+file. It can accompany `--json`; alone it keeps the default stdout bytes.
+The parent directory must already exist. Empty paths, paths over 4096 bytes,
+control characters, symlink ancestry and any existing target (including a
+symlink or directory) are refused. Use a canonical path on systems with a
+symlinked temporary directory. Preparation happens before publication; a
+failed input/room/topic lookup leaves no id file. Complete bytes are fsynced
+and published atomically without replacement, then the directory is fsynced.
+Filesystems without hard-link publication support refuse this mode.
+
+A destination can still appear after preparation, or a disk/stdout write can
+fail after the remote send succeeds. Such a failure exits 1, names the known
+sent event id and says `do not repost`; it never retries the send. A completed
+id file remains available if stdout subsequently fails. Invalid/unsafe receipt
+fields are refused without echoing them; receipt fields are capped at 4096
+bytes in these opt-in modes. As with existing `attach --pin`, a later pin
+failure can follow a successful publication result. Consumers must check the
+exit status as well as the result.
+
 ### `a2a topics <room>`
 Thread roots, oldest first: `slug<TAB>event id<TAB>reply count<TAB>title`. Uses the v1 `/threads` API and adds topic roots with no
 replies yet from a bounded `/messages` scan (2000 events); if `/threads` is unsupported, counts come from that scan.
@@ -849,6 +886,42 @@ identity validation remains separate from the stricter native observation.
 
 Actual Element and macOS acceptance remain external. This is Part 1 only;
 speech recognition and its model/codec/duration policies are a separate unit.
+
+#### Batch fetch: `a2a fetch <room> <$event> <$event>... -o DIR`
+
+Two to fifty distinct event ids select batch mode. `-o DIR` is required and
+must name a **fresh directory**: even an existing empty directory is refused.
+Its parent must already exist, with no symlink components. The directory is
+created with mode `0700`; each verified file has mode `0600`. Event ids must
+start with `$`, contain no whitespace/control characters and be at most 512
+bytes. `--sha256` remains exclusive to a single bare mxc URI.
+
+Each event uses the same bounded event observation, local tombstone, redaction
+and encryption checks as single fetch, followed by the single-file checksum,
+size, encoding and decoding gates above. Batch mode accepts legacy a2a
+attachments with a trusted expected hash. Native Matrix media requires a
+separate single fetch with an explicit output path; it is refused in batch
+mode as `metadata_error`, without downloading or printing native JSON. A checksum mismatch leaves neither a partial file nor a temporary file.
+Safe attachment names are limited to 255 bytes in batch mode. Duplicate names
+are refused for the later file without overwriting the earlier one. No archive
+is unpacked and no scanner runs. Existing attachment encoding restoration still
+applies; the reported hash and size describe the resulting file bytes.
+
+Stdout has one tab-separated line per requested event, in argument order:
+`event<TAB>name<TAB>sha256<TAB>size<TAB>status`. Success status is `ok`. A failure
+uses a fixed token: `event_not_found`, `metadata_error`, `encoding_invalid`,
+`media_config_error`, `size_invalid`, `unsafe_name`, `output_error`,
+`download_error`, `size_mismatch`, or `sha256_mismatch`. Before successful
+verification, hash and size are `-` and `0`; an unavailable name is `-`.
+Server error text never appears in these lines. Per-event failures do not stop
+later events; any failure makes the command exit 1. Successfully verified files
+remain in the directory, and a wholly failed batch leaves an empty directory.
+A stdout failure or cancellation ends the command and retains completed files.
+Single-event and bare-mxc invocations keep their existing stdout bytes.
+Unsupported batch encoding emits the fixed stderr notice
+`a2a: attachment encoding not supported; saved the stored bytes`; it never
+interpolates peer encoding metadata or paths. Single-file fallback keeps its
+existing version/coding/path warning.
 
 ### `a2a files <room> [--topic X] [--last N] [--json]`
 Attachment messages, oldest first (default the last 20, max 1000, scanning at most 2000 events):
@@ -1345,6 +1418,58 @@ The entries are the same as `wait`'s (`to`, `mention`, `thread`, `sub`, invites,
 - The receipt is recorded only after a successful write and flush, for exactly the printed entries (the rest stay, oldest first, so a backlog of
   any size drains with repeated calls). A crash or a broken stdout before that receipts nothing, so the next `inbox` prints the same entries again
   (at least once).
+  A short stdout write is also a failure, even when the writer returns no error;
+  incomplete output never receipts the batch.
+
+#### Saved inbox: `--out FILE [--summary [--width N]]`
+
+`--out FILE` saves the selected batch with **full sanitized bodies**, including
+text beyond the legacy 2000-character stdout limit. It uses the private,
+atomic, no-overwrite path rules of `--id-file` above. It refuses `--json`;
+without `--summary`, stdout keeps the ordinary bounded human frame. Both saved
+data and these opt-in displays redact known credentials and token-shaped text.
+Decoded metadata also redacts fields named `access_token`, `password`, `token`
+or `refresh_token`, case-insensitively, at every object/array depth. A named
+secret field's entire value is replaced, including an object or array value;
+ordinary neighboring metadata is retained. Escaped known credentials are
+scrubbed after JSON decoding.
+
+The saved format is `BEGIN UNTRUSTED PEER EVENTS ...`, followed by one compact
+`EventRecord` JSON object per line prefixed with `  | `, and then
+`END UNTRUSTED PEER EVENTS`, each with a newline. Bodies are JSON-escaped, so
+peer text cannot create frame markers or event boundaries. Invitations and
+gaps retain their mailbox ids as `event_id`. The whole frame is capped at
+16 MiB and 50 records; an oversized save fails without truncating or receipting
+events. `--limit` still selects the oldest 1..50 entries and leaves the rest
+pending. An empty batch saves an empty frame.
+
+`--summary` requires `--out`: stdout contains the untrusted-frame markers,
+sorted counts by sender, kind and room, and one line per selected event with
+its 1-based index, sender, kind, room, topic, event id and body prefix.
+Rooms use their alias when available, otherwise their Matrix room id.
+`--width N` requires `--summary`, defaults to 160, and accepts 1..2000 Unicode
+characters after normalizing whitespace to one line. Summary metadata fields
+over 512 characters are refused before saving or receipting, so truncated
+identities cannot merge counts. Save with `--out` alone to retain such data.
+The existing pending-count footer follows the frame when more entries remain.
+
+The complete file is written, fsynced and published before stdout is written
+and flushed; only then are exactly those saved entries receipted. A write,
+publish or stdout failure, or a crash before the receipt, leaves entries
+pending. A fully published frame can remain after failure; use another fresh
+path for a subsequent inbox invocation. No partial target is published.
+
+#### `a2a inbox show <$event> [--from FILE]`
+
+Prints one saved event's full sanitized body inside an untrusted-data frame.
+Without `--from`, it uses the last successful `inbox --out` path recorded for
+the selected identity/connection. `--from FILE` reads an explicit saved frame.
+This is a local read: it never syncs, fetches an event, or receipts mail.
+Unknown events, missing frames, malformed/incomplete frames, duplicate event
+ids, files over 16 MiB, non-regular files, symlinks and modes other than `0600`
+are refused without printing a body. File opening requires Unix no-follow
+support. If a saved path was moved or the last-path state update failed after
+a durable receipt, supply its current path explicitly with `--from`.
 
 ### Environment delivery: the Claude Code and Codex hook doorbell (`a2a hook`)
 Notifications reach the agent's session (protocol rule 4) through the public hook mechanism of its runtime: commands that Claude Code or the Codex
