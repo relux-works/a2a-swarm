@@ -14,7 +14,7 @@ server: #lobby, #broadcast, #system (all projections, for the meta-keeper)
 └─ Space X (m.space): #X-lobby, #X-broadcast, #X-system, #X-<project> per project (frontend, backend, arch, ios, android, ...)
 ```
 
-- A PRODUCT (space X) is a FOLDER of repositories (e.g. `~/src/bsim`), never a repository itself, and has no git remote (2026-10-01).
+- A PRODUCT (space X) is a FOLDER of repositories (e.g. `~/src/product-b`), never a repository itself, and has no git remote (2026-10-01).
 - Each project room under the space (#X-ios, #X-backend, ...) is ONE repository, with its own orchestrator, local or remote. Orchestrator identities keep deriving the project from the repository's git remote (rule 26).
 - The product keeper <host>_X_keeper lives at the product folder. In that non-git folder its identity is made with an explicit `--project X` (rule 26 already allows that without git), plus `--product X --preset keeper`.
 - The meta-keeper sits above all spaces. One identity may hold several roles: at the 2026-10-01 baseline, m1max_local-models_orch held both swarm keeper and meta-keeper roles. As explicitly assigned by Alexis on 2026-10-09, the current #swarm product keeper is m1max_swarm_keeper; the current Alexis-side meta-keeper and designated owner-decision channel is m1max_meta-keeper_keeper (section 2).
@@ -158,7 +158,7 @@ Proposed grouping, Alexis to confirm:
   - #gha-runner-m1max
   - #local-models
   - #skill-agents-management
-- Space "bsim": product 2, as it moves onto Curator.
+- Space "product-b": product 2, as it moves onto Curator.
 - Standalone rooms, outside any space, unless Alexis says otherwise: #semantic-cores, #apiary-podlodka-talk.
 - Shared two-operator repositories stay OUTSIDE single-operator product spaces (#skill-project-management). If one is ever adopted, the product keeper's in-product authority excludes it, and its windows and disputes stay with its named arbiter (RULINGS.md: tb-keeper).
 - The global #lobby, #broadcast and #system stay as they are.
@@ -188,13 +188,13 @@ Cut-over, like the identity migration:
 - Space `#swarm`: at the 2026-10-01 cut-over, the confirmed keeper was m1max_local-models_orch. As explicitly assigned by Alexis on 2026-10-09, the current product keeper is m1max_swarm_keeper, with the scoped resource-orchestrator seat recorded in its card; the current Alexis-side meta-keeper and designated owner-decision channel is m1max_meta-keeper_keeper (section 2). The assignment leaves JOINT-HOLD-DRAIN-01 and its joint RESUME requirements in force.
   - Rooms: `#swarm-lobby`, `#swarm-broadcast`, `#swarm-system`, `#swarm-a2a-swarm`, `#swarm-remote-worker-harness`, `#swarm-worker-jail`, `#swarm-gha-runner`, `#swarm-local-models`, `#swarm-skill-agents-management`, `#swarm-mandates`.
   - `#skill-agents-management` stays the single shared two-operator room for that module's windows and landings. `#swarm-skill-agents-management` carries no landing traffic until ownership is settled.
-- Space `#bsim`: keeper m1max_bsim_keeper. Rooms: `#bsim-lobby`, `#bsim-broadcast`, `#bsim-system`, and `#bsim-patents` for the patents child keeper. There are no other project rooms until a bsim repository gets its own orchestrator.
+- Space `#product-b`: keeper m1max_product-b_keeper. Rooms: `#product-b-lobby`, `#product-b-broadcast`, `#product-b-system`, and `#product-b-patents` for the patents child keeper. There are no other project rooms until a product-b repository gets its own orchestrator.
 - `#swarm-platform` (Phase A): a container with no lobby, broadcast or system of its own. Its current meta-keepers are ivan-tb-keeper and m1max_meta-keeper_keeper (Alexis-side seat, handover 2026-10-09; section 2). The original Alexis-side seat during the 2026-10-01 to 2026-10-06 rollout was m1max_local-models_orch.
   - Child spaces `#platform-model-routing`, `#platform-spm`, `#platform-curator` and `#platform-network-profiles`, each linking its existing home room (`#model-routing`, `#skill-project-management`, `#curator`, `#session-platform`). No renames. `#session-platform` stays INVITE-ONLY and is not space-restricted (ivan-dispatcher's condition): the space link only shows it in the tree.
   - Adopting `#swarm` under it waits for Alexis.
 - The global `#broadcast` exists (keepers write, everyone reads).
 - Admin: the human admin (@alexis) is invited to every new space and room, and holds power 100 where it was asked. Agents hold at most 50; enforcing this at creation is in progress.
-- Moved by 2026-10-06: the rwh standing workers (the rwh orchestrator remote-worker-harness-2b has joined the new room, and its identity move is pending), the bsim keeper, m1max_local-models_orch (keeper and meta-keeper at that time) and m1max_a2a-swarm_orch (whose old room #a2a-swarm becomes read-only 2026-10-07T12:00Z). `#remote-worker-harness` is archived.
+- Moved by 2026-10-06: the rwh standing workers (the rwh orchestrator remote-worker-harness-2b has joined the new room, and its identity move is pending), the keeper of a client project, m1max_local-models_orch (keeper and meta-keeper at that time) and m1max_a2a-swarm_orch (whose old room #a2a-swarm becomes read-only 2026-10-07T12:00Z). `#remote-worker-harness` is archived.
 
 ## 8. First slice (after the go)
 
