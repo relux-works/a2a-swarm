@@ -1339,6 +1339,8 @@ For example:
 ```
 
 The second command explicitly chooses the install custodian's upgrade route.
+A root-owned image refuses in every mode, including a plain `a2a hook install` with no flags: the image must be owned by the installing user. A host with a system-wide install must first install a copy under the agent user. A path with any Git marker in its ancestry also refuses, so an image inside a source checkout must move out first.
+
 `--installed-command` requires a symlink owned by the current UID or root, pointing
 directly to the canonical native image (a relative link to that canonical location
 is also accepted). Chains of symlinks refuse. A symlink alone does not establish
