@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -127,8 +128,8 @@ func TestStatusPendingDeadline(t *testing.T) {
 	if !errors.Is(err, ErrOwnStatusPending) || err.Error() != "own status publication already pending" || a.fail(err) != ExitError {
 		t.Fatalf("deadline lost sentinel identity/text/exit code: %v", err)
 	}
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Errorf("deadline refusal returned before caller deadline: %v", ctx.Err())
+	if deadline, _ := ctx.Deadline(); time.Now().Before(deadline) {
+		t.Errorf("deadline refusal returned before caller deadline: %s", deadline)
 	}
 	if refused.Load() == 0 {
 		t.Error("deadline caller observed no pending refusal")
@@ -138,6 +139,84 @@ func TestStatusPendingDeadline(t *testing.T) {
 	}
 	if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != puts {
 		t.Errorf("deadline refusal sent a PUT: count=%d, want %d", got, puts)
+	}
+}
+
+// Model the interval after the deadline has elapsed but before the context's
+// timer fires; Done and Err deliberately retain their parent's state.
+type ownStatusDelayedDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c ownStatusDelayedDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+// A lock or child-context deadline after a pending refusal retains the sentinel
+// before the caller's timer fires, provided preparation never began.
+func TestOwnStatusPendingEarlyDeadline(t *testing.T) {
+	for _, failure := range []error{config.ErrLockTimeout, fmt.Errorf("write context: %w", context.DeadlineExceeded)} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			ctx := ownStatusDelayedDeadlineContext{Context: context.Background(), deadline: time.Now().Add(-time.Hour)}
+			calls := 0
+			err := retryOwnStatusAttempts(ctx, func(ctx context.Context) (bool, error) {
+				calls++
+				if ctx.Err() != nil {
+					t.Fatalf("caller timer fired: %v", ctx.Err())
+				}
+				if calls == 1 {
+					return false, ErrOwnStatusPending
+				}
+				return false, failure
+			})
+			if err != ErrOwnStatusPending || calls != 2 {
+				t.Fatalf("early deadline lost pending sentinel: calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
+// Prepared attempts retain their exact deadline error (and publication
+// uncertainty remains owned by writeOwnStatus); other errors, unexpired or
+// absent deadlines, and attempts with no prior refusal are never masked.
+func TestOwnStatusPendingDeadlinePreservesErrors(t *testing.T) {
+	expired := ownStatusDelayedDeadlineContext{Context: context.Background(), deadline: time.Now().Add(-time.Hour)}
+	future := ownStatusDelayedDeadlineContext{Context: context.Background(), deadline: time.Now().Add(time.Hour)}
+	failure := errors.New("unrelated failure")
+	publicationTimeout := fmt.Errorf("publication: %w", context.DeadlineExceeded)
+	for _, tc := range []struct {
+		name     string
+		ctx      context.Context
+		pending  bool
+		prepared bool
+		failure  error
+	}{
+		{"prepared lock timeout", expired, true, true, config.ErrLockTimeout},
+		{"prepared publication timeout", expired, true, true, publicationTimeout},
+		{"no prior refusal", expired, false, false, config.ErrLockTimeout},
+		{"unexpired caller deadline", future, true, false, config.ErrLockTimeout},
+		{"no caller deadline", context.Background(), true, false, context.DeadlineExceeded},
+		{"cancellation", expired, true, false, context.Canceled},
+		{"unrelated failure", expired, true, false, failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			err := retryOwnStatusAttempts(tc.ctx, func(context.Context) (bool, error) {
+				calls++
+				if tc.pending && calls == 1 {
+					return false, ErrOwnStatusPending
+				}
+				return tc.prepared, tc.failure
+			})
+			wantCalls := 1
+			if tc.pending {
+				wantCalls++
+			}
+			if err != tc.failure || calls != wantCalls {
+				t.Fatalf("error retried or masked: calls=%d want=%d err=%v want=%v", calls, wantCalls, err, tc.failure)
+			}
+		})
 	}
 }
 

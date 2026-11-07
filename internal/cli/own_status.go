@@ -20,17 +20,26 @@ var ErrOwnStatusPending = errors.New("own status publication already pending")
 func (s *session) retryOwnStatus(ctx context.Context, prepare func(*config.State) (config.AgentStatus, bool, error), finish func(*config.State, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 	defer cancel()
-	pending := false
-	for {
+	return retryOwnStatusAttempts(ctx, func(ctx context.Context) (bool, error) {
 		prepared := false
 		err := s.writeOwnStatus(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
 			prepared = true
 			return prepare(st)
 		}, finish)
+		return prepared, err
+	})
+}
+
+func retryOwnStatusAttempts(ctx context.Context, attempt func(context.Context) (bool, error)) error {
+	deadline, hasDeadline := ctx.Deadline()
+	pending := false
+	for {
+		prepared, err := attempt(ctx)
 		// The deadline can fall between polls or during state-lock acquisition.
+		// The lock or child context can observe it before ctx's timer fires.
 		// Preserve a prior pending refusal only if no preparation/HTTP began;
 		// an actual publication timeout must retain its own error/uncertainty.
-		if pending && !prepared && errors.Is(ctx.Err(), context.DeadlineExceeded) && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, config.ErrLockTimeout)) {
+		if pending && !prepared && hasDeadline && !time.Now().Before(deadline) && !errors.Is(ctx.Err(), context.Canceled) && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, config.ErrLockTimeout)) {
 			return ErrOwnStatusPending
 		}
 		if !errors.Is(err, ErrOwnStatusPending) {
