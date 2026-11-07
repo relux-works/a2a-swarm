@@ -69,7 +69,8 @@ func TestTerminalConsumerProtocol(t *testing.T) {
 
 // Native old-flag, nonzero, wrong, excess-output and stderr candidates never
 // reach exec and stay fenced across minutes; a good token does. Each is probed
-// once with the allowlisted environment, leaving state/lease unchanged.
+// once with the allowlisted environment, leaving state/lease unchanged except
+// the refresh diagnostic, whose token identifies protocol refusal or exec failure.
 func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 	isolateBindTest(t)
 	_, raw := refreshExecutable(t)
@@ -124,8 +125,15 @@ func TestTerminalRefreshProtocolCandidates(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := e.state("alice")
-			if !reflect.DeepEqual(after, before) {
+			if !reflect.DeepEqual(withoutRefreshDiagnostic(after), withoutRefreshDiagnostic(before)) {
 				t.Fatal("probe changed consumer authority")
+			}
+			wantStatus := "changed_protocol_incompatible"
+			if kind == "good" {
+				wantStatus = "changed_exec_failed"
+			}
+			if got := after.Terminal.RefreshStatus; got != wantStatus {
+				t.Fatalf("refresh diagnostic=%q want=%q", got, wantStatus)
 			}
 			// An atomic replacement, even with identical bytes, is a new fingerprint.
 			next := path + ".next"
