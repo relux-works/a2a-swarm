@@ -1,4 +1,4 @@
-//go:build linux
+//go:build unix
 
 package cli
 
@@ -6,14 +6,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +25,47 @@ import (
 )
 
 type associationNoHTTP struct{}
+
+type associationFileEvidence struct {
+	Mode     os.FileMode
+	Size     int64
+	Modified time.Time
+	Hash     [32]byte
+}
+
+// Observe only this test's own synthetic tree, never opening poison FIFOs.
+// Filesystem atime is deliberately excluded: reads may update it.
+func associationEffectTree(t *testing.T, root string) map[string]associationFileEvidence {
+	t.Helper()
+	out := map[string]associationFileEvidence{}
+	err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		st, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		e := associationFileEvidence{Mode: st.Mode(), Size: st.Size(), Modified: st.ModTime()}
+		if st.Mode().IsRegular() {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			e.Hash = sha256.Sum256(b)
+		}
+		name, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out[name] = e
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
 func (associationNoHTTP) RoundTrip(*http.Request) (*http.Response, error) {
 	panic("association consulted network")
@@ -39,45 +80,30 @@ func TestAssociationChild(t *testing.T) {
 	a.HTTP = &http.Client{Transport: associationNoHTTP{}}
 	a.keychain = func(config.Paths) *keychainStore { panic("association consulted keychain") }
 	args := []string{"bind", "association", "--private-intent-fd=3", "--json"}
-	if os.Getenv("SYNTHETIC_BAD_ARGS") == "1" {
+	switch os.Getenv("SYNTHETIC_MODE") {
+	case "bad-args":
 		args = append(args, "--raw-state")
+	case "conflicting-profile":
+		args = append([]string{"--profile=first", "--profile=second"}, args...)
+	case "human":
+		args = append([]string{"--human", "--as=synthetic-own"}, args...)
+	case "bad-fingerprint":
+		args = append(args, "--connection-fingerprint=short")
+	case "strict-global":
+		args = append(args, "--as=synthetic-own", "--as=synthetic-own", "--verification-input")
 	}
 	os.Exit(a.Run(context.Background(), args))
-}
-
-func associationDescriptor(t *testing.T, b []byte) *os.File {
-	t.Helper()
-	fd, e := unix.MemfdCreate("synthetic-association", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
-	if e != nil {
-		t.Fatal(e)
-	}
-	w := os.NewFile(uintptr(fd), "synthetic-writer")
-	defer w.Close()
-	if e = w.Chmod(0600); e != nil {
-		t.Fatal(e)
-	}
-	raw := make([]byte, len(b)+4)
-	binary.BigEndian.PutUint32(raw, uint32(len(b)))
-	copy(raw[4:], b)
-	if _, e = w.Write(raw); e != nil {
-		t.Fatal(e)
-	}
-	if _, e = unix.FcntlInt(uintptr(fd), unix.F_ADD_SEALS, unix.F_SEAL_SEAL|unix.F_SEAL_WRITE|unix.F_SEAL_GROW|unix.F_SEAL_SHRINK); e != nil {
-		t.Fatal(e)
-	}
-	f, e := os.Open(fmt.Sprintf("/proc/self/fd/%d", fd))
-	if e != nil {
-		t.Fatal(e)
-	}
-	return f
 }
 
 // The only invocation is a fresh subprocess with controlled synthetic state.
 // Poison FIFOs prove ordinary matrix.env/credential reads cannot be on the path.
 func TestAssociationCLIDispatchEffectFree(t *testing.T) {
-	for _, mode := range []string{"legacy", "named", "bad-args", "missing-lock"} {
+	for _, mode := range []string{"legacy", "named", "bad-args", "missing-lock", "foreign-slug", "conflicting-profile", "human", "bad-fingerprint", "strict-global", "poison-slug"} {
 		t.Run(mode, func(t *testing.T) {
-			root := t.TempDir()
+			root, e := filepath.EvalSymlinks(t.TempDir())
+			if e != nil {
+				t.Fatal(e)
+			}
 			if e := os.Chmod(root, 0700); e != nil {
 				t.Fatal(e)
 			}
@@ -110,6 +136,15 @@ func TestAssociationCLIDispatchEffectFree(t *testing.T) {
 			if e := os.WriteFile(filepath.Join(root, "host"), []byte("synthetic-host\n"), 0600); e != nil {
 				t.Fatal(e)
 			}
+			if mode == "poison-slug" {
+				hostPath := filepath.Join(root, "host")
+				if e := os.Remove(hostPath); e != nil {
+					t.Fatal(e)
+				}
+				if e := unix.Mkfifo(hostPath, 0600); e != nil {
+					t.Fatal(e)
+				}
+			}
 			metadata := filepath.Join(p.Base, "agents")
 			if p.MetadataBase != "" {
 				metadata = filepath.Join(p.MetadataBase, "agents")
@@ -121,7 +156,13 @@ func TestAssociationCLIDispatchEffectFree(t *testing.T) {
 				t.Fatal(e)
 			}
 			target := tmuxwake.Target{Socket: "/synthetic-private/own/socket", SocketID: "SYNTHETIC_SOCKET_ID", Pane: "%817263", PanePID: 43001, PaneBirth: "SYNTHETIC_PANE_BIRTH", OwnerPID: 42001, OwnerBirth: "SYNTHETIC_OWNER_BIRTH", Runtime: "codex"}
-			binding := config.TerminalBinding{Generation: strings.Repeat("a", 32), SessionID: "SYNTHETIC_PRIVATE_SESSION", Host: "synthetic-host", OwnerPID: 42001, OwnerBirth: target.OwnerBirth, DaemonPID: 41001, DaemonBirth: "SYNTHETIC_CONSUMER_BIRTH", Target: target}
+			binding := config.TerminalBinding{Generation: strings.Repeat("a", 32), SessionID: "SYNTHETIC_PRIVATE_SESSION", Host: machineLabel(), OwnerPID: 42001, OwnerBirth: target.OwnerBirth, DaemonPID: 41001, DaemonBirth: "SYNTHETIC_CONSUMER_BIRTH", Target: target}
+			if mode == "foreign-slug" {
+				binding.Host = "synthetic-host"
+			}
+			if machineLabel() == "synthetic-host" {
+				t.Fatal("fixture must separate hostname from slug")
+			}
 			state := map[string]any{"terminal": binding, "lease": map[string]any{"holder": binding.SessionID, "expires": time.UnixMilli(1800000060000).Format(time.RFC3339Nano)}, "principal_coverage": map[string]any{"retained": true}, "host_enrollment": map[string]any{"uninterpreted": true}, "notification": map[string]any{"retained": true}, "hooks_paused": true, "wake": map[string]any{"unknown": "retained"}}
 			before, e := json.Marshal(state)
 			if e != nil {
@@ -153,14 +194,16 @@ func TestAssociationCLIDispatchEffectFree(t *testing.T) {
 			defer cancel()
 			cmd := exec.CommandContext(ctx, exe, "-test.run=^TestAssociationChild$")
 			cmd.Env = []string{"SYNTHETIC_ASSOCIATION_CHILD=1", "A2A_AGENT=" + name, "A2A_CONFIG_DIR=" + root, "HOME=" + root, "TMPDIR=" + root, "PATH=/usr/bin:/bin"}
-			if mode == "bad-args" {
-				cmd.Env = append(cmd.Env, "SYNTHETIC_BAD_ARGS=1")
-			}
+			cmd.Env = append(cmd.Env, "SYNTHETIC_MODE="+mode)
 			cmd.ExtraFiles = []*os.File{fd}
+			effectsBefore := associationEffectTree(t, root)
 			var out, errbuf bytes.Buffer
 			cmd.Stdout = &out
 			cmd.Stderr = &errbuf
 			e = cmd.Run()
+			if !reflect.DeepEqual(effectsBefore, associationEffectTree(t, root)) {
+				t.Fatal("association changed synthetic tree bytes, mode, mtime or entries")
+			}
 			code := 0
 			if e != nil {
 				if exit, ok := e.(*exec.ExitError); ok {
@@ -185,12 +228,16 @@ func TestAssociationCLIDispatchEffectFree(t *testing.T) {
 			}
 			want := "stored_tuple_equal"
 			wantCode := 0
-			if mode == "bad-args" {
+			if mode == "bad-args" || mode == "conflicting-profile" || mode == "human" || mode == "bad-fingerprint" || mode == "strict-global" {
 				want = "input_invalid"
 				wantCode = 2
 			}
 			if mode == "missing-lock" {
 				want = "snapshot_unavailable"
+				wantCode = 2
+			}
+			if mode == "foreign-slug" {
+				want = "stale_binding"
 				wantCode = 2
 			}
 			if code != wantCode || got.Reason != want {

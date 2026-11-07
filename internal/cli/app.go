@@ -205,17 +205,24 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if a.HTTP == nil {
 		a.HTTP = &http.Client{}
 	}
-	if err := verificationGlobalSelection(args); err != nil {
+	globalFailure := func(err error) int {
+		if rest := associationInvocation(args); rest != nil {
+			// Global guards still refuse, through the association's closed output.
+			return a.bindAssociation(append(rest, "--invalid-global-selection"))
+		}
 		return a.fail(err)
+	}
+	if err := verificationGlobalSelection(args); err != nil {
+		return globalFailure(err)
 	}
 	rest, err := a.extractGlobal(args)
 	if err != nil {
-		return a.fail(err)
+		return globalFailure(err)
 	}
 	if a.human && !a.interactive() {
 		// Agents' tool calls have no terminal on stdin, so an agent cannot use a
 		// human's account even when it knows the flag.
-		return a.fail(usagef("--human needs an interactive terminal on stdin: only a human at a terminal uses a human account"))
+		return globalFailure(usagef("--human needs an interactive terminal on stdin: only a human at a terminal uses a human account"))
 	}
 	if len(rest) == 0 || rest[0] == "help" || rest[0] == "-h" || rest[0] == "--help" {
 		if len(rest) == 0 {

@@ -4,10 +4,35 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/association"
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
+
+// associationInvocation recognizes only the command selected after global
+// options, including when a global value is invalid. It performs no validation
+// or effects; extractGlobal and the existing global guards remain authoritative.
+func associationInvocation(args []string) []string {
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			rest = append(rest, args[i:]...)
+			i = len(args)
+		case arg == "--as" || arg == "-as" || arg == "--profile" || arg == "--connection-fingerprint":
+			i++
+		case arg == "--human", strings.HasPrefix(arg, "--as="), strings.HasPrefix(arg, "-as="), strings.HasPrefix(arg, "--profile="), strings.HasPrefix(arg, "--connection-fingerprint="):
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	if len(rest) >= 2 && rest[0] == "bind" && rest[1] == "association" {
+		return rest[2:]
+	}
+	return nil
+}
 
 // associationContext deliberately bypasses selectedConnection/pathsFor, whose
 // legacy conflict check reads matrix.env. Only public routing metadata and the
@@ -23,7 +48,7 @@ func (a *App) associationContext() (association.Context, error) {
 		return association.Context{}, bad
 	}
 	p.Base = filepath.Clean(p.Base)
-	out := association.Context{Name: name, Connection: "legacy", Base: p.Base, Root: p.Base}
+	out := association.Context{Name: name, Connection: "legacy", Base: p.Base, Root: p.Base, MachineLabel: machineLabel()}
 	b, e := association.ReadMetadata(p.ConnectionsFile(), 1<<20)
 	if errors.Is(e, os.ErrNotExist) {
 		if a.profile != "" || a.connectionFingerprint != "" {

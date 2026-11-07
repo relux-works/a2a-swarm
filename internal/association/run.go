@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -13,17 +12,7 @@ import (
 // Context is derived from the already selected own identity/routing metadata,
 // never from request assertions. Resolve must not load credentials or probe a
 // runtime. The source does not authenticate descriptor origin or intent policy.
-type Context struct{ Name, Connection, Base, Root, Selection string }
-
-var hostSlug = regexp.MustCompile(`^[a-z0-9-]{1,24}$`)
-
-func trimHost(b []byte) string {
-	s := strings.TrimSpace(string(b))
-	if !hostSlug.MatchString(s) {
-		return ""
-	}
-	return s
-}
+type Context struct{ Name, Connection, Base, Root, Selection, MachineLabel string }
 
 type Options struct {
 	Context     context.Context
@@ -63,11 +52,9 @@ func Run(o Options) int {
 			out = refusal("clock_unavailable", nil)
 		} else if admitted && lastMS >= r.Expires {
 			out = refusal("input_expired", observation)
-		} else if time.Since(start) > 250*time.Millisecond {
+		} else if admitted && time.Since(start) > 250*time.Millisecond {
 			out = refusal("budget_exceeded", observation)
-			if admitted {
-				out.Digest = &r.Digest
-			}
+			out.Digest = &r.Digest
 		} else if !leaseUntil.IsZero() && !leaseUntil.After(last) {
 			out = refusal("stale_binding", observation)
 			out.Digest = &r.Digest
@@ -119,7 +106,7 @@ func Run(o Options) int {
 		return finish()
 	}
 	c, e := o.Resolve()
-	if e != nil || c.Name == "" || c.Name == "." || filepath.Base(c.Name) != c.Name || c.Connection == "" || c.Name != r.Identity || c.Connection != r.Connection || !filepath.IsAbs(c.Base) || !filepath.IsAbs(c.Root) {
+	if e != nil || c.Name == "" || c.Name == "." || filepath.Base(c.Name) != c.Name || c.Connection == "" || c.MachineLabel == "" || c.Name != r.Identity || c.Connection != r.Connection || !filepath.IsAbs(c.Base) || !filepath.IsAbs(c.Root) {
 		out.Reason = "context_unavailable"
 		return finish()
 	}
@@ -159,14 +146,14 @@ func Run(o Options) int {
 		out.Reason = "binding_invalid"
 		return finish()
 	}
-	host, e := ReadMetadata(filepath.Join(c.Root, "host"), 128)
-	// Match LoadHost's existing slug-file whitespace convention, without repair.
-	local := trimHost(host)
+	// Bind records machineLabel(), the sanitized OS hostname, independently of
+	// the identity naming slug. Context supplies that same label without reading
+	// credentials, connection state or the unrelated host slug file.
 	lease, _ := s["lease"].(map[string]any)
 	holder, _ := lease["holder"].(string)
 	expires, _ := lease["expires"].(string)
 	until, e2 := time.Parse(time.RFC3339Nano, expires)
-	if e != nil || local == "" || t["host"] != local || strings.HasPrefix(holder, "pid:") || holder != own.SessionID || e2 != nil || !until.After(first) {
+	if t["host"] != c.MachineLabel || strings.HasPrefix(holder, "pid:") || holder != own.SessionID || e2 != nil || !until.After(first) {
 		out.Reason = "stale_binding"
 		return finish()
 	}

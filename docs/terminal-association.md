@@ -14,7 +14,9 @@ Global identity/profile guards still apply. Named resolution reads only bounded
 public `connections.json`, derives the selected own paths, and fences the
 operational binding fingerprint across the snapshot. It does not read
 `matrix.env`, identity metadata, credentials, Keychain or other secret stores.
-An unavailable effect-free context is a closed refusal.
+An unavailable effect-free context is a closed refusal. Global parsing or
+noninteractive human-selection failures for this command also produce a closed
+`input_invalid` result, without stderr or context resolution.
 
 The launcher checks the expected tuple and the SHA-256 of the **complete
 original launch intent bytes**, including every option, against its admitted
@@ -68,7 +70,12 @@ pane_birth, owner_pid, owner_birth and runtime. Target owner/runtime fields
 must be internally consistent. The lease holder must equal the exact SessionID
 and expire strictly after observation and publication. A `pid:` holder remains
 stale even if other lease operations would accept it. Stored binding Host must
-exactly equal the existing local host label; it is never inferred or repaired.
+exactly equal the binding writer's `machineLabel()`: the sanitized OS hostname,
+with its existing `unknown` fallback. Case, punctuation and printable Unicode
+are retained. The separate identity naming slug is not read or compared, and
+changing that slug cannot change the machine label. Host equality is exact;
+the stored Host is never normalized, inferred or repaired. Context revalidation
+also fences a changed local machine label before publication.
 None of these declarations establishes current process identity across hosts.
 
 The [public schema](../internal/association/testdata/public-output.schema.json)
@@ -92,14 +99,15 @@ SessionID, births, socket, socket ID, pane or pane birth conservatively yields
 `unavailable/privacy_collision`, with stored data, correlation **and observation
 time null**. This reconciles the historical schema's timestamp conflict:
 clock_unavailable and privacy_collision require null observation time; other
-reasons require an integer. Budget expiry before context admission may have a
-null digest; no unadmitted digest becomes trusted correlation. No foreign state
-is enumerated or read for collision checking.
+reasons require an integer. No unadmitted digest becomes trusted correlation.
+No foreign state is enumerated or read for collision checking.
 
 Refusal precedence is clock, descriptor trust, request validity, own context,
 future/expired input, whole budget, unavailable snapshot, missing/invalid
 binding, stale lease/Host, stopped binding, generation mismatch, tuple mismatch,
-then equality. Final clock, expiry, lease and budget checks suppress a stale
+then equality. The final budget check applies only after request, context and
+time admission, so it cannot replace an earlier descriptor, validity or context
+refusal. Final clock, expiry, lease and budget checks suppress a stale
 projection. Privacy suppression applies to every publishable variable scalar,
 including refusal timestamps, without revealing which value collided.
 
@@ -111,12 +119,12 @@ and `runtime status` behavior is unchanged.
 
 | Source clause | Implementation and controlled evidence |
 | --- | --- |
-| Launcher/FD origin | Metadata/seal checks only; admitted-launcher trust and weaker macOS custody remain explicit. Synthetic descriptor positives/refusals exercise Linux shape, not installed launcher qualification. |
+| Launcher/FD origin | Metadata/seal checks only; admitted-launcher trust and weaker macOS custody remain explicit. Common Unix fixtures exercise shape/refusals; Linux uses sealed memfds and non-Linux Unix uses cooperating unlinked read-only files. Neither qualifies installed launchers. |
 | Effect-free context/no-create lock | Early CLI dispatch; public routing only; no credential/session loader; existing read-only lock. Synthetic poison-FIFO subprocess controls detect ordinary preflight or credential reads. |
-| Session lease and Host | Exact SessionID holder, strict expiry and local Host; pid holder and foreign/missing Host refuse. HostEnrollment is uninterpreted. |
+| Session lease and Host | Exact SessionID holder, strict expiry and sanitized OS hostname; hostname differs from slug in positive controls, while a foreign Host matching the slug refuses. Case/whitespace differences refuse; absent/poison slug cannot affect the result. HostEnrollment is uninterpreted. |
 | Lock and deadlines | Existing flock, 100 ms acquisition, 100 ms copy/decode, 250 ms operation; synthetic contention and publication guards. No runtime lock. |
 | Birth/privacy | Stored declaration hashes, lossless integer parsing, pane-PID and observation-time collision controls; closed timestamp suppression. |
-| Command/schema/current state | Separate early operation, all eight Target fields, unrelated/new top-level fields tolerated; synthetic positive, mismatch and refusal controls. |
+| Command/schema/current state | Separate early operation including global-error output; all eight Target fields, unrelated/new top-level fields tolerated. Tests load both schemas and check fixtures/output plus planted invalid-schema controls, independently of implementation struct decoding. |
 
 Checks use controlled synthetic state and inherited synthetic descriptors only.
 They establish comparator behavior, refusal sensitivity and no state writes;

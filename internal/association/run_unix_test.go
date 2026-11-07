@@ -1,11 +1,10 @@
-//go:build linux
+//go:build unix
 
 package association
 
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,51 +14,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
-	"unsafe"
 )
 
 // All state, leases and descriptor bytes are synthetic and private to each test.
 // These tests do not inspect any installed identity, process or native runtime.
-func frame(t *testing.T, b []byte) *os.File {
-	t.Helper()
-	nr := uintptr(0)
-	switch runtime.GOARCH {
-	case "amd64":
-		nr = 319
-	case "arm64":
-		nr = 279
-	default:
-		t.Skip("synthetic memfd helper unavailable on this architecture")
-	}
-	name := append([]byte("synthetic-association"), 0)
-	fd, _, err := syscall.Syscall(nr, uintptr(unsafe.Pointer(&name[0])), 3, 0)
-	if err != 0 {
-		t.Fatal(err)
-	}
-	f := os.NewFile(fd, "synthetic-writer")
-	defer f.Close()
-	if e := f.Chmod(0600); e != nil {
-		t.Fatal(e)
-	}
-	raw := make([]byte, 4+len(b))
-	binary.BigEndian.PutUint32(raw, uint32(len(b)))
-	copy(raw[4:], b)
-	if _, e := f.Write(raw); e != nil {
-		t.Fatal(e)
-	}
-	if _, _, e := syscall.Syscall(syscall.SYS_FCNTL, fd, 1033, 15); e != 0 {
-		t.Fatal(e)
-	}
-	ro, e := os.Open(fmt.Sprintf("/proc/self/fd/%d", fd))
-	if e != nil {
-		t.Fatal(e)
-	}
-	// The comparator must use positional reads, ignoring this inherited offset.
-	if _, e = ro.Seek(2, 0); e != nil {
-		t.Fatal(e)
-	}
-	return ro
-}
 func object(t *testing.T, b []byte) map[string]any {
 	t.Helper()
 	m, e := parse(b, 32, 65536)
@@ -78,11 +36,14 @@ func marshal(t *testing.T, m any) []byte {
 }
 func fixture(t *testing.T) (Context, []byte, map[string]any, time.Time) {
 	t.Helper()
-	base := t.TempDir()
+	base, e := filepath.EvalSymlinks(t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
 	if e := os.Chmod(base, 0700); e != nil {
 		t.Fatal(e)
 	}
-	c := Context{Name: "synthetic-own", Connection: "legacy", Base: base, Root: base}
+	c := Context{Name: "synthetic-own", Connection: "legacy", Base: base, Root: base, MachineLabel: "Synthetic-Workstation.local"}
 	if e := os.Mkdir(filepath.Join(base, "state"), 0700); e != nil {
 		t.Fatal(e)
 	}
@@ -100,10 +61,14 @@ func fixture(t *testing.T) (Context, []byte, map[string]any, time.Time) {
 	binding["daemon_birth"] = binding["consumer_birth"]
 	delete(binding, "consumer_birth")
 	delete(binding, "runtime")
-	binding["host"] = "synthetic-host"
+	binding["host"] = c.MachineLabel
 	binding["stopped"] = false
 	state := map[string]any{"terminal": binding, "lease": map[string]any{"holder": "SYNTHETIC_PRIVATE_SESSION", "expires": now.Add(time.Minute).Format(time.RFC3339Nano)}, "notification": map[string]any{"synthetic272": true}, "new_opaque_272_field": []any{true, "retained"}, "host_enrollment": map[string]any{"uninterpreted": true}, "hooks_paused": true, "runtime": nil, "wake": map[string]any{"synthetic-unknown": "retained"}}
-	return c, marshal(t, request), state, now
+	raw := marshal(t, request)
+	if e := loadTestSchema(t, "private-input").validate(raw); e != nil {
+		t.Fatal(e)
+	}
+	return c, raw, state, now
 }
 func execute(t *testing.T, c Context, req []byte, s map[string]any, now time.Time, change func(*Options)) (output, int, string) {
 	t.Helper()
@@ -122,6 +87,7 @@ func execute(t *testing.T, c Context, req []byte, s map[string]any, now time.Tim
 		t.Fatal(e)
 	}
 	code := Run(o)
+	checkPublicSchema(t, buf.Bytes(), code)
 	after, e := os.ReadFile(path)
 	if e != nil || !bytes.Equal(before, after) {
 		t.Fatal("state effect")
@@ -327,6 +293,7 @@ func TestAssociationNoCreateAndLockContention(t *testing.T) {
 			before, _ := os.ReadFile(statePath)
 			start := time.Now()
 			code := Run(o)
+			checkPublicSchema(t, buf.Bytes(), code)
 			elapsed := time.Since(start)
 			after, _ := os.ReadFile(statePath)
 			if held != nil {
@@ -435,6 +402,9 @@ func TestAssociationDescriptorRefusals(t *testing.T) {
 					t.Fatal(e)
 				}
 			case "writable-sealed":
+				if runtime.GOOS != "linux" {
+					t.Skip("Linux sealed descriptor control")
+				}
 				ro := frame(t, b)
 				var e error
 				f, e = os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", ro.Fd()), os.O_RDWR, 0)
@@ -443,6 +413,9 @@ func TestAssociationDescriptorRefusals(t *testing.T) {
 					t.Fatal(e)
 				}
 			case "unsealed":
+				if runtime.GOOS != "linux" {
+					t.Skip("non-Linux Unix admits unlinked read-only shape")
+				}
 				p := filepath.Join(t.TempDir(), "synthetic-frame")
 				os.WriteFile(p, b, 0600)
 				var e error
@@ -468,6 +441,7 @@ func TestAssociationDescriptorRefusals(t *testing.T) {
 				t.Fatal("descriptor refusal must not resolve own state")
 				return Context{}, invalid
 			}})
+			checkPublicSchema(t, buf.Bytes(), code)
 			var out output
 			if e := json.Unmarshal(buf.Bytes(), &out); e != nil {
 				t.Fatal(e)
@@ -609,7 +583,7 @@ func TestAssociationConsumerAndBindingValidity(t *testing.T) {
 				want = "binding_missing"
 				wantCode = 2
 			case "empty-host":
-				os.WriteFile(filepath.Join(c.Root, "host"), nil, 0600)
+				binding["host"] = ""
 				want = "stale_binding"
 				wantCode = 2
 			case "malformed-lease":
@@ -648,6 +622,113 @@ func TestAssociationInterruptedSnapshot(t *testing.T) {
 			})
 			if code != 2 || out.Reason != "snapshot_unavailable" || out.Stored != nil {
 				t.Fatalf("%d/%s", code, out.Reason)
+			}
+		})
+	}
+}
+
+func TestAssociationMachineLabelBoundary(t *testing.T) {
+	for _, kind := range []string{"actual-host", "slug-matches-foreign", "case", "space", "absent-slug", "poison-slug", "changed-host", "missing-local-label"} {
+		t.Run(kind, func(t *testing.T) {
+			c, b, s, now := fixture(t)
+			binding := s["terminal"].(map[string]any)
+			want := "stored_tuple_equal"
+			codeWant := 0
+			switch kind {
+			case "slug-matches-foreign":
+				binding["host"] = "synthetic-host"
+				want = "stale_binding"
+				codeWant = 2
+			case "case":
+				binding["host"] = strings.ToLower(c.MachineLabel)
+				want = "stale_binding"
+				codeWant = 2
+			case "space":
+				binding["host"] = c.MachineLabel + " "
+				want = "stale_binding"
+				codeWant = 2
+			case "absent-slug":
+				if e := os.Remove(filepath.Join(c.Root, "host")); e != nil {
+					t.Fatal(e)
+				}
+			case "poison-slug":
+				p := filepath.Join(c.Root, "host")
+				if e := os.Remove(p); e != nil {
+					t.Fatal(e)
+				}
+				if e := syscall.Mkfifo(p, 0600); e != nil {
+					t.Fatal(e)
+				}
+			case "missing-local-label":
+				c.MachineLabel = ""
+				want = "context_unavailable"
+				codeWant = 2
+			case "changed-host":
+				want = "context_unavailable"
+				codeWant = 2
+			}
+			out, code, _ := execute(t, c, b, s, now, func(o *Options) {
+				if kind == "changed-host" {
+					calls := 0
+					o.Resolve = func() (Context, error) {
+						calls++
+						fresh := c
+						if calls > 1 {
+							fresh.MachineLabel = "Synthetic-Other.local"
+						}
+						return fresh, nil
+					}
+				}
+			})
+			if code != codeWant || out.Reason != want {
+				t.Fatalf("%d/%s want %d/%s", code, out.Reason, codeWant, want)
+			}
+			if code != 0 && out.Stored != nil {
+				t.Fatal("foreign binding projection")
+			}
+		})
+	}
+}
+
+func TestAssociationRefusalPrecedenceAfterBudget(t *testing.T) {
+	for _, kind := range []string{"untrusted", "invalid", "context", "future", "expired", "admitted"} {
+		t.Run(kind, func(t *testing.T) {
+			c, b, s, now := fixture(t)
+			r := object(t, b)
+			switch kind {
+			case "invalid":
+				r["unknown"] = true
+			case "future":
+				r["issued_at_ms"] = now.UnixMilli() + 1
+			case "expired":
+				r["issued_at_ms"] = now.UnixMilli() - 10
+				r["expires_at_ms"] = now.UnixMilli()
+			}
+			out, code, _ := execute(t, c, marshal(t, r), s, now, func(o *Options) {
+				// Delay inside the injected clock after Run starts: deterministic over-budget
+				// controls without changing production deadlines or the host clock.
+				calls := 0
+				o.Now = func() time.Time {
+					calls++
+					if calls == 1 {
+						time.Sleep(260 * time.Millisecond)
+					}
+					return now
+				}
+				if kind == "untrusted" {
+					o.Input.Close()
+					o.Input = nil
+				}
+				if kind == "context" {
+					o.Resolve = func() (Context, error) { return Context{}, invalid }
+				}
+			})
+			want := map[string]string{"untrusted": "input_untrusted", "invalid": "input_invalid", "context": "context_unavailable", "future": "input_invalid", "expired": "input_expired", "admitted": "budget_exceeded"}[kind]
+			if code != 2 || out.Reason != want || out.Stored != nil {
+				t.Fatalf("%d/%s want %s", code, out.Reason, want)
+			}
+			if kind != "admitted" && out.Digest != nil {
+				t.Fatal("unadmitted digest")
 			}
 		})
 	}
