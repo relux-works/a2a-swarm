@@ -11,31 +11,42 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// A lead-only route arms stuck-notice alerts, not stale-mail alarms. Owner
-// and operator neighbors show their distinct scopes in text and JSON.
+// alarmPolicy resolves lead-only, owner and operator configurations; status
+// keeps their stale-mail/stuck-notice scopes distinct in text and JSON.
 func TestRolloutAlarmRoutes(t *testing.T) {
 	c := config.MailAlarmConfig{Minutes: 20, Owner: "auto", Lead: "lead", LeadRoom: "operations", LeadTopic: "incidents"}
 	for _, tc := range []struct {
 		name, stale, stuck string
-		targets            []config.MailAlarmJob
 		roles              []string
 	}{
-		{"lead-only", "disabled", "partial", nil, []string{"lead"}},
-		{"owner-and-lead", "armed", "armed", []config.MailAlarmJob{{Room: "!owner:fixture.invalid"}}, []string{"owner", "lead"}},
-		{"operator-and-lead", "armed", "partial", []config.MailAlarmJob{{Target: "operator", Room: "operations", Topic: "alarms"}}, []string{"lead"}},
+		{"lead-only", "disabled", "partial", []string{"lead"}},
+		{"owner-and-lead", "armed", "armed", []string{"owner", "lead"}},
+		{"operator-and-lead", "armed", "partial", []string{"lead"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reason := ""
-			if len(tc.targets) == 0 {
-				reason = "no destinations (no active owner DM)"
-			}
 			policy := c
+			if tc.name == "owner-and-lead" {
+				policy.Owner = "!owner:fixture.invalid"
+			}
 			if tc.name == "operator-and-lead" {
 				policy.Operator, policy.Room, policy.Topic = "operator", "operations", "alarms"
 			}
-			got := alarmStatusForPolicy("worker", config.State{}, policy, tc.targets, reason)
+			s := &session{paths: config.Paths{Base: t.TempDir()}, name: "worker"}
+			st := config.State{MailAlarmConfig: &policy}
+			resolved, targets, reason := alarmPolicy(s, st)
+			got := alarmStatusForPolicy("worker", st, resolved, targets, reason)
 			if got.State != tc.stale || got.StuckNotice.State != tc.stuck {
 				t.Fatalf("alarm scopes: %+v", got)
+			}
+			wantTargets := []alarmStatusTarget{}
+			switch tc.name {
+			case "owner-and-lead":
+				wantTargets = append(wantTargets, alarmStatusTarget{Role: "owner", Room: "!owner:fixture.invalid"})
+			case "operator-and-lead":
+				wantTargets = append(wantTargets, alarmStatusTarget{Role: "operator", Target: "operator", Room: "operations", Topic: "alarms"})
+			}
+			if !reflect.DeepEqual(got.Targets, wantTargets) {
+				t.Fatalf("stale-mail targets=%+v want=%+v", got.Targets, wantTargets)
 			}
 			var roles []string
 			for _, target := range got.StuckNotice.Targets {
@@ -51,6 +62,9 @@ func TestRolloutAlarmRoutes(t *testing.T) {
 				if !strings.Contains(out.String(), want) {
 					t.Fatalf("text missing %q: %s", want, out.String())
 				}
+			}
+			if tc.name == "operator-and-lead" && !strings.Contains(out.String(), "stale-mail-target=operator target=operator room=operations topic=alarms") {
+				t.Fatalf("operator route missing from text: %s", out.String())
 			}
 			raw, err := json.Marshal(got)
 			if err != nil {

@@ -31,12 +31,13 @@ func terminalRefreshBlockReason(st config.State, generation, birth, host string,
 	return ""
 }
 
-// Keep the last safety refusal visible while its check is throttled, rather
-// than hiding a persistent pending attempt or lost lease behind "cooldown".
+// Keep the last failure visible while its check is throttled, so a persistent
+// safety, probe, pinning or candidate failure does not cause periodic saves.
 func terminalRefreshCooldownStatus(last string) string {
 	switch last {
 	case "changed_pending_attempt", "changed_reservation", "changed_lease",
-		"changed_authority", "changed_invalid_notification", "changed_safety_unavailable":
+		"changed_authority", "changed_invalid_notification", "changed_safety_unavailable",
+		"changed_probe_unavailable", "changed_pin_unavailable", "changed_candidate_unavailable":
 		return last
 	default:
 		return "changed_cooldown"
@@ -49,7 +50,7 @@ func safeTerminalRefreshStatus(token string) string {
 		"changed_pending_attempt", "changed_reservation", "changed_lease",
 		"changed_authority", "changed_invalid_notification", "changed_safety_unavailable",
 		"changed_probe_unavailable", "changed_protocol_incompatible", "changed_exec_failed",
-		"changed_candidate_unavailable", "changed_connection", "changed_ready":
+		"changed_candidate_unavailable", "changed_pin_unavailable", "changed_ready":
 		return token
 	default:
 		return "unavailable"

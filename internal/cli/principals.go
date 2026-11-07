@@ -190,8 +190,8 @@ func repairPrincipalSubs(list *SubList, room string, principals []string, now ti
 	return len(missing) > 0
 }
 
-// PrincipalSubscriptionError is a typed refusal; no policy/subscription write
-// has occurred when a trim returns it.
+// PrincipalSubscriptionError refuses removal of a dedicated host-principal
+// row before any subscription write. Covering manual rows remain removable.
 type PrincipalSubscriptionError struct {
 	Reason    string
 	Room      string

@@ -230,27 +230,49 @@ func TestPrincipalCheckAndSync(t *testing.T) {
 	}
 }
 
-// Kind trim records preserve separate principal rows and never write account
-// data. Sync retains principal coverage and both ordinary/principal-room trims.
+// Kind trim never writes account data. Sync preserves both managed and manual
+// exact-sender principal coverage plus both room trims, without adding duplicates.
 func TestPrincipalTrimPreservesCoverage(t *testing.T) {
-	e, room, ordinary := principalWorld(t)
-	e.as("worker", "subs", "sync").ok(t)
-	e.as("worker", "subs", "trim", "--room", ordinary, "--drop", "decision", "--reason", "ordinary filter").ok(t)
-	e.as("worker", "host", "principals", "set", fixturePrincipal).ok(t)
-	e.as("worker", "subs", "sync").ok(t)
-	remote := e.serverSubs("worker")
-	puts := e.hs.CallCount(accountDataPut)
-	e.as("worker", "subs", "trim", "--room", room, "--drop", "decision", "--reason", "kind filter").ok(t)
-	if !reflect.DeepEqual(remote, e.serverSubs("worker")) || puts != e.hs.CallCount(accountDataPut) {
-		t.Fatal("kind trim changed server subscriptions")
-	}
-	e.as("worker", "subs", "sync").ok(t)
-	if missing := missingRoomPrincipals(room, []string{fixturePrincipal}, e.serverSubs("worker"), time.Now()); len(missing) != 0 {
-		t.Fatalf("trim lost principal coverage: %v", missing)
-	}
-	policy, err := config.LoadSubscriptionPolicy(e.paths(), "worker")
-	if err != nil || !reflect.DeepEqual(policy.Trims[ordinary].Dropped, []string{"decision"}) || !reflect.DeepEqual(policy.Trims[room].Dropped, []string{"decision"}) {
-		t.Fatalf("trim policy = %+v (%v)", policy, err)
+	for _, source := range []string{principalSubSource, "manual"} {
+		t.Run(source, func(t *testing.T) {
+			e, room, ordinary := principalWorld(t)
+			e.as("worker", "subs", "sync").ok(t)
+			e.as("worker", "subs", "trim", "--room", ordinary, "--drop", "decision", "--reason", "ordinary filter").ok(t)
+			if source == "manual" {
+				list := e.serverSubs("worker")
+				list.Subs = append(list.Subs, Sub{ID: "sub-manual", SubSelector: SubSelector{Room: room, From: fixturePrincipal, AllEvents: true}})
+				e.hs.setAccountData("@worker:"+testServer, SubsType, list)
+			}
+			e.as("worker", "host", "principals", "set", fixturePrincipal).ok(t)
+			e.as("worker", "subs", "sync").ok(t)
+			remote := e.serverSubs("worker")
+			puts := e.hs.CallCount(accountDataPut)
+			e.as("worker", "subs", "trim", "--room", room, "--drop", "decision", "--reason", "kind filter").ok(t)
+			if !reflect.DeepEqual(remote, e.serverSubs("worker")) || puts != e.hs.CallCount(accountDataPut) {
+				t.Fatal("kind trim changed server subscriptions")
+			}
+			e.as("worker", "subs", "sync").ok(t)
+			final := e.serverSubs("worker")
+			if missing := missingRoomPrincipals(room, []string{fixturePrincipal}, final, time.Now()); len(missing) != 0 {
+				t.Fatalf("trim lost principal coverage: %v", missing)
+			}
+			covering := 0
+			for _, sub := range final.Subs {
+				if coversPrincipal(sub, room, fixturePrincipal, time.Now()) {
+					covering++
+					if source == "manual" && (sub.ID != "sub-manual" || sub.Source != "") {
+						t.Fatal("sync replaced manual coverage with a managed row")
+					}
+				}
+			}
+			if covering != 1 {
+				t.Fatalf("sync created duplicate coverage: %d rows", covering)
+			}
+			policy, err := config.LoadSubscriptionPolicy(e.paths(), "worker")
+			if err != nil || !reflect.DeepEqual(policy.Trims[ordinary].Dropped, []string{"decision"}) || !reflect.DeepEqual(policy.Trims[room].Dropped, []string{"decision"}) {
+				t.Fatalf("trim policy = %+v (%v)", policy, err)
+			}
+		})
 	}
 }
 

@@ -76,8 +76,8 @@ func TestTerminalRefreshBlockReasons(t *testing.T) {
 	}
 }
 
-// Refresh observations survive JSON storage as one token. Foreign/retired
-// consumers cannot overwrite it, and arbitrary persisted text is never shown.
+// The pure recorder deduplicates identical tokens and preserves their JSON
+// round-trip. Foreign/retired consumers cannot overwrite them; unknown text is hidden.
 func TestTerminalRefreshRecordedStatus(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	st := refreshStatusFixture(now)
@@ -106,9 +106,11 @@ func TestTerminalRefreshRecordedStatus(t *testing.T) {
 			t.Fatal("foreign consumer changed diagnostic")
 		}
 	}
-	st.Terminal.RefreshStatus = "PRIVATE SCREEN\nargv=/private/path"
-	if terminalRefreshStatus(st.Terminal) != "unavailable" {
-		t.Fatal("unrecognized metadata escaped closed projection")
+	for _, unknown := range []string{"changed_connection", "PRIVATE SCREEN\nargv=/private/path"} {
+		st.Terminal.RefreshStatus = unknown
+		if terminalRefreshStatus(st.Terminal) != "unavailable" {
+			t.Fatal("removed or unrecognized metadata escaped closed projection")
+		}
 	}
 	st.Terminal.Stopped = true
 	if recordTerminalRefreshStatus(&st, "generation", "fixture-host", 42, "current") || terminalRefreshStatus(st.Terminal) != "unavailable" || terminalRefreshStatus(nil) != "unavailable" {
@@ -116,12 +118,12 @@ func TestTerminalRefreshRecordedStatus(t *testing.T) {
 	}
 }
 
-// Cooldown retains the last observed safety cause so persistent attempts,
-// reservations and lease loss remain diagnosable between authority checks.
+// Cooldown retains safety and post-safety failure causes between checks;
+// non-failure and unknown tokens cannot invent a cause.
 func TestTerminalRefreshCooldownReason(t *testing.T) {
-	for _, reason := range []string{"changed_pending_attempt", "changed_reservation", "changed_lease", "changed_authority", "changed_invalid_notification", "changed_safety_unavailable"} {
+	for _, reason := range []string{"changed_pending_attempt", "changed_reservation", "changed_lease", "changed_authority", "changed_invalid_notification", "changed_safety_unavailable", "changed_probe_unavailable", "changed_pin_unavailable", "changed_candidate_unavailable"} {
 		if got := terminalRefreshCooldownStatus(reason); got != reason {
-			t.Fatalf("cooldown hid safety cause %s as %s", reason, got)
+			t.Fatalf("cooldown hid failure cause %s as %s", reason, got)
 		}
 	}
 	for _, previous := range []string{"", "current", "changed_stabilizing", "private arbitrary data"} {

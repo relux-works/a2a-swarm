@@ -98,16 +98,20 @@ principal message is ingested in every received joined room without waiting
 for sync repair; wait/watch room and message predicates cannot suppress it.
 The text still carries no verified application authority.
 
-`subs check --json` reports `missing_principals` for joined configured principals
-without independent `host-principal` all-events sender rows. Use `subs sync`
-to repair audit rows. Ordinary and service onboarding repair visited rooms.
-Room-wide owner-DM/manual rows cannot stand in for principal rows. Trim and
-single protected-row unsubscribe refuse with `principal_subscription_required`
+`subs check --json` reports `missing_principals` when a joined configured principal
+lacks permanent all-events coverage for its exact ID in that room, without extra
+selector or time gates. A qualifying manual row counts; `subs sync` then creates
+no `host-principal` row. Ordinary and service onboarding repair visited rooms.
+Room-wide rows without the exact sender do not count. Manual rows remain removable
+without a typed refusal; mandatory delivery still carries principal mail.
+Kind trim preserves this coverage; only a real coverage loss warrants refusal,
+while invalid policy or unreadable membership fails closed. Single protected
+`host-principal` row unsubscribe refuses with `principal_subscription_required`
 and a host-list remedy. `unsubscribe --all` removes allowed rows and reports
-each protected row it kept, why, and how to change it. Manual rows remain removable.
+each protected row it kept, why, and how to change it.
 There is no `unsubscribe --force`. Host removal of an ID from the principal
 list permits its rows to be removed; leaving ends membership. Owner-DM cleanup
-preserves independent principal coverage. Cross-host account-data races can
+preserves dedicated principal rows. Cross-host account-data races can
 still erase audit rows, but local principal ingestion does not depend on them.
 Each delivery cycle reads an atomic local host-list snapshot without a policy
 lock. Invalid metadata warns once per session and appears in `subs check` and

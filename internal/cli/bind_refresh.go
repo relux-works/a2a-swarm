@@ -207,6 +207,12 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 		return
 	}
 	diagnostic = "changed_stabilizing"
+	// Retain the last candidate failure through fresh stabilization attempts.
+	// An installer can alternate readable and incomplete images on every poll;
+	// only a mature check (or the current image) should replace that cause.
+	if r.lastStatus == "changed_candidate_unavailable" {
+		diagnostic = r.lastStatus
+	}
 	// Production throttling uses monotonic time, independent of delivery time.
 	now := time.Now()
 	if r.now != nil {
@@ -250,7 +256,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	}
 	r.nextSafety = now.Add(30 * time.Second)
 	if err := s.checkConnection(); err != nil {
-		diagnostic = "changed_connection"
+		diagnostic = "unavailable"
 		return
 	}
 	var sessionID string
@@ -301,7 +307,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	// between entire cycles, never from Send or a reservation/finish callback.
 	pin, err := a.pinnedArgs(s.name)
 	if err != nil {
-		diagnostic = "changed_connection"
+		diagnostic = "changed_pin_unavailable"
 		return
 	}
 	args := append([]string{r.path}, pin...)
@@ -319,7 +325,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 		return
 	}
 	if err := s.checkConnection(); err != nil || ctx.Err() != nil {
-		diagnostic = "changed_connection"
+		diagnostic = "unavailable"
 		return
 	}
 	// Keep the SAME flock open-file description and log descriptors through

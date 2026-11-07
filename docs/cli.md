@@ -1318,7 +1318,15 @@ between throttled checks so cooldown does not hide its cause. Notification
 spacing alone does not block re-exec. Other closed tokens are
 `changed_safety_unavailable`, `changed_probe_unavailable`,
 `changed_protocol_incompatible`, `changed_exec_failed`,
-`changed_candidate_unavailable`, `changed_connection` and `changed_ready`.
+`changed_candidate_unavailable`, `changed_pin_unavailable` and `changed_ready`.
+Probe, launch-connection pinning and candidate failures retain their cause during
+cooldown. Candidate unavailability also remains visible during renewed
+stabilization until a mature check or the current image supplies a new observation;
+an installation alternating readable and incomplete candidates does not save
+state on every poll. The former `changed_connection` token is removed: an invalid
+active connection fences diagnostic writes as well as refresh, so its last
+persisted observation remains. Pinning failures with a still-valid active
+connection use `changed_pin_unavailable`.
 `unavailable` covers absent/older/stopped consumers or unknown telemetry.
 Only an updated consumer can record these observations; status reads do not
 probe the executable or trigger replacement. Persistence is best effort under
@@ -1451,9 +1459,13 @@ it); follow Muse's native human trust step. Start (`SessionStart`) and Prompt
 (`UserPromptSubmit`) check mail and supply a fixed a2a-authored mail notice as model
 context. Stop emits a terminal `systemMessage`; it does not block stopping,
 acknowledge model receipt, or consume the next Start/Prompt context notice.
-Read the messages with `a2a inbox`.
+Shell, hook and inbox session propagation and Start/Prompt model receipt remain
+unqualified; installation exports no project environment and commands pin `--as`.
+Read the messages with `a2a inbox`, which works only outside the default Muse
+sandbox. The first addressed event before first sync may be missing. Both limits
+are tracked in issue #278.
 
-Idle wake is not available for Muse (issue #274). Hooks run only at those
+Idle wake is unsupported for Muse (issue #274). Hooks run only at those
 lifecycle events; installation does not create a terminal/native consumer.
 Use `a2a hook uninstall --runtime muse` to remove these hooks.
 
