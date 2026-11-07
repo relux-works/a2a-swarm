@@ -350,6 +350,17 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		handle := inboundmedia.Handle{RoomID: roomID, EventID: pos[1]}
+		// Local redaction knowledge wins even if the server is unavailable
+		// or still returns the old unredacted event.
+		if s.client.FilterEvents != nil {
+			known, err := s.client.FilterEvents(roomID, []matrix.Event{{EventID: pos[1]}})
+			if err != nil || len(known) != 1 {
+				return &inboundmedia.Refusal{Code: inboundmedia.ContextInvalid, Handle: handle}
+			}
+			if known[0].IsRedacted() {
+				return &inboundmedia.Refusal{Code: inboundmedia.Redacted, Handle: handle}
+			}
+		}
 		ev, err := s.client.GetFetchEvent(ctx, roomID, pos[1])
 		if err != nil {
 			return mediaObservationRefusal(ctx, err, handle)

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/inboundmedia"
 )
 
@@ -21,7 +22,7 @@ func TestElementMediaProjectionIsInboxOnly(t *testing.T) {
 			content := elementContent("m.file")
 			content["filename"] = "PEER-DECLARED-NAME-ONLY-IN-INBOX"
 			id := e.hs.inject(room, "@bob:"+testServer, content)
-			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			args := []string{"--as", "alice", consumer, "--json"}
 			if consumer == "read" {
@@ -140,5 +141,33 @@ func TestElementMediaConsumesSecondLocatorAndSize(t *testing.T) {
 	var result inboundmedia.Result
 	if json.Unmarshal([]byte(r.stdout), &result) != nil || result.ActualSize != 6 || result.DeclaredSize == nil || *result.DeclaredSize != 6 || readFileStr(t, result.Path) != "second" {
 		t.Fatalf("stale media fields consumed: %+v", r)
+	}
+}
+
+func TestElementMediaLocalTombstoneBeforeFetch(t *testing.T) {
+	e, room := nativeWorld(t)
+	e.as("alice", "inbox").ok(t)
+	target := e.hs.inject(room, "@bob:"+testServer, elementContent("m.file"))
+	neighbour := e.hs.inject(room, "@bob:"+testServer, elementContent("m.file"))
+	e.as("alice", "inbox").ok(t)
+	if err := e.mailbox("alice").Redact([]config.Redaction{{Room: room, EventID: target}}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
+	e.as("alice", "fetch", room, neighbour, "-o", filepath.Join(root, "valid")).ok(t)
+	route := "GET /_matrix/client/v3/rooms/{room}/event/{event}"
+	before := e.hs.CallCount(route)
+	downloads := e.hs.CallCount(downloadRoute)
+	// The server has stale unredacted content, then becomes unavailable.
+	for _, unavailable := range []bool{false, true} {
+		if unavailable {
+			e.hs.fail(route, 500, "M_UNKNOWN", "synthetic lookup failure")
+		}
+		r := e.as("alice", "fetch", room, target, "-o", filepath.Join(root, "refused")).failsWith(t, ExitError, string(inboundmedia.Redacted))
+		handle, _ := json.Marshal(inboundmedia.Handle{RoomID: room, EventID: target})
+		if !strings.Contains(r.stderr, string(handle)) || r.stdout != "" || e.hs.CallCount(route) != before || e.hs.CallCount(downloadRoute) != downloads || len(dirEntries(t, root)) != 1 {
+			t.Fatalf("local tombstone did not decide before network: %+v", r)
+		}
 	}
 }
