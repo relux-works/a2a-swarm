@@ -12,12 +12,13 @@ import (
 )
 
 type roomCoverage struct {
-	Room    string   `json:"room"`
-	Label   string   `json:"label"`
-	Missing []string `json:"missing"`
-	Skipped string   `json:"skipped,omitempty"`
-	Trimmed []string `json:"trimmed,omitempty"`
-	Status  string   `json:"status"`
+	Room              string   `json:"room"`
+	Label             string   `json:"label"`
+	Missing           []string `json:"missing"`
+	Skipped           string   `json:"skipped,omitempty"`
+	Trimmed           []string `json:"trimmed,omitempty"`
+	Status            string   `json:"status"`
+	MissingPrincipals []string `json:"missing_principals,omitempty"`
 }
 
 // missingRoomKinds measures current unconditional coverage, not historical
@@ -78,6 +79,10 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	configured, err := ownerFiles(s.paths, s.name).principals()
+	if err != nil {
+		return err
+	}
 	rooms, err := s.client.JoinedRooms(ctx)
 	if err != nil {
 		return fmt.Errorf("read joined rooms: %w", err)
@@ -130,7 +135,19 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		} else {
 			row.Status = "skipped"
 		}
+		principals, err := s.roomPrincipals(ctx, id, configured)
+		if err != nil {
+			return err
+		}
+		row.MissingPrincipals = missingRoomPrincipals(id, principals, list, now)
+		if len(row.MissingPrincipals) > 0 {
+			row.Status = "missing"
+			result.OK = false
+		}
 		result.Rooms = append(result.Rooms, row)
+	}
+	if len(configured) == 0 {
+		fmt.Fprintln(a.Stderr, "principals: none configured; principal coverage not checked")
 	}
 	if *asJSON {
 		if err := a.printJSON(result); err != nil {
@@ -139,6 +156,12 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 	} else {
 		for _, row := range result.Rooms {
 			switch {
+			case len(row.MissingPrincipals) > 0:
+				a.printf("%s\tmissing principal all-events: %s", row.Label, strings.Join(row.MissingPrincipals, ","))
+				if len(row.Missing) > 0 {
+					a.printf("; missing kinds: %s", strings.Join(row.Missing, ","))
+				}
+				a.printf("\n")
 			case row.Skipped != "":
 				a.printf("%s\tskipped: %s\n", row.Label, row.Skipped)
 			case len(row.Missing) > 0:
@@ -154,7 +177,10 @@ func cmdSubsCheck(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	if !result.OK {
-		return fmt.Errorf("subscription coverage gaps; review missing kinds, then run a2a subs sync to backfill")
+		if len(configured) == 0 {
+			return fmt.Errorf("subscription coverage gaps; review missing kinds, then run a2a subs sync to backfill")
+		}
+		return fmt.Errorf("subscription coverage gaps; review missing kinds/principals, then run a2a subs sync to backfill")
 	}
 	return nil
 }

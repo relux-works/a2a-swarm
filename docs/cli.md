@@ -1842,6 +1842,37 @@ delivers matching events until the first one of kind K, delivers that one, and r
 `a2a unsubscribe <sub-id>` removes one (an unknown id exits 1); `a2a unsubscribe --all` removes all. `a2a subs [--json]` lists the live (unexpired) subscriptions,
 `id<TAB>summary`, or the `{v, subs}` object; `a2a subscriptions` is an alias.
 
+The host operator configures who may instruct each identity, using exact Matrix
+user IDs only. This list is independent of the owner-DM pin and is never learned
+from Matrix, display names, or signatures in message text:
+
+```bash
+a2a --as worker host principals set '@principal:authority.invalid' '@delegate:authority.invalid'
+a2a --as worker host principals show --json
+a2a --as worker host principals clear
+```
+
+`set` replaces the list (duplicates are removed); `show` reads it; `clear` stores
+an empty list. These commands are local and do not open a Matrix session or
+require credentials. The per-identity, per-selected-connection host file is
+`<config>/owner-dm/NAME.principals.json`, beside the unchanged `NAME.pin`, with
+regular mode 0600 and atomic writes: `{"v":1,"principals":["@principal:authority.invalid"]}`.
+Missing/empty configuration keeps existing subscription behavior; `subs check`
+prints `principals: none configured; principal coverage not checked` to stderr,
+leaving its existing stdout/JSON shape and verdict unchanged. Malformed or
+unreadable principal configuration fails closed during check, repair and new trim records.
+The owner pin alone does not configure any principal.
+
+For every joined room, `subs check` also requires permanent all-events coverage
+for each configured principal whose exact MXID has current `join` membership.
+Nonmembers and invitations are ignored. The JSON room row includes
+`missing_principals` when coverage is absent, has `status: "missing"`, and exits 1;
+text output names the missing MXIDs. Baseline exemptions (spaces, global
+#system/#broadcast) do not waive principal coverage. A room-wide all-events row
+or an all-events row with the exact `from` qualifies; kind/thread/subject/product/
+subtype filters, expiry, one-shot rows and future creation/since gates do not.
+This includes plain client messages without an A2A header.
+
 `a2a subs check [--json]` reads joined rooms, server subscriptions and the identity's local trim policy without migrating legacy state or writing subscriptions. It reports each room as `covered`, `trimmed` (explicitly recorded), `missing`, or `skipped` (space, global #system projection or #broadcast). Any missing standard kind exits 1; read/metadata failures also exit 1 without a success report. Coverage unions active unrestricted selectors, including room-wide all-events and global kind selectors; sender/thread/subject/product/subtype filters and one-shot rows cannot stand in for the baseline. This is a current coverage snapshot, not proof of historical delivery, consumer health, wake or reply.
 
 Ordinary rooms include product #X-system/#X-broadcast and private direct rooms, including an F1 owner-DM room on a later sync. F1 binding itself keeps its existing all-events selector. A room-type or exemption-alias read can fail after membership was established; retry join/sync after resolving that read to backfill coverage. A genuinely absent alias is allowed; an unreadable exemption alias is not evidence of an ordinary room. Joining and subscribing are not one atomic server transaction.
@@ -1856,7 +1887,11 @@ a2a subs check --json
 a2a subs trim --room team --clear
 ```
 
-`trim` requires a joined room and explicitly named standard kinds. It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
+`trim` requires a joined room and explicitly named standard kinds. A new trim in
+any room containing a joined configured principal is refused before any policy
+or subscription write, with typed `PrincipalSubscriptionError` and reason
+`principal_subscription_required`; clear remains allowed. Ordinary rooms still
+accept deliberate trims. It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
 
 Automatic repair also filters room-scoped legacy State subscriptions through the recorded trims before migration; allowed kinds remain. A legacy global selector intersecting a room trim cannot express that exception, so repair refuses before writing subscriptions or consuming legacy State. Resolve it deliberately with the subscription commands, then retry repair; for an intended full replacement, `unsubscribe --all` removes the legacy rows in the same write before `subs sync` restores the trimmed baseline. Explicit subscription and delivery commands retain their existing migration behavior; trim records do not rewrite manually requested selectors.
 ```bash
@@ -1966,6 +2001,17 @@ never load it (not with `--as`, not via `A2A_AGENT`, not by registering the name
 Without a preset, ensures the room subscription (kinds system, owner-needed, decision) for every joined ordinary message room, idempotently, and prints it; spaces are skipped and recorded trims are preserved;
 `#system` and `#broadcast` are skipped with the reason. `a2a join` creates the same subscription for the joined room and `a2a leave` removes
 the room's subscriptions.
+
+Both plain and preset sync add missing untagged `room + from + all_events`
+subscriptions for every joined configured principal, including in direct rooms
+outside the preset resource/product plan. Recorded trims do not suppress these
+rows. Preset cleanup preserves existing qualifying principal rows even if they
+carry the reconciled preset tag; ordinary obsolete rows are still removed.
+An explicit `service` sync also repairs configured principal coverage; with no
+principals configured its existing no-subscription behavior remains. Ordinary
+join/session onboarding performs the same principal repair for rooms it visits.
+Explicit `unsubscribe`, leave and owner-DM lifecycle removal retain their
+existing behavior; rerun sync to restore coverage while still joined.
 
 With `--preset`, reconciles the subscriptions of each listed row (tag `orch:X`, `keeper:X`, `arbiter:ROOM` or `meta-keeper`) to exactly that
 row; `--product` is required for product-scoped presets. Other tags are never touched; sync prints each addition and removal, leaves manually created subscriptions untouched, and prints
@@ -2150,6 +2196,7 @@ with regular mode 0600 files and atomic temp/fsync/rename writes:
 
 | File | Meaning |
 | --- | --- |
+| `NAME.principals.json` | Host-configured `v:1` and exact `principals` MXID list, managed by `host principals set/show/clear`; independent of the owner-DM lifecycle. |
 | `NAME.pin` | Host-written `{"mode":"host"|"owner-channel","owner":"@exact:server"}`. No CLI writes it. Missing/invalid pin means host mode. |
 | `NAME.json` | `v:1`, generation, active, pending_join, owner, room, tag, mirror, render, sub_id and bound_by_event. |
 | `NAME.archive-exclude` | Append-only set of room IDs, one per line; unset/unbind never remove rooms. |
