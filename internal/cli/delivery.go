@@ -517,14 +517,17 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	var lastHeartbeat time.Time
 	if *status != "" {
 		if err := s.writeLivenessSource(ctx, profile, "wait"); err != nil {
-			return err
+			if !errors.Is(err, ErrOwnStatusPending) {
+				return err
+			}
+		} else {
+			lastHeartbeat = a.Now()
 		}
-		lastHeartbeat = a.Now()
 		defer func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), nativeRPCTimeout)
 			defer cancel()
 			profile.Doorbell = "none"
-			if err := s.writeLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {
+			if err := s.retryLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {
 				fmt.Fprintln(a.Stderr, "wait liveness disarm:", a.secrets.Scrub(sanitizeLine(err.Error())))
 			}
 		}()
@@ -558,9 +561,12 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 		s.principals = s.readDeliveryPrincipals()
 		if *status != "" && a.Now().Sub(lastHeartbeat) >= *heartbeat {
 			if err := s.writeLivenessSource(ctx, profile, "wait-heartbeat"); err != nil {
-				return err
+				if !errors.Is(err, ErrOwnStatusPending) {
+					return err
+				}
+			} else {
+				lastHeartbeat = a.Now()
 			}
-			lastHeartbeat = a.Now()
 		}
 		n, err := a.showNew(ctx, s, filter, *asJSON)
 		if err != nil {

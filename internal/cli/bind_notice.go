@@ -333,6 +333,11 @@ func (s *session) publishTerminalNotice(ctx context.Context, generation string) 
 		failedAt := s.app.Now().UTC()
 		st.NoticeRetry = &config.NoticeRetry{FailedAt: failedAt, Next: failedAt.Add(delay), Delay: delay}
 	})
+	// Contention is not a failed publication: leave bounded retry eligibility
+	// unchanged and let the next ordinary hook/consumer cycle try again.
+	if errors.Is(err, ErrOwnStatusPending) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

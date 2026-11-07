@@ -332,7 +332,11 @@ func (a *App) hookLiveness(ctx context.Context, ev hookEvent, in hookInput) erro
 	if ev.arg == "stop" && st.HookBlocks(hookSessionKey(in.SessionID)) == 0 {
 		profile.State = "idle"
 	}
-	return s.writeLivenessSource(ctx, profile, "hook")
+	err = s.writeLivenessSource(ctx, profile, "hook")
+	if errors.Is(err, ErrOwnStatusPending) {
+		return nil
+	}
+	return err
 }
 
 // readHookInput parses the hook JSON; empty input is an empty object.

@@ -64,6 +64,9 @@ type App struct {
 	// printed and before it records that (shown, receipt, rung set): an error
 	// simulates a crash there.
 	afterPrint func() error
+	// afterOwnStatusPending observes local contention after releasing the state
+	// lock (tests only), so fixtures can clear a seeded fence deterministically.
+	afterOwnStatusPending func()
 	// beforeDeliver, when set (tests only), runs after a consumer synced and
 	// before it takes the state lock to persist and print: tests use it to let
 	// a concurrent consumer win the race.
