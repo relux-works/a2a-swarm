@@ -33,6 +33,7 @@ func selectHookExecutable(c hookExecutableChoice) (hookExecutableSelection, erro
 		return hookExecutableSelection{}, fmt.Errorf("hook executable is missing or unresolved; run a complete installed image and select its absolute path")
 	}
 	var linkStamp terminalExecutable
+	custodyPaths := []string{p, resolved}
 	if c.installedSet {
 		st, err := os.Lstat(p)
 		if err != nil || st.Mode()&os.ModeSymlink == 0 {
@@ -46,14 +47,26 @@ func selectHookExecutable(c hookExecutableChoice) (hookExecutableSelection, erro
 		// A single link to the canonical image keeps every selected piece of
 		// custody inspectable; do not adopt an uninspected chain of aliases.
 		target, err := os.Readlink(p)
+		if err != nil {
+			return hookExecutableSelection{}, fmt.Errorf("installed command target is unavailable")
+		}
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(filepath.Dir(p), target)
 		}
-		if err != nil || filepath.Clean(target) != resolved {
+		// Resolve directory aliases (/var -> /private/var on macOS), but
+		// never resolve a second link in the target's final component.
+		parent, err := filepath.EvalSymlinks(filepath.Dir(target))
+		direct := filepath.Join(parent, filepath.Base(target))
+		if err != nil || direct != resolved {
 			return hookExecutableSelection{}, fmt.Errorf("installed command must link directly to the canonical image; symlink chains are not supported")
 		}
+		info, err := os.Lstat(direct)
+		if err != nil || !info.Mode().IsRegular() {
+			return hookExecutableSelection{}, fmt.Errorf("installed command must link directly to a regular image; symlink chains are not supported")
+		}
+		custodyPaths = append(custodyPaths, target)
 	}
-	if err := hookExecutableParents(p, resolved); err != nil {
+	if err := hookExecutableParents(custodyPaths...); err != nil {
 		return hookExecutableSelection{}, err
 	}
 	stamp, err := observeTerminalExecutable(resolved)
@@ -70,6 +83,13 @@ func selectHookExecutable(c hookExecutableChoice) (hookExecutableSelection, erro
 	if c.installedSet {
 		command = p
 	}
+	aliases := []string{p, resolved}
+	// This only broadens companion denials; it never selects an executable.
+	if len(os.Args) > 0 && filepath.IsAbs(os.Args[0]) {
+		if launch, err := filepath.EvalSymlinks(os.Args[0]); err == nil && launch == resolved {
+			aliases = append(aliases, os.Args[0])
+		}
+	}
 	check := func() error {
 		current, err := filepath.EvalSymlinks(p)
 		if err != nil || current != resolved {
@@ -80,8 +100,13 @@ func selectHookExecutable(c hookExecutableChoice) (hookExecutableSelection, erro
 			if err != nil || executableMetadata(st) != linkStamp {
 				return fmt.Errorf("installed command changed; refusing to write configuration")
 			}
+			target := custodyPaths[len(custodyPaths)-1]
+			parent, err := filepath.EvalSymlinks(filepath.Dir(target))
+			if err != nil || filepath.Join(parent, filepath.Base(target)) != resolved {
+				return fmt.Errorf("installed command no longer links directly to the image; refusing to write configuration")
+			}
 		}
-		if err := hookExecutableParents(p, resolved); err != nil {
+		if err := hookExecutableParents(custodyPaths...); err != nil {
 			return err
 		}
 		currentStamp, err := observeTerminalExecutable(resolved)
@@ -90,7 +115,7 @@ func selectHookExecutable(c hookExecutableChoice) (hookExecutableSelection, erro
 		}
 		return nil
 	}
-	return hookExecutableSelection{path: command, check: check}, nil
+	return hookExecutableSelection{path: command, aliases: aliases, check: check}, nil
 }
 
 func hookExecutableParents(paths ...string) error {

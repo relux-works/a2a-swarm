@@ -1315,6 +1315,8 @@ Reading status does not migrate, clamp or repair the record. There is no interva
 flag; 30s is the fixed protocol constant. Source delivery does not activate
 already installed consumers; their custodian coordinates adoption separately.
 
+<a id="hook-executable-selection"></a>
+
 #### `a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH]` / `a2a hook uninstall --runtime claude|codex|muse [--settings PATH]`
 `--runtime` is required; a missing or unknown runtime, like an invalid agent name, is a usage error (exit 2) and writes nothing.
 
@@ -1322,7 +1324,7 @@ Executable selection is local and explicit. Choose one of these modes:
 
 | Selection | Recorded executable | Upgrade behavior |
 | --- | --- | --- |
-| Neither path flag | The running image's absolute, symlink-resolved path | Fixed image path, including when launched through a symlink |
+| Neither path flag | The running image's absolute, symlink-resolved path | Fixed image path, subject to the launch-spelling ancestry check below |
 | `--executable /absolute/path/a2a` | The selected path after symlink resolution | Fixed image path; a launch alias changing later does not change it |
 | `--installed-command /absolute/installed/a2a` | The selected symlink's absolute spelling, shell-quoted when needed | Subsequent hook invocations follow that link after the install custodian upgrades it |
 
@@ -1334,16 +1336,29 @@ currently loaded executable image, not merely a file with the same bytes or name
 For example:
 
 ```sh
-/opt/a2a/images/release-1/a2a hook install --agent alice --runtime muse --executable /opt/a2a/images/release-1/a2a
-/opt/a2a/current hook install --agent alice --runtime muse --installed-command /opt/a2a/current
+"$HOME/.local/libexec/a2a/a2a-<sha>" hook install --agent worker --runtime muse --executable "$HOME/.local/libexec/a2a/a2a-<sha>"
+"$HOME/.local/bin/a2a" hook install --agent worker --runtime muse --installed-command "$HOME/.local/bin/a2a"
 ```
+
+Replace `<sha>` with the installed image's version digest. See the README's
+[user-owned installation recipe](../README.md#a2a-examples-one-per-command).
+No-flag selection uses `os.Executable()`: Linux usually reports the resolved image,
+while macOS may retain a launch alias. A legacy checkout alias can therefore
+succeed on Linux but refuse on macOS because its ancestry contains `.git`.
+For a portable migration, invoke `"$HOME/.local/bin/a2a"` and explicitly select
+that path with `--installed-command`; explicitly selecting the checkout alias
+refuses on both systems. Existing hooks naming that alias are not rewritten or
+counted: they keep following the existing two-link route at runtime.
 
 The second command explicitly chooses the install custodian's upgrade route.
 A root-owned image refuses in every mode, including a plain `a2a hook install` with no flags: the image must be owned by the installing user. A host with a system-wide install must first install a copy under the agent user. A path with any Git marker in its ancestry also refuses, so an image inside a source checkout must move out first.
 
 `--installed-command` requires a symlink owned by the current UID or root, pointing
 directly to the canonical native image (a relative link to that canonical location
-is also accepted). Chains of symlinks refuse. A symlink alone does not establish
+is also accepted). Parent directory aliases such as macOS `/var` and `/tmp`
+are resolved separately; a second link in the target filename still refuses.
+Both spellings retain the ancestry checks, so shared writable temporary directories
+still refuse. Chains of command/image symlinks refuse. A symlink alone does not establish
 trust, and being outside a Git checkout does not establish trust. The operator
 must select a route whose future targets remain under the install custodian's
 control. No automatic installed-path discovery or migration of existing hooks occurs.
@@ -1353,7 +1368,8 @@ UID, with owner execute permission, no group/world write and no set-ID bits. Bot
 the selected and resolved paths' ancestor directories must be owned by the current
 UID or root and have no group/world write permission. A `.git` directory or gitdir
 file anywhere in either ancestry refuses installation from a mutable source
-checkout. Missing or unreadable custody information refuses too. There is no
+checkout. Every `.git` marker refuses, including a dangling symlink or an entry
+that cannot be inspected. Missing or unreadable custody information refuses too. There is no
 checkout override. Build and install a separate complete image, then invoke it
 before installing hooks. A missing checkout build output is never recorded for
 a future build to fill. Other platforms refuse unavailable validation.
@@ -1367,7 +1383,19 @@ observations do not lock the filesystem against a concurrent custodian or same-U
 writer; pathname validation and publication remain separate operations. A fixed
 image path stays fixed only while the custodian preserves that image at that path;
 the hook command does not enforce content immutability at runtime. An installed
-link intentionally delegates future selection to its custodian. Runtime fail-open
+link intentionally delegates future selection to its custodian. Companion Codex
+owner-DM rules include the selected spelling, resolved image and observed absolute
+launch alias, plus the existing bare/checkout spellings. Arbitrary undiscovered
+aliases and future link targets are not covered by those spelling-based rules;
+the independent host-terminal checks remain required.
+
+Custody permission checks currently inspect POSIX mode bits only, including in
+the shared terminal-refresh image validator. macOS extended ACL write grants are
+not inspected. This remains an unresolved security limitation; mode checks do
+not prove ACL-level exclusion of other users. Native ACL handling needs dedicated
+platform validation before this custody guarantee can be broadened.
+
+Runtime fail-open
 behavior, identity ownership and native runtime trust steps remain unchanged.
 
 `--runtime claude` merges the three hooks and `env.A2A_AGENT` into a Claude Code settings file (default `./.claude/settings.local.json`, the project's

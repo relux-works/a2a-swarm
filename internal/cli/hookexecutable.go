@@ -18,8 +18,9 @@ func (c hookExecutableChoice) validate() error {
 }
 
 type hookExecutableSelection struct {
-	path  string
-	check func() error
+	path    string
+	aliases []string // Observed spellings for companion owner-DM rules only.
+	check   func() error
 }
 
 func (a *App) selectHookExecutable(c hookExecutableChoice) (hookExecutableSelection, error) {

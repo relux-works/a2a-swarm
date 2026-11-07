@@ -398,7 +398,7 @@ func cmdHookInstall(a *App, args []string, install bool) error {
 			exe = selected.path
 			name = *agent
 		}
-		if err := ownerCodexRules(path, exe, name, install); err != nil {
+		if err := ownerCodexRules(path, exe, name, install, selected.aliases...); err != nil {
 			return err
 		}
 	}
