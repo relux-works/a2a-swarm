@@ -87,4 +87,4 @@ jobs:
           cache: true
       - run: go vet -tags sherpa ./...
       - run: go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a
-      - run: go test -tags sherpa -race ./internal/voice ./internal/cli -run 'TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict|TestModelCache|TestLocalRunner' -count=1
+      - run: go test -tags sherpa -race ./internal/voice ./internal/cli -run 'TestWorkerPaths|TestPostVoice|TestVoiceConfig|TestRender|TestCapPCM|TestWaveform|TestInstall|TestExtract|TestConfigStrict|TestModelCache|TestLocalRunner' -count=1
