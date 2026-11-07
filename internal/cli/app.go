@@ -174,7 +174,7 @@ func commands() []command {
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},
 		{"runtime", "runtime bind --codex-thread ID --endpoint unix:///SOCK --owner-pid PID --heartbeat DUR --max-wakes-per-hour N --gate G --hooks H [--product X] [--watch] | dispatch|gate|abandon|status   launcher-owned native Codex wake", cmdRuntime},
-		{"bind", "bind --runtime R --owner-pid PID [--interval DUR --retry-max DUR --max-wakes-per-hour N] [--session-id ID]   bind this tmux session once; persistent counts-only wake", cmdBind},
+		{"bind", "bind association --private-intent-fd=3 --json | bind --runtime R --owner-pid PID [--interval DUR --retry-max DUR --max-wakes-per-hour N] [--session-id ID]   stored association or persistent counts-only wake", cmdBind},
 		{"unbind", "unbind                               stop this session's persistent wake process", cmdUnbind},
 	}
 }
@@ -208,17 +208,24 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if a.HTTP == nil {
 		a.HTTP = &http.Client{}
 	}
-	if err := verificationGlobalSelection(args); err != nil {
+	globalFailure := func(err error) int {
+		if rest := associationInvocation(args); rest != nil {
+			// Global guards still refuse, through the association's closed output.
+			return a.bindAssociation(append(rest, "--invalid-global-selection"))
+		}
 		return a.fail(err)
+	}
+	if err := verificationGlobalSelection(args); err != nil {
+		return globalFailure(err)
 	}
 	rest, err := a.extractGlobal(args)
 	if err != nil {
-		return a.fail(err)
+		return globalFailure(err)
 	}
 	if a.human && !a.interactive() {
 		// Agents' tool calls have no terminal on stdin, so an agent cannot use a
 		// human's account even when it knows the flag.
-		return a.fail(usagef("--human needs an interactive terminal on stdin: only a human at a terminal uses a human account"))
+		return globalFailure(usagef("--human needs an interactive terminal on stdin: only a human at a terminal uses a human account"))
 	}
 	if len(rest) == 0 || rest[0] == "help" || rest[0] == "-h" || rest[0] == "--help" {
 		if len(rest) == 0 {
@@ -230,6 +237,11 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
+			// Stored association is effect-free and has its own closed JSON
+			// refusals. Both preflight and owner warnings read unrelated state.
+			if c.name == "bind" && len(rest) > 1 && rest[1] == "association" {
+				return a.bindAssociation(rest[2:])
+			}
 			// This anonymous public read has its own routing-only preflight. It
 			// must not consult credentials, secret stores or owner-DM state.
 			if c.name == "availability" || c.name == "voice" && len(rest) > 1 && rest[1] == "status" {
