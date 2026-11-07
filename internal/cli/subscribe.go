@@ -523,8 +523,8 @@ func addSelectorFlags(fs *flag.FlagSet, roomFlag, topicFlag, roomDefault string)
 	return &selectorFlags{
 		room:      fs.String(roomFlag, roomDefault, "room, or all"),
 		product:   fs.String("product", "", "product projections by canonical alias name"),
-		topic:     fs.String(topicFlag, "", "topic slug or root event id (needs a concrete room)"),
-		from:      fs.String("from", "", "sender (name or user id)"),
+		topic:     fs.String(topicFlag, "", "topic slug or root event id (needs a concrete room; follow first if muted)"),
+		from:      fs.String("from", "", "sender (name or user id); matching subscriptions bypass topic mute"),
 		subject:   fs.String("subject", "", "structured subject or whole token in the body"),
 		subtype:   fs.String("subtype", "", "comma-separated system subtypes"),
 		kind:      fs.String("kind", "", "comma-separated kinds"),
@@ -654,12 +654,16 @@ func cmdSubscribe(ctx context.Context, a *App, args []string) error {
 		}
 		sub.Since = *since
 	}
-	if _, _, err := s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
+	st, _, err := s.updateSubs(ctx, func(_ *config.State, list *SubList) (bool, error) {
 		sub.ID = newSubID(*list)
 		list.Subs = append(list.Subs, sub)
 		return true, nil
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if sub.Topic != "" && st.IsMuted(sub.Topic) && sub.From == "" && !sub.AllEvents {
+		fmt.Fprintln(a.Stderr, "warning: topic is muted; suppressed matches will not ring or close --until-kind. Use a2a follow before waiting; skipped events are not replayed.")
 	}
 	a.printf("%s\t%s\n", sub.ID, sub.summary(label, s.server))
 	return nil
