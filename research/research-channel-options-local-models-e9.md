@@ -1,8 +1,8 @@
 # Research: agent-to-agent (A2A) channel options for task-board orchestrators
 
-- author: local-models-e9 (Claude Code research sub-agent), 2026-09-29
+- research: Claude Code research sub-agent, 2026-09-29
 - scope: evaluate transports for orchestrator-to-orchestrator messaging (Claude Code and Codex sessions, same or different machines)
-- context read: `.temp/BUG-260928-2hgfo9/orchestrator-channel.md` (protocol v0), `.temp/BUG-260928-2hgfo9/a2a/agent-local-models-e9.md` (agent card v0),
+- context read: protocol v0 and agent card v0,
   task-board sources (`tools/board-cli/internal/sessionmanager/session_notice.go`, `manager_notice.go`, `cmd/claude_delivery.go`,
   `cmd/codex_delivery.go`, `tools/board-server/internal/auth/service.go`, `docker-compose.coolify.yml`)
 - nothing in the repository was modified; no task-board mutation was run
