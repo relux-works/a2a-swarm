@@ -125,3 +125,35 @@ func TestNativeStateEventRefusedBeforeDownload(t *testing.T) {
 	}
 	cleanRoot(t, f.root)
 }
+
+func TestNativeOutputRootAliasRetargetRefusesPublication(t *testing.T) {
+	f := newFixture(t, []byte("valid"), 64)
+	aliases, outside := t.TempDir(), t.TempDir()
+	alias := filepath.Join(aliases, "output-root")
+	if err := os.Symlink(f.root, alias); err != nil {
+		t.Fatal(err)
+	}
+	retargeted := false
+	f.c.BeforeRequest = func() error {
+		// The final connection guard runs after bytes have been downloaded.
+		if f.downloads.Load() != 0 && !retargeted {
+			retargeted = true
+			if err := os.Remove(alias); err != nil {
+				return err
+			}
+			return os.Symlink(outside, alias)
+		}
+		return nil
+	}
+	_, err := Fetch(context.Background(), f.c, validEvent("m.file", 5), selection, filepath.Join(alias, "out"))
+	wantRefusal(t, err, UnsafeOutput)
+	if !retargeted || f.downloads.Load() != 1 {
+		t.Fatal("alias was not retargeted after the download")
+	}
+	cleanRoot(t, f.root)
+	cleanRoot(t, outside)
+	f.c.BeforeRequest = nil
+	if _, err := f.fetch(validEvent("m.file", 5), "valid-neighbour"); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -21,6 +21,7 @@ type outputTarget struct {
 	scratchName, leaf     string
 	rootParts             []string
 	configuredRoot        string
+	outputRoot            string
 	parentParts           []string
 	file                  *os.File
 	scratchStat           unix.Stat_t
@@ -80,9 +81,11 @@ func openTarget(output string) (*outputTarget, Code) {
 		return nil, UnsafeOutput
 	}
 	relative, err := filepath.Rel(configuredRoot, abs)
+	outputRoot := configuredRoot
 	if err == nil && (relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
 		// Also accept the canonical spelling of the same trusted root.
 		relative, err = filepath.Rel(rootPath, abs)
+		outputRoot = rootPath
 	}
 	if err == nil && (relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
 		// The output may spell the trusted root through different ancestor
@@ -99,6 +102,7 @@ func openTarget(output string) (*outputTarget, Code) {
 			}
 			if resolved == rootPath {
 				relative = filepath.Join(parts[i+1:]...)
+				outputRoot = prefix
 				break
 			}
 		}
@@ -115,7 +119,7 @@ func openTarget(output string) (*outputTarget, Code) {
 	if err != nil {
 		return nil, UnsafeOutput
 	}
-	t := &outputTarget{root: root, parent: -1, scratch: -1, leaf: filepath.Base(relative), rootParts: strings.Split(rootPath, "/"), configuredRoot: configuredRoot}
+	t := &outputTarget{root: root, parent: -1, scratch: -1, leaf: filepath.Base(relative), rootParts: strings.Split(rootPath, "/"), configuredRoot: configuredRoot, outputRoot: outputRoot}
 	fail := func(code Code) (*outputTarget, Code) { t.cleanup(); return nil, code }
 	t.parentParts = strings.Split(filepath.Dir(relative), "/")
 	t.parent, err = walkDirectory(root, t.parentParts)
@@ -166,6 +170,12 @@ func (t *outputTarget) pathCurrent() bool {
 	var retained unix.Stat_t
 	var configured unix.Stat_t
 	if unix.Fstat(t.root, &retained) != nil || unix.Stat(t.configuredRoot, &configured) != nil || retained.Dev != configured.Dev || retained.Ino != configured.Ino {
+		return false
+	}
+	// An alternate output spelling must still select the same trusted root,
+	// independently of the configured TMPDIR alias.
+	var output unix.Stat_t
+	if unix.Stat(t.outputRoot, &output) != nil || retained.Dev != output.Dev || retained.Ino != output.Ino {
 		return false
 	}
 	// Rewalk the canonical absolute path, not just the retained root FD.
