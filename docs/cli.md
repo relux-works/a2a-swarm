@@ -51,6 +51,14 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 
 ## Commands
 
+### `a2a bind association --private-intent-fd=3 --json`
+
+Compare only the selected own stored terminal binding against one private
+launcher-supplied expectation, without credentials, preflight, warnings, native
+observations or state changes. Match means stored equality only. The inherited
+descriptor, schemas, bounded lock/snapshot, privacy refusals and exit codes are
+specified in [the association contract](terminal-association.md).
+
 ### `a2a --as <own-name> creds migrate`
 With `A2A_SECRET_STORE=keychain`, migrate exactly the selected identity. No wildcard
 or directory enumeration is supported. A human uses interactive `--human --as`.
