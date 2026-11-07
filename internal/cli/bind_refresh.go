@@ -93,28 +93,20 @@ func observeTerminalExecutable(path string) (terminalExecutable, error) {
 // NoticeCount/AttemptAt/Retried and hourly reservations are historical after a
 // settled send; NotificationToken can also remain after a proven refusal.
 func terminalRefreshSafe(st config.State, generation, birth string, now time.Time) bool {
-	ledger := st.Notification
-	if ledger.Prepare(now, time.Time{}) != nil {
-		return false
-	}
-	b := st.Terminal
-	return st.HostEnrollment == nil && (st.Runtime == nil || st.Runtime.Retired) &&
-		b != nil && !b.Stopped && b.Generation == generation && b.Host == machineLabel() &&
-		b.DaemonPID == os.Getpid() && b.DaemonBirth == birth &&
-		len(b.AttemptIDs) == 0 && !b.Typed && b.Notice == "" &&
-		st.Notification.Reservation == nil &&
-		st.Lease != nil && st.Lease.Holder == b.SessionID && st.Lease.Host == b.Host && st.Lease.Expires.After(now)
+	return terminalRefreshBlockReason(st, generation, birth, machineLabel(), os.Getpid(), now) == ""
 }
 
 type terminalRefresh struct {
-	path       string
-	current    terminalExecutable
-	seen       terminalExecutable
-	since      time.Time
-	failed     terminalExecutable
-	stable     bool
-	nextSafety time.Time
-	probed     terminalExecutable
+	lastStatus   string
+	failedStatus string
+	path         string
+	current      terminalExecutable
+	seen         terminalExecutable
+	since        time.Time
+	failed       terminalExecutable
+	stable       bool
+	nextSafety   time.Time
+	probed       terminalExecutable
 	// Retain cooldowns across path changes and suppress repeated transient logs.
 	probeRetries map[terminalExecutable]time.Time
 	// Optional seams count expensive work and advance monotonic time in tests.
@@ -168,6 +160,8 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	if ctx.Err() != nil {
 		return
 	}
+	diagnostic := "unavailable"
+	defer func() { r.recordStatus(s, generation, diagnostic) }()
 	if r.path == "" {
 		r.initializePath()
 	}
@@ -202,9 +196,22 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 		return
 	}
 	metadata := executableMetadata(info)
-	if metadata == r.current.metadata() || metadata == r.failed.metadata() {
+	if metadata == r.current.metadata() {
+		diagnostic = "current"
 		r.seen = terminalExecutable{}
 		return
+	}
+	if metadata == r.failed.metadata() {
+		diagnostic = r.failedStatus
+		r.seen = terminalExecutable{}
+		return
+	}
+	diagnostic = "changed_stabilizing"
+	// Retain the last candidate failure through fresh stabilization attempts.
+	// An installer can alternate readable and incomplete images on every poll;
+	// only a mature check (or the current image) should replace that cause.
+	if r.lastStatus == "changed_candidate_unavailable" {
+		diagnostic = r.lastStatus
 	}
 	// Production throttling uses monotonic time, independent of delivery time.
 	now := time.Now()
@@ -215,6 +222,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	if metadata != r.seen.metadata() {
 		stamp, err = r.observeExecutable(resolved)
 		if err != nil {
+			diagnostic = "changed_candidate_unavailable"
 			r.seen = terminalExecutable{}
 			return
 		}
@@ -228,6 +236,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	if !r.stable {
 		stamp, err = r.observeExecutable(resolved)
 		if err != nil {
+			diagnostic = "changed_candidate_unavailable"
 			r.seen = terminalExecutable{}
 			return
 		}
@@ -238,23 +247,30 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 		r.stable = true
 	}
 	if now.Before(r.nextSafety) {
+		diagnostic = terminalRefreshCooldownStatus(r.lastStatus)
 		return
 	}
 	if now.Before(r.probeRetries[stamp]) {
+		diagnostic = "changed_probe_unavailable"
 		return
 	}
 	r.nextSafety = now.Add(30 * time.Second)
 	if err := s.checkConnection(); err != nil {
+		diagnostic = "unavailable"
 		return
 	}
-	check := r.safety
-	if check == nil {
-		check = terminalRefreshAuthority
+	var sessionID string
+	var safe bool
+	diagnostic = "changed_safety_unavailable"
+	if r.safety == nil {
+		sessionID, safe, diagnostic, err = terminalRefreshAuthorityReason(ctx, a, s, generation)
+	} else {
+		sessionID, safe, err = r.safety(ctx, a, s, generation)
 	}
-	sessionID, safe, err := check(ctx, a, s, generation)
 	if err != nil || !safe || ctx.Err() != nil {
 		return
 	}
+	diagnostic = "changed_ready"
 	env := detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), sessionID)
 	if r.probed != stamp {
 		probe := r.probe
@@ -263,6 +279,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 		}
 		if err := probe(ctx, resolved, env); err != nil {
 			if errors.Is(err, errConsumerProbeUnavailable) {
+				diagnostic = "changed_probe_unavailable"
 				if r.probeRetries == nil {
 					r.probeRetries = make(map[terminalExecutable]time.Time)
 				}
@@ -279,6 +296,8 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 				return
 			}
 			r.failed = stamp
+			diagnostic = "changed_protocol_incompatible"
+			r.failedStatus = diagnostic
 			fmt.Fprintln(a.Stderr, "binding re-exec refused: protocol incompatible")
 			return
 		}
@@ -288,37 +307,50 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	// between entire cycles, never from Send or a reservation/finish callback.
 	pin, err := a.pinnedArgs(s.name)
 	if err != nil {
+		diagnostic = "changed_pin_unavailable"
 		return
 	}
 	args := append([]string{r.path}, pin...)
 	args = append(args, "--as", s.name, "bind", "--run-generation", generation, "--consumer-lock-fd", strconv.Itoa(int(lock.Fd())))
 	finalPath, err := filepath.EvalSymlinks(r.path)
 	if err != nil || finalPath != resolved {
+		diagnostic = "changed_candidate_unavailable"
 		r.seen = terminalExecutable{}
 		return
 	}
 	final, err := r.observeExecutable(resolved)
 	if err != nil || final != stamp {
+		diagnostic = "changed_candidate_unavailable"
 		r.seen = terminalExecutable{}
 		return
 	}
 	if err := s.checkConnection(); err != nil || ctx.Err() != nil {
+		diagnostic = "unavailable"
 		return
 	}
 	// Keep the SAME flock open-file description and log descriptors through
 	// exec. Everything else remains CLOEXEC. On failure restore immediately.
 	fd := int(lock.Fd())
 	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		diagnostic = "changed_exec_failed"
 		return
 	}
 	_ = r.exec(resolved, args, env)
 	syscall.CloseOnExec(fd)
 	r.failed = stamp
+	diagnostic = "changed_exec_failed"
+	r.failedStatus = diagnostic
 	fmt.Fprintln(a.Stderr, "binding re-exec refused: exec failed")
 }
 
 func terminalRefreshAuthority(ctx context.Context, a *App, s *session, generation string) (string, bool, error) {
+	name, safe, _, err := terminalRefreshAuthorityReason(ctx, a, s, generation)
+	return name, safe, err
+}
+
+func terminalRefreshAuthorityReason(ctx context.Context, a *App, s *session, generation string) (string, bool, string, error) {
 	safe := false
+	reason := "changed_safety_unavailable"
 	var sessionID string
 	err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
@@ -332,12 +364,35 @@ func terminalRefreshAuthority(ctx context.Context, a *App, s *session, generatio
 			return err
 		}
 		safe = terminalRefreshSafe(st, generation, birth, a.Now())
+		reason = terminalRefreshBlockReason(st, generation, birth, machineLabel(), os.Getpid(), a.Now())
 		if safe {
 			sessionID = st.Terminal.SessionID
 		}
 		return nil
 	})
-	return sessionID, safe, err
+	return sessionID, safe, reason, err
+}
+
+// Diagnostics are best effort and bounded: no extra wait in the consumer loop.
+func (r *terminalRefresh) recordStatus(s *session, generation, token string) {
+	token = safeTerminalRefreshStatus(token)
+	if s == nil || token == r.lastStatus || s.checkConnection() != nil {
+		return
+	}
+	unchanged := false
+	_, err := config.UpdateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
+		if b := st.Terminal; b != nil && !b.Stopped && b.Generation == generation && b.Host == machineLabel() && b.DaemonPID == os.Getpid() && b.RefreshStatus == token && s.checkConnection() == nil {
+			unchanged = true
+			return errors.New("refresh diagnostic unchanged")
+		}
+		if s.checkConnection() != nil || !recordTerminalRefreshStatus(st, generation, machineLabel(), os.Getpid(), token) {
+			return errors.New("refresh diagnostic unchanged or retired")
+		}
+		return nil
+	})
+	if err == nil || unchanged {
+		r.lastStatus = token
+	}
 }
 
 // Cap memory and reject even a correct token followed by extra output.

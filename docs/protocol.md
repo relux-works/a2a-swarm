@@ -101,14 +101,19 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
       Each received joined room has mandatory real-sender delivery, including
       later joins, spaces, direct and exempt rooms; wait/watch predicates cannot
       suppress it. Projection headers cannot stand in for that sender.
-      Onboarding (including service-only) and sync maintain independent
-      `host-principal` all-events rows. `subs check` reports `missing_principals`;
-      room-wide owner-DM rows do not satisfy it. Trim and single protected-row
-      unsubscribe refuse with `principal_subscription_required` and a host-list
-      remedy; bulk unsubscribe removes allowed rows and reports those kept. Manual
+      Onboarding (including service-only) and sync add `host-principal` all-events
+      rows only where permanent exact-sender coverage is missing; qualifying
+      manual rows count. `subs check` reports `missing_principals`; room-wide
+      owner-DM rows do not satisfy it. Trim only records a local kind exception:
+      it does not change subscription rows or principal repair and does not
+      refuse on missing coverage. New trim records still refuse invalid principal
+      configuration or unreadable membership. Single protected-row unsubscribe
+      refuses with `principal_subscription_required` and a host-list remedy;
+      bulk unsubscribe removes allowed rows and reports those kept. Manual
       selectors remain removable and retain their projection semantics. Owner-DM
-      cleanup preserves those rows. Host removal of the principal or leaving
-      the room ends that protection; there is no unsubscribe force flag.
+      cleanup preserves dedicated `host-principal` rows. Host removal of the
+      principal or leaving the room ends that protection; there is no unsubscribe
+      force flag.
       Each delivery cycle snapshots the atomic local list without a policy lock
       or network repair. Invalid metadata warns once per session and surfaces
       in check/status while mail continues as with no configured list. Coverage
