@@ -53,6 +53,12 @@ func (r EventRecord) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return escapeJSONFormatCharacters(raw), nil
+}
+
+// escapeJSONFormatCharacters preserves decoded identifiers while making Unicode
+// format controls inert when JSON is displayed directly in a terminal.
+func escapeJSONFormatCharacters(raw []byte) []byte {
 	var b strings.Builder
 	for _, ch := range string(raw) {
 		if unicode.Is(unicode.Cf, ch) {
@@ -63,7 +69,7 @@ func (r EventRecord) MarshalJSON() ([]byte, error) {
 			b.WriteRune(ch)
 		}
 	}
-	return []byte(b.String()), nil
+	return []byte(b.String())
 }
 
 // eventRecord builds the record for a message event. typ is the record type;

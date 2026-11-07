@@ -55,7 +55,7 @@ func cmdMuteList(a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		return writeCLIOutput(a.Stdout, string(data)+"\n")
+		return writeCLIOutput(a.Stdout, string(escapeJSONFormatCharacters(data))+"\n")
 	}
 	if len(roots) == 0 {
 		return writeCLIOutput(a.Stdout, "no muted topics\n")

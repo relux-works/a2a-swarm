@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -324,5 +325,31 @@ func TestHumanCredentials(t *testing.T) {
 	write(p.AgentFile("ivan"))
 	if _, err := MoveToHumans(p, "ivan"); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("overwrite: %v", err)
+	}
+}
+
+// Learned membership is room-scoped and bounded, cannot overwrite an existing
+// observation or accept empty components, and grants no follow/unmute status.
+// Valid same-ID observations in two rooms are the independent controls.
+func TestThreadEventMembershipScopeAndRetention(t *testing.T) {
+	var st State
+	for _, e := range []ThreadEvent{{EventID: "$child", Root: "$root"}, {Room: "!room", Root: "$root"}, {Room: "!room", EventID: "$child"}} {
+		st.RememberThreadEvent(e)
+	}
+	if len(st.ThreadEvents) != 0 {
+		t.Fatal("invalid membership retained")
+	}
+	st.Mute("$root")
+	st.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: "$child", Root: "$root"})
+	st.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: "$child", Root: "$replacement"})
+	st.RememberThreadEvent(ThreadEvent{Room: "!other", EventID: "$child", Root: "$other-root"})
+	if len(st.ThreadEvents) != 2 || st.ThreadEventRoot("!room", "$child") != "$root" || st.ThreadEventRoot("!other", "$child") != "$other-root" || st.ThreadEventRoot("!unknown", "$child") != "" || st.HasThread("$root") || !st.IsMuted("$root") {
+		t.Fatalf("membership altered scope or follow/mute policy: %+v", st)
+	}
+	for i := 0; i < 2000; i++ {
+		st.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: fmt.Sprintf("$event-%d", i), Root: "$root"})
+	}
+	if len(st.ThreadEvents) != 2000 || st.ThreadEventRoot("!room", "$child") != "" || st.ThreadEventRoot("!other", "$child") != "" || st.ThreadEventRoot("!room", "$event-0") != "$root" || st.ThreadEventRoot("!room", "$event-1999") != "$root" {
+		t.Fatal("membership retention did not evict only the oldest entries")
 	}
 }

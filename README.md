@@ -41,8 +41,10 @@ when no live owned consumer can carry it. Notification does not receipt mail.
 See [shared notification spacing](docs/cli.md#shared-30-second-notification-spacing)
 for uncertainty, clock/restart and diagnostic limits.
 
-Topic mutes suppress future ordinary room-subscription delivery using the same
-root rule as `read --json`, including header-named topics on plain replies.
+Topic mutes suppress future ordinary room-subscription delivery using
+server relations: `m.thread`, or a plain reply to a known thread event in
+the same room. Header topic claims cannot suppress or create delivery matches.
+Concurrent mute changes defer admission and retry without a consumer restart.
 Inspect local muted roots with `a2a mute list [--json]`; see the
 [mute and follow reference](docs/cli.md#a2a-mute-room---topic-x--a2a-follow-room---topic-x).
 

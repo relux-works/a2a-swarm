@@ -115,11 +115,12 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 
 // batch is what one sync response adds to the mailbox.
 type batch struct {
-	entries    []config.MailEntry
-	redactions []config.Redaction
-	learned    []string // thread roots learned from my own events
-	close      []string // --until-kind subscriptions closed by a persisted event
-	muted      []string // mute snapshot used for classification
+	entries      []config.MailEntry
+	redactions   []config.Redaction
+	learned      []string             // thread roots learned from my own events
+	threadEvents []config.ThreadEvent // room-scoped server-derived membership
+	close        []string             // --until-kind subscriptions closed by a persisted event
+	muted        []string             // mute snapshot used for classification
 }
 
 // deliveryFilter is the --room/--all selection of wait and watch.
@@ -180,6 +181,7 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 
 func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
 	b := batch{muted: slices.Clone(st.Muted)}
+	st.ThreadEvents = slices.Clone(st.ThreadEvents)
 	me := s.creds.UserID
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		if s.adminRoomExcluded(roomID) {
@@ -207,7 +209,9 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 			if ev.Type != "m.room.message" {
 				return false
 			}
-			if ev.Sender == me || eventTopicRoot(ev) != "" || all[roomID] {
+			// Keep plain replies before chronological classification, even when
+			// their targets will only be learned on an older backfill page.
+			if ev.Sender == me || ev.Message().RelatesTo != nil || all[roomID] {
 				return true
 			}
 			rel, _, _ := classifyWithPrincipals(ev, roomID, me, s.name, st, subs, configured)
@@ -233,6 +237,16 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 		}
 		b.redactions = append(b.redactions, eventRedactions(roomID, events)...)
 		for _, ev := range events {
+			if ev.Type == "m.room.message" && !ev.IsRedacted() {
+				root := deliveryTopicRoot(ev, roomID, st)
+				if root != "" {
+					for _, id := range []string{root, ev.EventID} {
+						membership := config.ThreadEvent{Room: roomID, EventID: id, Root: root}
+						st.RememberThreadEvent(membership)
+						b.threadEvents = append(b.threadEvents, membership)
+					}
+				}
+			}
 			active := subs
 			if len(closed) > 0 {
 				active = nil
@@ -363,6 +377,9 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 				return nil, err
 			}
 		}
+		for _, e := range b.threadEvents {
+			cur.RememberThreadEvent(e)
+		}
 		for _, r := range b.learned {
 			cur.AddThread(r)
 		}
@@ -375,6 +392,9 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 
 // ingest classifies one sync response from since and persists it.
 func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time) (config.State, error) {
+	if since == "" {
+		return s.savePositionAll(ctx, resp, deadline, all)
+	}
 	return s.ingestWithRedactions(ctx, resp, since, subs, all, nil, deadline)
 }
 
@@ -407,7 +427,18 @@ func (s *session) ingestWithRedactions(ctx context.Context, resp matrix.SyncResp
 			return st, err
 		}
 	}
-	return st, errDeliveryMutesChanged
+	// Deferral is a normal cycle outcome, including during first sync. Return
+	// fresh persisted state: never the zero State returned by a refused update.
+	// Consumers keep their cursor and ownership and poll again normally.
+	return config.LoadState(s.paths, s.name)
+}
+
+// A deferred first sync must still locate our join on the next normal cycle.
+func deliverySyncFilter(since string) string {
+	if since == "" {
+		return firstDeliveryFilter
+	}
+	return syncFilter
 }
 
 // takePosition is the very first run. Only history after the identity's own
@@ -685,7 +716,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 			}
 		}
 		resp, err := waitRetry(ctx, s, deadline, func() (matrix.SyncResponse, error) {
-			return s.waitSync(ctx, st.NextBatch, poll, syncFilter)
+			return s.waitSync(ctx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch))
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -814,7 +845,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		if err := a.acquireLease(s, "", time.Time{}); err != nil {
 			return stopped(err)
 		}
-		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, syncFilter)
+		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, deliverySyncFilter(st.NextBatch))
 		if err != nil {
 			return stopped(err)
 		}

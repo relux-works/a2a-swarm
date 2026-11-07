@@ -42,15 +42,19 @@ const (
 	relAll     relevance = "all"
 )
 
-// eventTopicRoot is shared by read records and delivery. An explicit Matrix
-// thread takes precedence; plain replies may carry their topic only in the
-// a2a header. Projection origin metadata does not create a local thread.
-func eventTopicRoot(ev matrix.Event) string {
-	if root := ev.ThreadRoot(); root != "" {
+// eventTopicRoot exposes only the server's explicit Matrix thread relation.
+// Sender-controlled a2a headers never establish thread membership.
+func eventTopicRoot(ev matrix.Event) string { return ev.ThreadRoot() }
+
+// deliveryTopicRoot additionally accepts plain replies to events whose thread
+// membership this identity already learned from server events in this room.
+func deliveryTopicRoot(ev matrix.Event, roomID string, st config.State) string {
+	if root := eventTopicRoot(ev); root != "" {
 		return root
 	}
-	if h, ok := decodeHeader(ev.Message().A2A); ok && h.Type != "projection" {
-		return h.Topic
+	r := ev.Message().RelatesTo
+	if r != nil && r.RelType == "" && r.InReplyTo != nil {
+		return st.ThreadEventRoot(roomID, r.InReplyTo.EventID)
 	}
 	return ""
 }
@@ -64,7 +68,7 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		return "", "", nil
 	}
 	m := ev.Message()
-	root := eventTopicRoot(ev)
+	root := deliveryTopicRoot(ev, roomID, st)
 	if ev.Sender == me {
 		// My own message: a reply joins me to its thread; a topic root I sent is a thread I own.
 		if root != "" {
@@ -89,7 +93,7 @@ func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs 
 		if muted && sub.Room != "" && sub.Room == roomID && sub.From == "" && !sub.AllEvents && !(hasHeader && h.Type == "projection") {
 			continue
 		}
-		if sub.matches(ev, roomID, h, hasHeader) {
+		if sub.matchesTopicRoot(ev, roomID, h, hasHeader, root) {
 			matched = append(matched, sub.ID)
 		}
 	}

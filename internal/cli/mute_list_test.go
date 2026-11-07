@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -141,5 +143,62 @@ func TestMuteListNamedNamespace(t *testing.T) {
 	}
 	if f.effects() != 0 {
 		t.Fatalf("local inspection produced %d HTTP/secret-store effects", f.effects())
+	}
+}
+
+// JSON renders format controls inert exactly like EventRecord, including a
+// supplementary-plane control, while decoding preserves every opaque ID byte.
+// A plain ID is the neighboring positive control; listing never rewrites state.
+func TestMuteListJSONFormatCharacters(t *testing.T) {
+	p := config.Paths{Base: t.TempDir()}
+	roots := []string{"$plain", "$bidi\u202e", "$tag\U000e0001"}
+	if err := config.SaveState(p, "alice", config.State{Muted: roots}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(p.StateFile("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	a := NewApp()
+	a.Stdout, a.Stderr = &out, &out
+	a.Getenv = func(k string) string {
+		if k == config.EnvConfigDir {
+			return p.Base
+		}
+		return ""
+	}
+	if code := a.Run(context.Background(), []string{"--as", "alice", "mute", "list", "--json"}); code != 0 {
+		t.Fatalf("code=%d: %s", code, out.String())
+	}
+	var got struct {
+		Identity string   `json:"identity"`
+		Muted    []string `json:"muted"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil || got.Identity != "alice" || len(got.Muted) != len(roots) {
+		t.Fatalf("invalid JSON: %+v %v", got, err)
+	}
+	for _, root := range roots {
+		if !slices.Contains(got.Muted, root) {
+			t.Fatalf("opaque ID changed: %q", root)
+		}
+		control, err := json.Marshal(EventRecord{EventID: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(control, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(out.Bytes(), fields["event_id"]) {
+			t.Fatalf("escaping differs from EventRecord: %q %s", out.String(), control)
+		}
+	}
+	if strings.ContainsAny(out.String(), "\u202e\U000e0001") || !strings.Contains(out.String(), `\u202e`) || !strings.Contains(out.String(), `\udb40\udc01`) {
+		t.Fatalf("unsafe format controls: %q", out.String())
+	}
+	after, err := os.ReadFile(p.StateFile("alice"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("listing rewrote state: %v", err)
 	}
 }
