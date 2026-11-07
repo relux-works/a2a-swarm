@@ -376,6 +376,8 @@ type State struct {
 	Wake     codexwake.Ledger   `json:"wake,omitempty"`
 	Liveness *AgentStatus       `json:"liveness,omitempty"`
 	// Knowledge of the identity's status event survives terminal replacement.
+	// NoticeStatus acknowledges notice-only publication without enabling liveness.
+	NoticeStatus         *AgentStatus             `json:"notice_status,omitempty"`
 	NoticeWriteUncertain bool                     `json:"notice_write_uncertain,omitempty"`
 	NoticeRetry          *NoticeRetry             `json:"notice_retry,omitempty"`
 	LivenessSource       string                   `json:"liveness_source,omitempty"`

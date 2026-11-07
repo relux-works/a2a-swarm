@@ -1681,15 +1681,15 @@ No CLI setter ships in this change. Existing source provisioning helpers can upd
 for already scrubbed metadata (both secret fields must remain empty), or `config.UpdateCredentials` for existing token-bearing file credentials
 (that helper clears the legacy password field). Both use the established identity file lock and 0600 replacement. Neither is a new CLI
 provisioning command or a reason to migrate/repair credentials. `creds migrate` is not an own-room setter. Until an operator provisions
-the opt-in field, the local unavailable status is the mitigation and no incident message is sent. No live provisioning is performed here.
+the opt-in field, the consumer uses the mail-alarm fallback described below. No live provisioning is performed here.
 Before pinning and again before sending, the consumer reads joined membership, canonical alias and message power levels.
-Missing configuration reports `incident route not configured`; nonmembership, denied or unknown access remains locally unavailable with
-zero message sends. A missing canonical alias or unrecognized power-level availability also refuses. No room is created or joined.
+Only absent `own_room` configuration selects the mail-alarm fallback. A configured incident room keeps the existing path:
+nonmembership, denied or unknown access remains locally unavailable with zero incident sends and no fallback. A missing canonical alias or unrecognized power-level availability also refuses. No room is created or joined.
 There is no global `#system` fallback; that room remains projection-only and the projector remains OFF.
 Existing project system subscriptions provide the protocol audience; a successful send does not establish any particular subscriber's receipt.
 This works without an own liveness record or new mail. Unavailable routes retry after `--retry-max`.
-While suspicion is due, an unavailable report emits one fixed stderr line per retry, about 120 lines/hour at the default 30s retry cap,
-into the binding log. Log rotation is not established by this change. Power checks can fail closed when needed defaults are omitted; room-version-12
+Report diagnostics log only changes of the fixed outcome (`binding incident report: OUTCOME`). The last logged outcome is persisted
+with the episode, so retries and consumer restarts do not repeat the same line. Log rotation is unchanged. Power checks can fail closed when needed defaults are omitted; room-version-12
 creator power without a `users` entry is not inferred, so valid rooms can be refused. Live server behavior remains unverified.
 The destination, transaction ID and fixed content are persisted before sending; retries after an ambiguous ACK or process restart reuse them.
 An own-room change or unavailable pinned route blocks the retry locally, without rerouting or replacing the pin. Restoring the original
@@ -1698,9 +1698,41 @@ A successful report is sent once per continuing suspicion episode. Automatic dea
 target carries the report destination, transaction, immutable content, ACK and retry state into the replacement generation. Manual rebinding,
 a different session/target/owner, explicit unbind, and cleared/new episodes cannot inherit the report. Cleared or retired observations, and unknown observations without an aged retained notice journal, cannot send
 a pending report; a fresh suspicion after a clear starts a new episode. Status exposes `system-report` in text and `system_report` in JSON
-(`not due`, `pending`, `published`, or a fixed unavailable reason), independently of own-liveness publication. Report failures remain report-local,
+(`not due`, `pending`, `published`, `queued via mail-alarm`, `published via mail-alarm`, or a fixed unavailable reason), independently of own-liveness publication. Report failures remain report-local,
 never degrading a healthy consumer's suspicion signal. Without an aged retained notice, partial/untyped attempts with no continuing typing origin remain unknown after handover/rebinding; qualified empty input can still report clear.
 Continuity residual (N5): empty input seen while busy, cursor-off, layout-unknown or gated does not qualify to revoke origin. Deleting and later recalling identical notice text entirely within that unqualified interval is indistinguishable from continued presence. Recovery remains bounded and exact-rendered; a held attempt escalates, but continuous presence is not proven.
+When no incident room is configured, the same ten-minute threshold queues one alert per audience in the existing durable
+mail-alarm outbox. Owner routing follows `mail-alarm --owner`: the pinned active owner DM by default, an explicit owner room,
+or an explicitly disabled owner route. The optional per-identity lead target is configured with all three flags:
+
+```sh
+a2a --as lane mail-alarm set --owner auto \
+  --lead '@lead:example.org' --lead-room operations --lead-topic lane-incidents
+```
+
+`set` replaces the complete policy; keep any desired stale-mail operator/threshold flags in the same command.
+Lead is separate from the stale-mail `--operator` and receives stranded-notice incidents only. No destination is inferred from an
+identity, host or client name. Missing owner routing remains `unavailable: alarm destination missing`; a configured lead still receives
+its one alert. If the owner route becomes available later in the same episode, only that audience is added. With no usable route,
+status stays locally unavailable; the program cannot deliver an alert without a destination.
+Each audience's transaction and fixed payload are persisted atomically with its episode fence before any send. Already queued
+destinations stay pinned across restart/config edits; disabling that audience pauses its jobs. Successful ACKs mark delivery separately
+from queueing. Failed incident sends use the existing bounded exponential outbox retry, including ambiguous ACKs beyond the ordinary
+stale-mail alarm's two-attempt hold. Every retry reuses the same transaction and resolved destination; Matrix's finite transaction retention
+still limits the deduplication guarantee. Owner-DM audience/pin checks remain mandatory before every send. Hook pause, busy/input gates,
+and absent liveness do not silence these incidents. The existing worker, not the terminal submission path, performs delivery.
+The fallback text contains exactly identity, host, since and fixed `reason=owned-notice-orphan-suspected`; no screen/mail content,
+mail count, event IDs, paths or runtime reason enter it. Binding host metadata is syntax-checked, otherwise `unknown-host` is used.
+A submitted notice, qualified clear observation, or matching own-session Prompt/Stop hook clears suspicion and retires that episode's
+unsent incident jobs. A transaction already in flight may complete and cannot be recalled. A later episode gets new audience transactions.
+Foreign-session/host hooks, disabled hooks and elapsed time alone cannot clear the state. A turn revokes old typing authority and never
+receipts pending mail. Recovery publication uses the same acknowledged-status retry path.
+
+Focused producer regressions for incident fallback and published status (CI runners only):
+`go test ./internal/cli -run 'TestStrandedFallback|TestStrandedReportTransitionLog|TestPublishedNotice|TestNoticeOnlyStatusContract|TestMailAlarmConfig' -count=1`.
+These use pure state/validation logic and the in-memory homeserver; no tmux fixtures are added. Runtime, tagged builds, live delivery and
+actual process-replacement behavior remain separate verification lanes.
+
 Reports contain the stable own identity and suspicion time, never composer contents, registry paths, targets, peer text or event IDs.
 Header `at` records content preparation time and stays immutable on retry. This escalation remains available when the bounded exact-notice recovery is ineligible or exhausted; reporting itself never submits or clears a notice.
 
@@ -1718,7 +1750,7 @@ a2a who --stale-after 3m --json
 
 Bind status reads notice/recovery history from private `state/NAME.json`; readiness/input diagnostics inspect the pinned pane read-only. JSON exposes `own_notice_possibly_orphaned` as true (suspected),
 false (fresh clear/not applicable), or null (unknown). True has fixed `reason=owned-notice-orphan-suspected` and `since`, the stable first-suspected
-RFC3339 UTC timestamp. `observed_at` is the last successful rendered observation, never publication time. Optional reason/since/observed_at
+RFC3339 UTC timestamp. `observed_at` is the last rendered/journal observation or matching session turn, never publication time. Optional reason/since/observed_at
 are absent when no such evidence exists; unknown may retain valid last-suspected reason/since and last observation. Elapsed time, a receipt,
 or a successful publication never clears that evidence. Text explicitly distinguishes unknown from clear.
 
@@ -1728,8 +1760,13 @@ spelling and fractional precision. Fractions are compared exactly for observatio
 offsets and trailing/control bytes are invalid. The existing non-leap-second time representation remains a bound: leap seconds are unavailable,
 not a claim of full RFC3339 leap-second support. Emitters continue to write uppercase UTC timestamps.
 
-The own identity's liveness key exposes the same facts under `own_notice`; who renders each identity on one line. Notice publication preserves
-heartbeat, runtime/hooks and other liveness fields. Bind JSON `publication` distinguishes pending, published and unavailable for these facts;
+The own identity's self-written status key exposes the same facts under `own_notice`; `who` and `status get` render the published
+observation, never another lane's local files. With an existing liveness record, notice publication preserves its heartbeat,
+runtime/hooks and other liveness fields. Without one, it publishes a metadata-only `state=unknown`, version-1 record with zero heartbeat
+and no runtime/hooks/doorbell claims. The separate private `notice_status` ACK does not opt the lane into liveness or hook heartbeats.
+Both readers show liveness as unknown for that record, alongside SUSPECTED-DEAF, clear or unknown notice evidence. Existing `#status`
+membership and its power-zero own-state policy are still required; absent/denied routing is reported locally and retried, never repaired
+by creating/joining rooms or escalating power. Older readers need updating to understand notice-only unknown records. Bind JSON `publication` distinguishes pending, published and unavailable for these facts;
 a consumer/dispatch failure publishes unknown when the own publisher is available, and a failed write reports unavailable locally without
 claiming remote visibility. Who's heartbeat freshness is independent of notice observation freshness. Missing legacy notice metadata is unknown;
 malformed notice facts are unknown with a bounded `notice_error`, never fresh suspected facts or raw payload. Invalid local notice metadata
@@ -1739,7 +1776,7 @@ Failed automatic notice publication uses the binding's explicit `--interval` and
 subsequent eligible failures double that delay up to the maximum. The identity persists this schedule across hooks, dispatch, process reload
 and replacement bindings; changed observations remain local until eligibility. Cooldown sends no status-room resolution or PUT and reports
 `unavailable: own liveness publication retry pending`. A due attempt resolves the current status room and sends at most one PUT within the
-original shared lock/deadline. Missing liveness and certain-equal observations remain zeroHTTP. Manual status and legitimate heartbeat writers
+original shared lock/deadline. Certain-equal acknowledged observations remain zeroHTTP, including notice-only records. Missing liveness no longer suppresses publication. Manual status and legitimate heartbeat writers
 retain their usual behavior; an actual own-status ACK clears the obsolete notice retry schedule and uncertainty. Own-status PUT and its room resolution never follow HTTP redirects, even redirects back to the original URL. A resolution redirect is a pre-send failure and preserves prior certainty; a PUT redirect leaves the write uncertain. Only a direct genuine 2xx ACK advances the acknowledged record. For own-status writes and their room resolution, success requires a complete body read to EOF without read error or cancellation, matching Content-Length when declared, and exactly one JSON object (surrounding JSON whitespace is allowed). The PUT object requires a nonempty string `event_id`; resolution requires a nonempty string `room_id`. Missing IDs, malformed or trailing JSON, partial bodies and interrupted reads provide no ACK. A failed resolution preserves prior knowledge; an invalid post-send response leaves the write uncertain and cannot clear notice cooldown. Only a direct response to the original PUT URL, with no redirect followed and a completely read body below the 64KiB error cap
 within the deadline, can establish a decoded HTTP403/`M_FORBIDDEN` rejection of that attempt: it preserves the exact prior ACK and restores PRE-attempt uncertainty, including uncertainty from an
 earlier possibly-applied send. Partial, limit-hit, read-failed, expired or redirected responses and other post-send failures remain uncertain. Clock rollback cannot make a persisted retry eligible early;
@@ -1878,12 +1915,20 @@ a2a card set --file agents/reviewer-7.md
 a2a card get m1max_swarm_keeper
 ```
 
-### `a2a status set <active|idle|away> ["text"]` / `a2a status get [name]`
-Matrix presence: `active` maps to `online`, `idle` and `away` to `unavailable`. The a2a value is kept at the start of `status_msg`
-(`idle: waiting for review`) so it round-trips exactly. `status get` prints `name<TAB>presence<TAB>status_msg` (`unknown` if never set).
+### `a2a status set <active|idle|away> ["text"]` / `a2a status get [name] [--stale-after 3m]`
+Legacy `status set active|idle|away` still sets Matrix presence and its `status_msg`. Matrix presence can stay online through sync
+traffic while the session has made no turn; it does not establish session liveness.
+`status get` now reads the same self-written `#status` records as `who`, verifying sender/state-key/name and notice metadata.
+It prints `name<TAB>state<TAB>health<TAB>age=AGE<TAB>notice observation`.
+Missing records (including an absent status room) and notice-only publications show `unknown` liveness, never `online`.
+Denied/unavailable reads remain errors, not proof of absence. Fresh, stale, future-clock, stopping and invalid liveness follow `who`'s rules.
+The default freshness threshold is 3m; use a positive `--stale-after` to change it. Unobserved foreign-server identities show unknown.
+SUSPECTED-DEAF remains visible even beside a stale heartbeat; recovery shows `own notice clear`.
+Use typed `status set` for explicit liveness, and real runtime hooks for turn evidence; no unconditional heartbeat is added.
+
 ```bash
 a2a status set idle "waiting for review"
-a2a status get m1max_swarm_keeper
+a2a status get lane --stale-after 3m
 ```
 
 
@@ -2436,7 +2481,8 @@ Native consumers are outside this feature.
 
 ```sh
 a2a --as lane mail-alarm set --minutes 20 --owner auto \
-  --operator operator-agent --room operations --topic lane-alarms
+  --operator operator-agent --room operations --topic lane-alarms \
+  --lead lead-agent --lead-room operations --lead-topic lane-incidents
 a2a --as lane mail-alarm set --owner Escalations \
   --operator '@operator:remote.example' --room operations --topic '$root'
 a2a --as lane mail-alarm status
@@ -2459,10 +2505,11 @@ owner joined, invite-only join rules, non-world-readable history and no encrypti
 A failed check sends nothing and reports a fixed error reason in status.
 Queued automatic
 owner alerts pause if that DM is deactivated or its owner pin changes. An explicit owner room overrides that DM; `--owner off`
-disables the owner destination. `unset` restores defaults, including automatic
+disables the owner destination for both stale-mail and stranded-notice alerts. The optional `--lead`, `--lead-room`, `--lead-topic`
+triple uses the same target/room/topic validation as the operator triple, but applies only to the stranded-notice fallback. `unset` restores defaults, including automatic
 owner-DM selection. With no destinations and no active owner DM, nothing is
-sent and status reports disabled. To disable all destinations explicitly, use
-`set --owner off`. Already queued jobs pause while the policy is disabled and
+sent for stale mail and status reports disabled. To disable all destinations explicitly, use
+`set --owner off` with neither operator nor lead flags. Already queued jobs pause while their audience is disabled and
 resume when enabled; replacing policy does not retarget queued jobs.
 
 Only event entries classified `rel=to` by the existing mailbox classifier count:

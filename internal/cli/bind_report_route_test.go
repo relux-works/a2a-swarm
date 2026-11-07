@@ -118,7 +118,7 @@ func TestNoticeOwnRoomRoute(t *testing.T) {
 			if mode == "joined" {
 				wantStatus = "published"
 			} else if mode == "missing" || mode == "global-only" {
-				wantStatus = "incident route not configured"
+				wantStatus = "unavailable: alarm destination missing"
 			}
 			err := a.reportStrandedTerminalNotice(context.Background(), s, "gen")
 			b := e.state("alice").Terminal

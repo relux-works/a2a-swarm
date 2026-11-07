@@ -150,7 +150,7 @@ func TestLivenessReaderRejectsForgedState(t *testing.T) {
 	}
 	e.hs.mu.Unlock()
 	r := e.as("alice", "who", "--stale-after", "3m").ok(t)
-	if !strings.Contains(r.stdout, "alice\tworking\tfresh") || !strings.Contains(r.stdout, "bob\tunknown\tdown") || !strings.Contains(r.stdout, "carol\tunknown\tdown") || strings.Contains(r.stdout, "alien") || strings.Contains(r.stdout, "forged") {
+	if !strings.Contains(r.stdout, "alice\tworking\tfresh") || !strings.Contains(r.stdout, "bob\tunknown\tunknown") || !strings.Contains(r.stdout, "carol\tunknown\tunknown") || strings.Contains(r.stdout, "alien") || strings.Contains(r.stdout, "forged") {
 		t.Fatalf("forged telemetry admitted: %s", r.stdout)
 	}
 }

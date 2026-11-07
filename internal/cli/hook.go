@@ -300,12 +300,25 @@ func (a *App) hookLiveness(ctx context.Context, ev hookEvent, in hookInput) erro
 	if err != nil {
 		return err
 	}
-	if st.Liveness == nil || st.HooksPaused {
+	if st.HooksPaused || st.Liveness == nil && st.Terminal == nil {
 		return nil
 	}
 	if st.Runtime != nil && st.Runtime.SessionID != in.SessionID {
 		return errors.New("liveness hook refuses a foreign runtime session")
 	}
+	if st.Terminal != nil && (ev.arg == "prompt" || ev.arg == "stop") {
+		if err := a.clearTerminalNoticeOnTurn(ctx, s, in.SessionID); err != nil {
+			return err
+		}
+		st, err = config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+	}
+	if st.Liveness == nil {
+		return nil
+	}
+
 	profile := *st.Liveness
 	if st.LivenessSource == "manual" && (profile.State == "blocked" || profile.State == "stopping" || (profile.State == "waiting-human" && ev.arg != "prompt")) {
 		return nil

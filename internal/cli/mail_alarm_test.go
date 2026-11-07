@@ -300,9 +300,9 @@ func TestMailAlarmFailureBackoff(t *testing.T) {
 // leaves the complete identity state byte-for-byte unchanged.
 func TestMailAlarmConfig(t *testing.T) {
 	e, _ := world(t)
-	e.as("alice", "mail-alarm", "set", "--owner", "Escalations", "--operator", "@operator:remote.example", "--room", "operations", "--topic", "alarms", "--minutes", "7").ok(t)
+	e.as("alice", "mail-alarm", "set", "--owner", "Escalations", "--operator", "@operator:remote.example", "--room", "operations", "--topic", "alarms", "--minutes", "7", "--lead", "lead", "--lead-room", "operations", "--lead-topic", "incidents").ok(t)
 	st := e.state("alice")
-	if st.MailAlarmConfig == nil || st.MailAlarmConfig.Owner != "Escalations" || st.MailAlarmConfig.Minutes != 7 {
+	if st.MailAlarmConfig == nil || st.MailAlarmConfig.Owner != "Escalations" || st.MailAlarmConfig.Minutes != 7 || st.MailAlarmConfig.Lead != "lead" || st.MailAlarmConfig.LeadRoom != "operations" || st.MailAlarmConfig.LeadTopic != "incidents" {
 		t.Fatal("config not saved")
 	}
 	if e.state("bob").MailAlarmConfig != nil {
@@ -312,7 +312,7 @@ func TestMailAlarmConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"--minutes", "0"}, {"--minutes", "1441"}, {"--operator", "all", "--room", "ops", "--topic", "alarm"}, {"--operator", "@a:bad host", "--room", "ops", "--topic", "alarm"}, {"--owner", "!"}, {"--operator", "agent"}, {"--owner", "room\nsecret"}} {
+	for _, args := range [][]string{{"--lead", "lead"}, {"--lead-room", "operations", "--lead-topic", "incidents"}, {"--lead", "all", "--lead-room", "operations", "--lead-topic", "incidents"}, {"--lead", "lead", "--lead-room", "bad\nroom", "--lead-topic", "incidents"}, {"--minutes", "0"}, {"--minutes", "1441"}, {"--operator", "all", "--room", "ops", "--topic", "alarm"}, {"--operator", "@a:bad host", "--room", "ops", "--topic", "alarm"}, {"--owner", "!"}, {"--operator", "agent"}, {"--owner", "room\nsecret"}} {
 		r := e.as("alice", append([]string{"mail-alarm", "set"}, args...)...)
 		if r.code == 0 {
 			t.Fatalf("invalid accepted: %v", args)

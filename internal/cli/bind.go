@@ -479,6 +479,7 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 			return errors.New("binding retired")
 		}
 		fn(st.Terminal)
+		dropRetiredStrandedAlarms(st)
 		return nil
 	})
 	return err
@@ -901,6 +902,7 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 		clear := false
 		b.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
 		b.NoticeReport = nil
+		dropRetiredStrandedAlarms(st)
 		if recovering && expected.NoticeOrigin != nil && expected.TypingStarted {
 			b.Recovery = &config.TerminalRecovery{Reason: config.TerminalRecovered, At: a.Now().UTC()}
 		}
