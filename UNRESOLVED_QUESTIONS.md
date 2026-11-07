@@ -95,23 +95,36 @@ outside this producer slice.
 ## Principal coverage: explicit subscription removal
 ## Principal coverage: account-data concurrency and history limits
 
-The former explicit-removal question is resolved: unsubscribe, including
-`--all`, atomically refuses configured principal rows with
-`principal_subscription_required`. No force flag exists. Host removal of an ID
-or departure of the agent from the room ends protection. Owner-DM cleanup owns
-only its own room-wide row and maintains separate principal coverage.
+Explicit removal is resolved: a single protected `host-principal` row refuses
+with `principal_subscription_required` and a host-list remedy; `--all` removes
+unprotected rows and reports each retained row with that remedy. Manual rows
+remain removable. No force flag exists. Host removal of an ID or departure
+from the room ends protection. Owner-DM cleanup maintains independent rows.
 
 Cross-host account-data writers still have no compare-and-swap in the existing
 client. Dedicated audit rows can be lost by a competing get/modify/put. Should
 future server support provide conditional writes, or should a single writer
-own subscription storage? Delivery no longer waits on this decision: every
-batch derives mandatory selectors from the local host list, without a network
-repair or membership snapshot. Host lists/cursors are not synchronized across
-hosts. Configure each participating identity/connection on its host.
+own subscription storage? Local delivery does not wait on this decision: each
+cycle snapshots the atomically replaced host list without a policy lock or
+network repair. Lists and cursors are not synchronized across hosts.
 
-History already behind a cursor when a principal is configured is not replayed.
-First-cursor principal history is backfilled up to 500 pages of 100 events per
-room, with a durable gap on an incomplete scan. Server retention/redaction,
-membership history visibility and pre-join events can make content unavailable.
-Live wake responsiveness, fsync/crash recovery and concurrent process behavior
-are not verified by the pure regression fixtures in this repair.
+The accepted coverage-start window includes all messages behind the current
+committed cursor when the cycle starts with coverage. This includes first
+positioning, configuration/upgrade, changes during an in-flight cycle, and
+cycles with unreadable metadata. These messages are not replayed. Initial
+history crawling and retroactive principal backfill are removed. Existing
+limited-sync recovery from the current cursor remains unchanged. Malformed
+metadata warns once per delivery session and is visible in `subs check` and
+`bind status`, but cannot freeze the cursor or pending-mail output.
+
+Case-sensitive historical MXIDs remain supported intentionally; a case typo
+cannot be corrected without potentially selecting a different identity. Exact
+membership is checked by `subs check`; no normalization or alias inference is
+safe. Manual projection selectors retain their explicit origin semantics;
+only dedicated principal rows and mandatory host delivery require real sender
+matching. Older binaries sharing account data/cursors retain their old behavior.
+
+The new isolated fixtures are not executed in this producer round, by explicit
+instruction. They use memory HTTP responses and private temporary stores, no
+server, tmux or a2a processes. Live wake responsiveness, crash/fsync recovery
+and multiprocess behavior remain unverified.

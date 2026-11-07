@@ -686,6 +686,7 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 			continue
 		}
 		poll := a.notificationWait(st, min(maxPoll, st.Runtime.HeartbeatEvery))
+		s.principals = s.readDeliveryPrincipals()
 		resp, err := s.client.Sync(ctx, st.NextBatch, poll, syncFilter)
 		if err != nil {
 			if ctx.Err() != nil {

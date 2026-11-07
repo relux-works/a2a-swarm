@@ -29,10 +29,6 @@ type backfillGap struct {
 // set when the pages could not reach `since` (the page bound, or a server that
 // stops paging).
 func (s *session) timelineEvents(ctx context.Context, roomID, since string, events []matrix.Event, limited bool, prevBatch string, keep func(matrix.Event) bool) (out []matrix.Event, gap *backfillGap, err error) {
-	return s.timelineEventsFrom(ctx, roomID, since, events, limited, prevBatch, keep, false)
-}
-
-func (s *session) timelineEventsFrom(ctx context.Context, roomID, since string, events []matrix.Event, limited bool, prevBatch string, keep func(matrix.Event) bool, replayInitial bool) (out []matrix.Event, gap *backfillGap, err error) {
 	// Learn the entire live tail before paging/selection. A target redaction
 	// can follow its edit, including on a different backfill page.
 	if s.client.FilterEvents != nil {
@@ -50,14 +46,7 @@ func (s *session) timelineEventsFrom(ctx context.Context, roomID, since string, 
 		}
 		return kept
 	}
-	if replayInitial && limited && prevBatch == "" {
-		oldest := ""
-		if len(events) > 0 {
-			oldest = events[0].EventID
-		}
-		return filter(events), &backfillGap{From: "initial-history", To: oldest}, nil
-	}
-	if !limited || prevBatch == "" || since == "" && !replayInitial {
+	if !limited || prevBatch == "" || since == "" {
 		return filter(events), nil, nil
 	}
 	maxPages := maxBackfillPages
@@ -70,13 +59,9 @@ func (s *session) timelineEventsFrom(ctx context.Context, roomID, since string, 
 		oldest = events[0].EventID
 	}
 	from := prevBatch
-	gapFrom := since
-	if replayInitial {
-		gapFrom = "initial-history"
-	}
 	for pages := 0; ; pages++ {
 		if pages >= maxPages {
-			gap = &backfillGap{From: gapFrom, To: oldest}
+			gap = &backfillGap{From: since, To: oldest}
 			break
 		}
 		p, err := s.client.MessagesTo(ctx, roomID, from, since, backfillPageSize)
@@ -94,7 +79,7 @@ func (s *session) timelineEventsFrom(ctx context.Context, roomID, since string, 
 			break // no more events: the previous position was reached
 		}
 		if next == from {
-			gap = &backfillGap{From: gapFrom, To: oldest} // the server cannot page further back
+			gap = &backfillGap{From: since, To: oldest} // the server cannot page further back
 			break
 		}
 		from = next

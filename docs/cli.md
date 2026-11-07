@@ -1099,8 +1099,7 @@ checking that timeout, and individual requests retain their existing bounds. Can
 `--timeout 0` keeps retrying temporary failures until canceled or an event arrives. Authentication,
 configuration, permanent transport/API errors and malformed successful sync responses still fail promptly. Backfill and local delivery failures
 retain their existing refusal behavior. Retries emit no new result type or outage notification.
-The very first run takes a position plus pending invites; with configured principals it also backfills their accessible history, with explicit gaps on incomplete scans.
-Ordinary history is not replayed. `--room` limits ordinary rooms that can ring; principal messages bypass it. Relevant events
+The very first run takes a position plus pending invites. Message history, including principal history, is not replayed. `--room` limits ordinary rooms that can ring; principal messages bypass it. Relevant events
 in other rooms are still persisted (the next wait without that filter, or `inbox`, shows them). `--all` adds every message of the `--room` rooms that
 this wait syncs; for durable room-wide delivery that every consumer sees, use `a2a subscribe --room R --all-events`.
 Excerpts are one line, stripped of control characters, and never longer than 200 characters.
@@ -1251,7 +1250,7 @@ dropped from the longer list first and counted as `K more`.
 How the doorbell works:
 - It brings the mailbox up to date without a long poll: one `/sync` from the cursor with timeout 0 (plus the usual backfill), classified and
   persisted exactly like `wait`'s (before the cursor moves). It reads the subscriptions (expired ones are ignored, not pruned). The first run without
-  a cursor takes a position plus bounded principal-history backfill when configured. It then counts the unreceived mailbox entries. It never receipts anything.
+  a cursor takes a position plus pending invites, without replaying message history. It then counts the unreceived mailbox entries. It never receipts anything.
 - Rung set: per `session_id` (bounded to 64 sessions and 100 ids each) the state records which unreceived entries the doorbell announced, after a
   successful write. A hook rings only when some unreceived entry is not in that set; otherwise it prints nothing. Received entries leave the set.
 - Stop loop guard: consecutive blocking Stops per `session_id`. When `stop_hook_active` is true and 3 blocks happened in a row, the hook prints
@@ -1845,8 +1844,8 @@ Only events created after the subscription match (`created_at`, compared with `o
 delivers matching events until the first one of kind K, delivers that one, and removes the subscription once that event is persisted in the mailbox
 (e.g. `--subject BUG-1 --until-kind system`). Invalid flags are usage errors (exit 2) before any request.
 
-`a2a unsubscribe <sub-id>` removes one (an unknown id exits 1); `a2a unsubscribe --all` removes all removable rows. Both refuse atomically with
-`principal_subscription_required` (exit 1) if the selection contains a configured principal row; no rows are removed. There is no `unsubscribe --force`.
+`a2a unsubscribe <sub-id>` removes one (an unknown id exits 1); it refuses with
+`principal_subscription_required` (exit 1) for a single protected `host-principal` row, without removing it. The refusal names the host-list remedy. `unsubscribe --all` removes every unprotected row and succeeds, reporting each retained row with its reason and remedy. Manual rows, including exact-sender all-events rows, remain removable. There is no `unsubscribe --force`.
 The host can remove an ID from `host principals set`, or clear that list, before explicitly removing its rows. Leaving a room removes its rows after membership ends.
 `a2a subs [--json]` lists the live (unexpired) subscriptions,
 `id<TAB>summary`, or the `{v, subs}` object; `a2a subscriptions` is an alias.
@@ -1861,15 +1860,21 @@ a2a --as worker host principals show --json
 a2a --as worker host principals clear
 ```
 
-`set` replaces the list (duplicates are removed); `show` reads it; `clear` stores
-an empty list. These commands are local and do not open a Matrix session or
+`set` replaces the list (duplicates are removed); `show` reads it; `clear` removes
+the file, restoring the cheap absent-file delivery path (already absent is a no-op).
+These commands are local and do not open a Matrix session or
 require credentials. The per-identity, per-selected-connection host file is
 `<config>/owner-dm/NAME.principals.json`, beside the unchanged `NAME.pin`, with
 regular mode 0600 and atomic writes: `{"v":1,"principals":["@principal:authority.invalid"]}`.
 Missing/empty configuration keeps existing subscription behavior, including
 `subs check` stdout, stderr, JSON shape and verdict. The new host command remains
-listed in help. Malformed or unreadable principal configuration fails closed
-during delivery, check, repair, unsubscribe and new trim records.
+listed in help. Malformed or unreadable principal configuration does not block
+delivery or pending mailbox output: that cycle behaves as if the list were absent.
+One fixed warning per delivery session goes to stderr, without file contents or
+IDs. `subs check` reports `principal_error` and exits 1; `bind status` reports
+the same field (text or JSON) while retaining its other diagnostics. Repair,
+unsubscribe and new trim records still refuse invalid configuration. Replace
+it with `host principals set <exact MXIDs>` or `host principals clear`.
 The owner pin alone does not configure any principal.
 
 MXIDs remain byte-exact and case sensitive. Historical uppercase localparts
@@ -1890,32 +1895,44 @@ subtype filters, expiry, one-shot rows and future creation/since gates do not.
 This includes plain client messages without an A2A header.
 
 Delivery enforces principal coverage independently of this audit snapshot.
-Each received sync batch reads the local host list and derives exact-sender
-selectors for every received joined room, including later joins, direct rooms,
-spaces, #system and #broadcast. This adds no network request per cycle. It
-does not wait for `subs sync`, a saved row, or a current membership query: a
-principal may have left after sending a message. There is no repair-time
-creation gate. Only the actual event sender counts; a principal all-events sender row
-never accepts a projection header's claimed origin. This is notification
-coverage, not verification of application authority; message text stays untrusted.
+At the start of each delivery cycle, the process snapshots the local host list
+with a plain local file read. An absent file costs only one cheap existence
+check; there is no additional lock, read, stat or output in that case. A valid
+file is mode-checked and decoded. Delivery takes no subscription-policy lock,
+and holds no new lock across network I/O. `host principals set` atomically
+replaces the file; `clear` unlinks it. Neither waits on subscription repair. An in-flight cycle
+uses its starting snapshot; a later cycle sees the replacement.
 
-On this host, ingestion holds the subscription-policy lock from reading the
-list through mailbox persistence and cursor advancement; `host principals set`
-and `clear` share that lock. A completed configuration write therefore applies
-to subsequent batches. Messages already consumed before the write are not
-retroactively recovered. On the first cursor with configured principals,
-accessible history is backfilled for principal mail only; ordinary historical
-messages keep the existing no-replay behavior. Backfill is bounded to 500 pages
-of 100 events per room; an incomplete backfill emits a durable gap. A failed
-history read does not advance the cursor. Server retention, redaction, history
-visibility and events sent before the agent joined may make older content
-unavailable. Neither a subscription nor this repair can recreate that content.
+Every received joined room is covered, including later joins, direct rooms,
+spaces, #system and #broadcast. This adds no network request per cycle and does
+not wait for `subs sync`, a saved row, or current membership: a principal may
+have left after sending. Only the actual event sender counts. Dedicated
+`host-principal` rows never accept a projection header's claimed origin;
+manual projection selectors retain their explicit matching semantics and are
+never re-tagged by host policy. This is notification coverage, not verification
+of application authority; message text stays untrusted.
+
+Host-policy delivery retains relevance `sub`, but its mailbox `Sub` is empty:
+text omits `sub=`, and JSON omits `sub`. No subscription ID is invented; there
+is no account-data subscription to look up or unsubscribe for this delivery.
+Ordinary subscription delivery continues to show its real stored ID.
+
+**Accepted coverage-start window:** coverage begins at the current committed
+cursor using the cycle's starting host-list snapshot. Messages already behind
+that cursor are not replayed. This includes messages before the first cursor
+(initial positioning), before configuration or upgrade, and messages consumed
+by a cycle that started before a host-list change or while the list was
+unreadable. There is no initial principal-history crawl, retroactive backfill,
+or stale-history wake flood. Existing limited-sync gap recovery between the
+current cursor and a later sync remains unchanged for all mail; it is not a
+coverage-start replay. Server retention, redaction and history visibility still
+limit what ordinary gap recovery can retrieve.
 
 Cross-host account-data writers remain unfenced: the existing get/modify/put
 API has no compare-and-swap in this client. A competing write can erase an
 audit row, so `subs check` can report a gap until repair. It cannot suppress
-delivery on a host with the principal configured, because delivery derives its
-own selectors locally. Each host/selected identity needs its own authoritative
+delivery on a host with the principal configured, because delivery enforces its
+own sender policy locally. Each host/selected identity needs its own authoritative
 configuration; this does not synchronize lists or cursors across hosts.
 
 `a2a subs check [--json]` reads joined rooms, server subscriptions and the identity's local trim policy without migrating legacy state or writing subscriptions. It reports each room as `covered`, `trimmed` (explicitly recorded), `missing`, or `skipped` (space, global #system projection or #broadcast). Any missing standard kind exits 1; read/metadata failures also exit 1 without a success report. Coverage unions active unrestricted selectors, including room-wide all-events and global kind selectors; sender/thread/subject/product/subtype filters and one-shot rows cannot stand in for the baseline. This is a current coverage snapshot, not proof of historical delivery, consumer health, wake or reply.
@@ -2051,7 +2068,7 @@ Both plain and preset sync add missing untagged `room + from + all_events`
 subscriptions for every joined configured principal, including in direct rooms
 outside the preset resource/product plan. Recorded trims do not suppress these
 rows, stamped from the epoch so they cannot reject messages from before repair.
-Preset cleanup protects dedicated and legacy exact-sender principal rows using
+Preset cleanup protects dedicated `host-principal` rows using
 the host list, independent of its membership snapshot; ordinary obsolete rows
 are still removed. A tagged or legacy row is not borrowed as the dedicated row.
 An explicit `service` sync also repairs configured principal coverage; with no
@@ -2060,7 +2077,7 @@ join/session onboarding performs the same principal repair for every room it
 visits, including broadcast. Service-only preset onboarding also repairs these
 rows while remaining sessionless. Owner-DM unbind/unset removes only its own
 room-wide row and retains/repairs an independent row when that owner is a
-configured principal. Explicit unsubscribe refuses principal-row removal while
+configured principal. Single-row unsubscribe refuses protected-row removal while
 the ID remains configured; leave ends room membership and removes its rows.
 
 With `--preset`, reconciles the subscriptions of each listed row (tag `orch:X`, `keeper:X`, `arbiter:ROOM` or `meta-keeper`) to exactly that

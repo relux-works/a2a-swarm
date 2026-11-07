@@ -398,14 +398,16 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // session is an authenticated identity bound to one homeserver.
 type session struct {
-	app          *App
-	paths        config.Paths
-	mx           config.Matrix
-	name         string
-	creds        config.Credentials
-	client       *matrix.Client
-	server       string
-	checkBinding func() error // Immutable operational snapshot; nil for legacy sessions.
+	app              *App
+	paths            config.Paths
+	mx               config.Matrix
+	name             string
+	creds            config.Credentials
+	client           *matrix.Client
+	server           string
+	checkBinding     func() error // Immutable operational snapshot; nil for legacy sessions.
+	principals       []string     // Local snapshot for this delivery cycle; no lock spans I/O.
+	principalWarning bool         // Emit malformed/unreadable metadata warning once per session.
 }
 
 func (a *App) paths() (config.Paths, error) {

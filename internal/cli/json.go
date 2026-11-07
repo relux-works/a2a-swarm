@@ -28,7 +28,7 @@ type EventRecord struct {
 	Trunk    string   `json:"trunk,omitempty"`
 	Subtype  string   `json:"subtype,omitempty"`
 	Subject  string   `json:"subject,omitempty"`
-	// Sub names the subscription that delivered the event (wait/watch type "sub").
+	// Sub names a stored subscription; mandatory host-policy mail omits it.
 	Sub string `json:"sub,omitempty"`
 	// SubRequest is the requested selector of a kind=subscribe request.
 	SubRequest *SubSelector `json:"sub_request,omitempty"`

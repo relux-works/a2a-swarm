@@ -18,7 +18,7 @@ type deliveryPredicates struct {
 	toMe       bool
 	keywords   config.WaitKeywords
 	me, name   string
-	principals []string // refreshed from host configuration before showing mail
+	principals []string // host snapshot from the start of this delivery cycle
 }
 
 type deliveryPredicateFlags struct {
