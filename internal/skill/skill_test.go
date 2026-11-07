@@ -80,8 +80,8 @@ func TestInstall(t *testing.T) {
 }
 
 // The installed package declares only current instructed contacts: Matrix,
-// the Quickstart SSH clone, and the gh api documentation fetch. Curator's
-// URL detector cannot infer the latter two hosts from those command forms.
+// the public GitHub skill/build source, and the gh api documentation fetch.
+// This checks declarations, not permission to provision accounts or run hooks.
 func TestInstallNetworkCapabilities(t *testing.T) {
 	r, err := Install(t.TempDir(), false)
 	if err != nil {
