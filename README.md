@@ -145,7 +145,7 @@ Outcomes log only on state changes; delivery requires a persisted ACK for each a
 notice evidence; a stale existing heartbeat stays stale. Lanes without an opted-in liveness record make no automatic status HTTP requests.
 Hooks finish mail delivery and its acknowledgement before quiet, best-effort status work; status HTTP holds neither the control nor state lock.
 Concurrent own-status publication makes automatic writers quietly skip that cycle; explicit status, native runtime bind and disarm wait within their existing RPC budget.
-If contention outlasts that budget, native runtime bind keeps the binding, reports the pending publication on stderr and exits nonzero before starting `--watch`; its launcher can retry the same generation with bounded backoff.
+If contention outlasts that budget, native runtime bind keeps the successful binding and its generation/journal, warns on stderr, records a `runtime_profile_pending` marker with the generation and full bind profile, and continues successfully, starting the consumer normally with `--watch`; the first heartbeat (and later cycles while the marker remains) republishes the full runtime, hooks, heartbeat interval and product profile, clearing the marker only after an acknowledged publication for that generation.
 Submission or an opted-in matching session turn clears the episode. Completed attempts can retain time/count history without making a later human draft uncertain; retained pending IDs or
 notice text keep unsettled attempts distinguishable from completed history. A retained notice journal alerts even when partial/untyped or recovery is held; unknown frames cannot suppress that alert past ten minutes. See the CLI contract for authority and verification limits.
 
