@@ -68,6 +68,8 @@ type App struct {
 	// afterOwnStatusPending observes local contention after releasing the state
 	// lock (tests only), so fixtures can clear a seeded fence deterministically.
 	afterOwnStatusPending func()
+	// runtimeBindStatusBudget shortens only the one-shot bind publication in tests.
+	runtimeBindStatusBudget time.Duration
 	// beforeDeliver, when set (tests only), runs after a consumer synced and
 	// before it takes the state lock to persist and print: tests use it to let
 	// a concurrent consumer win the race.

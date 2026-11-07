@@ -2604,10 +2604,13 @@ before changing anything and holds it for its lifetime. Without `--watch`, bind 
 After recording the binding, bind publishes its runtime, hooks, heartbeat interval and product profile once. An in-flight own-status
 publication is retried without control/state locks within the existing 10-second RPC budget (or an earlier caller deadline).
 If contention outlasts that deadline, bind keeps the successful binding and its generation/journal, prints
-`a2a: runtime binding kept; liveness not published: own status publication already pending` on stderr and exits nonzero without
-printing the usual `bound` line. With `--watch`, this exits before starting the consumer and releases the consumer lock.
-The owning launcher must notice the exit and retry the same bind with bounded backoff; an identical bind reuses its generation/journal.
-Native heartbeats still skip contended cycles and copy the last acknowledged profile; they do not repair a refused bind-profile publication.
+`liveness not yet published; the first heartbeat republishes it` on stderr, prints the usual `bound` line and continues successfully.
+With `--watch`, it starts the consumer normally. Private state retains a `runtime_profile_pending` marker containing the generation
+and full bind profile. The first heartbeat, and later cycles while that marker remains, publishes the runtime, hooks, heartbeat interval
+and product from that profile, even when no liveness record exists yet. Only an acknowledged publication of that generation's full
+profile clears the marker; contention does not fabricate an acknowledgement. Without `--watch`, the marker survives for the next
+`runtime bind --watch` or native consumer start. Real publication errors still surface as errors. Ordinary heartbeats after recovery
+retain their existing last-acknowledged-profile behavior.
 
 The owner supplies `A2A_AGENT=NAME` and `A2A_SESSION_ID=THREAD_ID` to the attached thread's CLI calls/hooks so the supervised consumer and inbox share
 one identity lease. Exporting these only in a local TUI shell does not establish remote subprocess inheritance: configure and verify

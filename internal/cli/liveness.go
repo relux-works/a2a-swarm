@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -177,6 +178,7 @@ func (s *session) writeLivenessSourceMode(ctx context.Context, record config.Age
 	if retry {
 		write = s.retryOwnStatus
 	}
+	var pending *config.RuntimeProfilePending
 	return write(ctx, func(st *config.State) (config.AgentStatus, bool, error) {
 		if err := s.checkConnection(); err != nil {
 			return record, false, err
@@ -213,12 +215,22 @@ func (s *session) writeLivenessSourceMode(ctx context.Context, record config.Age
 		if err := noticeValid(record.OwnNotice); err != nil {
 			return record, false, err
 		}
+		if p := st.RuntimeProfilePending; p != nil && st.Runtime != nil && p.Generation == st.Runtime.Generation &&
+			p.Profile.Runtime == record.Runtime && p.Profile.Hooks == record.Hooks &&
+			p.Profile.HeartbeatEvery == record.HeartbeatEvery && p.Profile.Product == record.Product {
+			pending = p
+		}
 		return record, true, nil
 	}, func(st *config.State, err error) {
 		if err != nil {
 			return
 		}
 		st.LivenessSource = source
+		// Only an ACK of this full profile may clear recovery. A replacement
+		// generation/profile written during HTTP retains its own marker.
+		if pending != nil && st.Runtime != nil && st.Runtime.Generation == pending.Generation && reflect.DeepEqual(st.RuntimeProfilePending, pending) {
+			st.RuntimeProfilePending = nil
+		}
 		if st.Terminal != nil && manualWakeGate(*st) != "" {
 			st.Terminal.Idle = nil
 		}

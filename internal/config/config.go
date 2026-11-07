@@ -377,6 +377,9 @@ type State struct {
 	Terminal *TerminalBinding   `json:"terminal,omitempty"`
 	Wake     codexwake.Ledger   `json:"wake,omitempty"`
 	Liveness *AgentStatus       `json:"liveness,omitempty"`
+	// RuntimeProfilePending retains the desired bind profile until an ACK for
+	// this generation, independently of whether any liveness record exists.
+	RuntimeProfilePending *RuntimeProfilePending `json:"runtime_profile_pending,omitempty"`
 	// Knowledge of the identity's status event survives terminal replacement.
 	// NoticeStatus acknowledges notice-only publication without enabling liveness.
 	NoticeStatus         *AgentStatus             `json:"notice_status,omitempty"`
@@ -385,6 +388,11 @@ type State struct {
 	OwnStatusWrite       *OwnStatusWrite          `json:"own_status_write,omitempty"`
 	LivenessSource       string                   `json:"liveness_source,omitempty"`
 	LivenessAlerts       map[string]LivenessAlert `json:"liveness_alerts,omitempty"`
+}
+
+type RuntimeProfilePending struct {
+	Generation string      `json:"generation"`
+	Profile    AgentStatus `json:"profile"`
 }
 
 // HookSession is the doorbell state of one agent session.

@@ -309,6 +309,9 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 					st.Wake.Outcome = "runtime bound: consumer not armed"
 				}
 				st.Runtime = &binding
+				// Persist recovery before attempting HTTP, including a crash or
+				// deadline with no previously acknowledged liveness record.
+				st.RuntimeProfilePending = &config.RuntimeProfilePending{Generation: binding.Generation, Profile: profile}
 				return nil
 			})
 			return err
@@ -321,10 +324,16 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 			profile.Detail = preserve.Detail
 			profile.Doorbell = preserve.Doorbell
 		}
-		if err := s.retryLivenessSource(ctx, profile, preserveSource); err != nil {
-			if errors.Is(err, ErrOwnStatusPending) {
-				return fmt.Errorf("runtime binding kept; liveness not published: %w", err)
-			}
+		budget := nativeRPCTimeout
+		if a.runtimeBindStatusBudget > 0 {
+			budget = a.runtimeBindStatusBudget
+		}
+		publishCtx, cancel := context.WithTimeout(ctx, budget)
+		err = s.retryLivenessSource(publishCtx, profile, preserveSource)
+		cancel()
+		if errors.Is(err, ErrOwnStatusPending) {
+			fmt.Fprintln(a.Stderr, "liveness not yet published; the first heartbeat republishes it")
+		} else if err != nil {
 			return err
 		}
 		a.printf("%s bound generation=%s session=%s; launcher must export A2A_SESSION_ID=%s\n", s.name, binding.Generation, binding.SessionID, binding.SessionID)
@@ -657,8 +666,18 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 		if birth != st.Runtime.OwnerStart {
 			return errors.New("runtime owning launcher exited")
 		}
-		if st.Liveness != nil && (lastHeartbeat.IsZero() || a.Now().Sub(lastHeartbeat) >= st.Runtime.HeartbeatEvery || lastOutcome != st.Wake.Outcome) {
-			profile := *st.Liveness
+		pending := st.RuntimeProfilePending
+		hasPending := pending != nil && pending.Generation == generation
+		if (hasPending || st.Liveness != nil) && (hasPending || lastHeartbeat.IsZero() || a.Now().Sub(lastHeartbeat) >= st.Runtime.HeartbeatEvery || lastOutcome != st.Wake.Outcome) {
+			var profile config.AgentStatus
+			if hasPending {
+				profile = pending.Profile
+				if st.Liveness != nil {
+					profile.State, profile.Detail = st.Liveness.State, st.Liveness.Detail
+				}
+			} else {
+				profile = *st.Liveness
+			}
 			profile.Doorbell = "armed"
 			source := st.LivenessSource
 			if manualWakeGate(st) == "" {
