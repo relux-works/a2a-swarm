@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -91,7 +93,8 @@ func (s *session) replyTopicEvent(ctx context.Context, roomID, id string) (matri
 // resolveReplyTopic follows exactly one m.thread relation, never a reply chain
 // or an a2a header's claimed topic. A standalone target must be an a2a topic;
 // a child's authenticated m.thread relation also identifies an ordinary Matrix
-// root. A root with a relation is refused, including self-links and cycles.
+// root, even when historical access prevents reading that root. A returned root
+// with a relation is refused, including self-links and cycles.
 func (s *session) resolveReplyTopic(ctx context.Context, roomID, label, target string) (string, string, error) {
 	m, err := s.replyTopicEvent(ctx, roomID, target)
 	if err != nil {
@@ -103,8 +106,21 @@ func (s *session) resolveReplyTopic(ctx context.Context, roomID, label, target s
 		if root == target {
 			return "", "", fmt.Errorf("--re target has a cyclic thread relation")
 		}
+		child := m
 		m, err = s.replyTopicEvent(ctx, roomID, root)
 		if err != nil {
+			// Only an original-endpoint historical refusal permits routing from
+			// the already validated child. Never mask transport or content errors.
+			var me *matrix.Error
+			if errors.As(err, &me) && me.OriginalRequest &&
+				((me.Status == http.StatusNotFound && me.ErrCode == "M_NOT_FOUND") ||
+					(me.Status == http.StatusForbidden && me.ErrCode == "M_FORBIDDEN")) {
+				slug := ""
+				if h, ok := decodeHeader(child.A2A); ok && slugRE.MatchString(h.Slug) {
+					slug = h.Slug
+				}
+				return root, slug, nil
+			}
 			return "", "", err
 		}
 		if m.RelatesTo != nil {
