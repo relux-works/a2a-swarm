@@ -107,15 +107,13 @@ func cmdSubsTrim(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		if !*clear {
+			// A trim records a kind exception only. It neither removes sender
+			// rows nor changes principal repair, so principal coverage is intact.
 			configured, err := ownerFiles(s.paths, s.name).principals()
 			if err != nil {
 				return err
 			}
-			principals, err := s.roomPrincipals(ctx, id, configured)
-			if err != nil {
-				return err
-			}
-			if err := principalTrimGuard(id, principals); err != nil {
+			if _, err := s.roomPrincipals(ctx, id, configured); err != nil {
 				return err
 			}
 		}

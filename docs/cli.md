@@ -1438,6 +1438,31 @@ backward jump. A forward wall-clock discontinuity may permit one early
 notification, followed by a new 30s window. This is not a strict elapsed-time
 bound across wall-clock changes, independent config roots, or mixed old clients.
 
+`bind status` also shows `refresh=TOKEN` (JSON: `refresh`), the consumer's
+last recorded executable-refresh observation. `current` means its loaded image
+matched the launch target at that poll. `changed_stabilizing` and
+`changed_cooldown` mean a replacement was seen but stability or the refresh
+safety-check cooldown deferred it. `changed_pending_attempt`,
+`changed_reservation`, `changed_lease`, `changed_authority` and
+`changed_invalid_notification` name the last observed safety refusal, retained
+between throttled checks so cooldown does not hide its cause. Notification
+spacing alone does not block re-exec. Other closed tokens are
+`changed_safety_unavailable`, `changed_probe_unavailable`,
+`changed_protocol_incompatible`, `changed_exec_failed`,
+`changed_candidate_unavailable`, `changed_pin_unavailable` and `changed_ready`.
+Probe, launch-connection pinning and candidate failures retain their cause during
+cooldown. Candidate unavailability also remains visible during renewed
+stabilization until a mature check or the current image supplies a new observation;
+an installation alternating readable and incomplete candidates does not save
+state on every poll. The former `changed_connection` token is removed: an invalid
+active connection fences diagnostic writes as well as refresh, so its last
+persisted observation remains. Pinning failures with a still-valid active
+connection use `changed_pin_unavailable`.
+`unavailable` covers absent/older/stopped consumers or unknown telemetry.
+Only an updated consumer can record these observations; status reads do not
+probe the executable or trigger replacement. Persistence is best effort under
+the state lock; the token has no screen content, paths, argv or authority.
+
 `a2a bind status --json` adds a read-only `notification` state/deadline projection;
 text bind/runtime status also shows its closed state. `uncertain cooldown` and
 `uncertain ready` mean possible prior output, not a receipt or retry grant.
@@ -1633,6 +1658,27 @@ a2a hook install --agent alice --runtime claude    # in the project directory of
 a2a hook install --agent alice --runtime codex     # in the project directory of alice's Codex session, then the human trust step
 a2a hook uninstall --runtime codex
 ```
+
+#### Muse hooks (`--runtime muse`)
+
+```bash
+a2a hook install --agent worker --runtime muse
+```
+
+This installs project hooks in `.muse/hooks.json` (`--settings PATH` overrides
+it); follow Muse's native human trust step. Start (`SessionStart`) and Prompt
+(`UserPromptSubmit`) check mail and supply a fixed a2a-authored mail notice as model
+context. Stop emits a terminal `systemMessage`; it does not block stopping,
+acknowledge model receipt, or consume the next Start/Prompt context notice.
+Shell, hook and inbox session propagation and Start/Prompt model receipt remain
+unqualified; installation exports no project environment and commands pin `--as`.
+Read the messages with `a2a inbox`, which works only outside the default Muse
+sandbox. The first addressed event before first sync may be missing. Both limits
+are tracked in issue #278.
+
+Idle wake is unsupported for Muse (issue #274). Hooks run only at those
+lifecycle events; installation does not create a terminal/native consumer.
+Use `a2a hook uninstall --runtime muse` to remove these hooks.
 
 #### `a2a hook pause|resume --agent NAME`
 The hook kill switch: `pause` sets `hooks_paused` in `state/NAME.json`, and while it is set every hook event of that agent (both runtimes) prints
@@ -2104,10 +2150,13 @@ for each configured principal whose exact MXID has current `join` membership.
 Nonmembers and invitations are ignored. The JSON room row includes
 `missing_principals` when coverage is absent, has `status: "missing"`, and exits 1;
 text output names the missing MXIDs. Baseline exemptions (spaces, global
-#system/#broadcast) do not waive principal coverage. Only an independent,
-untagged `source: "host-principal"` all-events row with the exact `from`
-qualifies; room-wide owner-DM/manual rows cannot stand in for it. Kind/thread/subject/product/
-subtype filters, expiry, one-shot rows and future creation/since gates do not.
+#system/#broadcast) do not waive principal coverage. A permanent all-events row
+for that room with the exact full `from` MXID qualifies, including manual and
+preset rows. Same-server IDs are abbreviated only for text display; matching
+keeps the full ID. Sync adds a managed row only when coverage is missing;
+existing duplicates remain harmless. Room-wide rows without an exact sender,
+kind/thread/subject/product/subtype filters, expiry, one-shot rows and future
+creation/since gates do not provide principal coverage.
 This includes plain client messages without an A2A header.
 
 Delivery enforces principal coverage independently of this audit snapshot.
@@ -2165,11 +2214,11 @@ a2a subs check --json
 a2a subs trim --room team --clear
 ```
 
-`trim` requires a joined room and explicitly named standard kinds. A new trim in
-any room containing a joined configured principal is refused before any policy
-or subscription write, with typed `PrincipalSubscriptionError` and reason
-`principal_subscription_required`; clear remains allowed. Ordinary rooms still
-accept deliberate trims. It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
+`trim` requires a joined room and explicitly named standard kinds. Recording a
+kind trim preserves separate principal all-events rows and succeeds in rooms
+with configured principals. Trim policy never suppresses principal repair;
+protected row removal still refuses with `principal_subscription_required`.
+It only records or clears the exception; it does not unsubscribe existing rows, synthesize a narrowed server selector, or restore kinds on clear. Use the ordinary subscription commands for that deliberate change, and `subs sync` after clearing if restoration is wanted. The private 0600 `state/NAME.subscription-trims.json` stores version, room IDs, dropped kinds, reason and timestamp separately from delivery state, so an older consumer's state rewrite cannot erase the record. Baseline repair and preset reconciliation serialize against policy edits and never add recorded dropped kinds. Unrelated/manual rows stay intact. Older CLI versions do not understand trims; use a compatible CLI for onboarding or sync after recording one. Invalid/unreadable policy fails closed.
 
 Automatic repair also filters room-scoped legacy State subscriptions through the recorded trims before migration; allowed kinds remain. A legacy global selector intersecting a room trim cannot express that exception, so repair refuses before writing subscriptions or consuming legacy State. Resolve it deliberately with the subscription commands, then retry repair; for an intended full replacement, `unsubscribe --all` removes the legacy rows in the same write before `subs sync` restores the trimmed baseline. Explicit subscription and delivery commands retain their existing migration behavior; trim records do not rewrite manually requested selectors.
 ```bash
@@ -2816,6 +2865,16 @@ activation, bindings, identity creation, federation and rollout each retain
 their existing owner/keeper admission gates.
 
 ## Stale addressed-mail alarm (`a2a mail-alarm`)
+
+`mail-alarm status`, `mail-alarm set` feedback and `bind status` show stale-mail
+and stuck-notice routes separately. The legacy top-level mail-alarm fields
+(`mail_alarm` in bind JSON) describe stale mail; `stuck_notice` has its own
+state, targets and pending count. Targets identify `owner`, `operator` or
+`lead` and their room/topic. The operator receives stale-mail alerts only;
+the lead receives stuck-notice alerts only. With no active owner DM, a lead
+still arms its stuck-notice route (`partial`, with the missing owner reported),
+while stale mail remains disabled unless an operator destination is configured.
+These are configured routes, not a guarantee of consumer health or delivery.
 
 The terminal bind consumer observes its own durable mailbox without receipting,
 marking shown, changing the doorbell ledger, or typing into the pane. It reuses
