@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Stored own association only. Byte, lexical integer, framing, cooperative origin custody, time and privacy constraints also require the command contract.",
+  "$ref": "#/$defs/output",
+  "$defs": {
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "scope",
+        "source",
+        "observed_at_ms",
+        "launch_intent_sha256",
+        "result",
+        "reason",
+        "stored",
+        "native_evidence"
+      ],
+      "properties": {
+        "schema": {
+          "const": "a2a.terminal-association.proposed/1"
+        },
+        "scope": {
+          "const": "stored-own-binding"
+        },
+        "source": {
+          "const": "selected-own-state-snapshot"
+        },
+        "observed_at_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4102444800000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "launch_intent_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "enum": [
+            "match",
+            "mismatch",
+            "unavailable"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "input_untrusted",
+            "input_invalid",
+            "input_expired",
+            "context_unavailable",
+            "clock_unavailable",
+            "privacy_collision",
+            "budget_exceeded",
+            "snapshot_unavailable",
+            "binding_missing",
+            "binding_invalid",
+            "stale_binding",
+            "binding_stopped",
+            "generation_mismatch",
+            "tuple_mismatch",
+            "stored_tuple_equal"
+          ]
+        },
+        "stored": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/stored"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_evidence": {
+          "const": "not-observed-by-this-interface"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "result": {
+              "const": "match"
+            },
+            "reason": {
+              "const": "stored_tuple_equal"
+            },
+            "stored": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/stored"
+                },
+                {
+                  "properties": {
+                    "stopped": {
+                      "const": false
+                    }
+                  }
+                }
+              ]
+            },
+            "launch_intent_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "properties": {
+            "result": {
+              "const": "mismatch"
+            },
+            "reason": {
+              "enum": [
+                "generation_mismatch",
+                "tuple_mismatch"
+              ]
+            },
+            "stored": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/stored"
+                },
+                {
+                  "properties": {
+                    "stopped": {
+                      "const": false
+                    }
+                  }
+                }
+              ]
+            },
+            "launch_intent_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "properties": {
+            "result": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "const": "binding_stopped"
+            },
+            "stored": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/stored"
+                },
+                {
+                  "properties": {
+                    "stopped": {
+                      "const": true
+                    }
+                  }
+                }
+              ]
+            },
+            "launch_intent_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "properties": {
+            "result": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "enum": [
+                "input_untrusted",
+                "input_invalid",
+                "input_expired",
+                "context_unavailable",
+                "clock_unavailable",
+                "privacy_collision"
+              ]
+            },
+            "stored": {
+              "type": "null"
+            },
+            "launch_intent_sha256": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "result": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "enum": [
+                "snapshot_unavailable",
+                "binding_missing",
+                "binding_invalid",
+                "stale_binding"
+              ]
+            },
+            "stored": {
+              "type": "null"
+            },
+            "launch_intent_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        },
+        {
+          "properties": {
+            "result": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "const": "budget_exceeded"
+            },
+            "stored": {
+              "type": "null"
+            },
+            "launch_intent_sha256": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  "clock_unavailable",
+                  "privacy_collision"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "observed_at_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "observed_at_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4102444800000
+              }
+            }
+          }
+        }
+      ]
+    },
+    "stored": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "consumer_pid",
+        "consumer_birth_sha256",
+        "owner_pid",
+        "owner_birth_sha256",
+        "runtime",
+        "stopped",
+        "stopped_reason"
+      ],
+      "properties": {
+        "generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "consumer_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "consumer_birth_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "owner_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "owner_birth_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "runtime": {
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        },
+        "stopped": {
+          "type": "boolean"
+        },
+        "stopped_reason": {
+          "anyOf": [
+            {
+              "const": "recorded-stop-cause-ambiguous"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "stopped": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "stopped_reason": {
+                "const": "recorded-stop-cause-ambiguous"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "stopped_reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

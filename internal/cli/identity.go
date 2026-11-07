@@ -407,6 +407,10 @@ func (a *App) pidBirth(ctx context.Context, pid int) (int64, error) {
 // must not make the same machine look like two hosts).
 func machineLabel() string {
 	h, _ := os.Hostname()
+	return machineLabelFromHostname(h)
+}
+
+func machineLabelFromHostname(h string) string {
 	if h = sanitizeLine(h); h == "" {
 		h = "unknown"
 	}

@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Stored own association only. Byte, lexical integer, framing, cooperative origin custody, time and privacy constraints also require the command contract.",
+  "$ref": "#/$defs/input",
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_identity",
+        "source_connection",
+        "launch_intent_sha256",
+        "issued_at_ms",
+        "expires_at_ms",
+        "expected"
+      ],
+      "properties": {
+        "schema": {
+          "const": "a2a.terminal-association.proposed/1"
+        },
+        "source_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "source_connection": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "launch_intent_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "issued_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4102444800000
+        },
+        "expires_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4102444800000
+        },
+        "expected": {
+          "$ref": "#/$defs/member"
+        }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "consumer_pid",
+        "consumer_birth",
+        "owner_pid",
+        "owner_birth",
+        "runtime",
+        "session_id",
+        "target"
+      ],
+      "properties": {
+        "generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "consumer_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "consumer_birth": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "owner_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "owner_birth": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "runtime": {
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "socket",
+        "socket_id",
+        "pane",
+        "pane_pid",
+        "pane_birth",
+        "owner_pid",
+        "owner_birth",
+        "runtime"
+      ],
+      "properties": {
+        "socket": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "socket_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "pane": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 11,
+          "pattern": "^%[0-9]{1,10}$"
+        },
+        "pane_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "pane_birth": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "owner_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "owner_birth": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "runtime": {
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        }
+      }
+    }
+  }
+}
