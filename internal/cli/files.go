@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/inboundmedia"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -325,7 +326,7 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 		bare = &m
 	case len(pos) == 2 && strings.HasPrefix(pos[1], "$"):
 		if *want != "" {
-			return usagef("--sha256 is only for a bare mxc URI; an event carries its own checksum")
+			return usagef("--sha256 is only for a bare mxc URI")
 		}
 	default:
 		return usagef(use)
@@ -344,16 +345,60 @@ func cmdFetch(ctx context.Context, a *App, args []string) error {
 	if bare != nil {
 		att = Attachment{Name: bare.MediaID, MXC: bare.String(), SHA256: *want, Size: -1}
 	} else {
-		roomID, label, err := s.resolveRoom(ctx, pos[0])
+		roomID, _, err := s.resolveRoom(ctx, pos[0])
 		if err != nil {
 			return err
 		}
-		ev, err := s.client.GetEvent(ctx, roomID, pos[1])
+		handle := inboundmedia.Handle{RoomID: roomID, EventID: pos[1]}
+		ev, err := s.client.GetFetchEvent(ctx, roomID, pos[1])
 		if err != nil {
-			if isNotFound(err) {
-				return fmt.Errorf("event %s not found in %s", sanitizeLine(pos[1]), label)
-			}
+			return mediaObservationRefusal(ctx, err, handle)
+		}
+		if ev.IsRedacted() {
+			return &inboundmedia.Refusal{Code: inboundmedia.Redacted, Handle: handle}
+		}
+		if err := inboundmedia.CheckEncryption(ev, handle); err != nil {
 			return err
+		}
+		if m := inboundmedia.Inspect(ev, roomID); !inboundmedia.HasLegacyAttachment(ev) && m != nil {
+			if ev.EventID != handle.EventID || !matrix.ValidVerificationID(ev.Sender, '@') || (ev.RoomID != "" && ev.RoomID != roomID) {
+				return &inboundmedia.Refusal{Code: inboundmedia.ContextInvalid, Handle: handle}
+			}
+			// Refusal consumes no media fields and grants no transfer authority.
+			// Keep it typed even when oversized metadata cannot be re-observed
+			// by the stricter native parser; never try legacy decoding instead.
+			if m.Refusal != "" {
+				return &inboundmedia.Refusal{Code: m.Refusal, Handle: handle}
+			}
+			// Bulk/display decoding is not evidence for a native transfer. Observe
+			// the original endpoint with exact identity/context before consuming it.
+			observed, err := s.client.GetMediaEvent(ctx, roomID, pos[1])
+			if err != nil {
+				return mediaObservationRefusal(ctx, err, handle)
+			}
+			if observed.IsRedacted() {
+				return &inboundmedia.Refusal{Code: inboundmedia.Redacted, Handle: handle}
+			}
+			if observed.Sender != ev.Sender || observed.Type != ev.Type {
+				return &inboundmedia.Refusal{Code: inboundmedia.ContextInvalid, Handle: handle}
+			}
+			result, err := inboundmedia.Fetch(ctx, s.client, observed, handle, *out)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(a.Stderr, inboundmedia.FormatResult(result))
+			// Native media has no trusted expected digest. Keep that fact in
+			// stdout too, so a path-only consumer cannot mistake it for legacy.
+			raw, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				return &inboundmedia.Refusal{Code: inboundmedia.TransferFailed, Handle: handle}
+			}
+			raw = append(raw, '\n')
+			n, writeErr := a.Stdout.Write(raw)
+			if writeErr != nil || n != len(raw) {
+				return &inboundmedia.Refusal{Code: inboundmedia.TransferFailed, Handle: handle}
+			}
+			return nil
 		}
 		p, err := attachmentForFetch(ev)
 		if err != nil {
@@ -702,4 +747,18 @@ func pinCommand(ctx context.Context, a *App, args []string, on bool) error {
 	}
 	a.printf("%s\n", sanitizeLine(eventID))
 	return nil
+}
+
+// Observation failures never print untrusted server errors or lose the selection.
+func mediaObservationRefusal(ctx context.Context, err error, h inboundmedia.Handle) error {
+	code := inboundmedia.ContextInvalid
+	switch {
+	case errors.Is(err, matrix.ErrOpaqueRedacted):
+		code = inboundmedia.Redacted
+	case errors.Is(ctx.Err(), context.Canceled), errors.Is(err, context.Canceled):
+		code = inboundmedia.Cancelled
+	case errors.Is(ctx.Err(), context.DeadlineExceeded), errors.Is(err, context.DeadlineExceeded):
+		code = inboundmedia.Timeout
+	}
+	return &inboundmedia.Refusal{Code: code, Handle: h}
 }

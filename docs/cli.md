@@ -711,14 +711,99 @@ a2a attach a2a-swarm --topic bridge-daemon --to m1max_swarm_keeper design.pdf "D
 ```
 
 ### `a2a fetch <room> <$event_id> [-o path]` / `a2a fetch <mxc://...> --sha256 <hex> [-o path]`
-Downloads through authenticated `GET /_matrix/client/v1/media/download/<server>/<id>`, verifies temporary bytes, and publishes only after
-verification without replacing an existing file. The encoding table, bounds and verification order above apply. A bare mxc URI requires
+Downloads through authenticated `GET /_matrix/client/v1/media/download/<server>/<id>`. Legacy a2a attachments and bare MXC fetches compare temporary bytes against their expected SHA256 before publication without replacing an existing file. Native Matrix media has no trusted expected hash; its distinct contract follows below. The encoding table, bounds and verification order above apply. A bare mxc URI requires
 `--sha256 <hex>`, uses `L + 1` as its read bound, and saves stored bytes. The default target is the top-level name, or `encoding.original.name`
 for v1 gzip. Unsafe default names (empty, `.`, `..`, containing `/`, `\`, NUL or control characters, or starting with `-`) are refused;
 `-o` uses the given path. mxc URIs are parsed strictly (`mxc://<hostname[:port]>/<[A-Za-z0-9_-]+>`). Prints the written path.
 ```bash
 a2a fetch a2a-swarm '$F1...' -o /tmp/design.pdf
 ```
+
+#### Native Matrix media (Part 1 candidate)
+
+Plaintext Element `m.image`, `m.file`, `m.audio` and `m.video` events that already
+meet the existing delivery gates gain a bounded `media` projection in inbox JSON
+and an indented JSON metadata line inside the text inbox's untrusted frame.
+It includes canonical kind, declared name/MIME/size, their untrusted status,
+full sender MXID, an exact `{room_id,event_id}` handle, and
+`integrity: "homeserver_only_no_trusted_hash"`. Native metadata is inbox-only;
+`wait --json`, `watch --json` and `read --json` retain their prior fields. Names are display
+data, never paths. Missing size is unknown; present malformed/nonpositive size
+refuses that item. A bad media item retains its handle and does not suppress
+valid neighbours. Listing performs no download, transcription or new receipt
+transition; successful inbox writes retain the existing explicit receipt rule.
+
+Native fetch requires an explicit `-o` and an existing caller-selected `TMPDIR`.
+Until the upstream final-output wording is clarified, both scratch and final
+output must be beneath that root, with existing nonsymlink descendant directories.
+The caller-selected trusted TMPDIR is canonicalized once, accepting system
+aliases such as macOS `/var` and `/tmp`; output descendants are never
+canonicalized or followed through symlinks. Both configured and canonical root
+spellings are accepted:
+
+```bash
+a2a fetch '!room:example.org' '$event' -o "$TMPDIR/chosen-image.bin"
+```
+
+The new branch re-observes the original room/event endpoint, validates exact
+event/sender/room context, and downloads only canonical unencrypted MXC media
+through the selected homeserver's authenticated API. This consistency evidence
+does not grant sender or owner authority. Every media redirect is refused.
+The byte limit is the existing `min(positive m.upload.size, 1 TiB)`; absent or
+invalid caps refuse. Reads are bounded to declared size plus one, or cap plus
+one when size is unknown. An unknown-size stream can consume disk up to the
+server cap (at most 1 TiB) plus one byte; the caller must provision space accordingly. Actual bytes must be positive and match any declared
+size. The transfer has a ten-minute maximum and respects shorter caller
+deadlines. HTTP decoding, gzip extraction, thumbnails and codec decoding are
+disabled; gzip media remains opaque bytes.
+
+Scratch uses a private 0700 directory and 0600 file beneath TMPDIR. Directory
+traversal below the canonical root uses anchored no-follow operations; size-checked bytes publish by atomic
+hard link with no replacement and no rename fallback. Existing targets,
+symlinks, traversal, directory-only output spellings (trailing `/` or `/.`)
+and unsupported publication refuse. The configured absolute root path and its
+identity, plus the destination parent identity, are revalidated around
+publication; a moved/replaced root or ancestor observed during transfer refuses.
+The caller must control TMPDIR and output parents and trust their ancestors
+against concurrent namespace changes. These checks are not isolation from a
+hostile process with the same UID or an administrator able to rename directories
+between system calls or after return. Normal failures clean
+only task-owned scratch. Native success prints one JSON object on stdout with
+`path`, `handle`, `actual_size`, `declared_size` (null when unknown), computed
+`sha256`, and `hash_status: "computed_unverified"`; stderr also summarizes the
+bounds and hash status. Legacy success retains path-only stdout. Native size,
+cap and encoding checks establish no authenticity: a native event supplies no
+trusted expected hash and relies on the selected homeserver. Native failures
+and bounded event-observation failures use closed `MEDIA_*` codes and the exact
+selected handle; legacy attachment validation retains its existing errors.
+A redaction at either event observation or in the local tombstone store refuses
+with `MEDIA_REDACTED`, without downloading.
+Caller cancellation and deadline expiry retain `MEDIA_CANCELLED` and
+`MEDIA_TIMEOUT` during preflight as well as transfer; a missing/invalid cap or
+configuration failure remains `MEDIA_LIMIT_UNAVAILABLE`.
+
+Publication's contract is atomic no-replace. Crash durability is outside that
+contract: a crash can lose or truncate a published file, or leave an orphaned
+private scratch directory. A truncated final file blocks the same output name
+with `MEDIA_OUTPUT_EXISTS`. The event and its exact `{room_id,event_id}` handle
+persist; refetch to a new output path recovers it.
+Neither the fetched file nor its destination directory is fsynced by this path.
+
+Encrypted envelopes explicitly fetched, encrypted `file` data (including
+null/malformed fields with a clear URL), encrypted thumbnails and recognized
+encrypted extension indicators refuse as `MEDIA_ENCRYPTED` without downloading.
+This candidate does not widen encrypted ingress, subscriptions or wait filters;
+coverage of encrypted envelopes in listings remains an upstream source question.
+Existing a2a attachment dispatch (including malformed/null descriptors), stored
+hash/size checks, gzip decoding and bare-MXC behavior remain separate. The
+initial event dispatch lookup now has a bounded 1 MiB entity; native metadata
+is limited to 64 KiB and 32 nesting levels with duplicate/alias checks. Native
+kind detection uses the dispatch bound, so oversized metadata refuses with
+`MEDIA_METADATA_INVALID` regardless of whether `msgtype` precedes or follows
+it; refused native metadata does not fall through to legacy attachment decoding.
+
+Actual Element and macOS acceptance remain external. This is Part 1 only;
+speech recognition and its model/codec/duration policies are a separate unit.
 
 ### `a2a files <room> [--topic X] [--last N] [--json]`
 Attachment messages, oldest first (default the last 20, max 1000, scanning at most 2000 events):

@@ -49,8 +49,9 @@ var (
 const maxJSONDepth = 10000 // encoding/json's existing composite nesting limit
 
 type wireParser struct {
-	b []byte
-	i int
+	b          []byte
+	i          int
+	depthLimit int // zero preserves the control parser's historical limit
 }
 
 func (p *wireParser) space() {
@@ -72,7 +73,11 @@ func (p *wireParser) value(depth int) (any, error) {
 	}
 	switch p.b[p.i] {
 	case '{', '[':
-		if depth >= maxJSONDepth {
+		limit := p.depthLimit
+		if limit == 0 {
+			limit = maxJSONDepth
+		}
+		if depth >= limit {
 			return nil, errWireJSON
 		}
 		object := p.b[p.i] == '{'

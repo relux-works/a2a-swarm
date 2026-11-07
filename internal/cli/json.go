@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/inboundmedia"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -36,6 +37,8 @@ type EventRecord struct {
 	Body       string       `json:"body,omitempty"`    // read: the full text without the header lines
 	// Attachment is set for file messages (a2a attach).
 	Attachment *Attachment `json:"attachment,omitempty"`
+	// Media is set only by inbox, with bounded untrusted declarations and a handle.
+	Media *inboundmedia.Metadata `json:"media,omitempty"`
 }
 
 // eventRecord builds the record for a message event. typ is the record type;
