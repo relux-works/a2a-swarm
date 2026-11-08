@@ -244,7 +244,7 @@ func writeArchiveBlock(b *strings.Builder, ev matrix.Event, server string) {
 	}
 	m := ev.Message()
 	b.WriteString("\n## " + sanitizeLine(ev.EventID) + "\n")
-	meta := []string{time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339), localpartIfLocal(ev.Sender, server)}
+	meta := []string{}
 	h, hok := decodeHeader(m.A2A)
 	if hok && !redacted {
 		if h.Kind != "" {
@@ -269,7 +269,11 @@ func writeArchiveBlock(b *strings.Builder, ev matrix.Event, server string) {
 			meta = append(meta, "subject="+h.Subject)
 		}
 	}
-	b.WriteString("- " + sanitizeLine(strings.Join(meta, " ")) + "\n")
+	b.WriteString("- " + time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339) + " " + senderText(ev.Sender))
+	if len(meta) > 0 {
+		b.WriteString(" " + sanitizeLine(strings.Join(meta, " ")))
+	}
+	b.WriteByte('\n')
 	if at := h.Attachment; hok && at != nil && !redacted {
 		fmt.Fprintf(b, "- attachment: %s %d sha256=%s %s%s\n", sanitizeLine(at.Name), at.Size, sanitizeLine(at.SHA256), sanitizeLine(at.MXC), attachmentEncodingText(at, " "))
 	}

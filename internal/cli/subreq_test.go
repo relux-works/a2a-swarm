@@ -57,7 +57,7 @@ func TestSubRequestAccept(t *testing.T) {
 	}
 
 	id := e.hs.inject(room, "@bob:test.local", msg("BUG-1 progress after accept", nil))
-	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "sub #proj "+id+" from=bob sub="+m[1])
+	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "sub #proj "+id+" from=@bob:test.local sub="+m[1])
 }
 
 // Proves sub-accept refuses a request addressed to someone else and an event

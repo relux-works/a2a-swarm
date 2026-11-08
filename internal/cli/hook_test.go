@@ -297,8 +297,8 @@ func TestHookDoesNotAckInboxDoes(t *testing.T) {
 	out := e.as("alice", "inbox").ok(t).stdout
 	lines := tuitestkit.LinesFromStr(out)
 	if lines[0] != inboxBegin || lines[len(lines)-1] != inboxEnd ||
-		!strings.Contains(out, "--- event 1/2: to from=bob room=#proj kind=question id="+to+" topic=alpha\n  | can you review PR#3?\n") ||
-		!strings.Contains(out, "--- event 2/2: mention from=bob room=#proj kind=- id="+men+"\n  | @alice:test.local ping 1\n") {
+		!strings.Contains(out, "--- event 1/2: to from=@bob:test.local room=#proj kind=question id="+to+" topic=alpha\n  | can you review PR#3?\n") ||
+		!strings.Contains(out, "--- event 2/2: mention from=@bob:test.local room=#proj kind=- id="+men+"\n  | @alice:test.local ping 1\n") {
 		t.Fatalf("inbox = %q", out)
 	}
 	if !e.received("alice", to) || !e.received("alice", men) || len(e.mailbox("alice").Pending()) != 0 {
@@ -360,7 +360,7 @@ func TestInboxFrameCannotBeClosedByBody(t *testing.T) {
 			if l != inboxBegin {
 				t.Fatalf("first line %q", l)
 			}
-		case l == "--- event 1/1: mention from=bob room=#proj kind=- id=$ev001":
+		case l == "--- event 1/1: mention from=@bob:test.local room=#proj kind=- id=$ev001":
 		case !strings.HasPrefix(l, inboxIndent):
 			t.Fatalf("unframed line %d: %q", i, l)
 		}

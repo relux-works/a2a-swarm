@@ -92,6 +92,12 @@ func savedInboxFrame(a *App, items []waitItem, server string) ([]EventRecord, []
 		if err := json.Unmarshal(data, &rec); err != nil {
 			return nil, nil, err
 		}
+		// Restore EventRecord's identifier escaping after decoded-value scrubbing.
+		// This keeps format controls inert without changing the decoded sender.
+		data, err = json.Marshal(rec)
+		if err != nil {
+			return nil, nil, err
+		}
 		records = append(records, rec)
 		b.WriteString(inboxIndent)
 		b.Write(data)
@@ -166,7 +172,10 @@ func inboxSummary(records []EventRecord, width, more int, inline []bool) (string
 	// Refuse rather than combine distinct identities under a truncated key.
 	// This bounds every field without silently changing grouping or event ids.
 	for _, r := range records {
-		for _, value := range []string{r.Sender, r.Kind, firstNonEmpty(r.Room, r.RoomID), r.Topic, r.EventID} {
+		if utf8.RuneCountInString(r.Sender) > 512 {
+			return "", fmt.Errorf("summary field exceeds 512 characters; save with --out without --summary")
+		}
+		for _, value := range []string{r.Kind, firstNonEmpty(r.Room, r.RoomID), r.Topic, r.EventID} {
 			if utf8.RuneCountInString(summaryField(value)) > 512 {
 				return "", fmt.Errorf("summary field exceeds 512 characters; save with --out without --summary")
 			}
@@ -184,16 +193,24 @@ func inboxSummary(records []EventRecord, width, more int, inline []bool) (string
 	} {
 		counts := map[string]int{}
 		for _, r := range records {
-			counts[summaryField(group.key(r))]++
+			key := group.key(r)
+			if group.name != "sender" {
+				key = summaryField(key)
+			}
+			counts[key]++
 		}
 		for _, key := range sortedKeys(counts) {
-			fmt.Fprintf(&b, "count %s=%q n=%d\n", group.name, key, counts[key])
+			if group.name == "sender" {
+				fmt.Fprintf(&b, "count sender=%s n=%d\n", senderText(key), counts[key])
+			} else {
+				fmt.Fprintf(&b, "count %s=%q n=%d\n", group.name, key, counts[key])
+			}
 		}
 	}
 	for i, r := range records {
 		excerpt, _ := truncateRunes(sanitizeLine(r.Body), width)
-		fmt.Fprintf(&b, "event %d sender=%q kind=%q room=%q topic=%q id=%q %s\n",
-			i+1, summaryField(r.Sender), summaryField(r.Kind), summaryField(firstNonEmpty(r.Room, r.RoomID)), summaryField(r.Topic), summaryField(r.EventID), excerpt)
+		fmt.Fprintf(&b, "event %d sender=%s kind=%q room=%q topic=%q id=%q %s\n",
+			i+1, senderText(r.Sender), summaryField(r.Kind), summaryField(firstNonEmpty(r.Room, r.RoomID)), summaryField(r.Topic), summaryField(r.EventID), excerpt)
 		if i < len(inline) && inline[i] {
 			writeInboxBody(&b, r.Body)
 		}
@@ -248,7 +265,7 @@ func cmdInboxShow(a *App, args []string) error {
 		// reading a frame never loads mail, syncs or records a receipt.
 		var b strings.Builder
 		b.WriteString(inboxBegin + "\n")
-		fmt.Fprintf(&b, "--- event 1/1: from=%q room=%q kind=%q id=%q\n", inboxField(r.Sender), inboxField(r.Room), inboxField(r.Kind), inboxField(r.EventID))
+		fmt.Fprintf(&b, "--- event 1/1: from=%s room=%q kind=%q id=%q\n", senderText(r.Sender), inboxField(r.Room), inboxField(r.Kind), inboxField(r.EventID))
 		writeInboxBody(&b, r.Body)
 		b.WriteString(inboxEnd + "\n")
 		return writeCLIOutput(a.Stdout, a.secrets.Scrub(b.String()))
