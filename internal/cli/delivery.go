@@ -716,7 +716,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 			}
 		}
 		resp, err := waitRetry(ctx, s, deadline, func() (matrix.SyncResponse, error) {
-			return s.waitSync(ctx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch))
+			return s.waitSyncUntil(ctx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch), deadline)
 		})
 		if err != nil {
 			if ctx.Err() != nil {

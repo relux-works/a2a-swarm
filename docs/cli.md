@@ -1350,7 +1350,9 @@ Fetch the full text with `a2a read <room_id> --event <event_id> --json`. Without
 With nothing new before the timeout it prints `timeout` and exits 0; it never returns empty. `--timeout 0` blocks until something matches (no `timeout` line).
 Known temporary failures during setup, subscription reads and sync retry inside the same waiter: delays are 5 seconds, 30 seconds, then double up to
 5 minutes. A successful operation resets its backoff. Retry delays respect the wait timeout; successful initial positioning still finishes before
-checking that timeout, and individual requests retain their existing bounds. Cancellation and a caller deadline interrupt both requests and backoff.
+checking that timeout. Each subsequent long poll, including retries, recalculates its server timeout and request context from the original remaining
+budget. Polls and retry pauses add zero intentional timer slack beyond that deadline (ordinary scheduling, output and durable local processing still take time).
+A successful response just before expiry is ingested and delivered normally. Cancellation and a caller deadline interrupt both requests and backoff.
 `--timeout 0` keeps retrying temporary failures until canceled or an event arrives. Authentication,
 configuration, permanent transport/API errors and malformed successful sync responses still fail promptly. Backfill and local delivery failures
 retain their existing refusal behavior. Retries emit no new result type or outage notification.
