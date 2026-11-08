@@ -51,15 +51,16 @@ func gapText(e config.MailEntry) string {
 func itemOf(e config.MailEntry, server string) waitItem {
 	switch e.Kind {
 	case config.MailInvite:
-		rec := EventRecord{Type: "invite", RoomID: sanitizeLine(e.Room), Sender: sanitizeLine(e.Sender)}
+		rec := EventRecord{Type: "invite", RoomID: sanitizeLine(e.Room), Sender: e.Sender}
 		if e.Label != e.Room {
 			rec.Room = sanitizeLine(e.Label)
 		}
-		line := "invite " + e.Label + " " + e.Room
+		// Bound room metadata before appending the reversible, unclipped sender.
+		line := snippet("invite "+e.Label+" "+e.Room, 400)
 		if e.Sender != "" {
-			line += " from=" + e.Sender
+			line += " from=" + senderText(e.Sender)
 		}
-		return waitItem{line: snippet(line, 400), rec: rec, id: e.ID}
+		return waitItem{line: line, rec: rec, id: e.ID}
 	case config.MailGap:
 		g := e
 		rec := EventRecord{Type: "gap", Room: sanitizeLine(e.Label), RoomID: sanitizeLine(e.Room), EventID: sanitizeLine(e.ID), Excerpt: "gap: " + gapText(e)}

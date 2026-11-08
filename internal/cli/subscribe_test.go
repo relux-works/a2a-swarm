@@ -326,7 +326,7 @@ func TestSubUntilKindClosesAfterFirstClosingEvent(t *testing.T) {
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
 	id, _ := e.subscribe("alice", "--subject", "BUG-1", "--until-kind", "system")
 	first := e.hs.inject(room, "@bob:test.local", msg("working on BUG-1", nil))
-	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "sub #proj "+first+" from=bob sub="+id)
+	tuitestkit.ContainsStr(t, e.as("alice", "wait", "--timeout", "2s").ok(t).stdout, "sub #proj "+first+" from=@bob:test.local sub="+id)
 
 	closing := e.hs.inject(room, "@bob:test.local", hdrMsg("bob", "system", "incident", "BUG-1", "closed"))
 	late := e.hs.inject(room, "@bob:test.local", msg("BUG-1 again", nil))
@@ -362,7 +362,7 @@ func TestSubExpiredDeliversNothing(t *testing.T) {
 	dead := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "decision", "after expiry"))
 	live := e.hs.inject(room, "@bob:test.local", kindMsg("bob", "answer", "still wanted"))
 	out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout
-	tuitestkit.ContainsStr(t, out, "sub #proj "+live+" from=bob sub=sub-0000beef")
+	tuitestkit.ContainsStr(t, out, "sub #proj "+live+" from=@bob:test.local sub=sub-0000beef")
 	tuitestkit.NotContainsStr(t, out, dead)
 	if got := e.serverSubs("alice"); len(got.Subs) != 1 || got.Subs[0].ID != "sub-0000beef" {
 		t.Fatalf("expired sub not removed: %+v", got.Subs)
