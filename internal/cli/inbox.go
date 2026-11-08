@@ -41,7 +41,7 @@ const (
 	inboxIndent = "  | "
 )
 
-const inboxUsage = "usage: a2a inbox [--limit N] [--json]  (N from 1 to 50)"
+const inboxUsage = "usage: a2a inbox [--limit N] [--json | --out FILE [--summary] | --brief] [--width N]  (N from 1 to 50)"
 
 // cmdInbox: a2a inbox [--limit N] [--json]
 func cmdInbox(ctx context.Context, a *App, args []string) error {
@@ -52,8 +52,9 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	limit := fs.Int("limit", inboxMax, "most events to print (1..50)")
 	asJSON := fs.Bool("json", false, "one JSON object per event (EventRecord with body) instead of the frame")
 	outPath := fs.String("out", "", "save full bodies in a new private untrusted frame")
-	summary := fs.Bool("summary", false, "print bounded counts and event excerpts (requires --out)")
-	width := fs.Int("width", 160, "summary excerpt characters (1..2000; requires --summary)")
+	brief := fs.Bool("brief", false, "save privately and summarize, with full bodies for addressed requests, questions and decisions")
+	summary := fs.Bool("summary", false, "print bounded counts and event excerpts (requires --out or --brief)")
+	width := fs.Int("width", 160, "summary excerpt characters (1..2000; requires --summary or --brief)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -64,9 +65,13 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	if *limit < 1 || *limit > inboxMax {
 		return usagef("--limit must be between 1 and %d; %s", inboxMax, inboxUsage)
 	}
-	save := flagPresent(fs, "out")
-	if *summary && !save || flagPresent(fs, "width") && !*summary {
-		return usagef("--summary requires --out; --width requires --summary")
+	explicitOut := flagPresent(fs, "out")
+	if *brief && (*asJSON || explicitOut) {
+		return usagef("--brief cannot be combined with --json or --out")
+	}
+	save := explicitOut || *brief
+	if *summary && !save || flagPresent(fs, "width") && !*summary && !*brief {
+		return usagef("--summary requires --out or --brief; --width requires --summary or --brief")
 	}
 	if *width < 1 || *width > inboxBodyMax {
 		return usagef("--width must be between 1 and %d", inboxBodyMax)
@@ -75,7 +80,7 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 		return usagef("--out cannot be combined with --json")
 	}
 	var saved *privateOutput
-	if save {
+	if explicitOut {
 		saved, err = preparePrivateOutput(*outPath)
 		if err != nil {
 			return err
@@ -92,6 +97,13 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	}
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
+	}
+	if *brief {
+		saved, *outPath, err = prepareBriefInbox(s)
+		if err != nil {
+			return err
+		}
+		defer saved.close()
 	}
 	st, subs, err := s.startDelivery(ctx, a.Now())
 	if err != nil {
@@ -123,8 +135,12 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 			if err != nil {
 				return nil, fmt.Errorf("save inbox: %w%s", err, lost)
 			}
-			if *summary {
-				out, err = inboxSummary(records, *width, more)
+			if *summary || *brief {
+				var inline []bool
+				if *brief {
+					inline = briefInboxInline(shown, s)
+				}
+				out, err = inboxSummary(records, *width, more, inline)
 				if err != nil {
 					return nil, fmt.Errorf("%w%s", err, lost)
 				}
@@ -132,6 +148,9 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 				out = "no new peer events\n"
 			} else {
 				out = a.secrets.Scrub(out)
+			}
+			if *brief {
+				out += fmt.Sprintf("saved inbox: %q\n", *outPath)
 			}
 			if err := saved.commit(data); err != nil {
 				return nil, fmt.Errorf("save inbox: %w%s", err, lost)

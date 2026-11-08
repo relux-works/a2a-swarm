@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -17,6 +19,41 @@ import (
 // Unlike the legacy stdout frame, saved bodies are not truncated. Both saving
 // and reading refuse a frame over this cap; they never receipt a truncated save.
 const inboxSavedMax = 16 << 20
+
+// Brief saves use the same private publication and last-path record as --out.
+func prepareBriefInbox(s *session) (*privateOutput, string, error) {
+	path, err := filepath.Abs(filepath.Join(filepath.Dir(s.paths.StateFile(s.name)), s.name+".inbox-"+rand.Text()+".txt"))
+	if err != nil {
+		return nil, "", err
+	}
+	out, err := preparePrivateOutput(path)
+	return out, path, err
+}
+
+// Inline display narrows the existing address/mention rule, without granting
+// authority to a relevance label or a human-readable header claim.
+func briefInboxInline(items []waitItem, s *session) []bool {
+	inline := make([]bool, len(items))
+	for i, it := range items {
+		if it.ev == nil {
+			continue
+		}
+		h, ok := decodeHeader(it.ev.Message().A2A)
+		if !ok || (h.Kind != "request" && h.Kind != "question" && h.Kind != "decision") {
+			continue
+		}
+		rel, _, _ := classify(*it.ev, it.rec.RoomID, s.creds.UserID, s.name, config.State{}, nil)
+		inline[i] = rel == relTo || rel == relMention
+	}
+	return inline
+}
+
+func writeInboxBody(b *strings.Builder, body string) {
+	body = strings.NewReplacer("\u2028", "\n", "\u2029", "\n").Replace(sanitizeText(redact.String(body)))
+	for _, line := range strings.Split(body, "\n") {
+		b.WriteString(inboxIndent + line + "\n")
+	}
+}
 
 func savedInboxFrame(a *App, items []waitItem, server string) ([]EventRecord, []byte, error) {
 	records := make([]EventRecord, 0, len(items))
@@ -124,7 +161,7 @@ func summaryField(value string) string {
 	return value
 }
 
-func inboxSummary(records []EventRecord, width, more int) (string, error) {
+func inboxSummary(records []EventRecord, width, more int, inline []bool) (string, error) {
 	// Refuse rather than combine distinct identities under a truncated key.
 	// This bounds every field without silently changing grouping or event ids.
 	for _, r := range records {
@@ -156,6 +193,9 @@ func inboxSummary(records []EventRecord, width, more int) (string, error) {
 		excerpt, _ := truncateRunes(sanitizeLine(r.Body), width)
 		fmt.Fprintf(&b, "event %d sender=%q kind=%q room=%q topic=%q id=%q %s\n",
 			i+1, summaryField(r.Sender), summaryField(r.Kind), summaryField(firstNonEmpty(r.Room, r.RoomID)), summaryField(r.Topic), summaryField(r.EventID), excerpt)
+		if i < len(inline) && inline[i] {
+			writeInboxBody(&b, r.Body)
+		}
 	}
 	b.WriteString(inboxEnd + "\n")
 	if more > 0 {
@@ -205,10 +245,7 @@ func cmdInboxShow(a *App, args []string) error {
 		var b strings.Builder
 		b.WriteString(inboxBegin + "\n")
 		fmt.Fprintf(&b, "--- event 1/1: from=%q room=%q kind=%q id=%q\n", inboxField(r.Sender), inboxField(r.Room), inboxField(r.Kind), inboxField(r.EventID))
-		body := strings.NewReplacer("\u2028", "\n", "\u2029", "\n").Replace(sanitizeText(redact.String(r.Body)))
-		for _, line := range strings.Split(body, "\n") {
-			b.WriteString(inboxIndent + line + "\n")
-		}
+		writeInboxBody(&b, r.Body)
 		b.WriteString(inboxEnd + "\n")
 		return writeCLIOutput(a.Stdout, a.secrets.Scrub(b.String()))
 	}

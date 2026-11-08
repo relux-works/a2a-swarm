@@ -1446,7 +1446,7 @@ The entries are the same as `wait`'s (`to`, `mention`, `thread`, `sub`, invites,
   A short stdout write is also a failure, even when the writer returns no error;
   incomplete output never receipts the batch.
 
-#### Saved inbox: `--out FILE [--summary [--width N]]`
+#### Saved inbox: `--out FILE [--summary [--width N]]` or `--brief [--width N]`
 
 `--out FILE` saves the selected batch with **full sanitized bodies**, including
 text beyond the legacy 2000-character stdout limit. It uses the private,
@@ -1468,15 +1468,27 @@ gaps retain their mailbox ids as `event_id`. The whole frame is capped at
 events. `--limit` still selects the oldest 1..50 entries and leaves the rest
 pending. An empty batch saves an empty frame.
 
-`--summary` requires `--out`: stdout contains the untrusted-frame markers,
+`--summary` requires `--out` or `--brief`: stdout contains the untrusted-frame markers,
 sorted counts by sender, kind and room, and one line per selected event with
 its 1-based index, sender, kind, room, topic, event id and body prefix.
 Rooms use their alias when available, otherwise their Matrix room id.
-`--width N` requires `--summary`, defaults to 160, and accepts 1..2000 Unicode
-characters after normalizing whitespace to one line. Summary metadata fields
+`--width N` requires `--summary` or `--brief`, defaults to 160, and accepts
+1..2000 Unicode characters after normalizing whitespace to one line. Summary metadata fields
 over 512 characters are refused before saving or receipting, so truncated
 identities cannot merge counts. Save with `--out` alone to retain such data.
 The existing pending-count footer follows the frame when more entries remain.
+
+`--brief` uses the same save and summary path, generating a fresh private file
+under the selected identity's state directory and printing its quoted absolute
+path after the frame. It refuses `--json` and `--out`. Each selected event gets
+the same summary line. Only events matching the existing structured direct-address
+or full-ID mention rule, with structured kind `request`, `question` or `decision`,
+also print their full sanitized body, with every line indented inside that same
+untrusted frame. Human-readable address claims do not qualify. Other kinds,
+unknown kinds, plain messages, invitations and gaps remain summary-only; these
+sender declarations never grant authority. The default excerpt width is 160.
+An empty batch still saves a fresh empty frame. Saved files remain available
+until explicitly removed; each successful brief updates the last-path record.
 
 The complete file is written, fsynced and published before stdout is written
 and flushed; only then are exactly those saved entries receipted. A write,
@@ -1487,7 +1499,7 @@ path for a subsequent inbox invocation. No partial target is published.
 #### `a2a inbox show <$event> [--from FILE]`
 
 Prints one saved event's full sanitized body inside an untrusted-data frame.
-Without `--from`, it uses the last successful `inbox --out` path recorded for
+Without `--from`, it uses the last successful `inbox --out` or `inbox --brief` path recorded for
 the selected identity/connection. `--from FILE` reads an explicit saved frame.
 This is a local read: it never syncs, fetches an event, or receipts mail.
 Unknown events, missing frames, malformed/incomplete frames, duplicate event
