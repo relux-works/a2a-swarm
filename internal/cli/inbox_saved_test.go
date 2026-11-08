@@ -20,7 +20,7 @@ func TestSavedInboxSummaryShowAndReceiptBoundary(t *testing.T) {
 	later := e.hs.inject(room, "@bob:test.local", ping(2))
 	path := filepath.Join(outputTestDir(t), "frame")
 	r := e.as("alice", "inbox", "--out", path, "--summary", "--width", "1", "--limit", "1").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, "count sender=\"bob\" n=1\n")
+	tuitestkit.ContainsStr(t, r.stdout, "count sender=@bob:test.local n=1\n")
 	tuitestkit.ContainsStr(t, r.stdout, "count kind=\"question\" n=1\n")
 	tuitestkit.ContainsStr(t, r.stdout, "count room=\"#proj\" n=1\n")
 	tuitestkit.ContainsStr(t, r.stdout, "id="+fmt.Sprintf("%q", id)+" 界\n")
@@ -118,7 +118,7 @@ func TestSavedInboxFailuresNeverReceipt(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			e, room := world(t)
 			e.as("alice", "inbox").ok(t)
-			id := e.hs.inject(room, "@bob:test.local", ping(1))
+			id := e.hs.inject(room, "@"+strings.Repeat("a", 230)+":alpha.example", ping(1))
 			dir := outputTestDir(t)
 			path := filepath.Join(dir, "frame")
 			e.configure = func(a *App) {
@@ -193,7 +193,7 @@ func TestInboxLegacyFrameBytesUnchanged(t *testing.T) {
 	e.as("alice", "inbox").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", ping(7))
 	got := e.as("alice", "inbox").ok(t).stdout
-	want := inboxBegin + "\n--- event 1/1: mention from=bob room=#proj kind=- id=" + id + "\n  | @alice:test.local ping 7\n" + inboxEnd + "\n"
+	want := inboxBegin + "\n--- event 1/1: mention from=@bob:test.local room=#proj kind=- id=" + id + "\n  | @alice:test.local ping 7\n" + inboxEnd + "\n"
 	if got != want {
 		t.Fatalf("default frame bytes changed:\ngot %q\nwant %q", got, want)
 	}

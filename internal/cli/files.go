@@ -751,7 +751,7 @@ func cmdFiles(ctx context.Context, a *App, args []string) error {
 		if len(short) > 12 {
 			short = short[:12]
 		}
-		a.printf("%s\t%s\t%s\t%d\t%s\t%s%s\n", sanitizeLine(ev.EventID), sanitizeLine(localpartIfLocal(ev.Sender, s.server)),
+		a.printf("%s\t%s\t%s\t%d\t%s\t%s%s\n", sanitizeLine(ev.EventID), senderText(ev.Sender),
 			sanitizeLine(at.Name), at.Size, sanitizeLine(short), sanitizeLine(at.MXC), attachmentEncodingText(at, "\t"))
 	}
 	return nil

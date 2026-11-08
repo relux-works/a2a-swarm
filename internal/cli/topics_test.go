@@ -234,7 +234,7 @@ func TestReadRoom(t *testing.T) {
 	if !(strings.Index(out, "two") < strings.Index(out, "three") && strings.Index(out, "three") < strings.Index(out, "evil")) {
 		t.Fatalf("not oldest first:\n%s", out)
 	}
-	tuitestkit.ContainsStr(t, out, "bob $ev003 kind=answer to=all thread=$ev001")
+	tuitestkit.ContainsStr(t, out, "@bob:test.local $ev003 kind=answer to=all thread=$ev001")
 	tuitestkit.NotContainsStr(t, out, "- from:")
 	for _, bad := range []string{"\x1b", "‮", "\x07"} {
 		tuitestkit.NotContainsStr(t, out, bad)
@@ -305,7 +305,7 @@ func TestPostSubtypeSubject(t *testing.T) {
 		t.Fatalf("read record = %+v", rec)
 	}
 	line := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout
-	tuitestkit.ContainsStr(t, line, "to #proj "+id+" from=bob kind=system subtype=landing subject="+subject+" topic=alpha")
+	tuitestkit.ContainsStr(t, line, "to #proj "+id+" from=@bob:test.local kind=system subtype=landing subject="+subject+" topic=alpha")
 	e.project().ok(t)
 	got := e.projections(system)
 	if len(got) != 1 {

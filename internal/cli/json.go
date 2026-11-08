@@ -14,7 +14,7 @@ import (
 
 // EventRecord is the machine-readable form of one event, printed as one JSON
 // object per line by `read --json` and `wait --json`. Text fields are
-// sanitized exactly like the human-readable output.
+// sanitized for display, except Sender, which preserves the decoded event sender.
 type EventRecord struct {
 	Redacted bool     `json:"redacted,omitempty"`
 	Type     string   `json:"type"` // read: "topic" or "message"; wait/watch/inbox: "to", "mention", "sub", "thread", "all", "invite" or "gap"
@@ -82,7 +82,7 @@ func eventRecord(typ, room, roomID string, ev matrix.Event, server string, excer
 		Room:     room,
 		RoomID:   roomID,
 		EventID:  ev.EventID,
-		Sender:   localpartIfLocal(ev.Sender, server),
+		Sender:   ev.Sender,
 		At:       time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339),
 		Root:     eventTopicRoot(ev),
 	}

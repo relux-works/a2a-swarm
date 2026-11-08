@@ -168,7 +168,8 @@ func continuesServerName(rest string) bool {
 // never longer than SnippetMax characters.
 func eventLine(rel relevance, room string, ev matrix.Event, server, subID string) string {
 	m := ev.Message()
-	parts := []string{string(rel), room, ev.EventID, "from=" + localpartIfLocal(ev.Sender, server)}
+	prefix := sanitizeLine(strings.Join([]string{string(rel), room, ev.EventID}, " ")) + " from=" + senderText(ev.Sender)
+	parts := []string{}
 	if subID != "" {
 		parts = append(parts, "sub="+subID)
 	}
@@ -191,7 +192,10 @@ func eventLine(rel relevance, room string, ev matrix.Event, server, subID string
 	if root := eventTopicRoot(ev); root != "" {
 		parts = append(parts, "root="+root)
 	}
-	return sanitizeLine(strings.Join(parts, " ")) + ": " + snippet(text, SnippetMax)
+	if len(parts) > 0 {
+		prefix += " " + sanitizeLine(strings.Join(parts, " "))
+	}
+	return prefix + ": " + snippet(text, SnippetMax)
 }
 
 // inviteInfo extracts the room alias (or the id) and the inviter from invite state.
@@ -208,7 +212,7 @@ func inviteInfo(roomID string, state []matrix.Event, me, server string) (room, i
 			}
 		case "m.room.member":
 			if ev.StateKey != nil && *ev.StateKey == me && ev.Message().Membership == "invite" {
-				inviter = localpartIfLocal(ev.Sender, server)
+				inviter = ev.Sender
 			}
 		}
 	}
@@ -218,9 +222,10 @@ func inviteInfo(roomID string, state []matrix.Event, me, server string) (room, i
 // inviteLine renders a doorbell line for an invite.
 func inviteLine(roomID string, state []matrix.Event, me, server string) string {
 	room, inviter := inviteInfo(roomID, state, me, server)
-	line := "invite " + room + " " + roomID
+	// Bound room metadata before appending the reversible, unclipped sender.
+	line := snippet("invite "+room+" "+roomID, 400)
 	if inviter != "" {
-		line += " from=" + inviter
+		line += " from=" + senderText(inviter)
 	}
-	return snippet(line, 400)
+	return line
 }

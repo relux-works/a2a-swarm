@@ -118,7 +118,7 @@ func TestElementMediaFullHandleAndNonmediaOutput(t *testing.T) {
 	if strings.Contains(string(encoded), `"media"`) {
 		t.Fatal("nonmedia JSON wire shape changed")
 	}
-	expected := inboxBegin + "\n--- event 1/1: mention from=bob room=#proj kind=- id=$plain\n  | ordinary\n" + inboxEnd + "\n"
+	expected := inboxBegin + "\n--- event 1/1: mention from=@bob:test.local room=#proj kind=- id=$plain\n  | ordinary\n" + inboxEnd + "\n"
 	if got := inboxFrame([]waitItem{{ev: &plain, rec: EventRecord{Type: "mention", Room: "#proj", RoomID: "!projRoomID"}}}, testServer, 0); got != expected {
 		t.Fatalf("nonmedia text changed: %q", got)
 	}
