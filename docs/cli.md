@@ -2290,6 +2290,14 @@ tmux and python3 are required for terminal fixtures (absence is a skip, not pass
 
 Exact addresses to the agent and mentions still ring. Explicit `--from` subscriptions, whether room-scoped or roomless, keep matching even for plain client messages without an a2a header or mention. All existing sender, room, topic, product, kind, subtype, subject, creation, `--since` and expiry gates still apply; a sender filter requests delivery, not authority. This exemption applies to every sender filter, without a principal allowlist. Roomless subscriptions, subscription `--all-events`, and wait/watch `--all` retain their independent capture semantics; projection matching is unchanged. A mute uses the resolved root event ID, not a topic slug, and does not suppress a different root with the same slug. It applies to future classification only: existing pending mail, receipts and cursors are preserved, within the existing bounded mute retention. The mute is sticky: posting in the thread again does not re-follow it; only `follow` does.
 
+`mute ROOM --topic '$root'` also accepts a root hidden by history visibility when
+this identity already holds same-room evidence: a delivered event whose server
+`m.thread` relation names that root, or retained room/event/root membership learned
+from server events. This path does not fetch the root or trust an a2a header's
+topic claim. Without that evidence, the existing resolution and refusal text
+remain unchanged. A slug still works where ordinary topic discovery resolves it;
+it cannot recover an unknown hidden root. `follow` keeps its existing resolution.
+
 `a2a subscribe` warns on stderr when adding a muted topic selector without `--from` or `--all-events`; it still creates the subscription and leaves the mute intact. A topic-only one-shot subscription such as `--room R --topic '$root' --until-kind answer` does not override a mute. Its suppressed answers neither ring nor close the subscription, even if a separate address or mention delivers the answer. Run `a2a follow R --topic '$root'` before relying on that subscription, including the blocking-ask pattern. Subscribing does not automatically follow or replay events already passed by the cursor. An explicit `--from` row retains its own delivery and normal `--until-kind` behavior.
 
 Delivery trusts server relations: an explicit Matrix `m.thread` root, or a
