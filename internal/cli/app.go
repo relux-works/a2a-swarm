@@ -101,6 +101,9 @@ type App struct {
 	ownerConfirm      func(string) error
 	ownerMirrorBudget time.Duration
 	// Native transport/fault hooks are test-only seams.
+	postOperationFault                func(string) error
+	postOperationOS                   string
+	postOperationLateReserve          bool
 	nativeDial                        func(context.Context, string) (nativeRuntime, error)
 	afterWakeReserve, afterWakeSubmit func() error
 }
@@ -150,6 +153,7 @@ func commands() []command {
 		{"invite", "invite <room> <@user|name>           invite someone to a room", cmdInvite},
 		{"topic", "topic new <room> <slug> \"<title>\" [--body -|@file|text] [--to a,b] [--kind K]   start a topic thread", cmdTopic},
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
+		{"post-operation", "post-operation status <id> --json   local retained evidence; never resend", cmdPostOperation},
 		{"post", "post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--voice] <text|@file|->", cmdPost},
 		{"attach", "attach <room> --topic <slug|$event> <file> [--kind K] [--to a,b] [--pin] [caption|@file|-]   share a file", cmdAttach},
 		{"fetch", "fetch <room> <$event> [-o path] | fetch <mxc://...> --sha256 <hex> [-o path]   download a file (native hash is unverified)", cmdFetch},
@@ -249,7 +253,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			}
 			// These inspections have their own routing-only validation. They
 			// must not consult credentials, secret stores or owner-DM state.
-			if c.name == "availability" || c.name == "voice" && len(rest) > 1 && rest[1] == "status" || c.name == "mute" && len(rest) > 1 && rest[1] == "list" {
+			if c.name == "post-operation" || c.name == "post" && durablePostInvocation(rest[1:]) || c.name == "availability" || c.name == "voice" && len(rest) > 1 && rest[1] == "status" || c.name == "mute" && len(rest) > 1 && rest[1] == "list" {
 				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// Fetch parses usage/help before consulting connection or identity state.
