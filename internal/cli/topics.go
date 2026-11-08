@@ -403,15 +403,16 @@ func validKind(k string) bool {
 	return false
 }
 
-// cmdPost: a2a post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
+// cmdPost: a2a post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--reply-main] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
 func cmdPost(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
+	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--reply-main] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
 	fs := newFlagSet("post")
 	result := addResultFlags(fs)
 	withVoice := fs.Bool("voice", false, "add a local voice reply after the unchanged text post")
 	topic := fs.String("topic", "", "topic slug or root event id")
 	kind := fs.String("kind", "notice", "message kind")
 	re := fs.String("re", "", "event id this message answers")
+	replyMain := fs.Bool("reply-main", false, "reply in the main timeline (requires --re; incompatible with --topic)")
 	var to stringList
 	fs.Var(&to, "to", "comma-separated addressees (repeatable)")
 	replyBy := fs.String("reply-by", "", "reply deadline (RFC3339)")
@@ -422,6 +423,12 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
+	}
+	if *replyMain && flagPresent(fs, "topic") {
+		return usagef("--topic cannot be combined with --reply-main")
+	}
+	if *replyMain && *re == "" {
+		return usagef("--reply-main requires --re")
 	}
 	if len(pos) < 2 {
 		if len(pos) == 1 {
@@ -442,7 +449,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	if *topic == "" && *re == "" {
-		return usagef("--topic is required unless --re selects a topic (%s)", use)
+		return usagef("--topic is required unless --re selects a reply target (%s)", use)
 	}
 	if err := validateMessageKind(*kind); err != nil {
 		return err
@@ -503,7 +510,10 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	}
 	var root, slug string
 	if *re != "" {
-		root, slug, err = s.resolveReplyTopic(ctx, roomID, label, *re)
+		root, slug, err = s.resolveReplyTopic(ctx, roomID, label, *re, *replyMain)
+		if err == nil && root == "" && *topic != "" {
+			return fmt.Errorf("--re target is a main-timeline message and cannot be combined with --topic in %s", label)
+		}
 		if err == nil && *topic != "" && *topic != root {
 			var selected string
 			selected, _, err = s.resolveTopic(ctx, roomID, label, *topic)
@@ -539,8 +549,8 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	return resultErr
 }
 
-// sendThreadMessage sends h plus text as a thread reply to h.Topic and records
-// the thread in the local state; it returns the event id.
+// sendThreadMessage sends h plus text, using a plain reply when h.Topic is empty.
+// Only thread replies record participation in local state.
 func (s *session) sendThreadMessage(ctx context.Context, roomID, label string, h Header, text string, mentions []string) (string, error) {
 	content, err := framedTextContent(formatHeaderBody(h, text), threadReply(h, mentions), formatHeaderBody(h, ""), text, "")
 	if err != nil {
@@ -549,15 +559,17 @@ func (s *session) sendThreadMessage(ctx context.Context, roomID, label string, h
 	return s.sendThreadContent(ctx, roomID, label, h, content)
 }
 
-// sendThreadContent sends prepared thread-reply content and records the thread.
+// sendThreadContent sends prepared reply content and records nonempty threads.
 func (s *session) sendThreadContent(ctx context.Context, roomID, label string, h Header, content map[string]any) (string, error) {
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
 		return "", fmt.Errorf("post to %s: %w", label, err)
 	}
 	id := receipt.EventID()
-	if err := s.rememberThread(h.Topic); err != nil {
-		fmt.Fprintf(s.app.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
+	if h.Topic != "" {
+		if err := s.rememberThread(h.Topic); err != nil {
+			fmt.Fprintf(s.app.Stderr, "a2a: warning: could not record thread in state: %v\n", err)
+		}
 	}
 	return id, nil
 }
@@ -601,20 +613,24 @@ func addressees(to, server string) (names, mentions []string, err error) {
 	return names, mentions, nil
 }
 
-// threadReply returns the content shared by every thread reply (post, attach):
-// the structured header, the m.thread relation to h.Topic, and m.mentions.
-// The caller adds msgtype and body.
+// threadReply returns shared reply fields (post, attach). An empty h.Topic uses
+// only m.in_reply_to; otherwise the relation is m.thread with the existing
+// fallback behavior. The caller adds msgtype and body.
 func threadReply(h Header, mentions []string) map[string]any {
 	return map[string]any{
-		ContentKey: h,
-		"m.relates_to": matrix.RelatesTo{
-			RelType:       "m.thread",
-			EventID:       h.Topic,
-			IsFallingBack: h.Re == "",
-			InReplyTo:     &matrix.InReplyTo{EventID: firstNonEmpty(h.Re, h.Topic)},
-		},
-		"m.mentions": matrix.Mentions{UserIDs: mentions},
+		ContentKey:     h,
+		"m.relates_to": replyRelation(h.Topic, h.Re),
+		"m.mentions":   matrix.Mentions{UserIDs: mentions},
 	}
+}
+
+// replyRelation keeps main-timeline replies free of all thread/fallback fields.
+func replyRelation(root, target string) matrix.RelatesTo {
+	r := matrix.RelatesTo{InReplyTo: &matrix.InReplyTo{EventID: firstNonEmpty(target, root)}}
+	if root != "" {
+		r.RelType, r.EventID, r.IsFallingBack = "m.thread", root, target == ""
+	}
+	return r
 }
 
 // formatHeaderBody renders the protocol header lines (rule 2) above the text.

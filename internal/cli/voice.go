@@ -204,7 +204,7 @@ func (s *session) postVoice(ctx context.Context, roomID, root, textID, text stri
 		"org.matrix.msc1767.text":  body,
 		"org.matrix.msc1767.file":  map[string]any{"name": "voice.ogg", "mimetype": "audio/ogg", "size": len(audio.OGG), "url": mxc},
 		"org.matrix.msc1767.audio": map[string]any{"duration": audio.DurationMS, "waveform": audio.Waveform},
-		"m.relates_to":             matrix.RelatesTo{RelType: "m.thread", EventID: root, IsFallingBack: false, InReplyTo: &matrix.InReplyTo{EventID: textID}},
+		"m.relates_to":             replyRelation(root, textID),
 		"m.mentions":               matrix.Mentions{},
 	}
 	if _, err = s.client.SendMessageReceipt(ctx, roomID, content); err != nil {

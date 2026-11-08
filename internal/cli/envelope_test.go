@@ -183,6 +183,37 @@ func TestEnvelopeRoundTripExactBytes(t *testing.T) {
 	}
 }
 
+// Main-timeline envelope replies keep exact text/envelope bytes and only the
+// native reply relation, both for a plain target and an explicitly forced root.
+func TestEnvelopeMainReply(t *testing.T) {
+	for _, lane := range []string{"plain", "forced-root"} {
+		t.Run(lane, func(t *testing.T) {
+			forceMain := lane == "forced-root"
+			e, room := world(t)
+			target := e.hs.inject(room, "@human:test.local", msg("plain", nil))
+			if forceMain {
+				target = strings.TrimSpace(e.as("alice", "topic", "new", room, "alpha", "A").ok(t).stdout)
+			}
+			path := envelopeFile(t, []byte(envelopeCLIJSON))
+			args := []string{"post", room, "--re", target, "--envelope", "@" + path, " exact text \n"}
+			if forceMain {
+				args = append(args, "--reply-main")
+			}
+			id := strings.TrimSpace(e.as("bob", args...).ok(t).stdout)
+			ev, ok := e.hs.eventByID(id)
+			if !ok {
+				t.Fatal("envelope reply not sent")
+			}
+			c := decodeContent(t, ev)
+			want := map[string]any{"m.in_reply_to": map[string]any{"event_id": target}}
+			if c["body"] != " exact text \n" || c[matrix.EnvelopeContentKey] != base64.RawURLEncoding.EncodeToString([]byte(envelopeCLIJSON)) ||
+				!reflect.DeepEqual(c["m.relates_to"], want) {
+				t.Fatalf("main reply changed envelope/text/relation: %v", c)
+			}
+		})
+	}
+}
+
 // Proves an ordinary post is unchanged (header lines, no envelope key) and that
 // the projection refuses it with the specific missing-key code, so a missing
 // key can never look like an empty envelope. Regression neighbour of the

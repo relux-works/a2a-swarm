@@ -63,8 +63,14 @@ func (s *session) replyTopicEvent(ctx context.Context, roomID, id string) (matri
 				}
 			}
 		}
-		if m.RelatesTo == nil || m.RelatesTo.RelType != "m.thread" ||
-			!matrix.ValidVerificationID(m.RelatesTo.EventID, '$') {
+		for _, key := range []string{"rel_type", "event_id"} {
+			if raw, present := relation[key]; present && string(raw) == "null" {
+				return m, fmt.Errorf("invalid --re thread relation")
+			}
+		}
+		if m.RelatesTo == nil || (m.RelatesTo.RelType != "m.thread" && m.RelatesTo.RelType != "") ||
+			(m.RelatesTo.RelType == "m.thread" && !matrix.ValidVerificationID(m.RelatesTo.EventID, '$')) ||
+			(m.RelatesTo.RelType == "" && (m.RelatesTo.EventID != "" || m.RelatesTo.InReplyTo == nil)) {
 			return m, fmt.Errorf("--re target is not in a valid thread")
 		}
 		if raw, present := relation["is_falling_back"]; present {
@@ -90,18 +96,28 @@ func (s *session) replyTopicEvent(ctx context.Context, roomID, id string) (matri
 	return m, nil
 }
 
-// resolveReplyTopic follows exactly one m.thread relation, never a reply chain
-// or an a2a header's claimed topic. A standalone target must be an a2a topic;
-// a child's authenticated m.thread relation also identifies an ordinary Matrix
-// root, even when historical access prevents reading that root. A returned root
-// with a relation is refused, including self-links and cycles.
-func (s *session) resolveReplyTopic(ctx context.Context, roomID, label, target string) (string, string, error) {
+// resolveReplyTopic returns an empty root/slug for main-timeline replies. Plain
+// targets stay in the main timeline; replyMain forces that form for any target.
+// Otherwise follow exactly one m.thread relation, never a native reply chain or
+// an a2a header's claimed topic. A child's authenticated relation can identify
+// an ordinary Matrix root even when historical access prevents reading it.
+func (s *session) resolveReplyTopic(ctx context.Context, roomID, label, target string, replyMain bool) (string, string, error) {
 	m, err := s.replyTopicEvent(ctx, roomID, target)
 	if err != nil {
 		return "", "", err
 	}
+	threaded := m.RelatesTo != nil && m.RelatesTo.RelType == "m.thread"
+	_, _, topicBody := parseTopicBody(m.Body)
+	h, header := decodeHeader(m.A2A)
+	topicRoot := m.RelatesTo == nil && (topicBody || (header && h.Type == "topic" && slugRE.MatchString(h.Slug)))
+	if !threaded && !topicRoot && header && h.Topic != "" {
+		return "", "", fmt.Errorf("--re target has only a header topic claim in %s, not server thread membership", label)
+	}
+	if replyMain || (!threaded && !topicRoot) {
+		return "", "", nil
+	}
 	root := target
-	if m.RelatesTo != nil {
+	if threaded {
 		root = m.RelatesTo.EventID
 		if root == target {
 			return "", "", fmt.Errorf("--re target has a cyclic thread relation")
@@ -125,12 +141,6 @@ func (s *session) resolveReplyTopic(ctx context.Context, roomID, label, target s
 		}
 		if m.RelatesTo != nil {
 			return "", "", fmt.Errorf("--re thread root is itself related to another event")
-		}
-	} else {
-		_, _, topicBody := parseTopicBody(m.Body)
-		h, header := decodeHeader(m.A2A)
-		if !topicBody && !(header && h.Type == "topic" && slugRE.MatchString(h.Slug)) {
-			return "", "", fmt.Errorf("--re target is not a topic root or thread reply in %s", label)
 		}
 	}
 	slug, _, _ := parseTopicBody(m.Body)

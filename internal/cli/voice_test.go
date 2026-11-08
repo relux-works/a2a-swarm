@@ -91,6 +91,34 @@ func TestPostVoiceShapeAndTextIdentity(t *testing.T) {
 	}
 }
 
+// Voice for a main-timeline post replies only to the sent text, without thread
+// fields, for both a plain target and an explicitly forced topic-root target.
+// The existing topic voice test above is the threaded control.
+func TestPostVoiceMainReply(t *testing.T) {
+	for _, lane := range []string{"plain", "forced-root"} {
+		t.Run(lane, func(t *testing.T) {
+			e, root, f := voiceWorld(t)
+			target := root
+			args := []string{"post", "proj", "--voice", "answer"}
+			if lane == "plain" {
+				target = e.hs.inject("!projRoomID", "@human:test.local", msg("question", nil))
+			} else {
+				args = append(args, "--reply-main")
+			}
+			args = append(args, "--re", target)
+			textID := strings.TrimSpace(e.as("alice", args...).ok(t).stdout)
+			e.hs.mu.Lock()
+			audio := e.hs.events[len(e.hs.events)-1]
+			e.hs.mu.Unlock()
+			content := decodeContent(t, audio)
+			want := map[string]any{"m.in_reply_to": map[string]any{"event_id": textID}}
+			if f.calls != 1 || content["msgtype"] != "m.audio" || !reflect.DeepEqual(content["m.relates_to"], want) {
+				t.Fatalf("voice did not retain the main-timeline route: %v", content)
+			}
+		})
+	}
+}
+
 // Each rejected voice stage retains exactly the successful text and exit0,
 // emits one marked warning, leaks no private diagnostics and publishes no audio.
 func TestPostVoiceFailuresPreserveText(t *testing.T) {

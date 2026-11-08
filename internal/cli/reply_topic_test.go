@@ -15,7 +15,8 @@ import (
 )
 
 // These tests enter through App.Run, with synthetic authenticated HTTP and
-// recorded requests, rather than calling the resolver directly.
+// recorded requests, rather than calling the resolver directly. Topic roots
+// and thread children keep their thread routing with absent/matching --topic.
 func TestPostReplyTopicCLI(t *testing.T) {
 	for _, target := range []string{"root", "child"} {
 		for _, topic := range []string{"", "id", "slug"} {
@@ -63,6 +64,8 @@ func TestPostReplyTopicCLI(t *testing.T) {
 	}
 }
 
+// Missing/foreign targets, header claims, invalid IDs and explicit topic
+// conflicts send nothing; every rejection is paired with a valid threaded reply.
 func TestPostReplyTopicRoomAndConflict(t *testing.T) {
 	e, room := world(t)
 	root := strings.TrimSpace(e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t).stdout)
@@ -71,6 +74,7 @@ func TestPostReplyTopicRoomAndConflict(t *testing.T) {
 	foreign := strings.TrimSpace(e.as("alice", "topic", "new", "lobby", "alpha", "A").ok(t).stdout)
 	plain := e.hs.inject(room, "@alice:test.local", map[string]any{"msgtype": "m.text", "body": "plain; claims topic " + root,
 		ContentKey: Header{Type: "message", Topic: root}})
+	ordinary := e.hs.inject(room, "@alice:test.local", msg("plain main message", nil))
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -78,7 +82,8 @@ func TestPostReplyTopicRoomAndConflict(t *testing.T) {
 	}{
 		{"missing", []string{"--re", "$missing"}, ExitError},
 		{"wrong-room", []string{"--re", foreign}, ExitError},
-		{"unthreaded", []string{"--re", plain}, ExitError},
+		{"header-claim", []string{"--re", plain}, ExitError},
+		{"plain-with-topic", []string{"--re", ordinary, "--topic", root}, ExitError},
 		{"topic-id-conflict", []string{"--re", child, "--topic", beta}, ExitError},
 		{"topic-slug-conflict", []string{"--re", child, "--topic", "beta"}, ExitError},
 		{"topic-child", []string{"--re", child, "--topic", child}, ExitError},
@@ -98,6 +103,9 @@ func TestPostReplyTopicRoomAndConflict(t *testing.T) {
 			r := e.as("bob", args...)
 			if r.code != tc.code || r.stdout != "" || e.hs.CallCount(send) != before {
 				t.Fatalf("refusal failed: exit=%d stdout=%q", r.code, r.stdout)
+			}
+			if tc.name == "plain-with-topic" && !strings.Contains(r.stderr, "main-timeline message") {
+				t.Fatal("plain target refusal lost main-timeline guidance")
 			}
 			// Readable cross-topic conflicts retain refusal and explain citation.
 			if strings.HasPrefix(tc.name, "topic-") && strings.HasSuffix(tc.name, "-conflict") &&
@@ -127,6 +135,8 @@ func TestPostReplyTopicWireRefusals(t *testing.T) {
 	}{
 		{"valid", childContent, rootContent, "", 2},
 		{"valid-root", rootContent, "", "", 1},
+		{"valid-plain", `{"msgtype":"m.text","body":"plain"}`, "", "", 1},
+		{"valid-native-reply", `{"body":"child","m.relates_to":{"m.in_reply_to":{"event_id":"$root"}}}`, "", "", 1},
 		{"valid-no-room-field", childContent, rootContent, "no-room", 2},
 		{"valid-ordinary-root", childContent, `{"msgtype":"m.text","body":"ordinary root"}`, "", 2},
 		{"wrong-id", childContent, rootContent, "wrong-id", 1},
@@ -151,7 +161,12 @@ func TestPostReplyTopicWireRefusals(t *testing.T) {
 		{"relation-missing-root", `{"body":"child","m.relates_to":{"rel_type":"m.thread"}}`, rootContent, "", 1},
 		{"relation-invalid-root", `{"body":"child","m.relates_to":{"rel_type":"m.thread","event_id":"root"}}`, rootContent, "", 1},
 		{"relation-invalid-kind", `{"body":"child","m.relates_to":{"rel_type":"m.replace","event_id":"$root"}}`, rootContent, "", 1},
-		{"ordinary-reply", `{"body":"child","m.relates_to":{"m.in_reply_to":{"event_id":"$root"}}}`, rootContent, "", 1},
+		// Native reply acceptance does not weaken reply-ID or case-alias checks.
+		{"native-reply-missing-id", `{"body":"child","m.relates_to":{"m.in_reply_to":{}}}`, "", "", 1},
+		{"native-reply-invalid-id", `{"body":"child","m.relates_to":{"m.in_reply_to":{"event_id":"root"}}}`, "", "", 1},
+		{"native-reply-case-alias", `{"body":"child","m.relates_to":{"m.in_reply_to":{"EVENT_ID":"$root"}}}`, "", "", 1},
+		{"native-reply-null-type", `{"body":"child","m.relates_to":{"rel_type":null,"m.in_reply_to":{"event_id":"$root"}}}`, "", "", 1},
+		{"native-reply-null-root", `{"body":"child","m.relates_to":{"event_id":null,"m.in_reply_to":{"event_id":"$root"}}}`, "", "", 1},
 		{"invalid-in-reply-to", `{"body":"child","m.relates_to":{"rel_type":"m.thread","event_id":"$root","m.in_reply_to":{}}}`, rootContent, "", 1},
 		{"self-cycle", `{"body":"child","m.relates_to":{"rel_type":"m.thread","event_id":"$target"}}`, rootContent, "", 1},
 		{"two-cycle", childContent, `{"body":"root","m.relates_to":{"rel_type":"m.thread","event_id":"$target"}}`, "", 2},
@@ -235,9 +250,13 @@ func TestPostReplyTopicWireRefusals(t *testing.T) {
 					if tc.name == "valid-root" {
 						wantRoot = "$target"
 					}
+					wantType := "m.thread"
+					if tc.name == "valid-plain" || tc.name == "valid-native-reply" {
+						wantRoot, wantType = "", ""
+					}
 					h, _ := decodeHeader(content.A2A)
 					if h.Topic != wantRoot || h.Re != "$target" || content.RelatesTo == nil ||
-						content.RelatesTo.EventID != wantRoot || content.RelatesTo.InReplyTo == nil ||
+						content.RelatesTo.EventID != wantRoot || content.RelatesTo.RelType != wantType || content.RelatesTo.InReplyTo == nil ||
 						content.RelatesTo.InReplyTo.EventID != "$target" {
 						t.Fatal("wrong wire thread")
 					}

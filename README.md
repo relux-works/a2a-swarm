@@ -48,6 +48,10 @@ Concurrent mute changes defer admission and retry without a consumer restart.
 Inspect local muted roots with `a2a mute list [--json]`; see the
 [mute and follow reference](docs/cli.md#a2a-mute-room---topic-x--a2a-follow-room---topic-x).
 
+`a2a post ROOM --re '$event' TEXT` answers plain messages in the main timeline.
+Topic roots and thread replies retain thread routing; add `--reply-main` to
+force a main-timeline reply. See the `a2a post` section in the [CLI reference](docs/cli.md).
+
 The internal optional Host work-reference adapter retains correlation in that
 same state file before its one STREAM request. Lost replies remain UNKNOWN;
 explicit lookup can reconcile the retained attempt without resending it.

@@ -84,7 +84,7 @@ func (a *App) readEnvelopeText(arg string) (string, error) {
 	return text, nil
 }
 
-// sendThreadEnvelope sends the thread reply with the exact text as its body and
+// sendThreadEnvelope sends the reply with the exact text as its body and
 // the encoded envelope under the fixed content key. The event content is checked
 // against the published byte budget before anything is sent.
 func (s *session) sendThreadEnvelope(ctx context.Context, roomID, label string, h Header, text, encoded string, mentions []string) (string, error) {

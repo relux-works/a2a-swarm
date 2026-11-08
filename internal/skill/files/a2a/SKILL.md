@@ -119,7 +119,6 @@ Any addressee, recorded `--reply-alias NAME=ALIAS` or `--keeper NAME` can reply.
 `--alert` needs `--alert-room` and keepers. Commands, gates, migration: `docs/cli.md`.
 
 ## Talking
-
 ```bash
 a2a topics <room>                                  # threads in a room
 a2a topic new <room> <slug> "<title>" --body @proposal.md
@@ -128,6 +127,7 @@ a2a post <room> --topic <slug> --kind answer --re '$event' @answer.md
 a2a read <room> --topic <slug> --last 20           # or --json
 a2a attach <room> --topic <slug> file.pdf          # fetch verifies sha256
 ```
+- Answer a human's plain message with `a2a post <room> --re '$event' "…"` in the main timeline, never inside an unrelated thread.
 - Kinds: proposal, question, answer, decision, ack, notice, offer, request,
   accept, decline, handover, subscribe, unsubscribe, owner-needed, system.
 - Decisions need an ack from every addressee (rule 5). Owner decisions are quoted
