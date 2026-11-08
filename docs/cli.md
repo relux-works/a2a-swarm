@@ -1398,8 +1398,23 @@ match (AND), in addition to the existing room/relevance selection:
 
 Omit `wait_keywords` to disable it. A present list must be nonempty and contain
 only strings of 1–128 ASCII letters, digits or `# . _ / : @ -` (without spaces).
-Null, empty lists and malformed entries refuse before delivery effects. Each
-string-valued predicate flag may appear once; empty values, empty comma-list
+Null, empty lists and malformed entries make `wait`/`watch` refuse with a
+`wait_keywords` error before Matrix requests or delivery effects. In keychain
+mode the secret store is read before this predicate validation. Other commands
+can still load these credentials. Unrelated credential rewrites preserve each
+configured value's raw JSON bytes, including malformed values. Rewrites are
+not byte-identical to the previous serializer: `wait_keywords` moves after the
+other fields, its key spelling becomes lowercase, and its original value's
+spacing and escaping are retained instead of being rendered by `MarshalIndent`.
+Named metadata rejects case-variant duplicate `wait_keywords` keys before use;
+legacy decoding retains and validates every occurrence.
+
+Programmatic credential updates replace the raw value when `WaitKeywords`
+differs from its decoded value, including nil versus a nonnil empty slice.
+Setting a nonnil empty slice clears the field. An assignment of nil to an
+already nil decoded value is indistinguishable from leaving it untouched and
+therefore retains the raw value; it cannot express a clear operation.
+Each string-valued predicate flag may appear once; empty values, empty comma-list
 entries, unknown kinds, invalid senders and invalid regexps are usage errors
 before leases, liveness writes or HTTP. Whitespace around comma-list entries
 is ignored. These settings are read at command start and apply to `wait`/`watch`

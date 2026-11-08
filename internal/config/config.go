@@ -165,7 +165,9 @@ func loadMatrix(p Paths, getenv Getenv, routingOnly bool) (Matrix, error) {
 
 // Credentials is the per-agent credential file.
 type Credentials struct {
-	WaitKeywords WaitKeywords `json:"wait_keywords,omitempty"`
+	// waitKeywordsRaw is immutable optional configuration, including invalid data.
+	waitKeywordsRaw waitKeywordValues
+	WaitKeywords    WaitKeywords `json:"wait_keywords,omitempty"`
 	// OwnRoom pins the operator-declared own project/lane route; no room-type discovery.
 	OwnRoom           string             `json:"own_room,omitempty"`
 	ConnectionBinding *ConnectionBinding `json:"connection_binding,omitempty"`
@@ -315,7 +317,7 @@ func CreateCredentialFile(p Paths, name string) (*os.File, error) {
 // WriteCredentials writes c into a file created by CreateCredentialFile and closes it.
 func WriteCredentials(f *os.File, c Credentials) error {
 	c.Password = ""
-	data, err := json.MarshalIndent(c, "", "  ")
+	data, err := marshalCredentials(c)
 	if err != nil {
 		f.Close()
 		return err
@@ -696,9 +698,14 @@ func UpdateCredentials(p Paths, name string, fn func(*Credentials) error) (Crede
 		return c, err
 	}
 	next.Password = ""
-	data, err := json.MarshalIndent(next, "", "  ")
+	data, err := marshalCredentials(next)
 	if err != nil {
 		return c, err
+	}
+	// Return the persisted representation, including cleared/updated optional
+	// raw state, rather than stale opaque data copied before the callback.
+	if err := json.Unmarshal(data, &next); err != nil {
+		return c, errors.New("cannot decode rewritten credential JSON")
 	}
 	if err := writeSecretAtomic(path, name, append(data, '\n')); err != nil {
 		return c, fmt.Errorf("rewrite %s: %w", path, err)

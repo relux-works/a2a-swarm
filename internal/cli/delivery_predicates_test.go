@@ -238,7 +238,7 @@ func TestDeliveryPredicatesInvalidFlags(t *testing.T) {
 // Proves malformed identity keywords fail before delivery effects and a restored valid config accepts the same message.
 func TestDeliveryPredicatesInvalidConfig(t *testing.T) {
 	for _, command := range []string{"wait", "watch"} {
-		for _, value := range []string{`null`, `[]`, `[""]`, `[" "]`, `[null]`, `[1]`, `"TASK-56"`, `{}`, `["TASK 56"]`, `["TASK-56",false]`, `["` + strings.Repeat("x", 129) + `"]`} {
+		for _, value := range []string{`null`, `[]`, `[""]`, `[" "]`, `[null]`, `[1]`, `"TASK-56"`, `{}`, `true`, `7`, `{"future":"pw-alice-secret"}`, `"pw-alice-secret"`, `{},"WAIT_KEYWORDS":["TASK-56"]`, `["TASK 56"]`, `["TASK-56",false]`, `["` + strings.Repeat("x", 129) + `"]`} {
 			t.Run(command+"/"+value, func(t *testing.T) {
 				e, room := world(t)
 				path := e.paths().AgentFile("alice")
@@ -253,7 +253,10 @@ func TestDeliveryPredicatesInvalidConfig(t *testing.T) {
 				before := predicateSnapshot(t, e.dir)
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
-				r := e.runCtx(ctx, "--as", "alice", command).failsWith(t, ExitError, "credential JSON")
+				r := e.runCtx(ctx, "--as", "alice", command).failsWith(t, ExitError, "wait_keywords")
+				if strings.Contains(r.stderr, "credential JSON") || strings.Contains(r.stderr, e.tokens["alice"]) || strings.Contains(r.stderr, "pw-alice-secret") {
+					t.Fatal("predicate error was generic or disclosed a secret")
+				}
 				if r.stdout != "" || len(e.hs.Calls()) != 0 || !reflect.DeepEqual(before, predicateSnapshot(t, e.dir)) {
 					t.Fatal("malformed config produced output, HTTP or file effects")
 				}
