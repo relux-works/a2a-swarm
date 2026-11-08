@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
 // cmdMute: a2a mute <room> --topic X. Thread replies and ordinary room-scoped
@@ -90,7 +91,11 @@ func followCommand(ctx context.Context, a *App, args []string, follow bool) erro
 	if err != nil {
 		return err
 	}
-	root, slug, err := s.resolveTopic(ctx, roomID, label, *topic)
+	resolve := s.resolveTopic
+	if !follow {
+		resolve = s.resolveMuteTopic
+	}
+	root, slug, err := resolve(ctx, roomID, label, *topic)
 	if err != nil {
 		return err
 	}
@@ -111,4 +116,37 @@ func followCommand(ctx context.Context, a *App, args []string, follow bool) erro
 	}
 	a.printf("%s\t%s\t%s\n", sanitizeLine(firstNonEmpty(slug, root)), root, state)
 	return nil
+}
+
+// resolveMuteTopic can use membership this identity already holds when history
+// visibility hides the root. It neither fetches a child/root to establish new
+// evidence nor trusts a sender's header claim. Other resolution stays unchanged.
+func (s *session) resolveMuteTopic(ctx context.Context, roomID, label, topic string) (string, string, error) {
+	if matrix.ValidVerificationID(topic, '$') {
+		st, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return "", "", err
+		}
+		for _, e := range st.ThreadEvents {
+			if e.Room == roomID && e.Root == topic {
+				return topic, "", nil
+			}
+		}
+		mb, err := config.OpenMailbox(s.paths, s.name)
+		if err != nil {
+			return "", "", err
+		}
+		for _, e := range mb.Pending() {
+			if e.Kind != config.MailEvent || e.Room != roomID {
+				continue
+			}
+			var ev matrix.Event
+			if json.Unmarshal(e.Event, &ev) == nil && ev.EventID == e.ID &&
+				(ev.RoomID == "" || ev.RoomID == roomID) && ev.Type == "m.room.message" &&
+				!ev.IsRedacted() && ev.EventID != topic && eventTopicRoot(ev) == topic {
+				return topic, "", nil
+			}
+		}
+	}
+	return s.resolveTopic(ctx, roomID, label, topic)
 }
