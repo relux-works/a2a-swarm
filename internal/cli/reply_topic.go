@@ -30,7 +30,15 @@ func defaultReplyBy(kind string, now time.Time) string {
 // strict reader binds the returned event ID and any room ID to that request,
 // rejects redirects/redactions/ambiguous JSON, and retains the connection guard.
 func (s *session) replyTopicEvent(ctx context.Context, roomID, id string) (matrix.MessageContent, error) {
+	if err := s.checkReplyRedaction(roomID, matrix.Event{EventID: id}); err != nil {
+		return matrix.MessageContent{}, err
+	}
 	ev, err := s.client.GetVerificationEvent(ctx, roomID, id)
+	// Recheck even on a historical refusal: a tombstone learned during the
+	// request must not be mistaken for permission to infer from the child.
+	if filterErr := s.checkReplyRedaction(roomID, matrix.Event{EventID: id, Sender: ev.Sender, Type: ev.Type, Content: ev.Content}); filterErr != nil {
+		return matrix.MessageContent{}, filterErr
+	}
 	if err != nil {
 		return matrix.MessageContent{}, fmt.Errorf("cannot resolve --re event in the selected room: %w", err)
 	}
@@ -94,6 +102,23 @@ func (s *session) replyTopicEvent(ctx context.Context, roomID, id string) (matri
 		}
 	}
 	return m, nil
+}
+
+// The strict event reader deliberately bypasses display filtering. Consult
+// the session's room-scoped suppression cache without relaxing that reader's
+// binding or using locally retained payloads to establish thread membership.
+func (s *session) checkReplyRedaction(roomID string, ev matrix.Event) error {
+	if s.client.FilterEvents == nil {
+		return nil
+	}
+	events, err := s.client.FilterEvents(roomID, []matrix.Event{ev})
+	if err != nil {
+		return err
+	}
+	if len(events) != 1 || events[0].IsRedacted() {
+		return errors.New("--re event is locally redacted; refusing reply routing")
+	}
+	return nil
 }
 
 // resolveReplyTopic returns an empty root/slug for main-timeline replies. Plain
