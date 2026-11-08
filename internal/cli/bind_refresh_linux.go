@@ -5,7 +5,7 @@ package cli
 import (
 	"debug/elf"
 	"fmt"
-	"os"
+	"io"
 	"runtime"
 	"syscall"
 )
@@ -17,7 +17,7 @@ func executableRange(offset, size uint64, length int64) bool {
 	return offset <= uint64(length) && size <= uint64(length)-offset
 }
 
-func completeTerminalExecutable(f *os.File, size int64) bool {
+func completeTerminalExecutable(f io.ReaderAt, size int64) bool {
 	image, err := elf.NewFile(f)
 	if err != nil || (image.Type != elf.ET_EXEC && image.Type != elf.ET_DYN) {
 		return false
