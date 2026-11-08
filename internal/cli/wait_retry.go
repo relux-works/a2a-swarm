@@ -64,6 +64,36 @@ func waitRetry[T any](ctx context.Context, s *session, deadline time.Time, attem
 
 var errWaitTimeout = errors.New("wait: timeout")
 
+// waitSyncUntil recalculates the budget on every attempt, including retries.
+// The server's poll timeout alone is insufficient: Sync allows extra transport
+// time, so the request context must share the waiter's original deadline too.
+// There is no additional timer slack for polls or retry pauses. Successful
+// responses remain eligible for durable ingestion, even at the deadline.
+func (s *session) waitSyncUntil(ctx context.Context, since string, poll time.Duration, filter string, deadline time.Time) (matrix.SyncResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return matrix.SyncResponse{}, err
+	}
+	pollCtx := ctx
+	if !deadline.IsZero() {
+		remaining := deadline.Sub(s.app.Now())
+		if remaining <= 0 {
+			return matrix.SyncResponse{}, errWaitTimeout
+		}
+		poll = min(poll, remaining)
+		var cancel context.CancelFunc
+		pollCtx, cancel = context.WithTimeout(ctx, remaining)
+		defer cancel()
+	}
+	resp, err := s.waitSync(pollCtx, since, poll, filter)
+	if ctx.Err() != nil {
+		return matrix.SyncResponse{}, ctx.Err()
+	}
+	if err != nil && pollCtx.Err() != nil && !deadline.IsZero() && !s.app.Now().Before(deadline) {
+		return matrix.SyncResponse{}, errWaitTimeout
+	}
+	return resp, err
+}
+
 func (s *session) waitSync(ctx context.Context, since string, poll time.Duration, filter string) (matrix.SyncResponse, error) {
 	resp, err := s.client.Sync(ctx, since, poll, filter)
 	if err == nil && resp.NextBatch == "" {
