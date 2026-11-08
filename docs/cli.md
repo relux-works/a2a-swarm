@@ -604,7 +604,11 @@ does not repair #169's thread-read completeness or relations pagination.
 | `--envelope` | - | `@file`: carry the exact bytes of the file as a swarm envelope next to the text ([below](#carrying-a-swarm-envelope---envelope-file)) |
 
 With `--re`, the CLI reads the target through the selected session's
-authenticated endpoint in the resolved room. A plain message without a topic
+authenticated endpoint in the resolved room. Local room-scoped redaction
+tombstones are checked before and after each target or thread-root read. A known
+redacted event refuses with a bounded reason and no message PUT, even if the
+server still returns its old content or refuses the historical root read.
+A plain message without a topic
 marker or server `m.thread` relation gets a main-timeline reply; no `--topic` is
 needed. A valid native `m.in_reply_to` on the target is not followed and does
 not make it a thread member. If that target carries a topic marker, it remains
