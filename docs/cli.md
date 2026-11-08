@@ -3658,3 +3658,11 @@ UNKNOWN operation. No history/body/time search, remote reconciliation, replay
 or resend is implemented here. Issue #97 remains open. A separately decided
 future resume route requires a known server transaction-deduplication horizon;
 this feature makes no such assumption.
+
+## Courier station enrollment
+
+`a2a courier enroll --dir HOME/.a2a --from - [--rotate]` installs a station
+user enrollment from a closed v1 pipe payload without consulting credentials.
+The parent is canonicalized once; the final directory and its entries refuse
+symlinks. See the [station enrollment contract](courier-enroll.md) for byte
+formats, canonical ownership checks, pinned readers and atomic rotation.
