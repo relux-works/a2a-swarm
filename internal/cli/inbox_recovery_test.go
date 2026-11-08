@@ -14,6 +14,12 @@ import (
 
 func TestInboxShowLostPathRecoveryHint(t *testing.T) {
 	e, room := world(t)
+	// macOS temporary roots can have symlink ancestors; output paths must not.
+	var err error
+	e.dir, err = filepath.EvalSymlinks(e.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.as("alice", "inbox").ok(t)
 	id := e.hs.inject(room, "@bob:test.local", ping(318))
 	e.as("alice", "inbox", "--brief").ok(t)
