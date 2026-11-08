@@ -3435,8 +3435,11 @@ relevant mailbox entries, and an overlapping owner-DM route refuse. Membership
 is a point-in-time observation; it does not lock the room against changes by
 another administrator. No local power-level check grants server administration
 rights. A server refusal reports a fixed stage, recognized Matrix errcode and
-HTTP status without server text; unknown errcodes use `SERVER_ERROR`. A local
-refusal or deadline has `LOCAL_REFUSAL` and HTTP 0, which is not a server status.
+HTTP status without server text. Recognized registration codes, including
+`M_INVALID_USERNAME`, `M_EXCLUSIVE`, `M_NOT_JSON` and `M_MISSING_PARAM`, are
+preserved; unknown errcodes use `SERVER_ERROR`. Server messages and raw response
+bodies remain suppressed. A local refusal or deadline has `LOCAL_REFUSAL` and
+HTTP 0, which is not a server status.
 A server that silently ignores a command can only be reported as a deadline,
 not as a fabricated server denial.
 
