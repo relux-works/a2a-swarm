@@ -61,9 +61,11 @@ and warns. Other platforms retain normal text operation. The tagged executable
 depends on pinned native dylibs at its Go module-cache path; retain that
 dependency directory while using it. There is no say engine or voice picker.
 
-The `go 1.25.5` directive in `go.mod` is a minimum Go version, not an exact
-toolchain pin. Reproducing a worker binary's digest requires the same exact
-toolchain and build inputs; the #185 Linux qualification uses Go 1.25.5.
+The `go 1.25.12` directive in `go.mod` sets the minimum Go version to include
+the fix for the `os.Root` escape advisory CVE-2026-39822 (GO-2026-4970; #150);
+it is not an exact toolchain pin. Reproducing a worker binary's digest requires
+the same exact toolchain and build inputs. The historical #185 Linux
+qualification used Go 1.25.5.
 
 `voice install` alone downloads:
 

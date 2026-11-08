@@ -1,6 +1,6 @@
 module github.com/relux-works/a2a-swarm
 
-go 1.25.5
+go 1.25.12
 
 require (
 	github.com/coder/websocket v1.8.15
