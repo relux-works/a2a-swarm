@@ -3547,3 +3547,24 @@ it, and owner-DM mirroring cannot target it. A retained mailbox entry from this
 room causes delivery to refuse for private owner recovery; it is never printed.
 These exclusions apply to the selected connection's configured room. Unrelated
 rooms retain normal read, delivery, projection and archive behavior.
+
+### Internal notice projection
+
+The inert notice serializer defines a closed seven-field summary: `total`,
+`types`, `kinds`, `names`, `unknown`, `more`, `gaps`. Types and kinds use fixed
+orders. Sender labels are same-server ASCII localparts, checked for joined
+membership in the first contributing room, with at most four sorted lookups.
+Unchecked candidates count as `more`; failed or ineligible senders set `unknown`.
+Invites add only an event/type count; gaps are separate. Empty mail emits nothing.
+
+Text is at most 300 bytes before the transport newline. It drops optional names
+and kinds using the common hook template, then uses the fixed event-count
+sentence if the remaining base is too long. Counts are never clamped. JSON has
+exactly seven keys, includes zero type counts and empty arrays, and retains the
+full summary before text omissions. The amended base-overflow fallback empties
+JSON names/kinds while preserving all counts, `more` and `unknown`. Its hard
+limit is 2,048 bytes; failure returns no partial payload. Payloads have no LF;
+future stdout delivery must append exactly one, while a WebSocket frame must not.
+
+This serializer adds no command or consumer, and makes no receipt or state
+changes. Existing hook output remains unchanged.
