@@ -310,19 +310,27 @@ func cmdIdentityRelease(a *App, args []string) error {
 // leaseHolder names this session: hook id, explicit A2A_SESSION_ID, native
 // CODEX_THREAD_ID, CLAUDE_CODE_SESSION_ID, then the PID fallback. Native
 // session commands can share their hooks' lease without a manual export.
+// Long-lived consumers use leaseHolderFor with their own process scope.
 // A zero deadline means none (as in config.UpdateStateUntil); the start-time
 // read is still capped at pidBirthTimeout.
 func (a *App) leaseHolder(p config.Paths, sessionID string, deadline time.Time) string {
+	return a.leaseHolderFor(p, sessionID, deadline, false)
+}
+
+// leaseHolderFor keeps explicit ownership for every consumer. A watch or
+// unbounded wait can outlive its launching runtime, so ambient runtime IDs
+// cannot name its lease. The existing PID lifetime and acquisition rules apply.
+func (a *App) leaseHolderFor(p config.Paths, sessionID string, deadline time.Time, longConsumer bool) string {
 	if id := hookSessionKey(sessionID); sessionID != "" && id != "-" {
 		return id
 	}
 	if id := hookSessionKey(a.Getenv(EnvSessionID)); a.Getenv(EnvSessionID) != "" && id != "-" {
 		return id
 	}
-	if id := a.Getenv("CODEX_THREAD_ID"); claudeSessionRE.MatchString(id) {
+	if id := a.Getenv("CODEX_THREAD_ID"); !longConsumer && claudeSessionRE.MatchString(id) {
 		return id
 	}
-	if a.Getenv(EnvSessionID) == "" && a.Getenv("CODEX_THREAD_ID") == "" {
+	if !longConsumer && a.Getenv(EnvSessionID) == "" && a.Getenv("CODEX_THREAD_ID") == "" {
 		if id := a.Getenv("CLAUDE_CODE_SESSION_ID"); claudeSessionRE.MatchString(id) {
 			return id
 		}
@@ -443,7 +451,11 @@ func (a *App) leaseDeadBy(p config.Paths, deadline time.Time) func(string) bool 
 		if host != machineLabel() {
 			return false
 		}
-		if processGone(pid) {
+		gone := processGone
+		if a.leaseProcessGone != nil {
+			gone = a.leaseProcessGone
+		}
+		if gone(pid) {
 			return true
 		}
 		if !hasBirth {
@@ -481,7 +493,7 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	holder := a.leaseHolder(s.paths, sessionID, deadline)
+	holder := a.leaseHolderFor(s.paths, sessionID, deadline, s.longConsumer)
 	ttl := config.LeaseTTL
 	if a.leaseTTL != 0 {
 		ttl = a.leaseTTL

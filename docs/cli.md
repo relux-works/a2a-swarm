@@ -317,14 +317,17 @@ a2a broadcast-room init
 
 ### `a2a identity release [--force]`
 Clears this session's lease on the identity (`--as` / `A2A_AGENT`), so another session can take it at once. The session is named as for the
-lease (`A2A_SESSION_ID`, else `CODEX_THREAD_ID`, else `pid:<pid>@<host>`). Another session's live lease is refused (exit 1); `--force` clears it anyway: only when that
+lease (`A2A_SESSION_ID`, else a valid `CODEX_THREAD_ID`, else a valid `CLAUDE_CODE_SESSION_ID`, else `pid:<pid>@<host>`). Another session's live lease is refused (exit 1); `--force` clears it anyway: only when that
 session is really gone.
 
 ### One live session per identity: the lease
 The state file holds `lease: {holder, pid, expires}`. `wait`, `watch`, `inbox` and every hook event take the lease or refresh it for
 **10 minutes** (`config.LeaseTTL`, a named constant, not a flag); `wait` and `watch` refresh it again before every `/sync`. The holder is the
-session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise a valid native `CODEX_THREAD_ID`, otherwise `pid:<pid>@<host>` (the OS
-hostname, independent of the identity naming slug).
+session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise a valid native `CODEX_THREAD_ID`, otherwise a valid
+`CLAUDE_CODE_SESSION_ID` when neither higher-priority environment selector is set, otherwise `pid:<pid>@<host>` (the OS hostname, independent of the identity naming slug).
+`watch` and unbounded `wait --timeout 0` ignore both ambient native runtime IDs: unless explicitly owned through `A2A_SESSION_ID` (or a supplied hook id),
+their holder is their own PID with the process birth where supported below. All renewals, including retries, use that same process scope. Finite waits,
+`inbox` and hooks retain session sharing. Native bound consumers already use the binding's explicit session id; this does not change their ownership or exclusive consumer locks.
 - Another holder while the lease is unexpired is refused: `wait`, `watch` and `inbox` exit 1 with
   `identity <name> is held by <holder> until <time>` before any sync; a hook prints nothing, writes that line to stderr and exits 0.
 - An expired lease is taken over. A `pid:` holder on this host whose process has exited counts as expired.
@@ -343,6 +346,10 @@ hostname, independent of the identity naming slug).
   an id that is not a plain `[A-Za-z0-9._-]` token is skipped), so the session's own `a2a inbox` and `wait` hold the same lease as its hooks.
   Codex commands use the native `CODEX_THREAD_ID` automatically; no per-command `A2A_SESSION_ID` export is needed. An explicit export retains priority.
 - A restarted session (a new session id) finds the old lease for up to 10 minutes: `a2a identity release --force` if the old session is gone.
+  An ambient-only detached watcher does not keep renewing its launching runtime's session lease. On the same host a new known session can replace its PID lease;
+  subsequent watcher polls borrow that session's lease without renewing or replacing it, under the existing compatibility rule. A live foreign-host holder still refuses.
+  An explicit `A2A_SESSION_ID` intentionally shares ownership even if the consumer outlives the launching runtime: stop that consumer before releasing the old session's
+  lease or using `identity release --force`. For a process-owned consumer, exit or confirmed local PID reuse permits recovery as above; unreadable birth alone never proves exit.
 
 ### `a2a register <name>` (low level)
 Low level: agents use `a2a identity ensure` (above), which computes the stable name and refuses to take over an account that exists elsewhere.

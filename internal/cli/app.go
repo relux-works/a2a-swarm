@@ -91,6 +91,8 @@ type App struct {
 	leaseTTL time.Duration
 	// leaseBirth reads a process start time for pid: lease holders; tests only replace it.
 	leaseBirth func(ctx context.Context, pid int) (int64, error)
+	// leaseProcessGone replaces the PID liveness probe in synthetic lease tests.
+	leaseProcessGone func(int) bool
 	// leaseReuse is the last pid: holder released because its PID was reused.
 	leaseReuse *leaseReuse
 	// leaseGOOS overrides runtime.GOOS for the start-time reader; tests only.
@@ -429,6 +431,7 @@ type session struct {
 	checkBinding     func() error // Immutable operational snapshot; nil for legacy sessions.
 	principals       []string     // Local snapshot for this delivery cycle; no lock spans I/O.
 	principalWarning bool         // Emit malformed/unreadable metadata warning once per session.
+	longConsumer     bool         // Process-owned watch/unbounded wait; ignore ambient runtime session IDs.
 }
 
 func (a *App) paths() (config.Paths, error) {

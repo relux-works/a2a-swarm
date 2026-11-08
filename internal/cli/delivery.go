@@ -615,6 +615,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}
+	s.longConsumer = *timeout == 0
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
@@ -814,6 +815,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}
+	s.longConsumer = true
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
