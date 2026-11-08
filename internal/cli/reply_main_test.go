@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
@@ -236,13 +237,13 @@ func TestPostReplyMainSelfCycle(t *testing.T) {
 						if cyclic {
 							root = "$target"
 						}
-						body = `{"event_id":"$target","room_id":"!room:fixture","type":"m.room.message","content":{"msgtype":"m.text","body":"child","m.relates_to":{"rel_type":"m.thread","event_id":"` + root + `"}}}`
+						body = `{"event_id":"$target","room_id":"!room:fixture","sender":"@bob:fixture","origin_server_ts":1000,"unsigned":{},"type":"m.room.message","content":{"msgtype":"m.text","body":"child","m.relates_to":{"rel_type":"m.thread","event_id":"` + root + `"}}}`
 					case r.Method == "GET" && r.URL.Path == "/_matrix/client/v3/rooms/!room:fixture/event/$root":
 						if forceMain || cyclic {
 							t.Fatal("unexpected root re-read")
 						}
 						gets++
-						body = `{"event_id":"$root","room_id":"!room:fixture","type":"m.room.message","content":{"msgtype":"m.text","body":"[topic] alpha: A"}}`
+						body = `{"event_id":"$root","room_id":"!room:fixture","sender":"@bob:fixture","origin_server_ts":999,"unsigned":{},"type":"m.room.message","content":{"msgtype":"m.text","body":"[topic] alpha: A"}}`
 					case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/_matrix/client/v3/rooms/!room:fixture/send/m.room.message/"):
 						sends++
 						var content map[string]any
@@ -297,6 +298,12 @@ func TestPostReplyMainMutedLearnedMemberWait(t *testing.T) {
 			e, room := subWorld(t)
 			root := strings.TrimSpace(e.as("alice", "topic", "new", room, "alpha", "A").ok(t).stdout)
 			e.subscribe("alice", "--room", room, "--kind", "notice")
+			// The fake's first sync returns a cursor without message history.
+			// Establish it before posting the child so wait ingests the event.
+			_, s := notificationApp(t, e)
+			if _, err := s.takePosition(context.Background(), time.Time{}); err != nil {
+				t.Fatal(err)
+			}
 			member := strings.TrimSpace(e.as("bob", "post", room, "--topic", root, "member").ok(t).stdout)
 			if out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout; !strings.Contains(out, member) {
 				t.Fatalf("unmuted member did not ring: %q", out)
