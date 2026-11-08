@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -266,7 +265,7 @@ func TestNoticePublicationSuccessCancelsBudget(t *testing.T) {
 func TestNoticePublicationEarlierLockDeadline(t *testing.T) {
 	isolateBindTest(t)
 	e, a, s := noticeDeadlineFixture(t)
-	synctest.Test(t, func(t *testing.T) {
+	noticeFakeTime(t, e, a, func(t *testing.T) {
 		probe := &noticeContextTransport{next: noticeHandlerTransport(e.hs.srv.Config.Handler)}
 		s.client.HTTP = &http.Client{Transport: probe}
 		held, release, holderDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)

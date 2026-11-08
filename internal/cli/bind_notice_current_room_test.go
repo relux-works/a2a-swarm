@@ -433,8 +433,8 @@ func TestNoticeCurrentRoomSiblingBudget(t *testing.T) {
 					if holdErr := <-done; holdErr != nil {
 						t.Fatal(holdErr)
 					}
-					if !errors.Is(err, config.ErrLockTimeout) || time.Since(start) > time.Second || len(probe.contexts) != 0 || !reflect.DeepEqual(before, e.state("alice")) {
-						t.Fatalf("sibling lock budget or no-network/knowledge bound failed: %v", err)
+					if !errors.Is(err, config.ErrLockTimeout) || time.Since(start) != 150*time.Millisecond || len(probe.contexts) != 0 || !reflect.DeepEqual(before, e.state("alice")) {
+						t.Fatalf("sibling lock budget or no-network/knowledge bound failed: elapsed=%v err=%v", time.Since(start), err)
 					}
 
 					// Valid neighbour: release the lock and give the same writer a fresh budget.

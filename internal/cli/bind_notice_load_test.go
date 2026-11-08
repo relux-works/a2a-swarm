@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -237,13 +238,12 @@ func TestNoticePublicationCacheLifecycle(t *testing.T) {
 func TestNoticePublicationConcurrentMutation(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"resolve-replacement", "put-replacement", "put-notice", "put-heartbeat", "put-missing", "put-fence"} {
-		t.Run(kind, func(t *testing.T) {
-			e, a, s := noticeDeadlineFixture(t)
+		t.Run(kind, noticeDeadlineTest(true, func(t *testing.T, e *env, a *App, s *session) {
 			mail := e.mailbox("alice").Pending()
 			var puts atomic.Int32
 			var once sync.Once
 			writerDone := make(chan error, 1)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.client.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
 				put := r.Method == http.MethodPut
 				if put {
 					puts.Add(1)
@@ -255,8 +255,9 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 								t.Errorf("overlapping status writer bypassed reservation: %v", err)
 							}
 						}
+						start := time.Now()
 						go func() {
-							_, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(2*time.Second), func(st *config.State) error {
+							_, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(150*time.Millisecond), func(st *config.State) error {
 								st.HooksPaused = true
 								switch kind {
 								case "resolve-replacement", "put-replacement":
@@ -276,29 +277,25 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 							})
 							writerDone <- err
 						}()
+						// The state edit must complete before the HTTP response, with
+						// no timer advance or lock deadline needed to make progress.
+						synctest.Wait()
 						select {
 						case err := <-writerDone:
 							writerDone <- err
-							if err != nil {
+							if err != nil || !time.Now().Equal(start) {
 								t.Errorf("state writer failed during publication: %v", err)
 							}
-						case <-time.After(time.Second):
+						default:
 							t.Error("publication held state lock during network")
 						}
 					})
 				}
-				e.hs.srv.Config.Handler.ServeHTTP(w, r)
-			}))
-			defer srv.Close()
-			s.client.BaseURL = srv.URL
+				return noticeHandlerTransport(e.hs.srv.Config.Handler).RoundTrip(r)
+			})}
 			publicationErr := s.publishTerminalNotice(context.Background(), "deadline")
-			select {
-			case err := <-writerDone:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(3 * time.Second):
-				t.Fatal("queued writer did not resume")
+			if err := <-writerDone; err != nil {
+				t.Fatal(err)
 			}
 			st := e.state("alice")
 			if puts.Load() != 1 {
@@ -345,7 +342,7 @@ func TestNoticePublicationConcurrentMutation(t *testing.T) {
 					t.Fatal("missing liveness caused a remote write")
 				}
 			}
-		})
+		}))
 	}
 }
 
