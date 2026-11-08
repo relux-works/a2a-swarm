@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -229,6 +230,9 @@ func cmdInboxShow(a *App, args []string) error {
 		}
 		*from = st.LastInbox
 		if *from == "" {
+			if saved := latestPrivateInbox(paths, name); saved != "" {
+				return fmt.Errorf("no saved inbox path recorded; a private saved frame exists; use inbox show %s --from %s", shellQuote(pos[0]), shellQuote(saved))
+			}
 			return fmt.Errorf("no saved inbox frame; use inbox --out FILE or inbox --brief first")
 		}
 	}
@@ -250,6 +254,76 @@ func cmdInboxShow(a *App, args []string) error {
 		return writeCLIOutput(a.Stdout, a.secrets.Scrub(b.String()))
 	}
 	return fmt.Errorf("event not found in saved inbox frame")
+}
+
+// Brief frames have no expiry contract. "Latest" means the newest valid
+// identity-prefixed private frame by modification time, with a name tie-break.
+// This is a recovery hint only: never repair State or silently choose a batch.
+func latestPrivateInbox(paths config.Paths, name string) string {
+	dir := filepath.Dir(paths.StateFile(name))
+	root, _, err := openOutputParent(filepath.Join(dir, "saved-frame"))
+	if err != nil {
+		return ""
+	}
+	defer root.Close()
+	f, err := root.Open(".")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return ""
+	}
+	type candidate struct {
+		path string
+		info os.FileInfo
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		if !privateInboxFrameName(entry.Name(), name) || !entry.Type().IsRegular() {
+			continue
+		}
+		info, err := root.Lstat(entry.Name())
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > inboxSavedMax {
+			continue
+		}
+		candidates = append(candidates, candidate{filepath.Join(dir, entry.Name()), info})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].info.ModTime().Equal(candidates[j].info.ModTime()) {
+			return candidates[i].path < candidates[j].path
+		}
+		return candidates[i].info.ModTime().After(candidates[j].info.ModTime())
+	})
+	for _, candidate := range candidates {
+		if _, err := readSavedInbox(candidate.path); err == nil {
+			path, err := filepath.Abs(candidate.path)
+			if err == nil {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+func privateInboxFrameName(file, name string) bool {
+	prefix := name + ".inbox-"
+	if !strings.HasPrefix(file, prefix) || !strings.HasSuffix(file, ".txt") {
+		return false
+	}
+	suffix := strings.TrimSuffix(strings.TrimPrefix(file, prefix), ".txt")
+	// prepareBriefInbox uses rand.Text's base32 alphabet. A loose prefix
+	// match could include an identity named, for example, alice.inbox-bob.
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if !(r >= 'A' && r <= 'Z' || r >= '2' && r <= '7') {
+			return false
+		}
+	}
+	return true
 }
 
 func readSavedInbox(path string) ([]EventRecord, error) {
