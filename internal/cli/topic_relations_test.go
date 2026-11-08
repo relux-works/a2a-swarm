@@ -36,6 +36,7 @@ type topicRelationsFixture struct {
 	pages    map[string]relationsResponse
 	requests []string
 	root     matrix.Event
+	timeline []matrix.Event // Optional room-read control; nil retains the original root-only fixture.
 	repeat   bool
 }
 
@@ -76,8 +77,14 @@ func newTopicRelationsFixture(t *testing.T, old bool) *topicRelationsFixture {
 		switch r.URL.Path {
 		case "/_matrix/client/v3/rooms/" + relationsRoom + "/event/" + relationsRoot:
 			writeJSON(w, 200, f.root)
-		case "/_matrix/client/v1/rooms/" + relationsRoom + "/threads", "/_matrix/client/v3/rooms/" + relationsRoom + "/messages":
+		case "/_matrix/client/v1/rooms/" + relationsRoom + "/threads":
 			writeJSON(w, 200, matrix.Page{Chunk: []matrix.Event{f.root}})
+		case "/_matrix/client/v3/rooms/" + relationsRoom + "/messages":
+			if f.timeline != nil {
+				writeJSON(w, 200, matrix.Page{Chunk: f.timeline})
+			} else {
+				writeJSON(w, 200, matrix.Page{Chunk: []matrix.Event{f.root}})
+			}
 		case "/_matrix/client/v1/rooms/" + relationsRoom + "/relations/" + relationsRoot + "/m.thread":
 			if r.URL.Query().Get("dir") != "b" || r.URL.Query().Get("limit") != "100" {
 				t.Error("relations direction/limit changed")
@@ -120,6 +127,15 @@ func newTopicRelationsFixture(t *testing.T, old bool) *topicRelationsFixture {
 
 func (f *topicRelationsFixture) read(topic string, last int, asJSON bool) result {
 	f.t.Helper()
+	args := []string{"read", relationsRoom, "--topic", topic, "--last", strconv.Itoa(last)}
+	if asJSON {
+		args = append(args, "--json")
+	}
+	return f.readArgs(args...)
+}
+
+func (f *topicRelationsFixture) readArgs(args ...string) result {
+	f.t.Helper()
 	before := memberFiles(f.t, f.paths.Base)
 	var out, errb bytes.Buffer
 	a := &App{Stdout: &out, Stderr: &errb, Stdin: strings.NewReader(""), HTTP: f.server.Client(), Now: time.Now, Getenv: func(k string) string {
@@ -128,10 +144,7 @@ func (f *topicRelationsFixture) read(topic string, last int, asJSON bool) result
 		}
 		return ""
 	}}
-	args := []string{"--as", "reader", "read", relationsRoom, "--topic", topic, "--last", strconv.Itoa(last)}
-	if asJSON {
-		args = append(args, "--json")
-	}
+	args = append([]string{"--as", "reader"}, args...)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	code := a.Run(ctx, args)
