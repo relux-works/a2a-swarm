@@ -109,7 +109,12 @@ func (s *session) resolveReplyTopic(ctx context.Context, roomID, label, target s
 	threaded := m.RelatesTo != nil && m.RelatesTo.RelType == "m.thread"
 	_, _, topicBody := parseTopicBody(m.Body)
 	h, header := decodeHeader(m.A2A)
-	topicRoot := m.RelatesTo == nil && (topicBody || (header && h.Type == "topic" && slugRE.MatchString(h.Slug)))
+	// A native reply does not disqualify a topic marker from being a root,
+	// matching listTopics/resolveTopic. An explicit m.thread still wins.
+	topicRoot := !threaded && (topicBody || (header && h.Type == "topic" && slugRE.MatchString(h.Slug)))
+	if threaded && m.RelatesTo.EventID == target {
+		return "", "", fmt.Errorf("--re target has a cyclic thread relation")
+	}
 	if !threaded && !topicRoot && header && h.Topic != "" {
 		return "", "", fmt.Errorf("--re target has only a header topic claim in %s, not server thread membership", label)
 	}
@@ -119,9 +124,6 @@ func (s *session) resolveReplyTopic(ctx context.Context, roomID, label, target s
 	root := target
 	if threaded {
 		root = m.RelatesTo.EventID
-		if root == target {
-			return "", "", fmt.Errorf("--re target has a cyclic thread relation")
-		}
 		child := m
 		m, err = s.replyTopicEvent(ctx, roomID, root)
 		if err != nil {

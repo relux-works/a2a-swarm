@@ -607,8 +607,10 @@ With `--re`, the CLI reads the target through the selected session's
 authenticated endpoint in the resolved room. A plain message without a topic
 marker or server `m.thread` relation gets a main-timeline reply; no `--topic` is
 needed. A valid native `m.in_reply_to` on the target is not followed and does
-not make it a thread member. The outgoing header keeps `re` and omits `topic`
-and `slug`; sending it does not record thread participation.
+not make it a thread member. If that target carries a topic marker, it remains
+an a2a topic root: replies use that target as the thread root, without following
+its native reply target. For plain targets, the outgoing header keeps `re` and
+omits `topic` and `slug`; sending it does not record thread participation.
 
 An a2a topic root (recognized by its topic body or structured topic header), or
 a thread reply whose `m.thread` relation points to a root in that same room,
@@ -616,6 +618,8 @@ keeps the existing thread behavior. Thread routing requires at most two event
 reads; it never follows a chain of roots. A child can identify an ordinary
 Matrix root even without an a2a topic marker. `--reply-main` overrides thread
 routing after validating the target, with one event read and no root lookup.
+A target whose `m.thread` points at itself is refused in both modes before any
+send; `--reply-main` skips the root re-read, not this target-only cycle check.
 An unthreaded message claiming a topic only in its a2a header remains refused,
 including with `--reply-main`; that claim cannot create thread membership.
 

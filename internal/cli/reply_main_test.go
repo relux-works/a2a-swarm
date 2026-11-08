@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
@@ -10,21 +11,28 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// Plain targets (including native replies) emit only m.in_reply_to; roots and
-// server-thread children retain m.thread unless --reply-main explicitly opts out.
+// The marker (none/body/header) x relation (none/native/thread) cross-product
+// keeps marked non-thread targets as roots, and m.thread takes precedence over
+// markers. Only --reply-main opts roots/children out of thread routing.
 // All lanes preserve addressing, metadata and the direct reply target.
 func TestPostReplyMainRouting(t *testing.T) {
-	for _, target := range []string{"plain", "native-reply", "root", "child"} {
+	for _, target := range []string{"plain", "native-reply", "body-root", "body-native", "header-root", "header-native", "child", "body-child", "header-child"} {
 		for _, forceMain := range []bool{false, true} {
 			t.Run(target+"/reply-main="+map[bool]string{false: "false", true: "true"}[forceMain], func(t *testing.T) {
 				e, room := world(t)
 				root := strings.TrimSpace(e.as("alice", "topic", "new", room, "alpha", "A").ok(t).stdout)
-				child := strings.TrimSpace(e.as("alice", "post", room, "--topic", root, "child").ok(t).stdout)
-				plain := e.hs.inject(room, "@human:test.local", msg("human question", nil))
-				native := e.hs.inject(room, "@human:test.local", msg("native reply", map[string]any{
-					"m.relates_to": map[string]any{"m.in_reply_to": map[string]any{"event_id": plain}},
-				}))
-				re := map[string]string{"plain": plain, "native-reply": native, "root": root, "child": child}[target]
+				content := msg("plain target", nil)
+				if strings.HasPrefix(target, "body-") {
+					content["body"] = "[topic] alpha: A"
+				} else if strings.HasPrefix(target, "header-") {
+					content[ContentKey] = Header{Type: "topic", Slug: "alpha", Title: "A"}
+				}
+				if strings.Contains(target, "native") {
+					content["m.relates_to"] = map[string]any{"m.in_reply_to": map[string]any{"event_id": "$not-followed"}}
+				} else if strings.Contains(target, "child") {
+					content["m.relates_to"] = map[string]any{"rel_type": "m.thread", "event_id": root}
+				}
+				re := e.hs.inject(room, "@human:test.local", content)
 				args := []string{"post", room, "--re", re, "--to", "@alice:test.local", "--kind", "question",
 					"--reply-by", "2026-11-09T12:00:00+02:00", "--trunk", "abcdef1", "--subject", "PR#331", "answer"}
 				if forceMain {
@@ -38,11 +46,15 @@ func TestPostReplyMainRouting(t *testing.T) {
 					t.Fatal("reply was not exactly one send in the selected room")
 				}
 				wantRoot := ""
-				if !forceMain && (target == "root" || target == "child") {
-					wantRoot = root
+				if !forceMain {
+					if strings.Contains(target, "child") {
+						wantRoot = root
+					} else if strings.HasPrefix(target, "body-") || strings.HasPrefix(target, "header-") {
+						wantRoot = re
+					}
 				}
 				wantReads := 1
-				if wantRoot != "" && target == "child" {
+				if wantRoot != "" && strings.Contains(target, "child") {
 					wantReads = 2
 				}
 				if e.hs.CallCount(get)-beforeGet != wantReads {
@@ -68,7 +80,11 @@ func TestPostReplyMainRouting(t *testing.T) {
 					t.Fatalf("reply lost metadata: %+v", h)
 				}
 				st, err := config.LoadState(e.paths(), "bob")
-				if err != nil || st.HasThread(root) != (wantRoot != "") || st.HasThread(plain) || st.HasThread(native) {
+				wantThreads := []string(nil)
+				if wantRoot != "" {
+					wantThreads = []string{wantRoot}
+				}
+				if err != nil || !reflect.DeepEqual(st.Threads, wantThreads) {
 					t.Fatalf("reply recorded incorrect participation: %+v, %v", st, err)
 				}
 			})
@@ -189,6 +205,129 @@ func TestPostReplyMainDelivery(t *testing.T) {
 				if rel != "" || len(matched) != 0 {
 					t.Fatal("main reply matched an unrelated topic subscription")
 				}
+			}
+		})
+	}
+}
+
+// Both routing modes reject a self-cycle before PUT or state changes. A valid
+// child succeeds in both modes; --reply-main reads only the child, never its root.
+func TestPostReplyMainSelfCycle(t *testing.T) {
+	for _, forceMain := range []bool{false, true} {
+		for _, cyclic := range []bool{true, false} {
+			name := "valid-child"
+			if cyclic {
+				name = "self-cycle"
+			}
+			t.Run(name+"/reply-main="+map[bool]string{false: "false", true: "true"}[forceMain], func(t *testing.T) {
+				f := newNamedFixture(t, true)
+				a := f.app()
+				before, err := config.LoadState(f.paths("alpha", false), "alice")
+				if err != nil {
+					t.Fatal(err)
+				}
+				gets, sends := 0, 0
+				a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+					body := ""
+					switch {
+					case r.Method == "GET" && r.URL.Path == "/_matrix/client/v3/rooms/!room:fixture/event/$target":
+						gets++
+						root := "$root"
+						if cyclic {
+							root = "$target"
+						}
+						body = `{"event_id":"$target","room_id":"!room:fixture","type":"m.room.message","content":{"msgtype":"m.text","body":"child","m.relates_to":{"rel_type":"m.thread","event_id":"` + root + `"}}}`
+					case r.Method == "GET" && r.URL.Path == "/_matrix/client/v3/rooms/!room:fixture/event/$root":
+						if forceMain || cyclic {
+							t.Fatal("unexpected root re-read")
+						}
+						gets++
+						body = `{"event_id":"$root","room_id":"!room:fixture","type":"m.room.message","content":{"msgtype":"m.text","body":"[topic] alpha: A"}}`
+					case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/_matrix/client/v3/rooms/!room:fixture/send/m.room.message/"):
+						sends++
+						var content map[string]any
+						if err := json.NewDecoder(r.Body).Decode(&content); err != nil {
+							t.Fatal(err)
+						}
+						want := map[string]any{"m.in_reply_to": map[string]any{"event_id": "$target"}}
+						if !forceMain {
+							want["rel_type"], want["event_id"] = "m.thread", "$root"
+						}
+						if !reflect.DeepEqual(content["m.relates_to"], want) {
+							t.Fatalf("relation=%#v, want %#v", content["m.relates_to"], want)
+						}
+						body = `{"event_id":"$sent"}`
+					default:
+						t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+					}
+					return waitResponse(r, http.StatusOK, body)
+				})}
+				args := []string{"--as", "alice", "post", "!room:fixture", "--re", "$target", "answer"}
+				if forceMain {
+					args = append(args, "--reply-main")
+				}
+				code := a.Run(context.Background(), args)
+				wantReads := 1
+				if !cyclic && !forceMain {
+					wantReads = 2
+				}
+				if gets != wantReads {
+					t.Fatalf("GET count=%d, want %d", gets, wantReads)
+				}
+				if cyclic {
+					after, err := config.LoadState(f.paths("alpha", false), "alice")
+					if code != ExitError || sends != 0 || f.out.Len() != 0 || !strings.Contains(f.err.String(), "cyclic thread relation") ||
+						err != nil || !reflect.DeepEqual(before, after) {
+						t.Fatalf("cycle refusal failed: code=%d sends=%d err=%s", code, sends, f.err.String())
+					}
+				} else if code != ExitOK || sends != 1 || strings.TrimSpace(f.out.String()) != "$sent" {
+					t.Fatalf("valid control failed: code=%d sends=%d err=%s", code, sends, f.err.String())
+				}
+			})
+		}
+	}
+}
+
+// Wait learns same-room membership from a real thread child. Once muted, a
+// plain reply to that child creates no mail/receipt, while an addressed or
+// mentioned plain reply in the same sync still rings and reaches the mailbox.
+func TestPostReplyMainMutedLearnedMemberWait(t *testing.T) {
+	for _, control := range []string{"addressed", "mention"} {
+		t.Run(control, func(t *testing.T) {
+			e, room := subWorld(t)
+			root := strings.TrimSpace(e.as("alice", "topic", "new", room, "alpha", "A").ok(t).stdout)
+			e.subscribe("alice", "--room", room, "--kind", "notice")
+			member := strings.TrimSpace(e.as("bob", "post", room, "--topic", root, "member").ok(t).stdout)
+			if out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout; !strings.Contains(out, member) {
+				t.Fatalf("unmuted member did not ring: %q", out)
+			}
+			if st := e.state("alice"); st.ThreadEventRoot(room, member) != root {
+				t.Fatal("wait did not persist same-room membership")
+			}
+			e.as("alice", "mute", room, "--topic", root).ok(t)
+			cursor := e.state("alice").NextBatch
+			suppressed := strings.TrimSpace(e.as("bob", "post", room, "--re", member, "--reply-main", "plain reply").ok(t).stdout)
+			args := []string{"post", room, "--re", member, "--reply-main"}
+			wantRel := "mention"
+			if control == "addressed" {
+				args = append(args, "--to", "alice", "addressed reply")
+				wantRel = "to"
+			} else {
+				args = append(args, "@alice:test.local mentioned reply")
+			}
+			ringing := strings.TrimSpace(e.as("bob", args...).ok(t).stdout)
+			out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout
+			if !strings.HasPrefix(out, wantRel+" #proj "+ringing+" ") || strings.Count(out, "\n") != 1 {
+				t.Fatalf("muted ordinary reply rang or control was lost: %q", out)
+			}
+			if _, ok := e.pendingEntry("alice", suppressed); ok || e.received("alice", suppressed) {
+				t.Fatal("muted reply created mail or a receipt")
+			}
+			if entry, ok := e.pendingEntry("alice", ringing); !ok || entry.Rel != wantRel || e.received("alice", ringing) {
+				t.Fatal("address/mention control did not remain pending with its relevance")
+			}
+			if st := e.state("alice"); !st.IsMuted(root) || st.NextBatch == cursor {
+				t.Fatal("wait lost the mute or did not advance past suppressed mail")
 			}
 		})
 	}
