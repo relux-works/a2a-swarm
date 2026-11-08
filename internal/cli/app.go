@@ -135,7 +135,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"courier", "courier enroll --dir HOME/.a2a --from - [--rotate]   install station enrollment from a pipe", cmdCourier},
+		{"courier", "courier serve|register-station|unregister-station|enroll   local Courier and station enrollment", cmdCourier},
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room   named Matrix routing", cmdConnection},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
@@ -250,12 +250,17 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			// Enrollment is a local operator command; it must not read a
 			// connection, credentials, environment identity or owner-DM state.
 			if c.name == "courier" && len(rest) > 1 && rest[1] == "enroll" {
-				return a.fail(cmdCourierEnroll(ctx, a, rest[2:]))
+				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// Stored association is effect-free and has its own closed JSON
 			// refusals. Both preflight and owner warnings read unrelated state.
 			if c.name == "bind" && len(rest) > 1 && rest[1] == "association" {
 				return a.bindAssociation(rest[2:])
+			}
+			// Courier manages only its explicit local home and socket. Never run
+			// connection preflight or owner diagnostics on this path.
+			if c.name == "courier" {
+				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// These inspections have their own routing-only validation. They
 			// must not consult credentials, secret stores or owner-DM state.

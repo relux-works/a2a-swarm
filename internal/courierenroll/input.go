@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -22,7 +21,6 @@ var (
 	errFiles    = errors.New("courier enroll: unsafe or incomplete enrollment path")
 	errWrite    = errors.New("courier enroll: enrollment not installed")
 	errRecovery = errors.New("courier enroll: transaction outcome uncertain; inspect enrollment and sibling staging directories before retrying")
-	selector    = regexp.MustCompile(`^[a-z0-9._=-]{1,64}$`)
 )
 
 type enrollment struct {
@@ -82,7 +80,7 @@ func readInput(r io.Reader) (enrollment, error) {
 		return e, errInput
 	}
 	e.socket, e.identity, e.station = fields["socket"], fields["identity"], fields["station"]
-	if !selector.MatchString(e.identity) || !validSocket(e.socket) || !validStation(e.station) {
+	if courier.ValidateIdentity(e.identity) != nil || !validSocket(e.socket) || !validStation(e.station) {
 		return enrollment{}, errInput
 	}
 	s := fields["secret_b64"]
@@ -94,10 +92,7 @@ func readInput(r io.Reader) (enrollment, error) {
 }
 
 func validSocket(s string) bool {
-	// This is an opaque pointer value, never an output path opened by enroll.
-	// The v1 bound includes the leading slash and counts UTF-8 bytes, not runes.
-	return len(s) >= 1 && len(s) <= 103 && s[0] == '/' && utf8.ValidString(s) &&
-		!strings.ContainsAny(s, "\x00\r\n\uFEFF")
+	return courier.ValidateSocketPath(s) == nil
 }
 
 // Stationlink carries a station name as an opaque string, including reference

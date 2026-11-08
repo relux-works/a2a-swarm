@@ -3659,6 +3659,13 @@ or resend is implemented here. Issue #97 remains open. A separately decided
 future resume route requires a known server transaction-deduplication horizon;
 this feature makes no such assumption.
 
+## Courier authentication endpoint
+
+`a2a courier serve|register-station|unregister-station` is local-only and requires
+an explicit private `--home`. Registration emits only into an operator pipe with
+`--emit -`. See the [Courier wire and custody contract](courier.md) for framing,
+limits and the 0711 directory / 0666 socket access policy.
+
 ## Courier station enrollment
 
 `a2a courier enroll --dir HOME/.a2a --from - [--rotate]` installs a station

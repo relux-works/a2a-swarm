@@ -93,7 +93,15 @@ func install(dir string, r io.Reader, rotate bool, hook fault) error {
 	if !ownedMode(int(stage.Fd()), unix.S_IFDIR, 0700) {
 		return errFiles
 	}
-	contents := [][]byte{[]byte(e.socket + "\n"), []byte(e.identity + "\n"), e.key}
+	pointer, err := courier.PointerFile(e.socket)
+	if err != nil {
+		return errInput
+	}
+	identity, err := courier.IdentityFile(e.identity)
+	if err != nil {
+		return errInput
+	}
+	contents := [][]byte{pointer, identity, e.key}
 	for i, name := range fileNames {
 		fd, err := unix.Openat(int(stage.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 		if err != nil {
@@ -253,7 +261,9 @@ func verify(dir *os.File, want [][]byte) error {
 		}
 	}
 	defer clear(data[2])
-	if len(data[0]) < 2 || data[0][len(data[0])-1] != '\n' || !validSocket(string(data[0][:len(data[0])-1])) || len(data[1]) < 2 || data[1][len(data[1])-1] != '\n' || !selector.Match(data[1][:len(data[1])-1]) || len(data[2]) != courier.StationKeyLen {
+	_, pointerErr := courier.ParsePointerFile(data[0])
+	_, identityErr := courier.ParseIdentityFile(data[1])
+	if pointerErr != nil || identityErr != nil || len(data[2]) != courier.StationKeyLen {
 		return errFiles
 	}
 	return nil
