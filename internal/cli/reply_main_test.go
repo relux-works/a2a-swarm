@@ -320,7 +320,7 @@ func TestPostReplyMainMutedLearnedMemberWait(t *testing.T) {
 				args = append(args, "--to", "alice", "addressed reply")
 				wantRel = "to"
 			} else {
-				args = append(args, "@alice:test.local mentioned reply")
+				args = append(args, "ping @alice:test.local mentioned reply")
 			}
 			ringing := strings.TrimSpace(e.as("bob", args...).ok(t).stdout)
 			out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout
