@@ -36,7 +36,8 @@ func adminRegistrationError(stage string, err error) error {
 		status = me.Status
 		code = "SERVER_ERROR"
 		switch me.ErrCode {
-		case "M_FORBIDDEN", "M_NOT_FOUND", "M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_USER_IN_USE", "M_LIMIT_EXCEEDED", "M_BAD_JSON", "M_UNRECOGNIZED", "M_INVALID_PARAM", "M_UNAUTHORIZED":
+		case "M_FORBIDDEN", "M_NOT_FOUND", "M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_USER_IN_USE", "M_LIMIT_EXCEEDED", "M_BAD_JSON", "M_UNRECOGNIZED", "M_INVALID_PARAM", "M_UNAUTHORIZED",
+			"M_INVALID_USERNAME", "M_EXCLUSIVE", "M_NOT_JSON", "M_MISSING_PARAM":
 			code = me.ErrCode
 		}
 	}
