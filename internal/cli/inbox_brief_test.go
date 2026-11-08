@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
 )
 
@@ -82,6 +83,100 @@ func TestInboxBriefInlineAddressAndKindBoundary(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Claim: nil-event invite/gap entries keep their indices in a mixed batch;
+// only the addressed request and full-ID mention question expand directly
+// below their own summaries, and all six entries receive receipts.
+func TestInboxBriefMixedBatchInlineAlignment(t *testing.T) {
+	e, room := briefWorld(t)
+	entries := []config.MailEntry{
+		{ID: "invite:!mixed:test.local", Kind: config.MailInvite, Room: "!mixed:test.local", Label: "#mixed", Sender: "@bob:test.local"},
+		{ID: "gap:!mixed:test.local:s1", Kind: config.MailGap, Room: "!mixed:test.local", Label: "#mixed", From: "s1", To: "$oldest"},
+	}
+	// Use the same durable mailbox fixture API as the saved-inbox invite/gap
+	// tests; real message events below enter through the fake homeserver.
+	if _, err := config.UpdateState(e.paths(), "alice", func(_ *config.State) error {
+		mb, err := config.OpenMailbox(e.paths(), "alice")
+		if err != nil {
+			return err
+		}
+		_, err = mb.Append(entries)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const requestBody = "Please verify the release artifact.\nReturn its checksum before publishing."
+	const questionBody = "Which release artifact passed verification?\nInclude its checksum in the answer."
+	notice := e.hs.inject(room, "@bob:test.local", msg("The release artifact is ready.\nThis notice requires no action.", map[string]any{
+		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "notice"},
+	}))
+	request := e.hs.inject(room, "@bob:test.local", msg(requestBody, map[string]any{
+		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "request"},
+	}))
+	other := e.hs.inject(room, "@bob:test.local", msg("Please archive the previous release.\nThis request is for Carol.", map[string]any{
+		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "request"},
+	}))
+	question := e.hs.inject(room, "@bob:test.local", msg(questionBody, map[string]any{
+		ContentKey:   Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "question"},
+		"m.mentions": map[string]any{"user_ids": []string{"@alice:test.local"}},
+	}))
+	ids := []string{entries[0].ID, entries[1].ID, notice, request, other, question}
+	out := e.as("alice", "inbox", "--brief", "--width", "1").ok(t).stdout
+	if strings.Count(out, inboxBegin+"\n") != 1 || strings.Count(out, "\n"+inboxEnd+"\n") != 1 {
+		t.Fatalf("mixed batch changed the single frame boundary: %q", out)
+	}
+	frame, _, ok := strings.Cut(out, "\n"+inboxEnd+"\n")
+	if !ok || !strings.HasPrefix(frame, inboxBegin+"\n") {
+		t.Fatalf("mixed batch has no complete frame: %q", out)
+	}
+	lines := strings.Split(strings.TrimPrefix(frame, inboxBegin+"\n"), "\n")
+	var summaries []int
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "count "):
+			if len(summaries) != 0 {
+				t.Fatalf("count inside an event section: %q", line)
+			}
+		case strings.HasPrefix(line, "event "):
+			summaries = append(summaries, i)
+		case strings.HasPrefix(line, inboxIndent):
+			if len(summaries) == 0 {
+				t.Fatalf("body before its event summary: %q", line)
+			}
+		default:
+			t.Fatalf("unexpected frame line prefix: %q", line)
+		}
+	}
+	if len(summaries) != len(ids) {
+		t.Fatalf("want %d mixed summaries, got %d: %q", len(ids), len(summaries), out)
+	}
+	for i, start := range summaries {
+		line := lines[start]
+		if !strings.HasPrefix(line, fmt.Sprintf("event %d ", i+1)) || !strings.Contains(line, fmt.Sprintf(" id=%q ", ids[i])) {
+			t.Fatalf("summary %d does not match its mailbox entry %q: %q", i+1, ids[i], line)
+		}
+		end := len(lines)
+		if i+1 < len(summaries) {
+			end = summaries[i+1]
+		}
+		var want []string
+		switch ids[i] {
+		case request:
+			want = []string{inboxIndent + "Please verify the release artifact.", inboxIndent + "Return its checksum before publishing."}
+		case question:
+			want = []string{inboxIndent + "Which release artifact passed verification?", inboxIndent + "Include its checksum in the answer."}
+		}
+		if got := strings.Join(lines[start+1:end], "\n"); got != strings.Join(want, "\n") {
+			t.Errorf("inline body directly under event %d id=%q: got %q, want %q", i+1, ids[i], got, strings.Join(want, "\n"))
+		}
+		if !e.received("alice", ids[i]) {
+			t.Errorf("mixed entry %d id=%q was not receipted", i+1, ids[i])
+		}
+	}
+	if pending := e.mailbox("alice").Pending(); len(pending) != 0 {
+		t.Fatalf("mixed batch left %d entries pending", len(pending))
 	}
 }
 
@@ -210,14 +305,21 @@ func TestInboxBriefFailuresKeepEntireBatchPending(t *testing.T) {
 // Claim: incompatible flags fail before session/network/save effects; adjacent
 // valid brief controls preserve the selected mail and accept summary/width.
 func TestInboxBriefFlagRefusals(t *testing.T) {
-	for _, flags := range [][]string{
-		{"--json"}, {"--out", ""}, {"--out", "unused"}, {"--width", "0"}, {"--width", "2001"},
+	for _, tc := range []struct {
+		flags []string
+		why   string
+	}{
+		{[]string{"--json"}, "--brief cannot be combined with --json or --out"},
+		{[]string{"--out", ""}, "--brief cannot be combined with --json or --out"},
+		{[]string{"--out", "unused"}, "--brief cannot be combined with --json or --out"},
+		{[]string{"--width", "0"}, "--width must be between 1 and 2000"},
+		{[]string{"--width", "2001"}, "--width must be between 1 and 2000"},
 	} {
-		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+		t.Run(strings.Join(tc.flags, " "), func(t *testing.T) {
 			e, room := briefWorld(t)
 			id := e.hs.inject(room, "@bob:test.local", toMsg("bob", "request", "valid control"))
 			before := len(e.hs.urls())
-			r := e.as("alice", append([]string{"inbox", "--brief"}, flags...)...).failsWith(t, ExitUsage, "--")
+			r := e.as("alice", append([]string{"inbox", "--brief"}, tc.flags...)...).failsWith(t, ExitUsage, tc.why)
 			if r.stdout != "" || e.received("alice", id) || len(e.hs.urls()) != before || e.state("alice").LastInbox != "" {
 				t.Fatal("refused flags had delivery effects")
 			}
