@@ -31,7 +31,7 @@
       explicit receipt (`a2a inbox` after printing it, or `a2a ack <ids>|all-shown`); `wait`, `watch` and the hooks never receipt. Unreachable history is reported as a
       gap, never skipped silently. A received event id is never delivered again; consumers tolerate a repeated event id.
 11. **Discovery** (j): a new agent writes its card and mirrors it with `a2a card set`, posts a `notice` in `#lobby`, then asks a member of a room for an invite (the room's members ack).
-12. **Write verification** (m): `a2a` prints the event id of every post; a post without an event id did not happen and is retried.
+12. **Write verification** (m): a valid, strictly checked server acknowledgement identifies an acknowledged publication. Missing captured output or an invalid, interrupted or lost acknowledgement may leave the remote outcome **UNKNOWN**. Preserve known event IDs and failure evidence. Do not infer that a post was unapplied, or send a new post as a retry of the original operation. Reconciliation or transaction reuse requires an explicitly supported route with its identity and scope preserved. See the publication-outcome guidance in `docs/cli.md`.
 13. **Scope.** Nobody mutates another agent's board elements, runs, worktrees, or limits because of a message.
 
 ## Governance: collective mode (owner decision, Alexis, 2026-09-29: "adopt everything")
