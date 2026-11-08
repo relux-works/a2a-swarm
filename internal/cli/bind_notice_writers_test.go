@@ -21,10 +21,9 @@ import (
 func TestNoticeSharedWriterUncertainty(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"hook-cancelled", "wait-cancelled", "hook-acknowledged", "wait-acknowledged", "hook-not-applied", "wait-not-applied", "hook-error", "wait-error"} {
-		t.Run(kind, func(t *testing.T) {
-			e, a, s := noticeDeadlineFixture(t)
+		t.Run(kind, noticeDeadlineTest(true, func(t *testing.T, e *env, a *App, s *session) {
 			original := schemaNotice("true")
-			at := time.Now().UTC()
+			at := a.Now().UTC()
 			original.ObservedAt = at.Format(time.RFC3339Nano)
 			original.Since = at.Add(-time.Minute).Format(time.RFC3339Nano)
 			a.Now = func() time.Time { return at }
@@ -43,50 +42,27 @@ func TestNoticeSharedWriterUncertainty(t *testing.T) {
 			}
 			var partial atomic.Bool
 			var puts atomic.Int32
-			release := make(chan struct{})
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+				if err := r.Context().Err(); err != nil {
+					return nil, err
+				}
 				if r.Method == http.MethodPut {
 					puts.Add(1)
 					if partial.Load() {
 						if strings.HasSuffix(kind, "error") {
-							w.WriteHeader(500)
-							_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"synthetic refusal"}`))
-							return
+							return waitResponse(r, 500, `{"errcode":"M_UNKNOWN","error":"synthetic refusal"}`)
 						}
-						rec := httptest.NewRecorder()
 						if !strings.HasSuffix(kind, "not-applied") {
+							rec := httptest.NewRecorder()
 							e.hs.srv.Config.Handler.ServeHTTP(rec, r)
+							if rec.Code != http.StatusOK {
+								t.Fatalf("setup: apply %d", rec.Code)
+							}
 						}
-						if rec.Code != 200 {
-							t.Errorf("setup: apply %d", rec.Code)
-							w.WriteHeader(rec.Code)
-							return
-						}
-						w.WriteHeader(200)
-						_, _ = w.Write([]byte(`{"event_id":"`))
-						w.(http.Flusher).Flush()
-						select {
-						case <-r.Context().Done():
-						case <-release:
-						}
-						return
+						return noticePartialResponse(r), nil
 					}
 				}
-				e.hs.srv.Config.Handler.ServeHTTP(w, r)
-			}))
-			defer func() { close(release); srv.Close() }()
-			target, _ := url.Parse(srv.URL)
-			a.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
-				clone := r.Clone(r.Context())
-				u := *r.URL
-				clone.URL = &u
-				clone.URL.Scheme = target.Scheme
-				clone.URL.Host = target.Host
-				resp, err := http.DefaultTransport.RoundTrip(clone)
-				if resp != nil {
-					resp.Request = r
-				}
-				return resp, err
+				return noticeHandlerTransport(e.hs.srv.Config.Handler).RoundTrip(r)
 			})}
 			s.client.HTTP = a.HTTP
 			a.publishTerminalNotice(context.Background(), s, "deadline")
@@ -149,7 +125,7 @@ func TestNoticeSharedWriterUncertainty(t *testing.T) {
 			if puts.Load() != before+1 {
 				t.Fatal("acknowledged equality repeated PUT")
 			}
-		})
+		}))
 	}
 }
 
@@ -158,50 +134,28 @@ func TestNoticeSharedWriterUncertainty(t *testing.T) {
 func TestNoticeSharedWriterAcknowledgement(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"hook-after-cancel", "wait-after-cancel", "hook-certain-control", "wait-certain-control"} {
-		t.Run(kind, func(t *testing.T) {
-			e, a, s := noticeDeadlineFixture(t)
+		t.Run(kind, noticeDeadlineTest(true, func(t *testing.T, e *env, a *App, s *session) {
 			a.as = "alice"
 			a.Stdout = io.Discard
 			a.Stderr = io.Discard
 			var partial atomic.Bool
 			var puts atomic.Int32
-			release := make(chan struct{})
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+				if err := r.Context().Err(); err != nil {
+					return nil, err
+				}
 				if r.Method == http.MethodPut {
 					puts.Add(1)
 					if partial.Load() {
 						rec := httptest.NewRecorder()
 						e.hs.srv.Config.Handler.ServeHTTP(rec, r)
-						if rec.Code != 200 {
-							t.Errorf("setup: apply %d", rec.Code)
-							w.WriteHeader(rec.Code)
-							return
+						if rec.Code != http.StatusOK {
+							t.Fatalf("setup: apply %d", rec.Code)
 						}
-						w.WriteHeader(200)
-						_, _ = w.Write([]byte(`{"event_id":"`))
-						w.(http.Flusher).Flush()
-						select {
-						case <-r.Context().Done():
-						case <-release:
-						}
-						return
+						return noticePartialResponse(r), nil
 					}
 				}
-				e.hs.srv.Config.Handler.ServeHTTP(w, r)
-			}))
-			defer func() { close(release); srv.Close() }()
-			target, _ := url.Parse(srv.URL)
-			a.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
-				clone := r.Clone(r.Context())
-				u := *r.URL
-				clone.URL = &u
-				clone.URL.Scheme = target.Scheme
-				clone.URL.Host = target.Host
-				resp, err := http.DefaultTransport.RoundTrip(clone)
-				if resp != nil {
-					resp.Request = r
-				}
-				return resp, err
+				return noticeHandlerTransport(e.hs.srv.Config.Handler).RoundTrip(r)
 			})}
 			s.client.HTTP = a.HTTP
 			a.publishTerminalNotice(context.Background(), s, "deadline")
@@ -250,7 +204,7 @@ func TestNoticeSharedWriterAcknowledgement(t *testing.T) {
 			if puts.Load() != before {
 				t.Fatal("successful same-identity writer acknowledgement did not restore certainty; certain-equal publication repeated PUT")
 			}
-		})
+		}))
 	}
 }
 
@@ -259,37 +213,28 @@ func TestNoticeSharedWriterAcknowledgement(t *testing.T) {
 func TestNoticeSharedUncertaintyPersistence(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"new-session", "missing", "stale", "stopped", "foreign"} {
-		t.Run(kind, func(t *testing.T) {
-			e, a, s := noticeDeadlineFixture(t)
+		t.Run(kind, noticeDeadlineTest(true, func(t *testing.T, e *env, a *App, s *session) {
 			var partial atomic.Bool
 			var puts, requests atomic.Int32
-			release := make(chan struct{})
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+				if err := r.Context().Err(); err != nil {
+					return nil, err
+				}
 				requests.Add(1)
 				if r.Method == http.MethodPut {
 					puts.Add(1)
 					if partial.Load() {
 						rec := httptest.NewRecorder()
 						e.hs.srv.Config.Handler.ServeHTTP(rec, r)
-						if rec.Code != 200 {
-							t.Errorf("setup: apply %d", rec.Code)
-							w.WriteHeader(rec.Code)
-							return
+						if rec.Code != http.StatusOK {
+							t.Fatalf("setup: apply %d", rec.Code)
 						}
-						w.WriteHeader(200)
-						_, _ = w.Write([]byte(`{"event_id":"`))
-						w.(http.Flusher).Flush()
-						select {
-						case <-r.Context().Done():
-						case <-release:
-						}
-						return
+						return noticePartialResponse(r), nil
 					}
 				}
-				e.hs.srv.Config.Handler.ServeHTTP(w, r)
-			}))
-			defer func() { close(release); srv.Close() }()
-			s.client.BaseURL = srv.URL
+				return noticeHandlerTransport(e.hs.srv.Config.Handler).RoundTrip(r)
+			})}
+			s.client.HTTP = a.HTTP
 			a.publishTerminalNotice(context.Background(), s, "deadline")
 			ack := e.state("alice").Liveness
 			partial.Store(true)
@@ -304,7 +249,7 @@ func TestNoticeSharedUncertaintyPersistence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			next.client.BaseURL = srv.URL
+			next.client.HTTP = a.HTTP
 			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
 				st.Terminal.OwnNotice = ack.OwnNotice
 				switch kind {
@@ -356,7 +301,7 @@ func TestNoticeSharedUncertaintyPersistence(t *testing.T) {
 			if requests.Load() != after {
 				t.Fatal("new session certain-equal made requests")
 			}
-		})
+		}))
 	}
 }
 

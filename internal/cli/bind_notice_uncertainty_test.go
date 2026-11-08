@@ -22,10 +22,9 @@ import (
 func TestNoticeReturnToAcknowledgedAfterCancellation(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"applied-cancelled", "acknowledged-control", "fresh-observation-control", "not-applied-cancelled", "not-applied-error", "reconciliation-error", "certain-equal-control"} {
-		t.Run(kind, func(t *testing.T) {
-			e, a, s := noticeDeadlineFixture(t)
+		t.Run(kind, noticeDeadlineTest(true, func(t *testing.T, e *env, a *App, s *session) {
 			original := schemaNotice("true")
-			at := time.Now().UTC()
+			at := a.Now().UTC()
 			original.ObservedAt = at.Format(time.RFC3339Nano)
 			original.Since = at.Add(-time.Minute).Format(time.RFC3339Nano)
 			a.Now = func() time.Time { return at }
@@ -42,40 +41,29 @@ func TestNoticeReturnToAcknowledgedAfterCancellation(t *testing.T) {
 			var partial atomic.Bool
 			var puts atomic.Int32
 			var requests atomic.Int32
-			release := make(chan struct{})
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.client.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+				if err := r.Context().Err(); err != nil {
+					return nil, err
+				}
 				requests.Add(1)
 				if r.Method == http.MethodPut {
 					puts.Add(1)
 					if partial.Load() {
 						if kind == "not-applied-error" {
-							w.WriteHeader(500)
-							_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"synthetic rejected write"}`))
-							return
+							return waitResponse(r, 500, `{"errcode":"M_UNKNOWN","error":"synthetic rejected write"}`)
 						}
 						if kind != "not-applied-cancelled" {
 							rec := httptest.NewRecorder()
 							e.hs.srv.Config.Handler.ServeHTTP(rec, r)
 							if rec.Code != http.StatusOK {
-								t.Errorf("setup: apply response %d", rec.Code)
-								w.WriteHeader(rec.Code)
-								return
+								t.Fatalf("setup: apply response %d", rec.Code)
 							}
 						}
-						w.WriteHeader(200)
-						_, _ = w.Write([]byte(`{"event_id":"`))
-						w.(http.Flusher).Flush()
-						select {
-						case <-r.Context().Done():
-						case <-release:
-						}
-						return
+						return noticePartialResponse(r), nil
 					}
 				}
-				e.hs.srv.Config.Handler.ServeHTTP(w, r)
-			}))
-			defer func() { close(release); srv.Close() }()
-			s.client.BaseURL = srv.URL
+				return noticeHandlerTransport(e.hs.srv.Config.Handler).RoundTrip(r)
+			})}
 			a.publishTerminalNotice(context.Background(), s, "deadline")
 			if e.state("alice").Terminal.NoticePublication != "published" {
 				t.Fatal("setup: initial positive failed")
@@ -181,7 +169,7 @@ func TestNoticeReturnToAcknowledgedAfterCancellation(t *testing.T) {
 			if kind == "certain-equal-control" && puts.Load() != 1 {
 				t.Fatal("certain-equal positive control made extra PUT")
 			}
-		})
+		}))
 	}
 }
 

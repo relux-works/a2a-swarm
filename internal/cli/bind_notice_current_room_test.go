@@ -383,13 +383,12 @@ func TestNoticeObsoleteRoomMetadata(t *testing.T) {
 func TestNoticeCurrentRoomSiblingBudget(t *testing.T) {
 	isolateBindTest(t)
 	for _, writer := range []string{"hook", "wait"} {
-		for _, kind := range []string{"earlier", "later", "lock"} {
-			t.Run(writer+"/"+kind, func(t *testing.T) {
-				e, a, s := noticeDeadlineFixture(t)
+		for _, kind := range []string{"earlier", "later", "lock", "expired"} {
+			t.Run(writer+"/"+kind, noticeDeadlineTest(true, func(t *testing.T, e *env, a *App, s *session) {
 				a.as = "alice"
 				a.Stdout = io.Discard
 				a.Stderr = io.Discard
-				probe := &noticeContextTransport{next: http.DefaultTransport}
+				probe := &noticeContextTransport{next: noticeHandlerTransport(e.hs.srv.Config.Handler)}
 				a.HTTP = &http.Client{Transport: probe}
 				s.client.HTTP = a.HTTP
 				deadline := time.Now().Add(30 * time.Second)
@@ -398,6 +397,9 @@ func TestNoticeCurrentRoomSiblingBudget(t *testing.T) {
 				}
 				ctx, cancel := context.WithDeadline(context.Background(), deadline)
 				defer cancel()
+				if kind == "expired" {
+					time.Sleep(time.Until(deadline))
+				}
 				write := func() error {
 					if writer == "hook" {
 						return a.hookLiveness(ctx, hookEvent{arg: "stop"}, hookInput{SessionID: "synthetic"})
@@ -405,6 +407,19 @@ func TestNoticeCurrentRoomSiblingBudget(t *testing.T) {
 					return s.writeLivenessSource(ctx, *e.state("alice").Liveness, "wait-heartbeat")
 				}
 				before := e.state("alice")
+				if kind == "expired" {
+					if err := write(); err == nil || len(probe.contexts) != 0 || !reflect.DeepEqual(before.Liveness, e.state("alice").Liveness) {
+						t.Fatal("expired sibling deadline made HTTP or acknowledged a write")
+					}
+					// Valid neighbour: the same state/writer succeeds with a fresh budget.
+					ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					if err := write(); err != nil || len(probe.contexts) != 2 {
+						t.Fatalf("valid sibling control failed: %v", err)
+					}
+					return
+				}
+
 				if kind == "lock" {
 					held, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 					go func() {
@@ -420,6 +435,13 @@ func TestNoticeCurrentRoomSiblingBudget(t *testing.T) {
 					}
 					if !errors.Is(err, config.ErrLockTimeout) || time.Since(start) > time.Second || len(probe.contexts) != 0 || !reflect.DeepEqual(before, e.state("alice")) {
 						t.Fatalf("sibling lock budget or no-network/knowledge bound failed: %v", err)
+					}
+
+					// Valid neighbour: release the lock and give the same writer a fresh budget.
+					ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					if err := write(); err != nil || len(probe.contexts) != 2 {
+						t.Fatalf("valid unlocked sibling control failed: %v", err)
 					}
 					return
 				}
@@ -438,7 +460,7 @@ func TestNoticeCurrentRoomSiblingBudget(t *testing.T) {
 				if !errors.Is(probe.contexts[0].Err(), context.Canceled) || !errors.Is(probe.contexts[1].Err(), context.Canceled) {
 					t.Fatal("sibling success did not release budget")
 				}
-			})
+			}))
 		}
 	}
 }
