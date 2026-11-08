@@ -40,7 +40,7 @@ func TestReadEventJSON(t *testing.T) {
 		t.Fatalf("records = %d, want 1", len(recs))
 	}
 	r := recs[0]
-	want := EventRecord{Type: "message", Room: "#proj", RoomID: "!projRoomID", EventID: id, Sender: "bob", At: r.At,
+	want := EventRecord{Type: "message", Room: "#proj", RoomID: "!projRoomID", EventID: id, Sender: "@bob:test.local", At: r.At,
 		Kind: "question", Topic: "alpha", Root: root, To: []string{"alice", "carol"}, Re: root,
 		ReplyBy: "2026-10-01T00:00:00Z", Trunk: "abcdef1", Body: "line one\n" + long}
 	if !reflect.DeepEqual(r, want) {
@@ -112,7 +112,7 @@ func TestWaitJSON(t *testing.T) {
 		t.Fatalf("records = %+v", recs)
 	}
 	got := recs[0]
-	if got.Type != "to" || got.Room != "#proj" || got.RoomID != room || got.EventID != id || got.Sender != "bob" ||
+	if got.Type != "to" || got.Room != "#proj" || got.RoomID != room || got.EventID != id || got.Sender != "@bob:test.local" ||
 		got.Kind != "request" || got.Topic != "alpha" || got.Root != root || !reflect.DeepEqual(got.To, []string{"alice"}) || got.Body != "" {
 		t.Fatalf("record = %+v", got)
 	}
@@ -122,7 +122,7 @@ func TestWaitJSON(t *testing.T) {
 
 	e.as("alice", "invite", "proj", "carol").ok(t)
 	inv := decodeRecords(t, e.as("carol", "wait", "--timeout", "2s", "--json").ok(t).stdout)
-	if len(inv) != 1 || !reflect.DeepEqual(inv[0], EventRecord{Type: "invite", Room: "#proj", RoomID: "!projRoomID", Sender: "alice"}) {
+	if len(inv) != 1 || !reflect.DeepEqual(inv[0], EventRecord{Type: "invite", Room: "#proj", RoomID: "!projRoomID", Sender: "@alice:test.local"}) {
 		t.Fatalf("invite = %+v", inv)
 	}
 

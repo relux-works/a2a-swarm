@@ -131,7 +131,7 @@ func TestWaitRelevance(t *testing.T) {
 			if len(lines) != 1 {
 				t.Fatalf("lines = %q", lines)
 			}
-			tuitestkit.ContainsStr(t, lines[0], tc.want+" "+id+" from=bob")
+			tuitestkit.ContainsStr(t, lines[0], tc.want+" "+id+" from=@bob:test.local")
 		})
 	}
 }
@@ -175,12 +175,12 @@ func TestWaitInvite(t *testing.T) {
 	e, _ := world(t)
 	e.as("alice", "invite", "proj", "carol").ok(t)
 	r := e.as("carol", "wait", "--timeout", "2s").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, "invite #proj !projRoomID from=alice")
+	tuitestkit.ContainsStr(t, r.stdout, "invite #proj !projRoomID from=@alice:test.local")
 
 	e.hs.addRoom("side", "@bob:test.local")
 	e.as("bob", "invite", "side", "carol").ok(t)
 	r = e.as("carol", "wait", "--timeout", "2s").ok(t)
-	tuitestkit.ContainsStr(t, r.stdout, "invite #side !sideRoomID from=bob")
+	tuitestkit.ContainsStr(t, r.stdout, "invite #side !sideRoomID from=@bob:test.local")
 	tuitestkit.NotContainsStr(t, r.stdout, "#proj")
 }
 

@@ -95,7 +95,7 @@ func TestAttachFilesFetchRoundTrip(t *testing.T) {
 	}
 
 	files := e.as("bob", "files", "proj").ok(t).stdout
-	tuitestkit.ContainsStr(t, files, id+"\talice\tnotes.txt\t26\t"+at.SHA256[:12]+"\t"+at.MXC+"\n")
+	tuitestkit.ContainsStr(t, files, id+"\t@alice:test.local\tnotes.txt\t26\t"+at.SHA256[:12]+"\t"+at.MXC+"\n")
 	recs := decodeRecords(t, e.as("bob", "files", "proj", "--json").ok(t).stdout)
 	if len(recs) != 1 || recs[0].Attachment == nil || !reflect.DeepEqual(*recs[0].Attachment, at) || recs[0].Body != "see the notes" {
 		t.Fatalf("files --json = %+v", recs)
@@ -391,7 +391,7 @@ func TestFilesListing(t *testing.T) {
 	second := strings.TrimSpace(e.as("bob", "attach", "proj", "--topic", "beta", p).ok(t).stdout)
 
 	lines := tuitestkit.LinesFromStr(strings.TrimSpace(e.as("alice", "files", "proj").ok(t).stdout))
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], first+"\t") || !strings.HasPrefix(lines[1], second+"\tbob\tsecond.txt\t1\t") {
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], first+"\t") || !strings.HasPrefix(lines[1], second+"\t@bob:test.local\tsecond.txt\t1\t") {
 		t.Fatalf("files = %q", lines)
 	}
 	last := e.as("alice", "files", "proj", "--last", "1").ok(t).stdout

@@ -61,13 +61,13 @@ func TestArchiveFormat(t *testing.T) {
 		"- root: " + root + "\n" +
 		"- archived-by: a2a archive\n" +
 		"\n## $ev001\n" +
-		"- 2026-09-29T10:00:01Z alice kind=notice to=all\n" +
+		"- 2026-09-29T10:00:01Z @alice:test.local kind=notice to=all\n" +
 		"\n    [topic] alpha: Alpha plan\n\n    root text\n" +
 		"\n## $ev002\n" +
-		"- 2026-09-29T10:00:02Z bob kind=proposal to=alice reply-by=2026-10-01T12:00:00Z\n" +
+		"- 2026-09-29T10:00:02Z @bob:test.local kind=proposal to=alice reply-by=2026-10-01T12:00:00Z\n" +
 		"\n    first reply\n" +
 		"\n## $ev005\n" +
-		"- 2026-09-29T10:00:05Z alice kind=notice to=all\n" +
+		"- 2026-09-29T10:00:05Z @alice:test.local kind=notice to=all\n" +
 		"- attachment: notes.txt 17 sha256=" + sumHex([]byte("hello attachment\n")) + " mxc://test.local/media004AbC_-\n" +
 		"\n    the notes\n"
 	if got != want {
@@ -147,8 +147,8 @@ func TestArchiveEdit(t *testing.T) {
 	})
 	e.as("alice", "archive", "proj", "--dir", dir).ok(t)
 	got := readFileStr(t, filepath.Join(dir, "proj", "alpha.md"))
-	tuitestkit.ContainsStr(t, got, "\n## "+reply+"\n- 2026-09-29T10:00:02Z bob kind=proposal to=alice reply-by=2026-10-01T12:00:00Z\n\n    first reply\n")
-	tuitestkit.ContainsStr(t, got, "\n## "+edit+"\n- 2026-09-29T10:00:04Z bob\n- edit-of: "+reply+"\n\n    fixed reply\n")
+	tuitestkit.ContainsStr(t, got, "\n## "+reply+"\n- 2026-09-29T10:00:02Z @bob:test.local kind=proposal to=alice reply-by=2026-10-01T12:00:00Z\n\n    first reply\n")
+	tuitestkit.ContainsStr(t, got, "\n## "+edit+"\n- 2026-09-29T10:00:04Z @bob:test.local\n- edit-of: "+reply+"\n\n    fixed reply\n")
 	if heads := blockHeaders(got); len(heads) != 3 {
 		t.Fatalf("blocks = %q", heads)
 	}
@@ -167,8 +167,8 @@ func TestArchiveRedactedAndRoomLevel(t *testing.T) {
 	e.as("alice", "archive", "proj", "--dir", dir).ok(t)
 	room := readFileStr(t, filepath.Join(dir, "proj", RoomFileName))
 	tuitestkit.ContainsStr(t, room, "# #proj / _room: room-level messages\n- room: !projRoomID\n- archived-by: a2a archive\n")
-	tuitestkit.ContainsStr(t, room, "\n## "+gone+"\n- 2026-09-29T10:00:04Z bob\n- redacted\n\n    [redacted]\n")
-	tuitestkit.ContainsStr(t, room, "\n## "+kept+"\n- 2026-09-29T10:00:05Z bob\n\n    plain chatter\n")
+	tuitestkit.ContainsStr(t, room, "\n## "+gone+"\n- 2026-09-29T10:00:04Z @bob:test.local\n- redacted\n\n    [redacted]\n")
+	tuitestkit.ContainsStr(t, room, "\n## "+kept+"\n- 2026-09-29T10:00:05Z @bob:test.local\n\n    plain chatter\n")
 	tuitestkit.NotContainsStr(t, room, "secret oops")
 	if heads := blockHeaders(room); len(heads) != 2 {
 		t.Fatalf("_room.md blocks = %q, want only the 2 room-level messages", heads)
@@ -186,7 +186,7 @@ func TestArchiveProjection(t *testing.T) {
 		ContentKey: Projection{V: 1, Type: "projection", Kind: "system", From: "carol", At: "2026-09-29T10:00:00Z", OriginRoom: "!o", OriginEvent: "$x"}})
 	e.as("alice", "archive", "proj", "--dir", dir).ok(t)
 	tuitestkit.ContainsStr(t, readFileStr(t, filepath.Join(dir, "proj", RoomFileName)),
-		"\n## "+id+"\n- 2026-09-29T10:00:04Z bob kind=system\n\n    [system] #other from carol:\n    landed\n\n    origin: https://matrix.to/#/!o/$x\n")
+		"\n## "+id+"\n- 2026-09-29T10:00:04Z @bob:test.local kind=system\n\n    [system] #other from carol:\n    landed\n\n    origin: https://matrix.to/#/!o/$x\n")
 }
 
 // Proves --json-index writes a sorted, deterministic index of the topics.

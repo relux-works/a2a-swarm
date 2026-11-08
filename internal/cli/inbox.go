@@ -30,7 +30,7 @@ const inboxMax = 50
 // inboxBodyMax is the longest body, in characters, that inbox prints.
 const inboxBodyMax = 2000
 
-// inboxFieldMax bounds every header field of the frame.
+// inboxFieldMax bounds frame header fields other than the full event sender.
 const inboxFieldMax = 100
 
 const (
@@ -268,7 +268,8 @@ func inboxFrame(items []waitItem, server string, more int) string {
 			continue
 		}
 		if it.ev == nil {
-			b.WriteString(inboxField(it.line) + "\n")
+			// Invite lines already bound room metadata and quote their sender.
+			b.WriteString(it.line + "\n")
 			continue
 		}
 		rec, cut := inboxRecord(it, server)
@@ -276,7 +277,7 @@ func inboxFrame(items []waitItem, server string, more int) string {
 		if kind == "" {
 			kind = "-"
 		}
-		fields := []string{inboxField(rec.Type), "from=" + inboxField(rec.Sender), "room=" + inboxField(rec.Room), "kind=" + inboxField(kind), "id=" + inboxField(rec.EventID)}
+		fields := []string{inboxField(rec.Type), "from=" + senderText(rec.Sender), "room=" + inboxField(rec.Room), "kind=" + inboxField(kind), "id=" + inboxField(rec.EventID)}
 		for _, f := range []struct{ k, v string }{{"topic", rec.Topic}, {"sub", rec.Sub}, {"re", rec.Re}, {"reply-by", rec.ReplyBy}} {
 			if f.v != "" {
 				fields = append(fields, f.k+"="+inboxField(f.v))

@@ -944,11 +944,11 @@ func (a *App) printEvent(ev matrix.Event, server string) {
 	if root := eventTopicRoot(ev); root != "" {
 		meta = append(meta, "thread="+root)
 	}
-	line := fmt.Sprintf("[%s] %s %s", ts, localpartIfLocal(ev.Sender, server), ev.EventID)
+	line := fmt.Sprintf("[%s] %s %s", ts, senderText(ev.Sender), sanitizeLine(ev.EventID))
 	if len(meta) > 0 {
-		line += " " + strings.Join(meta, " ")
+		line += " " + sanitizeLine(strings.Join(meta, " "))
 	}
-	a.printf("%s\n", sanitizeLine(line))
+	a.printf("%s\n", line)
 	body := sanitizeText(m.Body)
 	if _, ok := decodeHeader(m.A2A); ok {
 		body = stripHeaderBody(body)
