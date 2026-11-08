@@ -399,37 +399,25 @@ func TestNoticeObservationDoesNotMarkPending(t *testing.T) {
 func TestNoticePublicationSharedBudgetAndAppliedCancellation(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"earlier-partial-body", "later-caller-success"} {
-		t.Run(kind, func(t *testing.T) {
-			e, a, s := noticeDeadlineFixture(t)
+		t.Run(kind, noticeDeadlineTest(true, func(t *testing.T, e *env, a *App, s *session) {
 			before := e.state("alice")
-			release := make(chan struct{})
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p := &noticeContextTransport{next: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+				if err := r.Context().Err(); err != nil {
+					return nil, err
+				}
 				if strings.Contains(r.URL.Path, "/directory/room/") && kind == "earlier-partial-body" {
 					time.Sleep(100 * time.Millisecond)
 				}
 				if r.Method == http.MethodPut && kind == "earlier-partial-body" {
-					// Apply the real self-keyed event before withholding acknowledgement.
 					rec := httptest.NewRecorder()
 					e.hs.srv.Config.Handler.ServeHTTP(rec, r)
-					if rec.Code != 200 {
-						t.Errorf("setup: apply failed: %d %s", rec.Code, rec.Body.String())
-						return
+					if rec.Code != http.StatusOK {
+						t.Fatalf("setup: apply failed: %d", rec.Code)
 					}
-					w.WriteHeader(200)
-					_, _ = w.Write([]byte(`{"event_id":"`))
-					w.(http.Flusher).Flush()
-					select {
-					case <-r.Context().Done():
-					case <-release:
-					}
-					return
+					return noticePartialResponse(r), nil
 				}
-				e.hs.srv.Config.Handler.ServeHTTP(w, r)
-			}))
-			defer srv.Close()
-			defer close(release)
-			s.client.BaseURL = srv.URL
-			p := &noticeContextTransport{next: http.DefaultTransport}
+				return noticeHandlerTransport(e.hs.srv.Config.Handler).RoundTrip(r)
+			})}
 			s.client.HTTP = &http.Client{Transport: p}
 			budget := 350 * time.Millisecond
 			if kind == "later-caller-success" {
@@ -455,7 +443,7 @@ func TestNoticePublicationSharedBudgetAndAppliedCancellation(t *testing.T) {
 				}
 				return
 			}
-			if elapsed < 300*time.Millisecond || elapsed > time.Second || !reflect.DeepEqual(st.Liveness, before.Liveness) || st.Terminal.NoticePublication == "published" {
+			if elapsed != budget || !reflect.DeepEqual(st.Liveness, before.Liveness) || st.Terminal.NoticePublication == "published" {
 				t.Fatalf("partial-body shared budget or acknowledgement violated: elapsed=%v", elapsed)
 			}
 			room, _, err := s.resolveRoom(context.Background(), StatusRoom)
@@ -466,7 +454,13 @@ func TestNoticePublicationSharedBudgetAndAppliedCancellation(t *testing.T) {
 			if err = s.client.GetState(context.Background(), room, StatusEventType, s.creds.UserID, &remote); err != nil || !reflect.DeepEqual(remote.OwnNotice, before.Terminal.OwnNotice) {
 				t.Fatalf("applied-before-cancel control missing: %v", err)
 			}
-		})
+			// A complete acknowledgement on the same state restores publication.
+			p.next = noticeHandlerTransport(e.hs.srv.Config.Handler)
+			publishNoticeAtEligibility(t, a, s, context.Background(), "deadline")
+			if e.state("alice").Terminal.NoticePublication != "published" {
+				t.Fatal("valid acknowledgement control refused")
+			}
+		}))
 	}
 }
 

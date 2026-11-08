@@ -9,14 +9,15 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// These tests use the real App/session publisher and real HTTP sockets. The
-// server consumes the status PUT body before withholding every response byte.
-// Safety releases happen only after a named property assertion has failed.
+// The fixture initializes the real App/session publisher through local HTTP.
+// Deadline tests replace that transport before entering fake time; the default
+// network-bound witnesses retain sockets and withhold every response byte.
 func noticeDeadlineFixture(t *testing.T) (*env, *App, *session) {
 	t.Helper()
 	e, room := world(t)
@@ -48,13 +49,12 @@ func noticeDeadlineFixture(t *testing.T) (*env, *App, *session) {
 func TestNoticePublicationNetworkBound(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"put-default", "resolve-default", "put-deadline", "resolve-deadline", "put-cancel", "resolve-cancel", "consumer-deadline"} {
-		t.Run(kind, func(t *testing.T) {
-			e, a, s := noticeDeadlineFixture(t)
+		t.Run(kind, noticeDeadlineTest(!strings.HasSuffix(kind, "default"), func(t *testing.T, e *env, a *App, s *session) {
 			before := e.state("alice")
 			mail := e.mailbox("alice").Pending()
 			entered, release := make(chan struct{}), make(chan struct{})
 			requestFinished := make(chan struct{})
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				statusPUT := r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/state/"+StatusEventType+"/")
 				resolve := strings.Contains(r.URL.Path, "/directory/room/")
 				stall := statusPUT
@@ -88,10 +88,15 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 				} else {
 					e.hs.srv.Config.Handler.ServeHTTP(w, r)
 				}
-			}))
-			// Cleanup must release a deliberately broken publisher before Server.Close.
-			t.Cleanup(srv.Close)
-			s.client.BaseURL = srv.URL
+			})
+			if strings.HasSuffix(kind, "default") {
+				// Keep the real-socket default-budget witnesses; short deadlines use fake time.
+				srv := httptest.NewServer(handler)
+				t.Cleanup(srv.Close)
+				s.client.BaseURL = srv.URL
+			} else {
+				s.client.HTTP = &http.Client{Transport: noticeHandlerTransport(handler)}
+			}
 			ctx := context.Background()
 			cancel := func() {}
 			budget := nativeRPCTimeout
@@ -201,7 +206,13 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 				t.Fatal("consumer error path did not resume")
 			}
 			t.Logf("accepted %s returned unavailable in %v; same-identity mutation and evidence preserved", kind, elapsed)
-		})
+			// Valid neighbour: complete the same eligible publication after the stall.
+			s.client.HTTP = &http.Client{Transport: noticeHandlerTransport(e.hs.srv.Config.Handler)}
+			publishNoticeAtEligibility(t, a, s, context.Background(), "deadline")
+			if e.state("alice").Terminal.NoticePublication != "published" {
+				t.Fatal("valid unstalled publication control refused")
+			}
+		}))
 	}
 }
 
@@ -254,24 +265,41 @@ func TestNoticePublicationSuccessCancelsBudget(t *testing.T) {
 
 func TestNoticePublicationEarlierLockDeadline(t *testing.T) {
 	isolateBindTest(t)
-	_, _, s := noticeDeadlineFixture(t)
-	held, release, holderDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	go func() {
-		_, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(time.Second), func(*config.State) error { close(held); <-release; return nil })
-		holderDone <- err
-	}()
-	<-held
-	defer func() {
-		close(release)
-		if err := <-holderDone; err != nil {
-			t.Error(err)
+	e, a, s := noticeDeadlineFixture(t)
+	synctest.Test(t, func(t *testing.T) {
+		probe := &noticeContextTransport{next: noticeHandlerTransport(e.hs.srv.Config.Handler)}
+		s.client.HTTP = &http.Client{Transport: probe}
+		held, release, holderDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+		go func() {
+			_, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(time.Second), func(*config.State) error { close(held); <-release; return nil })
+			holderDone <- err
+		}()
+		<-held
+		released := false
+		defer func() {
+			if !released {
+				close(release)
+				if err := <-holderDone; err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		err := s.publishTerminalNotice(ctx, "deadline")
+		if !errors.Is(err, config.ErrLockTimeout) || time.Since(start) != 150*time.Millisecond || len(probe.contexts) != 0 {
+			t.Fatalf("lock wait ignored earlier caller deadline: elapsed=%v err=%v", time.Since(start), err)
 		}
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	err := s.publishTerminalNotice(ctx, "deadline")
-	if !errors.Is(err, config.ErrLockTimeout) || time.Since(start) > time.Second {
-		t.Fatalf("lock wait ignored earlier caller deadline: elapsed=%v err=%v", time.Since(start), err)
-	}
+		close(release)
+		released = true
+		if err := <-holderDone; err != nil {
+			t.Fatal(err)
+		}
+		a.publishTerminalNotice(context.Background(), s, "deadline")
+		if len(probe.contexts) != 2 || e.state("alice").Terminal.NoticePublication != "published" {
+			t.Fatal("valid unlocked publication control refused")
+		}
+	})
 }
