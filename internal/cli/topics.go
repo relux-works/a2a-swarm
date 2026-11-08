@@ -577,7 +577,7 @@ func (s *session) sendThreadContent(ctx context.Context, roomID, label string, h
 // messageAddressees makes the selected-server convention visible to callers
 // sending messages. Validate the complete list before emitting any warning.
 func (s *session) messageAddressees(to string) (names, mentions []string, err error) {
-	names, mentions, err = addressees(to, s.server)
+	names, mentions, err = messageRecipientList(to, s.server)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -605,6 +605,30 @@ func addressees(to, server string) (names, mentions []string, err error) {
 			return nil, nil, err
 		}
 		names = append(names, localpartIfLocal(uid, server))
+		mentions = append(mentions, uid)
+	}
+	if len(names) == 0 {
+		names = []string{"all"}
+	}
+	return names, mentions, nil
+}
+
+// messageRecipientList validates only explicit message-publisher targets.
+func messageRecipientList(to, server string) (names, mentions []string, err error) {
+	for _, t := range splitList(to) {
+		if t == "all" {
+			names = append(names, "all")
+			continue
+		}
+		uid, explicit, err := messageRecipient(t, server)
+		if err != nil {
+			return nil, nil, err
+		}
+		if explicit {
+			names = append(names, uid)
+		} else {
+			names = append(names, localpartIfLocal(uid, server))
+		}
 		mentions = append(mentions, uid)
 	}
 	if len(names) == 0 {

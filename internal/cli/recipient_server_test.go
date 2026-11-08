@@ -21,7 +21,6 @@ func TestRecipientServerWarning(t *testing.T) {
 			}{
 				{"bare", "bob", true, []string{"@bob:" + server}},
 				{"at-shorthand", "@bob", true, []string{"@bob:" + server}},
-				{"empty-server", "bob:", true, []string{"@bob:" + server}},
 				{"mixed", "bob,@bob:remote.example,@carol", true, []string{"@bob:" + server, "@bob:remote.example", "@carol:" + server}},
 				{"explicit-local", "@bob:" + server, false, []string{"@bob:" + server}},
 				{"explicit-remote", "@bob:remote.example", false, []string{"@bob:remote.example"}},

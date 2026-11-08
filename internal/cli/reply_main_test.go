@@ -75,7 +75,7 @@ func TestPostReplyMainRouting(t *testing.T) {
 					wantSlug = "alpha"
 				}
 				if !ok || h.Topic != wantRoot || h.Slug != wantSlug || h.Re != re || h.Kind != "question" || h.ReplyBy != "2026-11-09T10:00:00Z" ||
-					h.Trunk != "abcdef1" || h.Subject != "PR#331" || !reflect.DeepEqual(h.To, []string{"alice"}) ||
+					h.Trunk != "abcdef1" || h.Subject != "PR#331" || !reflect.DeepEqual(h.To, []string{"@alice:test.local"}) ||
 					m.Mentions == nil || !reflect.DeepEqual(m.Mentions.UserIDs, []string{"@alice:test.local"}) ||
 					!strings.Contains(m.Body, "- re: "+re+"\n") {
 					t.Fatalf("reply lost metadata: %+v", h)

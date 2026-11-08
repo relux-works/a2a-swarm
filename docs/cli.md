@@ -709,14 +709,36 @@ are ignored, duplicates are preserved, and an entirely empty list addresses
 `all`. An invalid recipient in any occurrence refuses the whole command before
 sending.
 
-Recipient shorthand (`name`, `@name`, or a name with an empty server suffix)
-uses the selected identity's server, never a server inferred from the room or
-another account with the same name. `post`, `topic new`, and `attach` emit one
-`LOCAL_RECIPIENT` warning on stderr when such shorthand occurs in a valid
-recipient list. Use a full ID such as `@bob:remote.example` for a cross-server
-recipient. Explicit IDs with a server, `all`, and the default recipient list do
-not produce this warning. The warning goes only to stderr, so stdout stays
-exactly as the selected mode defines it: the event id or the JSON receipt.
+For `post`, `topic new`, and `attach`, an explicit `@name:server` target
+keeps its exact full ID in `m.mentions.user_ids` and the structured `To` header,
+including for the selected server. The visible `- to:` line on post/attach
+also keeps full explicit IDs. Topic openers retain their existing body frame.
+This changes local explicit header targets from short names to full IDs.
+
+Explicit targets require a nonempty localpart containing only lowercase ASCII
+letters, digits, `.`, `_`, `=`, `-`, `/` or `+`, a nonempty Matrix server name,
+and a full ID of at most 255 bytes. Servers accept ASCII host spelling or bracketed IPv6,
+with an optional one-to-five-digit port; spelling (including port zeroes) is
+preserved without DNS lookup. Uppercase in the localpart or server is a usage
+error naming the lowercase form only when the ASCII fold is itself a supported
+explicit target; it is never silently normalized. Non-ASCII inputs get no
+case-fold suggestion. Colon-bearing targets without `@` and empty servers (`name:`, `@name:`) now refuse rather
+than filling a server. Unsupported historical target localparts refuse; this
+does not say that the account is absent. Received historical IDs remain readable.
+These rules apply only to the three message publishers above. Mail alarms,
+`sub-request` and replies from `sub-accept` retain their existing recipient
+normalization and header behavior.
+
+Recipient shorthand (`name` or `@name`) retains its legacy lowercase localpart,
+short header name and selected-identity server. It never infers a server from
+the room or another account with the same name. These three commands emit one
+`LOCAL_RECIPIENT` warning on stderr for a valid list containing shorthand.
+Explicit full IDs, `all`, and default lists do not warn. The entire accumulated
+list is validated before warnings, recipient lookups, media config/upload or
+send; an invalid occurrence refuses without a success receipt. Order,
+duplicates, empty segments, broadcast defaults and end-of-options behavior
+remain unchanged. The warning goes only to stderr, so stdout stays exactly as
+the selected mode defines it: the event id or the JSON receipt.
 `--id-file` content is unaffected.
 
 ```bash
