@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,7 +52,7 @@ func RewriteCredentialMetadata(p Paths, name string, human bool, fn func(*Creden
 	if c.AccessToken != "" || c.Password != "" {
 		return fmt.Errorf("credential scrub refused: secrets remain")
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	data, err := marshalCredentials(c)
 	if err != nil {
 		return err
 	}

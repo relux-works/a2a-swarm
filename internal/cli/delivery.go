@@ -612,6 +612,9 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	if err != nil {
 		return err
 	}
+	if err := s.creds.ValidateWaitKeywords(); err != nil {
+		return err
+	}
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}
@@ -809,6 +812,9 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	}
 	s, err := a.session()
 	if err != nil {
+		return err
+	}
+	if err := s.creds.ValidateWaitKeywords(); err != nil {
 		return err
 	}
 	if err := refuseBoundWait(ctx, s); err != nil {

@@ -112,6 +112,13 @@ func DecodeConnectionJSON(data []byte, dst any) error {
 						return e
 					}
 					s, ok := k.(string)
+					// Credentials folds this optional field's spelling. Refuse
+					// aliases up front so a rewrite cannot create duplicate keys
+					// that brick the next strict named-metadata load. Opaque
+					// nested object members retain their existing semantics.
+					if _, credentials := dst.(*Credentials); credentials && depth == 0 && strings.EqualFold(s, "wait_keywords") {
+						s = "wait_keywords"
+					}
 					if !ok || keys[s] {
 						return errors.New("duplicate or invalid JSON key")
 					}
@@ -142,7 +149,15 @@ func DecodeConnectionJSON(data []byte, dst any) error {
 	}
 	d = json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
-	if err := d.Decode(dst); err != nil {
+	var err error
+	if c, ok := dst.(*Credentials); ok {
+		// Credentials.UnmarshalJSON bypasses DisallowUnknownFields; keep
+		// strict decoding explicit here, including nested binding fields.
+		err = c.decodeJSON(data, true)
+	} else {
+		err = d.Decode(dst)
+	}
+	if err != nil {
 		return errors.New("invalid or unknown connection fields")
 	}
 	return nil
@@ -409,7 +424,7 @@ func PublishBoundCredentials(p Paths, name string, human bool, c Credentials) er
 	if e = f.Chmod(0600); e != nil {
 		return e
 	}
-	data, e := json.MarshalIndent(c, "", "  ")
+	data, e := marshalCredentials(c)
 	if e != nil {
 		return e
 	}
