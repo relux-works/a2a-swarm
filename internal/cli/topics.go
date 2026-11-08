@@ -408,6 +408,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--reply-main] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
 	fs := newFlagSet("post")
 	result := addResultFlags(fs)
+	operationID := fs.String("operation-id", "", "durable plain-post identity; existing IDs never resend")
 	withVoice := fs.Bool("voice", false, "add a local voice reply after the unchanged text post")
 	topic := fs.String("topic", "", "topic slug or root event id")
 	kind := fs.String("kind", "notice", "message kind")
@@ -435,6 +436,11 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 			return usagef("empty message body refused")
 		}
 		return usagef(use)
+	}
+	if flagPresent(fs, "operation-id") {
+		if !config.ValidPostOperationID(*operationID) || !matrix.ValidVerificationID(pos[0], '!') || !matrix.ValidVerificationID(*topic, '$') || flagPresent(fs, "re") || flagPresent(fs, "reply-main") || flagPresent(fs, "voice") || flagPresent(fs, "envelope") || flagPresent(fs, "json") || flagPresent(fs, "id-file") {
+			return usagef("durable post requires an operation ID, exact room and topic root, plain text and its own result; excluded modes refused")
+		}
 	}
 	resultFile, err := result.prepare(fs)
 	if err != nil {
@@ -496,6 +502,9 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 
+	if flagPresent(fs, "operation-id") {
+		return a.durablePost(ctx, postIntent{ID: *operationID, Room: pos[0], Root: *topic, Text: text, Kind: *kind, To: to.String(), ReplyBy: *replyBy, ExplicitReplyBy: flagPresent(fs, "reply-by"), Trunk: *trunk, Subtype: *subtype, Subject: *subject}, Header{V: 1, Type: "message", At: now.Format(time.RFC3339), Kind: *kind, ReplyBy: rb, Trunk: *trunk, Subtype: *subtype, Subject: *subject})
+	}
 	s, err := a.session()
 	if err != nil {
 		return err

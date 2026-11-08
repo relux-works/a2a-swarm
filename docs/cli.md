@@ -3486,3 +3486,80 @@ it, and owner-DM mirroring cannot target it. A retained mailbox entry from this
 room causes delivery to refuse for private owner recovery; it is never printed.
 These exclusions apply to the selected connection's configured room. Unrelated
 rooms retain normal read, delivery, projection and archive behavior.
+
+### Durable plain posts and local operation evidence
+
+`a2a post '!room:example.invalid' --topic '$root' --operation-id op_1 TEXT`
+opts one plain text thread post into a private durable operation journal. Choose
+an operation ID before the call: 1–64 ASCII letters, digits, underscores or
+hyphens. The ID belongs to the selected own named connection and identity.
+Existing own account, device and binding metadata are required; this command
+does not create or migrate a binding. Linux credential-provider authorization
+and activation requirements remain unchanged.
+
+Only an exact room ID and exact existing topic root are eligible. Aliases,
+slugs, `--re`, `--reply-main`, voice, envelopes, attachments, new topics,
+protected/admin rooms and background modes are excluded. `--json` and
+`--id-file` are refused with this mode; its result is always a separate JSON
+operation projection. Durable mode supports macOS and Linux only. Other
+platforms explicitly refuse without falling back to an ordinary post.
+
+Before mutation I/O, the journal syncs the immutable framed request and then
+an UNKNOWN reservation. One generated Matrix transaction, endpoint, full own
+account, device, binding, room and root stay pinned. A strict complete ACK from
+the original endpoint is synced before follow-state work or output. An ACK is
+transport evidence, not recipient delivery, authenticated device proof or a
+universal exactly-once guarantee. Reserve and ACK each reread and compare the
+complete verified record, including request bytes, length, content and record
+digests, event type and transaction. The bytes sent are the verified reservation
+snapshot. A conflicting replacement before either gate refuses; an ACK mismatch
+remains UNKNOWN. These checks and cooperative locks do not isolate arbitrary
+code running as the same OS user. No journal lock spans remote I/O.
+
+**Privacy cost:** request bytes are stored privately while `not_submitted` or
+`unknown`; a durable ACK replaces them with metadata, content digest and event
+ID. Directories are 0700 and files 0600, with symlink/ownership/mode checks,
+cooperating writer locking, atomic publication, file sync and directory sync.
+Durability and locking assume a local filesystem (APFS, ext4 or similar);
+network filesystems are unsupported. Replacement writes an exclusive 0600
+`<operation-id>.tmp`, syncs it, renames it over the record, then syncs the
+directory. Readers ignore leftover temporary files; the next writer cleans
+them under the journal lock. A failed post-rename sync can leave the old or
+new record after a crash; it never grants a successful posting result.
+The complete framed request is capped at 64 KiB, a record at 128 KiB, the journal
+at 128 records and 16 MiB. A limit or unsupported durability/locking refuses;
+no unresolved record is evicted or automatically expired.
+
+`a2a post-operation status op_1 --json` reads only existing local own metadata
+and journal evidence. It makes no HTTP request or credential-provider call. Local inspection uses
+an existing journal lock and can sync the directory to seal retained ACK evidence;
+it creates no files and does not change record content.
+The closed result contains `operation_id`, `outcome`, `reason`, the exact
+recorded `room_id` and `root_id`, and `event_id` only for acknowledged state.
+It contains no body, filesystem path, credential reference or raw response.
+`retained_local_evidence` identifies a recovered observation, not a new remote
+response. Missing, corrupt, unreadable, foreign or rebound metadata refuses;
+a missing record never proves non-application.
+
+| Outcome | Meaning and exit |
+| --- | --- |
+| `not_submitted` | Record prepared; no mutation attempt through this mode. Local status exits 0; a posting invocation exits 1. This is no continuation grant. |
+| `unknown` | Reservation exists; application or ACK is unconfirmed. Exit 1. Remains unresolved after restart. |
+| `acknowledged` | Strict ACK retained locally. Exit 0 after successful output. |
+
+Refusal, storage and output failures exit 1; invalid usage or unsupported
+combinations/platforms exit 2. If an ACK was observed but persistence failed,
+the command reports UNKNOWN with reason `ack_persist_failed`, exits 1 and says
+“do not repost”; it does not print the observed event ID. Event IDs are exposed
+only from durable acknowledged records. A later stdout or
+follow-state failure cannot erase a durable ACK; inspect local status.
+
+**An existing operation ID never sends again**, including `not_submitted` and
+UNKNOWN. Identical semantic input reports retained evidence; changed text,
+explicit header choices, deadline, binding or destination refuses without
+overwriting it. Wall-clock advance does not regenerate the stored timestamp,
+default deadline, content or transaction. A fresh ID is not recovery for an old
+UNKNOWN operation. No history/body/time search, remote reconciliation, replay
+or resend is implemented here. Issue #97 remains open. A separately decided
+future resume route requires a known server transaction-deduplication horizon;
+this feature makes no such assumption.
