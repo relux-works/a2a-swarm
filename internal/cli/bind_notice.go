@@ -227,22 +227,27 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if _, err := ownerFiles(s.paths, s.name).principals(); err != nil {
 		principalError = principalConfigProblem
 	}
+	stateWriters := s.stateWriterWarnings(ctx, st)
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
-			Publication       string                      `json:"publication"`
-			Report            string                      `json:"system_report"`
-			NoticeError       string                      `json:"notice_error,omitempty"`
-			Notification      notificationStatus          `json:"notification"`
-			Readiness         *terminalReadinessStatus    `json:"readiness,omitempty"`
-			Input             *tmuxwake.InputAssessment   `json:"input,omitempty"`
-			BusyMatchLocation string                      `json:"busy_match_location,omitempty"`
-			SendRefusal       *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
-			Recovery          *config.TerminalRecovery    `json:"recovery,omitempty"`
-			MailAlarm         mailAlarmStatus             `json:"mail_alarm"`
-			Refresh           string                      `json:"refresh"`
-			PrincipalError    string                      `json:"principal_error,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError})
+			Publication         string                      `json:"publication"`
+			Report              string                      `json:"system_report"`
+			NoticeError         string                      `json:"notice_error,omitempty"`
+			Notification        notificationStatus          `json:"notification"`
+			Readiness           *terminalReadinessStatus    `json:"readiness,omitempty"`
+			Input               *tmuxwake.InputAssessment   `json:"input,omitempty"`
+			BusyMatchLocation   string                      `json:"busy_match_location,omitempty"`
+			SendRefusal         *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
+			Recovery            *config.TerminalRecovery    `json:"recovery,omitempty"`
+			MailAlarm           mailAlarmStatus             `json:"mail_alarm"`
+			Refresh             string                      `json:"refresh"`
+			PrincipalError      string                      `json:"principal_error,omitempty"`
+			StateWriterWarnings []stateWriterWarning        `json:"state_writer_warnings,omitempty"`
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, stateWriters})
+	}
+	for _, warning := range stateWriters {
+		a.printf("warning: %s: %s\n", warning.Source, warning.Detail)
 	}
 	if principalError != "" {
 		a.printf("%s\n", principalError)

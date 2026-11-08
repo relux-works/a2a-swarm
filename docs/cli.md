@@ -1541,6 +1541,14 @@ path for a subsequent inbox invocation. No partial target is published.
 Prints one saved event's full sanitized body inside an untrusted-data frame.
 Without `--from`, it uses the last successful `inbox --out` or `inbox --brief` path recorded for
 the selected identity/connection. `--from FILE` reads an explicit saved frame.
+If that recorded path is empty, but an identity-prefixed private brief frame
+remains in the selected identity/connection's state directory, the error names
+an explicit `--from` recovery command. It suggests the newest valid frame by
+file modification time descending (ascending full path breaks ties). Saved
+frames have no expiry contract: even an old frame can be suggested. Selection
+does not test whether that frame contains the requested event; an explicit
+`--from` read still requires event membership before printing a body. It never repairs State or automatically displays a different batch.
+Malformed, non-0600, symlinked and other identities' frames are excluded.
 This is a local read: it never syncs, fetches an event, or receipts mail.
 Unknown events, missing frames, malformed/incomplete frames, duplicate event
 ids, files over 16 MiB, non-regular files, symlinks and modes other than `0600`
@@ -1668,9 +1676,50 @@ During a transient credential refusal, `bind status` can project these diagnosti
 from validated local metadata without an authenticated session; permanent metadata
 or identity refusals still fail. `unavailable` covers absent/older/stopped consumers
 or unknown telemetry.
-Only an updated consumer can record these observations; status reads do not
-probe the executable or trigger replacement. Persistence is best effort under
+Only an updated consumer can record these observations; the refresh projection
+does not probe a replacement candidate or trigger replacement. Persistence is best effort under
 the state lock; the token has no screen content, paths, argv or authority.
+
+`bind status` also warns about a selected identity's hook or active local bound
+consumer using a libexec image known to predate the opaque State preservation
+fix `5f2b843`. These older writers can erase newer State fields such as
+`last_inbox`. JSON exposes optional `state_writer_warnings` with fixed `source`
+and `detail` strings. The diagnostic never executes the examined image and
+matches exact known ancestor revisions rather than ordering commit ids.
+
+This diagnostic is supported on Linux and Darwin only. Resolved hook images
+must use either the flat `.../libexec/a2a/<file>` layout or the install recipe's
+nested `.../libexec/a2a/image.XXXXXX/a2a` layout, where each of the six suffix
+characters is an ASCII letter or digit. Other parent names, suffix lengths,
+nested executable names and layouts are unknown. The image must be a complete
+native regular executable owned by the current UID, owner-executable, without
+group/world write or set-ID bits, and at most 64 MiB. Both native and Go metadata
+reads are bounded to its observed size. The opened fd and path are rechecked.
+Every parent of both the selected path and resolved image must be owned by this
+UID or root, have no group/world write bits, and have no Git marker. These are
+POSIX mode checks; they do not establish safety against macOS extended ACL grants.
+
+Hook discovery covers only default project settings for Claude Code, Codex and
+Muse (including pinned profile/fingerprint commands); custom settings paths are
+not searched. Consumer inspection requires a non-stopped local binding, own-UID
+process, matching birth before and after inspection, selected identity, config
+root, `bind` command and stable loaded-image identity. Linux opens the kernel's
+`/proc/PID/exe` image, including a retained unlinked inode, and checks custody
+and layout of its reported original parent path. It does not classify the new
+file at a retargeted argv path as the running image. Live filenames ending in
+` (deleted)` remain literal for layout checks; unavailable name disambiguation
+is unknown. On Darwin, the first `lsof`
+`txt` vnode supplies the image name and identity; only a readable image matching
+that vnode is classified. An unlinked/replaced Darwin image with no readable
+matching pathname remains unknown. Missing/unreadable images, unavailable parent
+custody, unsupported platforms/layouts and missing, modified, malformed or
+unrecognized build metadata are unknown and produce no known-old warning;
+absence of a warning does not prove an image is current.
+
+Portable Darwin `lsof` record parsing has unit controls, but native Darwin
+Mach-O/process/status end-to-end execution requires a Darwin runner and is not
+qualified by Linux tests or cross-compilation. Status does not rewrite settings,
+repair State, receipt mail, stop processes or upgrade images.
 
 `a2a bind status --json` adds a read-only `notification` state/deadline projection;
 text bind/runtime status also shows its closed state. `uncertain cooldown` and
