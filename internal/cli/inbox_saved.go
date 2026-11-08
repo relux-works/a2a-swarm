@@ -229,7 +229,7 @@ func cmdInboxShow(a *App, args []string) error {
 		}
 		*from = st.LastInbox
 		if *from == "" {
-			return fmt.Errorf("no saved inbox frame; use inbox --out FILE first")
+			return fmt.Errorf("no saved inbox frame; use inbox --out FILE or inbox --brief first")
 		}
 	}
 	records, err := readSavedInbox(*from)

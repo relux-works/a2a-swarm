@@ -29,7 +29,7 @@ func briefWorld(t *testing.T) (*env, string) {
 // structured kind expands a body. Adjacent controls keep every other event short.
 func TestInboxBriefInlineAddressAndKindBoundary(t *testing.T) {
 	for _, kind := range []string{"request", "question", "decision", "notice", "unknown", ""} {
-		for _, route := range []string{"direct", "full ID", "metadata mention", "body mention", "unaddressed", "header claim", "plain", "projection"} {
+		for _, route := range []string{"direct", "full ID", "metadata mention", "body mention", "unaddressed", "header claim", "full ID header claim", "plain", "projection"} {
 			t.Run(kind+"/"+route, func(t *testing.T) {
 				e, room := briefWorld(t)
 				body := "界" + strings.Repeat("body ", 450) + "TAIL\n" + inboxEnd + "\u2028after\x1b\u202e\nprivate syt_synthetic_token " + e.tokens["alice"]
@@ -42,6 +42,9 @@ func TestInboxBriefInlineAddressAndKindBoundary(t *testing.T) {
 				}
 				if route == "body mention" {
 					body = "@alice:test.local " + body
+				}
+				if route == "full ID header claim" {
+					body = "- from: bob\n- to: @alice:test.local\n- kind: request\n\n" + body
 				}
 				if route == "header claim" || route == "plain" {
 					body = "- from: bob\n- to: alice\n- kind: request\n\n" + body
@@ -59,7 +62,7 @@ func TestInboxBriefInlineAddressAndKindBoundary(t *testing.T) {
 				}
 				id := e.hs.inject(room, "@bob:test.local", content)
 				out := e.as("alice", "inbox", "--brief", "--width", "1").ok(t).stdout
-				inline := (kind == "request" || kind == "question" || kind == "decision") && (route == "direct" || route == "full ID" || route == "metadata mention" || route == "body mention")
+				inline := (kind == "request" || kind == "question" || kind == "decision") && (route == "direct" || route == "full ID" || route == "metadata mention" || route == "body mention" || route == "full ID header claim")
 				if strings.Contains(out, "TAIL") != inline || strings.Contains(out, inboxIndent) != inline {
 					t.Fatalf("inline=%v, output=%q", inline, out)
 				}
@@ -88,95 +91,124 @@ func TestInboxBriefInlineAddressAndKindBoundary(t *testing.T) {
 
 // Claim: nil-event invite/gap entries keep their indices in a mixed batch;
 // only the addressed request and full-ID mention question expand directly
-// below their own summaries, and all six entries receive receipts.
+// below their own summaries. Full and limited batches receipt only selected
+// entries, preserve the remaining pending order and print the exact footer.
 func TestInboxBriefMixedBatchInlineAlignment(t *testing.T) {
-	e, room := briefWorld(t)
-	entries := []config.MailEntry{
-		{ID: "invite:!mixed:test.local", Kind: config.MailInvite, Room: "!mixed:test.local", Label: "#mixed", Sender: "@bob:test.local"},
-		{ID: "gap:!mixed:test.local:s1", Kind: config.MailGap, Room: "!mixed:test.local", Label: "#mixed", From: "s1", To: "$oldest"},
-	}
-	// Use the same durable mailbox fixture API as the saved-inbox invite/gap
-	// tests; real message events below enter through the fake homeserver.
-	if _, err := config.UpdateState(e.paths(), "alice", func(_ *config.State) error {
-		mb, err := config.OpenMailbox(e.paths(), "alice")
-		if err != nil {
-			return err
-		}
-		_, err = mb.Append(entries)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	const requestBody = "Please verify the release artifact.\nReturn its checksum before publishing."
-	const questionBody = "Which release artifact passed verification?\nInclude its checksum in the answer."
-	notice := e.hs.inject(room, "@bob:test.local", msg("The release artifact is ready.\nThis notice requires no action.", map[string]any{
-		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "notice"},
-	}))
-	request := e.hs.inject(room, "@bob:test.local", msg(requestBody, map[string]any{
-		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "request"},
-	}))
-	other := e.hs.inject(room, "@bob:test.local", msg("Please archive the previous release.\nThis request is for Carol.", map[string]any{
-		ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "request"},
-	}))
-	question := e.hs.inject(room, "@bob:test.local", msg(questionBody, map[string]any{
-		ContentKey:   Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "question"},
-		"m.mentions": map[string]any{"user_ids": []string{"@alice:test.local"}},
-	}))
-	ids := []string{entries[0].ID, entries[1].ID, notice, request, other, question}
-	out := e.as("alice", "inbox", "--brief", "--width", "1").ok(t).stdout
-	if strings.Count(out, inboxBegin+"\n") != 1 || strings.Count(out, "\n"+inboxEnd+"\n") != 1 {
-		t.Fatalf("mixed batch changed the single frame boundary: %q", out)
-	}
-	frame, _, ok := strings.Cut(out, "\n"+inboxEnd+"\n")
-	if !ok || !strings.HasPrefix(frame, inboxBegin+"\n") {
-		t.Fatalf("mixed batch has no complete frame: %q", out)
-	}
-	lines := strings.Split(strings.TrimPrefix(frame, inboxBegin+"\n"), "\n")
-	var summaries []int
-	for i, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "count "):
-			if len(summaries) != 0 {
-				t.Fatalf("count inside an event section: %q", line)
+	for _, limit := range []int{6, 4} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			e, room := briefWorld(t)
+			entries := []config.MailEntry{
+				{ID: "invite:!mixed:test.local", Kind: config.MailInvite, Room: "!mixed:test.local", Label: "#mixed", Sender: "@bob:test.local"},
+				{ID: "gap:!mixed:test.local:s1", Kind: config.MailGap, Room: "!mixed:test.local", Label: "#mixed", From: "s1", To: "$oldest"},
 			}
-		case strings.HasPrefix(line, "event "):
-			summaries = append(summaries, i)
-		case strings.HasPrefix(line, inboxIndent):
-			if len(summaries) == 0 {
-				t.Fatalf("body before its event summary: %q", line)
+			// Use the same durable mailbox fixture API as the saved-inbox invite/gap
+			// tests; real message events below enter through the fake homeserver.
+			if _, err := config.UpdateState(e.paths(), "alice", func(_ *config.State) error {
+				mb, err := config.OpenMailbox(e.paths(), "alice")
+				if err != nil {
+					return err
+				}
+				_, err = mb.Append(entries)
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
-		default:
-			t.Fatalf("unexpected frame line prefix: %q", line)
-		}
-	}
-	if len(summaries) != len(ids) {
-		t.Fatalf("want %d mixed summaries, got %d: %q", len(ids), len(summaries), out)
-	}
-	for i, start := range summaries {
-		line := lines[start]
-		if !strings.HasPrefix(line, fmt.Sprintf("event %d ", i+1)) || !strings.Contains(line, fmt.Sprintf(" id=%q ", ids[i])) {
-			t.Fatalf("summary %d does not match its mailbox entry %q: %q", i+1, ids[i], line)
-		}
-		end := len(lines)
-		if i+1 < len(summaries) {
-			end = summaries[i+1]
-		}
-		var want []string
-		switch ids[i] {
-		case request:
-			want = []string{inboxIndent + "Please verify the release artifact.", inboxIndent + "Return its checksum before publishing."}
-		case question:
-			want = []string{inboxIndent + "Which release artifact passed verification?", inboxIndent + "Include its checksum in the answer."}
-		}
-		if got := strings.Join(lines[start+1:end], "\n"); got != strings.Join(want, "\n") {
-			t.Errorf("inline body directly under event %d id=%q: got %q, want %q", i+1, ids[i], got, strings.Join(want, "\n"))
-		}
-		if !e.received("alice", ids[i]) {
-			t.Errorf("mixed entry %d id=%q was not receipted", i+1, ids[i])
-		}
-	}
-	if pending := e.mailbox("alice").Pending(); len(pending) != 0 {
-		t.Fatalf("mixed batch left %d entries pending", len(pending))
+			const requestBody = "Please verify the release artifact.\nReturn its checksum before publishing."
+			const questionBody = "Which release artifact passed verification?\nInclude its checksum in the answer."
+			notice := e.hs.inject(room, "@bob:test.local", msg("The release artifact is ready.\nThis notice requires no action.", map[string]any{
+				ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "notice"},
+			}))
+			request := e.hs.inject(room, "@bob:test.local", msg(requestBody, map[string]any{
+				ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "request"},
+			}))
+			other := e.hs.inject(room, "@bob:test.local", msg("Please archive the previous release.\nThis request is for Carol.", map[string]any{
+				ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "request"},
+			}))
+			question := e.hs.inject(room, "@bob:test.local", msg(questionBody, map[string]any{
+				ContentKey:   Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "question"},
+				"m.mentions": map[string]any{"user_ids": []string{"@alice:test.local"}},
+			}))
+			ids := []string{entries[0].ID, entries[1].ID, notice, request, other, question}
+			out := e.as("alice", "inbox", "--brief", "--width", "1", "--limit", fmt.Sprint(limit)).ok(t).stdout
+			if strings.Count(out, inboxBegin+"\n") != 1 || strings.Count(out, "\n"+inboxEnd+"\n") != 1 {
+				t.Fatalf("mixed batch changed the single frame boundary: %q", out)
+			}
+			frame, tail, ok := strings.Cut(out, "\n"+inboxEnd+"\n")
+			if !ok || !strings.HasPrefix(frame, inboxBegin+"\n") {
+				t.Fatalf("mixed batch has no complete frame: %q", out)
+			}
+			wantTail := fmt.Sprintf("saved inbox: %q\n", e.state("alice").LastInbox)
+			if limit < len(ids) {
+				wantTail = fmt.Sprintf("(%d more pending: run a2a inbox again)\n", len(ids)-limit) + wantTail
+			}
+			if tail != wantTail {
+				t.Fatalf("pending footer and saved path: got %q, want %q", tail, wantTail)
+			}
+			lines := strings.Split(strings.TrimPrefix(frame, inboxBegin+"\n"), "\n")
+			var summaries []int
+			for i, line := range lines {
+				switch {
+				case strings.HasPrefix(line, "count "):
+					if len(summaries) != 0 {
+						t.Fatalf("count inside an event section: %q", line)
+					}
+				case strings.HasPrefix(line, "event "):
+					summaries = append(summaries, i)
+				case strings.HasPrefix(line, inboxIndent):
+					if len(summaries) == 0 {
+						t.Fatalf("body before its event summary: %q", line)
+					}
+				default:
+					t.Fatalf("unexpected frame line prefix: %q", line)
+				}
+			}
+			if len(summaries) != limit {
+				t.Fatalf("want %d mixed summaries, got %d: %q", limit, len(summaries), out)
+			}
+			for i, start := range summaries {
+				line := lines[start]
+				if !strings.HasPrefix(line, fmt.Sprintf("event %d ", i+1)) || !strings.Contains(line, fmt.Sprintf(" id=%q ", ids[i])) {
+					t.Fatalf("summary %d does not match its mailbox entry %q: %q", i+1, ids[i], line)
+				}
+				end := len(lines)
+				if i+1 < len(summaries) {
+					end = summaries[i+1]
+				}
+				var want []string
+				switch ids[i] {
+				case request:
+					want = []string{inboxIndent + "Please verify the release artifact.", inboxIndent + "Return its checksum before publishing."}
+				case question:
+					want = []string{inboxIndent + "Which release artifact passed verification?", inboxIndent + "Include its checksum in the answer."}
+				}
+				if got := strings.Join(lines[start+1:end], "\n"); got != strings.Join(want, "\n") {
+					t.Errorf("inline body directly under event %d id=%q: got %q, want %q", i+1, ids[i], got, strings.Join(want, "\n"))
+				}
+			}
+			for i, id := range ids {
+				if got, want := e.received("alice", id), i < limit; got != want {
+					t.Errorf("receipt for mixed entry %d id=%q: got %v, want %v", i+1, id, got, want)
+				}
+			}
+			pending := e.mailbox("alice").Pending()
+			if len(pending) != len(ids)-limit {
+				t.Fatalf("remaining pending count: got %d, want %d", len(pending), len(ids)-limit)
+			}
+			for i, entry := range pending {
+				if entry.ID != ids[limit+i] {
+					t.Errorf("remaining pending entry %d: got %q, want %q", i, entry.ID, ids[limit+i])
+				}
+			}
+			records, err := readSavedInbox(e.state("alice").LastInbox)
+			if err != nil || len(records) != limit {
+				t.Fatalf("saved selected batch: count=%d, error=%v", len(records), err)
+			}
+			for i, record := range records {
+				if record.EventID != ids[i] {
+					t.Errorf("saved selected entry %d: got %q, want %q", i, record.EventID, ids[i])
+				}
+			}
+		})
 	}
 }
 

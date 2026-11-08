@@ -1439,7 +1439,8 @@ The entries are the same as `wait`'s (`to`, `mention`, `thread`, `sub`, invites,
   Every body line is indented with `  | ` (a Unicode line or paragraph separator also starts a new indented line), so no body line can equal a frame
   marker or forge an `--- event` header: a peer cannot close the frame early. The `(K more pending …)` line appears only when events were left out.
 - `--json` prints one `EventRecord` per event, with `body` (cut at 2000 characters plus `[truncated: K more characters]`) instead of the frame.
-- With nothing pending it prints `no new peer events` (`--json`: nothing).
+- With nothing pending, plain inbox prints `no new peer events` (`--json`: nothing).
+  `--brief` saves and prints an empty untrusted frame followed by the saved path.
 - The receipt is recorded only after a successful write and flush, for exactly the printed entries (the rest stay, oldest first, so a backlog of
   any size drains with repeated calls). A crash or a broken stdout before that receipts nothing, so the next `inbox` prints the same entries again
   (at least once).
@@ -1484,8 +1485,11 @@ path after the frame. It refuses `--json` and `--out`. Each selected event gets
 the same summary line. Only events matching the existing structured direct-address
 or full-ID mention rule, with structured kind `request`, `question` or `decision`,
 also print their full sanitized body, with every line indented inside that same
-untrusted frame. Human-readable address claims do not qualify. Other kinds,
-unknown kinds, plain messages, invitations and gaps remain summary-only; these
+untrusted frame. A bare-name human-readable address claim such as `- to: alice`
+does not qualify by itself. A full-ID body mention such as `- to: @alice:test.local`
+does qualify through the existing mention rule, even inside a human-readable
+protocol header. Other kinds, unknown kinds, plain messages, invitations and
+gaps remain summary-only; these
 sender declarations never grant authority. The default excerpt width is 160.
 An empty batch still saves a fresh empty frame. Saved files remain available
 until explicitly removed; each successful brief updates the last-path record.
