@@ -817,19 +817,19 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
-	filter, err := waitRetry(ctx, s, time.Time{}, func() (deliveryFilter, error) {
-		return s.resolveFilter(ctx, rooms, *all)
-	})
-	if err != nil {
-		return err
-	}
-	filter.predicates = predicates.forSession(s)
 	stopped := func(err error) error {
 		if ctx.Err() != nil {
 			return nil
 		}
 		return err
 	}
+	filter, err := waitRetry(ctx, s, time.Time{}, func() (deliveryFilter, error) {
+		return s.resolveFilter(ctx, rooms, *all)
+	})
+	if err != nil {
+		return stopped(err)
+	}
+	filter.predicates = predicates.forSession(s)
 	st, _, err := s.startDelivery(ctx, a.Now())
 	if err != nil {
 		return stopped(err)

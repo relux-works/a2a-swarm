@@ -1412,10 +1412,12 @@ and marks them shown after the write; it **receipts nothing** (changed 2026-09-2
 that died after the pipe write lost the batch). A consumer receipts with `a2a ack <ids>` once it has really processed them. A write error exits 1
 and marks nothing, so the entries are printed again.
 
-Known temporary failures in room resolution, the initial `/sync`, polling `/sync` and post-sync subscription reads use `wait`'s retry policy:
+Known temporary failures in room resolution, the initial `/sync`, polling `/sync` and the poll-loop subscription read after a successful `/sync` use `wait`'s retry policy:
 5 seconds, then 30 seconds, doubling to a 5-minute cap. `watch` has no retry deadline; it checks and renews the same session lease before
 every attempt. Authentication, permanent refusal, malformed responses and lease loss stop immediately. A failed read leaves the cursor
 unchanged. Subscription writes, history recovery, mailbox commits, callbacks and output are not replayed by this retry policy.
+The subscription read inside cold-start recovery is also run once: a temporary failure there is terminal. A successful initial `/sync` and
+its recovery share one 30-second HTTP budget; recovery receives only the time left after that successful read, without restarting the budget.
 
 Startup subscription handling (`startDelivery`) differs: `wait` currently retries it, while `watch` runs it once and treats a failure as terminal.
 The startup transaction retry contract is tracked separately in [#319](https://github.com/relux-works/a2a-swarm/issues/319); this change leaves that shared path unchanged.

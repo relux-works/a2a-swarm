@@ -103,6 +103,7 @@ func TestWatchRetryNoDeadline(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		var at []time.Time
+		var leases []config.Lease
 		var p config.Paths
 		a, paths := watchRetryApp(t, func(r *http.Request) (*http.Response, error) {
 			if err := r.Context().Err(); err != nil {
@@ -110,7 +111,12 @@ func TestWatchRetryNoDeadline(t *testing.T) {
 			}
 			watchEmpty(t, p, "seed")
 			at = append(at, time.Now())
-			if len(at) <= 7 {
+			st, err := config.LoadState(p, "alice")
+			if err != nil || st.Lease == nil {
+				t.Fatalf("missing retry lease: %v", err)
+			}
+			leases = append(leases, *st.Lease)
+			if len(at) <= 30 {
 				return nil, waitRefused()
 			}
 			return waitResponse(r, 200, waitValidEvent)
@@ -118,12 +124,25 @@ func TestWatchRetryNoDeadline(t *testing.T) {
 		p = paths
 		a.leaseTTL = 2 * time.Minute
 		a.afterPrint = func() error { cancel(); return nil }
-		if code := a.Run(ctx, []string{"--as", "alice", "watch"}); code != ExitOK || len(at) != 8 {
+		if code := a.Run(ctx, []string{"--as", "alice", "watch"}); code != ExitOK || len(at) != 31 {
 			t.Fatalf("watch acquired an unintended retry bound: code=%d attempts=%d stderr=%v", code, len(at), a.Stderr)
 		}
-		for i, delay := range []time.Duration{5, 30, 60, 120, 240, 300, 300} {
-			if at[i+1].Sub(at[i]) != delay*time.Second {
-				t.Fatalf("attempt %d delay=%s", i+1, at[i+1].Sub(at[i]))
+		if at[len(at)-1].Sub(at[0]) <= 2*time.Hour {
+			t.Fatal("retry span did not exceed two hours")
+		}
+		for i := range at {
+			if leases[i].Holder != "watch-session" || leases[i].Expires.Sub(at[i]) != 2*time.Minute {
+				t.Fatalf("attempt %d did not renew the same lease: %+v", i+1, leases[i])
+			}
+			if i == 0 {
+				continue
+			}
+			delay := 5 * time.Minute
+			if i <= 5 {
+				delay = []time.Duration{5, 30, 60, 120, 240}[i-1] * time.Second
+			}
+			if at[i].Sub(at[i-1]) != delay || !leases[i].Expires.After(leases[i-1].Expires) {
+				t.Fatalf("attempt %d delay=%s lease=%+v", i+1, at[i].Sub(at[i-1]), leases[i])
 			}
 		}
 		waitRetryState(t, p, "delivered")
@@ -134,7 +153,8 @@ func TestWatchRetryNoDeadline(t *testing.T) {
 }
 
 // Auth and permanent refusal stop at the first attempt (including auth inside
-// a503), rather than reaching the valid neighbor or changing cursor/mail.
+// a 503), without changing cursor/mail. The valid control runs the same path
+// and proves it can deliver a well-formed response.
 func TestWatchRetryPermanentRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -142,6 +162,7 @@ func TestWatchRetryPermanentRefusal(t *testing.T) {
 		body   string
 		err    error
 	}{
+		{name: "valid", status: 200, body: waitValidEvent},
 		{name: "auth", status: 401, body: `{"errcode":"M_UNKNOWN_TOKEN"}`},
 		{name: "auth-on-503", status: 503, body: `{"errcode":"M_UNKNOWN_TOKEN"}`},
 		{name: "forbidden", status: 403, body: `{"errcode":"M_FORBIDDEN"}`},
@@ -162,8 +183,18 @@ func TestWatchRetryPermanentRefusal(t *testing.T) {
 					}
 					return waitResponse(r, tc.status, tc.body)
 				})
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				a.afterPrint = func() error { cancel(); return nil }
 				start := time.Now()
-				code := a.Run(context.Background(), []string{"--as", "alice", "watch"})
+				code := a.Run(ctx, []string{"--as", "alice", "watch"})
+				if tc.name == "valid" {
+					if code != ExitOK || calls != 1 || time.Since(start) != 0 || strings.Count(a.Stdout.(*bytes.Buffer).String(), "$neighbor") != 1 || a.Stderr.(*bytes.Buffer).Len() != 0 {
+						t.Fatalf("valid control: code=%d calls=%d stdout=%v stderr=%v", code, calls, a.Stdout, a.Stderr)
+					}
+					waitRetryState(t, p, "delivered")
+					return
+				}
 				if code != ExitError || calls != 1 || time.Since(start) != 0 || a.Stdout.(*bytes.Buffer).Len() != 0 || a.Stderr.(*bytes.Buffer).Len() == 0 {
 					t.Fatalf("refusal: code=%d calls=%d time=%s stdout=%v stderr=%v", code, calls, time.Since(start), a.Stdout, a.Stderr)
 				}
@@ -189,7 +220,7 @@ func TestWatchRetrySubscriptionRead(t *testing.T) {
 		})
 		base := a.HTTP.Transport
 		a.HTTP.Transport = waitRoundTrip(func(r *http.Request) (*http.Response, error) {
-			if strings.HasSuffix(r.URL.Path, "/account_data/"+SubsType) {
+			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/account_data/"+SubsType) {
 				subs++
 				if subs == 2 || subs == 3 {
 					watchEmpty(t, p, "seed")
@@ -269,7 +300,7 @@ func TestWatchRetryWriteFences(t *testing.T) {
 	for _, phase := range []string{"subscription-put", "before-append", "after-append"} {
 		t.Run(phase, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				syncs, puts, callbacks := 0, 0, 0
+				syncs, gets, puts, callbacks := 0, 0, 0, 0
 				a, p := watchRetryApp(t, func(r *http.Request) (*http.Response, error) {
 					if err := r.Context().Err(); err != nil {
 						return nil, err
@@ -284,6 +315,10 @@ func TestWatchRetryWriteFences(t *testing.T) {
 							puts++
 							return waitResponse(r, 503, `{"errcode":"M_UNAVAILABLE"}`)
 						}
+						if r.Method != http.MethodGet {
+							t.Fatalf("unexpected subscription method: %s", r.Method)
+						}
+						gets++
 						if phase == "subscription-put" {
 							return waitResponse(r, 200, `{"v":1,"subs":[{"id":"expired","room":"!proj:test.local","created_at":"1970-01-01T00:00:00.000Z","until":"1970-01-02T00:00:00Z"}]}`)
 						}
@@ -299,12 +334,12 @@ func TestWatchRetryWriteFences(t *testing.T) {
 				}
 				start := time.Now()
 				code := a.Run(context.Background(), []string{"--as", "alice", "watch"})
-				wantSync, wantPut, wantCallback := 1, 0, 1
+				wantSync, wantGet, wantPut, wantCallback := 1, 2, 0, 1
 				if phase == "subscription-put" {
-					wantSync, wantPut, wantCallback = 0, 1, 0
+					wantSync, wantGet, wantPut, wantCallback = 0, 1, 1, 0
 				}
-				if code != ExitError || syncs != wantSync || puts != wantPut || callbacks != wantCallback || time.Since(start) != 0 || a.Stdout.(*bytes.Buffer).Len() != 0 {
-					t.Fatalf("write replay: phase=%s code=%d sync=%d put=%d callback=%d elapsed=%s", phase, code, syncs, puts, callbacks, time.Since(start))
+				if code != ExitError || syncs != wantSync || gets != wantGet || puts != wantPut || callbacks != wantCallback || time.Since(start) != 0 || a.Stdout.(*bytes.Buffer).Len() != 0 {
+					t.Fatalf("write replay: phase=%s code=%d sync=%d get=%d put=%d callback=%d elapsed=%s", phase, code, syncs, gets, puts, callbacks, time.Since(start))
 				}
 				waitRetryState(t, p, "seed")
 				mb, err := config.OpenMailbox(p, "alice")
@@ -364,7 +399,11 @@ func TestWatchRetrySetupReads(t *testing.T) {
 						}
 						return waitResponse(r, 200, `{"next_batch":"positioned"}`)
 					}
-					return waitResponse(r, 200, waitValidEvent)
+					body := waitValidEvent
+					if phase == "resolve-room" {
+						body = strings.Replace(body, `"join":{`, `"join":{"!outside:test.local":{"timeline":{"events":[{"event_id":"$outside","type":"m.room.message","sender":"@bob:test.local","content":{"msgtype":"m.text","body":"@alice:test.local outside"}}]}},`, 1)
+					}
+					return waitResponse(r, 200, body)
 				})
 				args := []string{"--as", "alice", "watch"}
 				if phase == "cold-sync" {
@@ -398,6 +437,20 @@ func TestWatchRetrySetupReads(t *testing.T) {
 					t.Fatalf("setup replay: sync=%d resolve=%d commit=%d", syncs, resolves, commits)
 				}
 				waitRetryState(t, p, "delivered")
+				if phase == "resolve-room" {
+					if strings.Contains(a.Stdout.(*bytes.Buffer).String(), "$outside") {
+						t.Fatal("resolver retry widened the room filter")
+					}
+					mb, err := config.OpenMailbox(p, "alice")
+					if err != nil || len(mb.Pending()) != 2 {
+						t.Fatalf("room filter control did not retain both relevant events: %v %v", mb, err)
+					}
+					for _, entry := range mb.Pending() {
+						if entry.Shown != (entry.ID == "$neighbor") || mb.Received(entry.ID) {
+							t.Fatalf("room filter changed delivery/receipt state: %+v", entry)
+						}
+					}
+				}
 			})
 		})
 	}
@@ -443,4 +496,125 @@ func TestWatchRetryBackfillFence(t *testing.T) {
 		}
 		waitRetryState(t, p, "delivered")
 	})
+}
+
+// SIGINT/SIGTERM cancel watch's context, including while the first room
+// resolution is waiting to retry. No sync or startup read may follow it.
+func TestWatchRetryResolveCancel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		resolves, syncs, subs := 0, 0, 0
+		first := make(chan struct{})
+		a, p := watchRetryApp(t, func(r *http.Request) (*http.Response, error) {
+			syncs++
+			return waitResponse(r, 200, waitValidEvent)
+		})
+		base := a.HTTP.Transport
+		a.HTTP.Transport = waitRoundTrip(func(r *http.Request) (*http.Response, error) {
+			if strings.Contains(r.URL.Path, "/directory/room/") {
+				resolves++
+				if resolves != 1 {
+					t.Fatal("resolver ran after cancellation")
+				}
+				close(first)
+				return nil, waitRefused()
+			}
+			if strings.HasSuffix(r.URL.Path, "/account_data/"+SubsType) {
+				subs++
+			}
+			return base.RoundTrip(r)
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan int, 1)
+		start := time.Now()
+		go func() { done <- a.Run(ctx, []string{"--as", "alice", "watch", "--room", "proj"}) }()
+		<-first
+		synctest.Wait()
+		cancel()
+		if code := <-done; code != ExitOK || resolves != 1 || syncs != 0 || subs != 0 || time.Since(start) != 0 || a.Stdout.(*bytes.Buffer).Len() != 0 || a.Stderr.(*bytes.Buffer).Len() != 0 {
+			t.Fatalf("resolver cancel: code=%d resolves=%d sync=%d subs=%d elapsed=%s stdout=%v stderr=%v", code, resolves, syncs, subs, time.Since(start), a.Stdout, a.Stderr)
+		}
+		watchEmpty(t, p, "seed")
+	})
+}
+
+// A successful cold Sync consumes 25s of its 30s request budget. Recovery's
+// subscription GET gets only the remaining 5s, with no retry even for a known
+// transient failure. The valid control proves that remaining time is usable.
+func TestWatchRetryColdRecoveryBudget(t *testing.T) {
+	for _, outcome := range []string{"valid", "deadline", "transient"} {
+		t.Run(outcome, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				syncs, gets, puts, commits := 0, 0, 0, 0
+				var initialDeadline time.Time
+				a, p := watchRetryApp(t, func(r *http.Request) (*http.Response, error) {
+					syncs++
+					if syncs == 1 {
+						var ok bool
+						initialDeadline, ok = r.Context().Deadline()
+						if !ok || time.Until(initialDeadline) != 30*time.Second || r.URL.Query().Get("since") != "" {
+							t.Fatal("cold sync did not start with its 30s budget and empty cursor")
+						}
+						time.Sleep(25 * time.Second)
+						return waitResponse(r, 200, `{"next_batch":"positioned"}`)
+					}
+					if syncs != 2 || r.URL.Query().Get("since") != "positioned" {
+						t.Fatal("cold read or recovery replayed")
+					}
+					return waitResponse(r, 200, waitValidEvent)
+				})
+				if err := config.SaveState(p, "alice", config.State{}); err != nil {
+					t.Fatal(err)
+				}
+				base := a.HTTP.Transport
+				a.HTTP.Transport = waitRoundTrip(func(r *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(r.URL.Path, "/account_data/"+SubsType) {
+						if r.Method != http.MethodGet {
+							puts++
+							t.Fatal("cold recovery wrote subscriptions")
+						}
+						gets++
+						if gets == 2 {
+							deadline, ok := r.Context().Deadline()
+							if !ok || !deadline.Equal(initialDeadline) || time.Until(deadline) != 5*time.Second {
+								t.Fatalf("recovery restarted budget: deadline=%s initial=%s remaining=%s", deadline, initialDeadline, time.Until(deadline))
+							}
+							switch outcome {
+							case "valid":
+								time.Sleep(4 * time.Second)
+							case "deadline":
+								<-r.Context().Done()
+								return nil, r.Context().Err()
+							case "transient":
+								time.Sleep(time.Second)
+								return nil, waitRefused()
+							}
+						}
+					}
+					return base.RoundTrip(r)
+				})
+				a.beforeDeliver = func() { commits++ }
+				a.afterPrint = func() error { cancel(); return nil }
+				start := time.Now()
+				code := a.Run(ctx, []string{"--as", "alice", "watch"})
+				if outcome == "valid" {
+					if code != ExitOK || syncs != 2 || gets != 3 || puts != 0 || commits != 2 || time.Since(start) != 29*time.Second || strings.Count(a.Stdout.(*bytes.Buffer).String(), "$neighbor") != 1 || a.Stderr.(*bytes.Buffer).Len() != 0 {
+						t.Fatalf("valid cold recovery: code=%d sync=%d get=%d put=%d commit=%d elapsed=%s stdout=%v stderr=%v", code, syncs, gets, puts, commits, time.Since(start), a.Stdout, a.Stderr)
+					}
+					waitRetryState(t, p, "delivered")
+					return
+				}
+				wantElapsed := 30 * time.Second
+				if outcome == "transient" {
+					wantElapsed = 26 * time.Second
+				}
+				if code != ExitError || syncs != 1 || gets != 2 || puts != 0 || commits != 0 || time.Since(start) != wantElapsed || a.Stdout.(*bytes.Buffer).Len() != 0 || a.Stderr.(*bytes.Buffer).Len() == 0 {
+					t.Fatalf("cold recovery replay: code=%d sync=%d get=%d put=%d commit=%d elapsed=%s stdout=%v stderr=%v", code, syncs, gets, puts, commits, time.Since(start), a.Stdout, a.Stderr)
+				}
+				watchEmpty(t, p, "")
+			})
+		})
+	}
 }
