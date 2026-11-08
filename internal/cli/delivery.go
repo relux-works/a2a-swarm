@@ -817,7 +817,9 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
-	filter, err := s.resolveFilter(ctx, rooms, *all)
+	filter, err := waitRetry(ctx, s, time.Time{}, func() (deliveryFilter, error) {
+		return s.resolveFilter(ctx, rooms, *all)
+	})
 	if err != nil {
 		return err
 	}
@@ -833,7 +835,22 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		return stopped(err)
 	}
 	if st.NextBatch == "" {
-		if st, err = s.takePositionAll(ctx, time.Time{}, filter.allRooms()); err != nil {
+		// Retry only the initial Sync, not savePosition's callbacks or writes.
+		// Successful read and recovery retain the original shared request budget.
+		var initialDeadline time.Time
+		resp, readErr := waitRetry(ctx, s, time.Time{}, func() (matrix.SyncResponse, error) {
+			initialCtx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
+			defer cancel()
+			initialDeadline, _ = initialCtx.Deadline()
+			return s.waitSync(initialCtx, "", 0, firstDeliveryFilter)
+		})
+		if readErr != nil {
+			return stopped(readErr)
+		}
+		recoveryCtx, cancel := context.WithDeadline(ctx, initialDeadline)
+		st, err = s.savePositionAll(recoveryCtx, resp, time.Time{}, filter.allRooms())
+		cancel()
+		if err != nil {
 			return stopped(err)
 		}
 	}
@@ -845,11 +862,13 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		if err := a.acquireLease(s, "", time.Time{}); err != nil {
 			return stopped(err)
 		}
-		resp, err := s.client.Sync(ctx, st.NextBatch, maxPoll, deliverySyncFilter(st.NextBatch))
+		resp, err := waitRetry(ctx, s, time.Time{}, func() (matrix.SyncResponse, error) {
+			return s.waitSync(ctx, st.NextBatch, maxPoll, deliverySyncFilter(st.NextBatch))
+		})
 		if err != nil {
 			return stopped(err)
 		}
-		subs, err := s.getSubs(ctx)
+		subs, err := waitRetry(ctx, s, time.Time{}, func() (SubList, error) { return s.getSubs(ctx) })
 		if err != nil {
 			return stopped(err)
 		}
