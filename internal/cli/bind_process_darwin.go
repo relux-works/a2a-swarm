@@ -55,11 +55,14 @@ func bindingArguments(pid int) ([]string, []string, error) {
 // lsof reports the vnode of the RUNNING executable, including an unlinked old
 // image after same-path replacement. Stat(executable path) cannot do that.
 func bindingImage(ctx context.Context, pid int) (string, error) {
-	raw, err := exec.CommandContext(ctx, "/usr/sbin/lsof", "-a", "-p", strconv.Itoa(pid), "-d", "txt", "-F", "finD").Output()
+	raw, err := bindingImageOutput(ctx, pid)
 	if err != nil {
 		return "", bindingInspectionFailure("darwin-image-lsof", err)
 	}
 	return parseBindingImage(string(raw))
+}
+func bindingImageOutput(ctx context.Context, pid int) ([]byte, error) {
+	return exec.CommandContext(ctx, "/usr/sbin/lsof", "-a", "-p", strconv.Itoa(pid), "-d", "txt", "-F", "finD").Output()
 }
 func parseBindingImage(raw string) (string, error) {
 	dev, ino := "", ""
