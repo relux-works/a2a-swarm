@@ -98,6 +98,9 @@ func validateCredentialIdentity(c config.Credentials, name string) error {
 }
 
 func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) (config.Credentials, error) {
+	if err := config.CheckIdentityMigration(p, name); err != nil {
+		return config.Credentials{}, err
+	}
 	if c, e := a.selectedConnection(); e != nil {
 		return config.Credentials{}, e
 	} else if c != nil {
@@ -179,7 +182,7 @@ func (a *App) migrateCredentials(ctx context.Context, args []string) error {
 		}
 		k := a.keychainStore(p)
 		if c.AccessToken != "" {
-			if err := k.write(ctx, c.UserID, c.AccessToken); err != nil {
+			if err := k.writeLocked(ctx, c.UserID, c.AccessToken); err != nil {
 				return err
 			}
 		} else {

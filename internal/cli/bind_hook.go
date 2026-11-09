@@ -23,6 +23,9 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 	if err != nil {
 		return err
 	}
+	if st.Migration != nil {
+		return config.ErrIdentityMigrated
+	}
 	if err := st.RefuseMonitorConsumer(); err != nil {
 		return err
 	}
@@ -70,6 +73,9 @@ func (a *App) healHookBinding(ctx context.Context, runtime string, in hookInput)
 	st, err := config.LoadState(s.paths, s.name)
 	if err != nil {
 		return err
+	}
+	if st.Migration != nil {
+		return config.ErrIdentityMigrated
 	}
 	if err := st.RefuseMonitorConsumer(); err != nil {
 		return err
@@ -182,6 +188,9 @@ func refuseBoundWait(ctx context.Context, s *session) error {
 		if err != nil {
 			return err
 		}
+		if st.Migration != nil {
+			return config.ErrIdentityMigrated
+		}
 		if err := st.RefuseMonitorConsumer(); err != nil {
 			return err
 		}
@@ -210,6 +219,9 @@ func refuseHostConsumer(s *session) error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
+		}
+		if st.Migration != nil {
+			return config.ErrIdentityMigrated
 		}
 		if err := st.RefuseMonitorConsumer(); err != nil {
 			return err

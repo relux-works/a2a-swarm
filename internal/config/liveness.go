@@ -75,5 +75,10 @@ func WithRuntimeLock(p Paths, name, kind string, deadline time.Time, fn func() e
 		return fmt.Errorf("runtime %s lock: %w", kind, err)
 	}
 	defer unlock()
+	if kind == "consumer" {
+		if err := CheckIdentityMigration(p, name); err != nil {
+			return err
+		}
+	}
 	return fn()
 }

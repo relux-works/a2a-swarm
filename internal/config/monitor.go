@@ -24,7 +24,12 @@ func closedMonitorError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, closed := range []error{ErrIncompatibleWriter, ErrMonitorConflict, ErrMonitorGeneration, ErrLockTimeout, ErrMonitorOutput, ErrMonitorOwner, ErrMonitorLease} {
+	// The consumer's migration check decodes State before owner admission.
+	// Malformed owner authority still means writer integrity is unproven.
+	if errors.Is(err, ErrMigrationStateUnavailable) && errors.Is(err, ErrMonitorOwner) {
+		return ErrIncompatibleWriter
+	}
+	for _, closed := range []error{ErrIdentityMigrated, ErrIncompatibleWriter, ErrMonitorConflict, ErrMonitorGeneration, ErrLockTimeout, ErrMonitorOutput, ErrMonitorOwner, ErrMonitorLease} {
 		if errors.Is(err, closed) {
 			return closed
 		}
@@ -235,7 +240,7 @@ func WithMonitorGeneration(p Paths, name string, deadline time.Time, entry Monit
 			}
 			next := old
 			next.Monitor = cloneMonitor(&record)
-			saved, err := saveStateLocked(p, name, old, next, time.Time{}, true)
+			saved, err := saveStateLocked(p, name, old, next, time.Time{}, true, false)
 			if err == nil {
 				g.record = *cloneMonitor(saved.Monitor)
 				if saved.MonitorOwner != nil {
@@ -319,12 +324,12 @@ func (g *MonitorGeneration) guardedStatus(generation string, stop, renew, status
 					lease.Expires = expiry
 				}
 				next.Lease = &lease
-				return saveStateLocked(g.paths, g.name, old, next, time.Time{}, true)
+				return saveStateLocked(g.paths, g.name, old, next, time.Time{}, true, false)
 			}
 			next := old
 			next.Monitor = cloneMonitor(old.Monitor)
 			next.Monitor.Phase = "stopped"
-			return saveStateLocked(g.paths, g.name, old, next, time.Time{}, true)
+			return saveStateLocked(g.paths, g.name, old, next, time.Time{}, true, false)
 		})
 		return err
 	})

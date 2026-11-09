@@ -547,7 +547,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 	delay := policy.Interval
 	qualificationInterrupted := true
 	for ctx.Err() == nil {
-		if err := s.checkConnection(); err != nil {
+		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
 			return "selected connection unavailable", err
 		}
 		stage := "state"
@@ -619,7 +619,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			return "cancelled", nil
 		}
 		if err != nil {
-			if guardErr := s.checkConnection(); guardErr != nil {
+			if guardErr := s.checkConnection(); guardErr != nil && !errors.Is(guardErr, config.ErrMigrationStateUnavailable) {
 				return "selected connection unavailable", guardErr
 			}
 			qualificationInterrupted = true

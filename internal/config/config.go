@@ -58,9 +58,10 @@ type Getenv func(string) string
 
 // Paths resolves files under the base directory.
 type Paths struct {
-	Base         string
-	Root         string // Original registry and host root in named mode.
-	MetadataBase string // Connection-scoped identity metadata root.
+	Base           string
+	Root           string // Original registry and host root in named mode.
+	MetadataBase   string // Connection-scoped identity metadata root.
+	AgentStateBase string // Resolver-selected agent State root for a named human.
 }
 
 // ResolvePaths returns the base directory from A2A_CONFIG_DIR or ~/.config/a2a-swarm.
@@ -204,6 +205,9 @@ func checkSecretFile(path string) error {
 // LoadCredentials reads agents/<name>.json. The file must be a regular file
 // with mode 0600 and must contain a user id and an access token.
 func LoadCredentials(p Paths, name string) (Credentials, error) {
+	if err := CheckIdentityMigration(p, name); err != nil {
+		return Credentials{}, err
+	}
 	if err := ValidateName(name); err != nil {
 		return Credentials{}, err
 	}
@@ -222,6 +226,9 @@ func LoadCredentials(p Paths, name string) (Credentials, error) {
 
 // LoadHumanCredentials reads humans/<name>.json with the same checks.
 func LoadHumanCredentials(p Paths, name string) (Credentials, error) {
+	if err := CheckIdentityMigration(p, name); err != nil {
+		return Credentials{}, err
+	}
 	if err := ValidateName(name); err != nil {
 		return Credentials{}, err
 	}
@@ -241,6 +248,11 @@ func MoveToHumans(p Paths, name string) (string, error) {
 	if err := ValidateName(name); err != nil {
 		return "", err
 	}
+	guard, err := LockCredentialMutation(p, name, false)
+	if err != nil {
+		return "", err
+	}
+	defer guard.Close()
 	src, dst := p.AgentFile(name), p.HumanFile(name)
 	if err := checkSecretFile(src); err != nil {
 		return "", err
@@ -289,8 +301,18 @@ func readCredentialMetadata(path string) (Credentials, error) {
 
 // CreateCredentialFile reserves agents/<name>.json with O_EXCL and mode 0600,
 // before any network call, so an existing file is never overwritten.
-// The caller writes the content with WriteCredentials and removes the file on failure.
-func CreateCredentialFile(p Paths, name string) (*os.File, error) {
+// The returned reservation retains the credential lock. WriteCredentials closes
+// it on success; callers use Abort on failure while the lock is still held.
+func CreateCredentialFile(p Paths, name string) (_ *CredentialFile, err error) {
+	guard, err := LockCredentialMutation(p, name, false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			guard.Close()
+		}
+	}()
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
@@ -311,23 +333,31 @@ func CreateCredentialFile(p Paths, name string) (*os.File, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return f, nil
+	return &CredentialFile{File: f, guard: guard}, nil
 }
 
 // WriteCredentials writes c into a file created by CreateCredentialFile and closes it.
-func WriteCredentials(f *os.File, c Credentials) error {
+func WriteCredentials(f *CredentialFile, c Credentials) error {
+	if f.guard.release == nil {
+		return ErrMigrationStateUnavailable
+	}
 	c.Password = ""
 	data, err := marshalCredentials(c)
 	if err != nil {
-		f.Close()
+		f.Abort()
 		return err
 	}
 	data = append(data, '\n')
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		f.Abort()
 		return err
 	}
-	return f.Close()
+	if err := f.File.Close(); err != nil {
+		f.Abort()
+		return err
+	}
+	f.guard.Close()
+	return nil
 }
 
 // State is the per-agent delivery state. The events themselves live in the
@@ -339,10 +369,11 @@ type State struct {
 	// rawState is the immutable disk input, not a serialization of edited fields.
 	// The writer seal must be checked against this input before callbacks/effects.
 	rawState      []byte
-	Writer        *StateWriter   `json:"writer,omitempty"`
-	Monitor       *Monitor       `json:"monitor,omitempty"`
-	MonitorOwner  *MonitorOwner  `json:"monitor_owner,omitempty"`
-	MonitorConfig *MonitorConfig `json:"monitor_config,omitempty"`
+	Migration     *IdentityMigration `json:"migration,omitempty"`
+	Writer        *StateWriter       `json:"writer,omitempty"`
+	Monitor       *Monitor           `json:"monitor,omitempty"`
+	MonitorOwner  *MonitorOwner      `json:"monitor_owner,omitempty"`
+	MonitorConfig *MonitorConfig     `json:"monitor_config,omitempty"`
 
 	MailAlarmConfig *MailAlarmConfig `json:"mail_alarm_config,omitempty"`
 	MailAlarm       MailAlarm        `json:"mail_alarm,omitempty"`
@@ -631,15 +662,21 @@ func SaveState(p Paths, name string, s State) error {
 		}
 	}
 	_, err := withStateLock(p, name, lockFile, func(old State) (State, error) {
+		if old.Migration != nil {
+			return old, ErrIdentityMigrated
+		}
 		fence := ordinaryWriterFence(old, time.Now())
-		return saveStateLocked(p, name, old, s, fence, false)
+		return saveStateLocked(p, name, old, s, fence, false, false)
 	})
 	return err
 }
 
 // saveStateLocked never reacquires the state lock. Only monitor lifecycle code
 // may alter the monitor record or explicitly clear the sticky writer fence.
-func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monitor bool) (State, error) {
+func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monitor, migration bool) (State, error) {
+	if !migration && (old.Migration != nil || s.Migration != nil) {
+		return old, ErrIdentityMigrated
+	}
 	if s.HostEnrollment != nil && s.HostEnrollment.Validate() != nil {
 		return old, ErrHostEnrollment
 	}
@@ -735,11 +772,11 @@ func UpdateCredentials(p Paths, name string, fn func(*Credentials) error) (Crede
 		return Credentials{}, err
 	}
 	path := p.AgentFile(name)
-	unlock, err := lockFile(filepath.Join(filepath.Dir(path), "."+name+".lock"))
+	guard, err := LockCredentialMutation(p, name, false)
 	if err != nil {
 		return Credentials{}, err
 	}
-	defer unlock()
+	defer guard.Close()
 	c, err := LoadCredentials(p, name)
 	if err != nil {
 		return Credentials{}, err
@@ -796,6 +833,9 @@ func UpdateStateUntil(p Paths, name string, deadline time.Time, fn func(*State) 
 
 func updateState(p Paths, name string, lock func(string) (func(), error), fn func(*State) error) (State, error) {
 	return withStateLock(p, name, lock, func(old State) (State, error) {
+		if old.Migration != nil {
+			return old, ErrIdentityMigrated
+		}
 		fence := ordinaryWriterFence(old, time.Now())
 		// A callback must not mutate the comparison snapshot through shared
 		// lease/runtime/terminal pointers or slices. Decode the same disk input
@@ -810,7 +850,7 @@ func updateState(p Paths, name string, lock func(string) (func(), error), fn fun
 		if err := fn(&s); err != nil {
 			return old, err
 		}
-		return saveStateLocked(p, name, old, s, fence, false)
+		return saveStateLocked(p, name, old, s, fence, false, false)
 	})
 }
 
