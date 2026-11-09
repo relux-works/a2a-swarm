@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -47,6 +48,36 @@ type LivenessAlertMessage struct {
 // subscription-policy serializes explicit trims with automatic subscription
 // repair, independently of both live-runtime control and delivery state.
 func WithRuntimeLock(p Paths, name, kind string, deadline time.Time, fn func() error) error {
+	return withRuntimeLock(nil, p, name, kind, deadline, fn)
+}
+
+// WithRuntimeLockContext cancels lock acquisition with the invocation. The
+// legacy API retains its independent deadline for non-Courier callers.
+func WithRuntimeLockContext(ctx context.Context, p Paths, name, kind string, deadline time.Time, fn func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return ErrLockTimeout
+		}
+		return err
+	}
+	// A deadline of now is an intentional nonblocking ownership probe. Keep
+	// its one real flock attempt; an already-expired child context would
+	// incorrectly report every unheld consumer as busy.
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return withRuntimeLock(nil, p, name, kind, deadline, fn)
+	}
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	return withRuntimeLock(ctx, p, name, kind, deadline, fn)
+}
+
+func withRuntimeLock(ctx context.Context, p Paths, name, kind string, deadline time.Time, fn func() error) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
@@ -70,7 +101,16 @@ func WithRuntimeLock(p Paths, name, kind string, deadline time.Time, fn func() e
 	if err := checkSecretFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	unlock, err := lockFileBy(path, deadline)
+	var unlock func()
+	var err error
+	if ctx == nil {
+		unlock, err = lockFileBy(path, deadline)
+	} else {
+		unlock, err = lockFileContext(ctx, path)
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = ErrLockTimeout
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("runtime %s lock: %w", kind, err)
 	}

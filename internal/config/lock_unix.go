@@ -30,25 +30,31 @@ func lockFileContext(ctx context.Context, path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := flockContext(ctx, f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return unlocker(f), nil
+}
+
+// The caller owns the descriptor, which may be pinned through os.Root.
+func flockContext(ctx context.Context, f *os.File) error {
 	for {
 		if err := ctx.Err(); err != nil {
-			f.Close()
-			return nil, err
+			return err
 		}
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return unlocker(f), nil
+			return nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
-			f.Close()
-			return nil, err
+			return err
 		}
 		timer := time.NewTimer(lockRetry)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			f.Close()
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
