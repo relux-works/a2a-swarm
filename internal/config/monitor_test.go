@@ -55,6 +55,9 @@ func monitorSeed(t *testing.T) Paths {
 		t.Fatal(err)
 	}
 	seedStateJSON(t, p, string(b))
+	if err := RecordMonitorOwnerHook(p, "a", time.Now().Add(time.Second), "muse", "fixture-session", "SessionStart", false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	return p
 }
 func monitorRun(p Paths, entry MonitorEntry, fn func(*MonitorGeneration) error) error {
@@ -254,7 +257,9 @@ func TestMonitorOrdinaryPreCallbackAndFailure(t *testing.T) {
 	}
 }
 
-// Proves: Implicit admission refuses missing/invalid seals and retained history; explicit first arm has a narrow bootstrap exception.
+// Proves: admission refuses missing/invalid seals before owner admission; a
+// hook-admitted owner permits explicit first arm after a compatible reseal.
+// This does not qualify native hook invocation.
 func TestMonitorMissingInvalidAndHistory(t *testing.T) {
 	cases := map[string]func(*testing.T, Paths){
 		"missing": func(t *testing.T, p Paths) { seedStateJSON(t, p, `{"next_batch":"legacy"}`) },
@@ -293,11 +298,16 @@ func TestMonitorMissingInvalidAndHistory(t *testing.T) {
 			}
 			err := monitorRun(p, MonitorArm, func(*MonitorGeneration) error { return nil })
 			first := name == "missing" || name == "pre-preservation"
-			if first && err != nil {
-				t.Fatal("explicit first arm refused", err)
-			}
-			if !first && (!errors.Is(err, ErrIncompatibleWriter) || !bytes.Equal(before, monitorDisk(t, p))) {
+			if !errors.Is(err, ErrIncompatibleWriter) || !bytes.Equal(before, monitorDisk(t, p)) {
 				t.Fatal("arm repaired invalid existing seal/history", err)
+			}
+			if first {
+				ownerHook(t, p, "muse", monitorRecord().SessionID, "SessionStart", false, time.Now())
+				if err := monitorRun(p, MonitorArm, func(g *MonitorGeneration) error {
+					return g.CheckRenewal(monitorRecord().Generation)
+				}); err != nil {
+					t.Fatal("hook-admitted first arm refused", err)
+				}
 			}
 			if e := WithRuntimeLock(p, "a", "consumer", time.Now(), func() error { return nil }); e != nil {
 				t.Fatal("refused admission retained consumer lock", e)

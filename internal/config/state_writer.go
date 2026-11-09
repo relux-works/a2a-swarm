@@ -255,7 +255,7 @@ func rejectAuthorityAliases(data []byte) error {
 		if !ok {
 			return ErrMonitorState
 		}
-		if strings.EqualFold(k, "monitor") || strings.EqualFold(k, "writer") {
+		if strings.EqualFold(k, "monitor") || strings.EqualFold(k, "writer") || strings.EqualFold(k, "monitor_owner") || strings.EqualFold(k, "monitor_config") {
 			for _, prior := range seen {
 				if strings.EqualFold(prior, k) {
 					return ErrMonitorState
@@ -267,7 +267,7 @@ func rejectAuthorityAliases(data []byte) error {
 		if err := d.Decode(&raw); err != nil {
 			return err
 		}
-		if strings.EqualFold(k, "monitor") && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if (strings.EqualFold(k, "monitor") || strings.EqualFold(k, "monitor_owner") || strings.EqualFold(k, "monitor_config")) && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return ErrMonitorState
 		}
 	}

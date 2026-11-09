@@ -84,6 +84,7 @@ type hookInput struct {
 	SessionID      string          `json:"session_id"`
 	HookEventName  string          `json:"hook_event_name"`
 	StopHookActive bool            `json:"stop_hook_active"`
+	StopReason     string          `json:"stop_reason"`
 }
 
 // hookStopOutput blocks a Claude Code stop; the reason is fed to the model.
@@ -172,11 +173,11 @@ func lookupRuntime(name string) (hookRuntime, error) {
 	return hookRuntime{}, fmt.Errorf("unknown --runtime %q (%s)", sanitizeLine(name), runtimeNames)
 }
 
-const hookUsage = "usage: a2a hook stop|session-start|prompt --runtime claude|codex|muse  (reads the hook JSON on stdin) | " +
+const hookUsage = "usage: a2a hook stop|session-start|prompt|session-end --runtime claude|codex|muse  (reads the hook JSON on stdin) | " +
 	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
 	"a2a hook pause|resume --agent NAME"
 
-// cmdHook: a2a hook stop|session-start|prompt|install|uninstall
+// cmdHook: a2a hook stop|session-start|prompt|session-end|install|uninstall
 func cmdHook(ctx context.Context, a *App, args []string) error {
 	if len(args) == 0 {
 		return usagef("%s", hookUsage)
@@ -190,6 +191,10 @@ func cmdHook(ctx context.Context, a *App, args []string) error {
 		return cmdHookPause(a, args[1:], true)
 	case "resume":
 		return cmdHookPause(a, args[1:], false)
+	}
+	if args[0] == "session-end" {
+		a.runHook(ctx, hookEvent{"session-end", "SessionEnd"}, args[1:])
+		return nil
 	}
 	for _, ev := range hookEvents {
 		if ev.arg == args[0] {
@@ -268,6 +273,15 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	priorContext := a.ctx
 	a.ctx = ctx
 	defer func() { a.ctx = priorContext }()
+	if *runtime != "" {
+		if err := a.recordHookOwner(ctx, rt, ev, in); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if ev.arg == "session-end" || ev.arg == "stop" && in.StopReason == "exit" {
+		return
+	}
 	if *runtime != "" {
 		var bindErr error
 		if ev.arg == "session-start" {

@@ -234,6 +234,20 @@ func TestStateJSONCurrentSchemaCaseVariants(t *testing.T) {
 				}
 				body = `{"MONITOR":` + string(raw) + `}`
 			}
+			if name == "monitor_owner" || name == "monitor_config" {
+				// These authority members also refuse null. Exercise folded
+				// top-level spelling with valid closed-schema payloads.
+				var value any = MonitorConfig{OwnerTTL: DefaultOwnerTTL}
+				if name == "monitor_owner" {
+					now := time.Now().UTC()
+					value = MonitorOwner{Runtime: "muse", SessionIDHash: ownerHash("fixture"), FirstSeen: now, LastHookAt: now}
+				}
+				raw, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = `{"` + strings.ToUpper(name) + `":` + string(raw) + `}`
+			}
 			var reference State
 			if err := json.Unmarshal([]byte(body), &reference); err != nil {
 				t.Fatal(err)
