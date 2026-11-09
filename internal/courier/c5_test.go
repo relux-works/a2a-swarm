@@ -110,6 +110,9 @@ func TestCourierIdleAndShutdownDiagnostics(t *testing.T) {
 // Proves both caps refuse immediately without queuing; releasing one slot
 // admits the valid neighbor. The wire test separately checks the closed class.
 func TestCourierInvocationCaps(t *testing.T) {
+	if MaxStationInvocations != 4 || MaxInvocations != 32 || MaxConnections != 64 {
+		t.Fatal("contract caps changed")
+	}
 	s := &server{}
 	for station := 0; station < MaxInvocations/MaxStationInvocations; station++ {
 		name := fmt.Sprint(station)
@@ -265,12 +268,15 @@ func TestCourierEightConcurrentHellos(t *testing.T) {
 // successful neighbor executes after both injected kernel error classes.
 func TestCourierTransientAccept(t *testing.T) {
 	var calls atomic.Int32
+	var first, second atomic.Int64
 	r := executionServerOptions(t, func(context.Context, Invocation) int { return 0 }, time.Second, func(s *server) {
 		s.accept = func(l *net.UnixListener) (*net.UnixConn, error) {
 			switch calls.Add(1) {
 			case 1:
+				first.Store(time.Now().UnixNano())
 				return nil, unix.EMFILE
 			case 2:
+				second.Store(time.Now().UnixNano())
 				return nil, unix.ECONNABORTED
 			}
 			return l.AcceptUnix()
@@ -278,6 +284,9 @@ func TestCourierTransientAccept(t *testing.T) {
 	})
 	if code, err := Client(context.Background(), r.path, "station", "identity", r.secret, Request{Argv: []string{"whoami"}}, io.Discard, io.Discard); err != nil || code != 0 {
 		t.Fatal("transient accept killed listener", err)
+	}
+	if time.Duration(second.Load()-first.Load()) < AcceptBackoff {
+		t.Fatal("accept retried without backoff")
 	}
 	if calls.Load() < 3 {
 		t.Fatal("injection not exercised")
@@ -328,6 +337,11 @@ func TestCourierExplicitModes(t *testing.T) {
 		st, err := os.Stat(p)
 		if err != nil || st.Mode().Perm() != 0600 {
 			t.Fatal("umask changed explicit file mode")
+		}
+	}
+	for path, mode := range map[string]os.FileMode{r.home: 0700, filepath.Dir(r.path): 0711, r.path: 0666} {
+		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != mode {
+			t.Fatal("explicit directory/socket mode", path, err)
 		}
 	}
 	p := filepath.Join(r.home, "stations.json")
@@ -436,6 +450,16 @@ func TestCourierGoroutineLeakBlockedLogShutdown(t *testing.T) {
 		if r.s.sink.dropped.Load() == 0 {
 			t.Fatal("drop witness absent")
 		}
+	}
+	// Resume the external log reader after verifying bounded shutdown. This
+	// also releases the one destination worker owned by each stopped serve.
+	writer.Close()
+	drained := make(chan struct{})
+	go func() { io.Copy(io.Discard, reader); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(LockReleaseBound):
+		t.Fatal("log workers did not drain")
 	}
 	deadline := time.NewTimer(LockReleaseBound)
 	defer deadline.Stop()

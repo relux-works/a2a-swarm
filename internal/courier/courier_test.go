@@ -847,7 +847,11 @@ func TestSocketPermissionsStayWithDirectoryInode(t *testing.T) {
 
 func awaitLog(t *testing.T, r *running, want string) bool {
 	t.Helper()
-	timer := time.NewTimer(time.Second)
+	budget := LockReleaseBound
+	if deadline, ok := t.Deadline(); ok {
+		budget = min(budget, time.Until(deadline)/2)
+	}
+	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()

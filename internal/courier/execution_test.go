@@ -291,6 +291,10 @@ func TestExecutionCancellation(t *testing.T) {
 			}
 			select {
 			case <-finished:
+			case <-r.done:
+				if mode == "disconnect" {
+					t.Fatal("disconnect stopped server")
+				}
 			case <-time.After(LockReleaseBound):
 				t.Fatal("handler not canceled")
 			}

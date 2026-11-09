@@ -36,6 +36,9 @@ func openDirectory(path string, create bool) (*os.File, error) {
 
 // Socket directories have a separate, explicit traversable access policy.
 func openDirectoryMode(path string, create bool, mode uint32) (*os.File, error) {
+	return openDirectoryModeMkdir(path, create, mode, unix.Mkdirat)
+}
+func openDirectoryModeMkdir(path string, create bool, mode uint32, mkdir func(int, string, uint32) error) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
 		return nil, errRefused
 	}
@@ -47,7 +50,7 @@ func openDirectoryMode(path string, create bool, mode uint32) (*os.File, error) 
 	for i, p := range parts {
 		next, e := unix.Openat(fd, p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if e == unix.ENOENT && create && i == len(parts)-1 {
-			if e = unix.Mkdirat(fd, p, mode); e == nil {
+			if e = mkdir(fd, p, mode); e == nil {
 				next, e = unix.Openat(fd, p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 				if e == nil {
 					e = unix.Fchmod(next, mode)
@@ -57,6 +60,17 @@ func openDirectoryMode(path string, create bool, mode uint32) (*os.File, error) 
 				}
 			} else if e == unix.EEXIST {
 				next, e = unix.Openat(fd, p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+				if e == nil {
+					var st unix.Stat_t
+					if unix.Fstat(next, &st) != nil || st.Uid != uint32(os.Geteuid()) || st.Mode&unix.S_IFMT != unix.S_IFDIR || uint32(st.Mode)&07777 & ^mode != 0 {
+						e = errRefused
+					} else {
+						e = unix.Fchmod(next, mode)
+					}
+					if e != nil {
+						unix.Close(next)
+					}
+				}
 			}
 		}
 		unix.Close(fd)
