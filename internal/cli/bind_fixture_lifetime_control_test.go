@@ -186,6 +186,13 @@ func TestBindFixtureKilledOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Only this observer's explicit sweep may reclaim its controls while it
+	// lives. Other lifecycle runs must not mask a broken next-run reaper.
+	reaper, err := json.Marshal(observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("A2A_RUN_BIND_FIXTURE_REAPER", string(reaper))
 	t.Logf("independent observer: %+v", observer)
 	namespace, _ := os.Readlink("/proc/self/ns/pid")
 	t.Logf("observer PID namespace: %s", namespace)
@@ -265,6 +272,9 @@ func TestBindFixtureKilledOwner(t *testing.T) {
 		if c.witness.Dir == "" {
 			b, _ := os.ReadFile(filepath.Join(c.control, "child.log"))
 			t.Fatalf("%s fixture not ready: %s", name, b)
+		}
+		if c.witness.Record.Reaper != observer {
+			t.Fatal("control reaper mismatch")
 		}
 		if c.witness.Record.Owner != c.owner {
 			t.Fatal("control owner mismatch")
