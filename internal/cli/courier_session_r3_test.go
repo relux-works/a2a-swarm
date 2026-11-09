@@ -184,14 +184,14 @@ func TestCourierLeadingHumanHook(t *testing.T) {
 			})
 			r := s.run(context.Background(), "bad", append(append([]string{}, tc.prefix...), "hook", "prompt")...)
 			data, err := os.ReadFile(filepath.Join(s.home, "state", hookFailureLog))
-			if r.code != 0 || r.stdout != "" || err != nil || bytes.Count(data, []byte("\n")) != 1 || !bytes.HasSuffix(data, []byte(" UserPromptSubmit courier_unavailable\n")) {
+			if r.code != 0 || r.stdout != "" || err != nil || bytes.Count(data, []byte("\n")) != 1 || !bytes.HasSuffix(data, []byte(" UserPromptSubmit not_allowed\n")) {
 				t.Fatal("leading human hook did not fail open with one exact log", r, err)
 			}
-			r = s.run(context.Background(), "ok", append(append([]string{}, tc.prefix...), "hook", "prompt")...)
+			r = s.run(context.Background(), "ok", "hook", "prompt")
 			if r.code != 0 || r.stdout != "" || !strings.HasPrefix(r.stderr, "courier: 1 hook deliveries failed open since ") || strings.Count(r.stderr, "\n") != 1 {
 				t.Fatal("leading human hook valid neighbor", r)
 			}
-			if _, err := courier.Authorize([]string{"--human", "hook", "prompt"}, "identity"); err != nil {
+			if _, err := courier.Authorize([]string{"--human", "hook", "prompt"}, "identity"); err == nil || err.Error() != "courier: refused" {
 				t.Fatal("leading human authorization", err)
 			}
 			if _, err := courier.Authorize([]string{"hook", "--", "--human", "prompt"}, "identity"); err == nil || err.Error() != "courier: refused" {

@@ -72,9 +72,9 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		name, value, eq := strings.Cut(arg, "=")
 		switch name {
 		case "--human":
-			if eq || len(rest) != 0 {
-				return p, errRefused
-			}
+			// Station identities cannot execute commands as human accounts.
+			// Hook discovery happens before this gate and retains fail-open.
+			return p, errRefused
 		case "--as", "-as", "--profile", "--connection-fingerprint":
 			if !eq {
 				i++
