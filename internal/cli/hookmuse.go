@@ -124,6 +124,12 @@ func (j *museHookJournal) pending() (int64, bool, error) {
 }
 
 func museFailureClass(err error) string {
+	if errors.Is(err, config.ErrIdentityMigrated) {
+		return "identity_migrated"
+	}
+	if errors.Is(err, config.ErrMigrationStateUnavailable) {
+		return "state_unavailable"
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return "timeout"
 	}
@@ -165,6 +171,10 @@ func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
 	p, err := a.pathsFor(name)
 	if err != nil {
 		fail("identity_refused")
+		return
+	}
+	if err = config.CheckIdentityMigration(p, name); err != nil {
+		fail(museFailureClass(err))
 		return
 	}
 	budget := hookBudget

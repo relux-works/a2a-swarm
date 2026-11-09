@@ -216,6 +216,24 @@ func TestStateJSONCurrentSchemaCaseVariants(t *testing.T) {
 			name = f.Name
 		}
 		t.Run(name, func(t *testing.T) {
+			if name == "migration" {
+				// Migration is typed authority: null must not reopen, and even a valid
+				// case-folded record cannot pass through an ordinary save.
+				p := testPaths(t)
+				seedStateJSON(t, p, `{"MIGRATION":null}`)
+				if _, err := LoadState(p, "a"); err == nil {
+					t.Fatal("null migration accepted")
+				}
+				seedStateJSON(t, p, `{"MIGRATION":{"phase":"in_progress","courier_base":"/fixture","at":"2026-01-02T03:04:05Z"}}`)
+				st, err := LoadState(p, "a")
+				if err != nil || st.Migration == nil {
+					t.Fatal("case-folded migration not typed", err)
+				}
+				if err = SaveState(p, "a", st); !errors.Is(err, ErrIdentityMigrated) {
+					t.Fatal("ordinary save crossed migration fence", err)
+				}
+				return
+			}
 			body := `{"` + strings.ToUpper(name) + `":null}`
 			if name == "host_enrollment" {
 				// Enrollment null is refused by LoadState; use a valid typed

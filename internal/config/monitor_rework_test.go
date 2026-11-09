@@ -108,6 +108,7 @@ func TestMonitorSealEveryStateField(t *testing.T) {
 	// Writer has dedicated protocol/foreign_seen deletion and zeroing controls
 	// above; deleting the writer itself must also break verification.
 	edits["writer"] = `null`
+	edits["migration"] = `{"phase":"in_progress","courier_base":"/fixture","at":"2026-01-02T03:04:05Z"}`
 	for _, field := range stateJSONFields {
 		if _, ok := edits[field]; !ok {
 			t.Errorf("missing mutation for %s", field)
