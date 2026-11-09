@@ -8,6 +8,13 @@
 // addressing/principal_references, addressing/conversation_references and
 // raw_bounds/received respectively; these checks are unverified, never passes.
 // Existing required hooks and fixture data remain required.
+//
+// Implementers must declare Caps().MaxRawBytes on every fixture identity in
+// 0..transport.MaxRawBytes. Zero means no Raw on any read path; keyed capability
+// literals still compile, but transports exposing Raw must explicitly set a bound.
+// With ReceivedRawAtSize, positive bounds exercise exactly N and N+1 bytes.
+// Zero checks an ordinary received event with empty Raw and still injects an
+// absolute-ceiling+1 wire payload to verify rejection and drop accounting.
 package conformancetest
 
 import (
@@ -48,8 +55,10 @@ type Fixture struct {
 	// invalid reference. Optional; nil skips addressing/conversation_references.
 	ConversationReferences func() (valid, invalid string)
 	// ReceivedRawAtSize publishes an authenticated event from A, visible to B,
-	// with exactly n Raw bytes at the receive boundary and otherwise valid content.
+	// with exactly n wire Raw bytes at the receive boundary and otherwise valid content.
 	// It bypasses send-size limits, not receive validation, and returns the wire ID.
+	// Even when Caps().MaxRawBytes is zero, the hook supplies wire bytes; read
+	// projections must suppress Raw and still reject oversized wire payloads.
 	// Optional; nil skips raw_bounds/received.
 	ReceivedRawAtSize func(n int) tr.EventID
 	// RestartB reopens the same identity without resetting the world.
@@ -100,6 +109,16 @@ func fixture(t *testing.T, h Harness) *Fixture {
 	}{{"C", f.C != nil}, {"Extensions", len(f.Extensions) > 0}, {"StateDir", f.StateDir != ""}, {"SentinelDir", f.SentinelDir != ""}} {
 		if !field.ok {
 			t.Fatalf("harness missing fixture field %s", field.name)
+		}
+	}
+	// Reject invalid declarations on every identity before transport operations;
+	// zero and the absolute ceiling are valid neighbouring fixture declarations.
+	for _, identity := range []struct {
+		name      string
+		transport tr.Transport
+	}{{"A", f.A}, {"B", f.B}, {"C", f.C}} {
+		if n := identity.transport.Caps().MaxRawBytes; n < 0 || n > tr.MaxRawBytes {
+			t.Fatalf("fixture %s Caps.MaxRawBytes=%d outside 0..%d", identity.name, n, tr.MaxRawBytes)
 		}
 	}
 	f.nonce = marker()
@@ -774,9 +793,11 @@ func Run(t *testing.T, h Harness) {
 		}
 		t.Fatal("window loss not reported with Gap")
 	})
-	// Proves the documented Raw bound on Sync, Event and History beside a valid payload.
+	// Proves the declared Raw bound (including no exposure at zero) on ordinary
+	// Sync, Event and History projections beside a delivered valid payload.
 	t.Run("raw_bounds", func(t *testing.T) {
 		f := fixture(t, h)
+		limit := f.B.Caps().MaxRawBytes
 		start := baseline(t, f)
 		r := send(t, f, "raw")
 		b := syncBatch(t, f, start, false)
@@ -789,20 +810,30 @@ func Run(t *testing.T, h Harness) {
 		if e != nil {
 			t.Fatal(e)
 		}
+		// Require the valid neighbour on each path so empty results cannot hide a leak.
+		if direct.ID != r.Event {
+			t.Fatal("ordinary received Event changed ID")
+		}
+		one(t, tr.Batch{Events: page.Events}, r.Event)
 		for _, ev := range append(append(b.Events, direct), page.Events...) {
-			if len(ev.Raw) > tr.MaxRawBytes {
-				t.Fatal("Event.Raw exceeds MaxRawBytes")
+			if len(ev.Raw) > limit {
+				t.Fatal("Event.Raw exceeds MaxRawBytes declared by Caps")
 			}
 		}
-		// Proves receipt accepts the exact Raw boundary and drops its +1 neighbour
-		// across Sync, History and Event. Catches transports that omit receive-side
-		// size validation, clamp oversized Raw, or reject all large received events.
+		// Proves exact N is present and N+1 is dropped/countable on all read paths.
+		// At zero, proves the ordinary neighbour has no Raw and an absolute-ceiling+1
+		// wire event is still dropped. Nil hooks leave this receive check unverified.
 		t.Run("received", func(t *testing.T) {
 			if f.ReceivedRawAtSize == nil {
 				t.Skip("harness missing optional hook ReceivedRawAtSize")
 			}
-			exact := f.ReceivedRawAtSize(tr.MaxRawBytes)
-			over := f.ReceivedRawAtSize(tr.MaxRawBytes + 1)
+			exact, wireLimit := r.Event, limit
+			if limit > 0 {
+				exact = f.ReceivedRawAtSize(limit)
+			} else {
+				wireLimit = tr.MaxRawBytes
+			}
+			over := f.ReceivedRawAtSize(wireLimit + 1)
 			if exact == "" || over == "" || exact == over {
 				t.Fatal("ReceivedRawAtSize must return distinct nonempty IDs")
 			}
@@ -818,10 +849,10 @@ func Run(t *testing.T, h Harness) {
 					if ev.ID == over {
 						t.Fatal("oversized received event delivered")
 					}
-					if len(ev.Raw) > tr.MaxRawBytes {
-						t.Fatal("Event.Raw exceeds MaxRawBytes")
+					if len(ev.Raw) > limit {
+						t.Fatal("Event.Raw exceeds MaxRawBytes declared by Caps")
 					}
-					if ev.ID == exact && len(ev.Raw) != tr.MaxRawBytes {
+					if ev.ID == exact && len(ev.Raw) != limit {
 						t.Fatal("exact-bound received Raw changed")
 					}
 				}
@@ -830,7 +861,7 @@ func Run(t *testing.T, h Harness) {
 				t.Fatal("oversized received event not counted on Sync and History")
 			}
 			direct, e := f.B.Event(ctx(t), f.Conversation, exact)
-			if e != nil || direct.ID != exact || len(direct.Raw) != tr.MaxRawBytes {
+			if e != nil || direct.ID != exact || len(direct.Raw) != limit {
 				t.Fatal("exact-bound received Event unavailable or changed")
 			}
 			if _, e = f.B.Event(ctx(t), f.Conversation, over); tr.Code(e) != tr.InvalidReference {

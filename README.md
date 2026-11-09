@@ -58,7 +58,16 @@ explicit lookup can reconcile the retained attempt without resending it.
 The adapter has no CLI backend selection or live activation route. See
 [the Host enrollment contract](docs/host-enrollment.md).
 
+The public `transport` contract treats `Event.Raw` as optional opaque data: core
+never parses it, and the mailbox stores it only if present. External implementers
+must declare `Caps().MaxRawBytes`: zero suppresses Raw on every read path; a
+positive value bounds it up to the absolute 1 MiB ceiling. Keyed capability
+literals still compile, but adapters exposing Raw must set this field explicitly.
+The `transport/conformancetest` receive hook checks the declared boundary;
+without `ReceivedRawAtSize`, `raw_bounds/received` reports a named skip.
+
 ## Tools
+
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
 | Curator build checks (Go, Make) | Verify the dedicated build branch vendor closure and compile its command | `make verify-vendor BUILD_REPOSITORY="$REPOSITORY" BUILD_COMMIT="$FULL_BUILD_OID" MAIN_COMMIT="$FULL_MAIN_OID"`; `make curator-command BUILD_REPOSITORY="$BUILD_CHECKOUT" OUTPUT="$ARTIFACT"`; [branch rule and limits](docs/curator-build.md) | Named equality/refusal output; binary at the explicit output path |
