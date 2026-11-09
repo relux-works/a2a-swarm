@@ -3143,6 +3143,16 @@ a2a owner-dm unset
 a2a owner-dm status
 ```
 
+Terminal `ensure` and `unset` accept only `a2a owner-dm <subcommand> ...`.
+Select identity with `A2A_AGENT=<name>` and the existing config connection;
+global flags (including `--as`/`-as`, `--profile`,
+`--connection-fingerprint`, `--human` and their `=` spellings) refuse anywhere
+before `--`. Owner ensure's local tag/mirror/render options remain supported.
+Unset persists inactive locally before subscription removal, retaining `sub_id`
+if remote cleanup fails. It reports inactive with cleanup pending; retry unset
+is idempotent, reports completion and does not advance generation again.
+Owner-channel `unbind --event` retains its existing behavior.
+
 Ensure has the same effect as a verified bind: after observing the pending
 lifecycle, it refuses a still-pending claim, changes only flags while active
 (keeping room and generation), and creates a fresh room only when
@@ -3219,11 +3229,14 @@ inside bind/unbind room references or event IDs do not select terminal rules.
 Reinstall replaces the earlier managed substring globs. Codex uses literal argv
 prefix tokens for the same distinction. Codex receives `rules/a2a-owner-dm.rules`
 beside the selected hooks file, using
-forbidden prefix rules for canonical `a2a owner-dm ...` and `a2a --as NAME
-owner-dm ...` invocations, including the installed binary path. Foreign rules
+forbidden prefix rules for canonical `a2a owner-dm ...` and
+`a2a principal-dm ...` invocations, including the installed binary path. Foreign rules
 files refuse replacement. The rules are removed with the corresponding hook
 uninstall. They are runtime policy friction, not same-UID protection or a claim
 that arbitrary wrappers, renamed binaries or shell code cannot bypass them.
+Shell-quoted spellings such as `principal-dm 'ens'ure` can evade a string glob;
+TTY plus type-back remains friction, not authentication. Muse has no hook
+install, so no terminal-verb deny applies in that runtime.
 Syntax references: [OpenAI rules](https://learn.chatgpt.com/docs/agent-configuration/rules)
 and [Claude permissions](https://code.claude.com/docs/en/permissions).
 Agent-callable lifecycle commands are bind/unbind --event and status; the
@@ -3296,13 +3309,20 @@ a2a principal-dm unset @user:server         # host terminal: MXID typed back
 Storage under the config base, all regular 0600 files:
 
 - `principal-dm/<name>.pin`, written by the host: `{"principals":["@user:server"]}`.
-  A missing pin pins nobody. Any other shape, a bad MXID or a duplicate makes
+  A missing pin pins nobody. Any other shape, duplicate JSON key, bad MXID,
+  duplicate principal, or owner/self entry (including case variants) makes
   every principal-dm mutation refuse; status reports it.
 - `principal-dm/<name>.json`: `{"v":1,"dms":{"@user:server":{generation, active,
   pending_join, room, sub_id, created_at}}}`, written only under
   `principal-dm/<name>.lock`.
 - Rooms are added to the identity's `owner-dm/<name>.archive-exclude`, which
-  archive already honours.
+  archive honours. Creation holds the owner/archive lock and first writes the
+  durable `*principal-dm-creation*` exclusion reservation. Archive holds that
+  same lock through export and refuses all rooms while a reservation remains.
+  After the exact new room exclusion is recorded, a reservation created by
+  this invocation is removed. A CreateRoom error/uncertain response or exclusion
+  write failure retains it, including across retries; the host must account for
+  every orphan and record its exact exclusion before removing the reservation.
 
 Host setup, once per principal:
 
@@ -3310,21 +3330,35 @@ Host setup, once per principal:
 # <base> is ~/.config/a2a-swarm unless A2A_CONFIG_DIR says otherwise
 mkdir -p -m 700 <base>/principal-dm
 (umask 077; printf '{"principals":["@user:server"]}\n' > <base>/principal-dm/<name>.pin)
-a2a --as <name> principal-dm ensure @user:server
+A2A_AGENT=<name> a2a principal-dm ensure @user:server
 ```
+
+Ensure/unset require canonical `a2a principal-dm <subcommand> ...` argv.
+Select identity through `A2A_AGENT`; all global flags before `--`, including
+`=` forms and interposed flags, refuse as for owner-dm ensure/unset.
+Created timestamps later than the current clock refuse as invalid config.
 
 Ensure prints `active=false pending_join=true` when it creates the room. While
 the principal has not joined, re-running ensure refuses with "already has a
-pending claim"; after the join it activates, and so does the first `say` that
-passes the audience check. If a step after room creation fails, ensure says the
+pending claim"; after the join it activates, and so does the first `say` whose
+audience check and send both succeed. History must be exactly `joined`. If a
+step after room creation fails, ensure says the
 room was created but not recorded: the room is already archive-excluded, a
-subscription it just added is removed, and the next ensure creates a fresh
-room. `hook install` denies `principal-dm ensure` and `principal-dm unset` to
-agent runtimes, like the owner-dm terminal verbs; the TTY check alone is
-friction, not consent. A present but invalid owner-dm pin refuses every
+subscription it just added is removed (cleanup failures retain the orphan
+report and name the cleanup error), and the next ensure creates a fresh room. `hook install` denies `principal-dm ensure` and `principal-dm unset` to
+Claude/Codex, like the owner-dm terminal verbs. Muse has no hook install and
+no deny. Shell quoting can evade string globs, and wrappers/renamed binaries
+can evade prefix rules; TTY plus type-back is friction, not authentication.
+A present but invalid owner-dm pin refuses every
 principal-dm mutation. Say refuses while pending, after expiry or unset, for an
 unpinned principal, and whenever the audience check fails; it never repairs the
-room. Status prints, per principal, `pinned`, the state (active, pending with
+room. Unset writes inactive locally before removing the subscription; remote
+failure leaves inactive-but-subscribed with its cleanup ID and a retry message.
+Retry unset is idempotent and reports cleanup completion. Expired pending rooms
+lose their DM-only inbound subscription coverage too; independent subscriptions,
+mandatory host-principal coverage and already retained mailbox entries remain
+ordinary delivery, as for an inactive room. Status prints, per principal,
+`pinned`, the state (active, pending with
 expiry, expired, inactive, never-configured), generation, room and the audience
 result, and writes nothing. Incoming messages arrive through the room's
 all-events subscription and `a2a inbox` like any other room. When the same

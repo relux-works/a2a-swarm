@@ -44,7 +44,7 @@ func principalFiles(p config.Paths, name string) ownerDMFiles {
 
 // The pin is the host's allowlist. A missing pin pins nobody; an invalid one
 // refuses every principal-dm mutation instead of being partially honoured.
-func principalPin(f ownerDMFiles) (map[string]bool, error) {
+func principalPin(f ownerDMFiles, forbidden ...string) (map[string]bool, error) {
 	out := map[string]bool{}
 	b, st, err := ownerRead(f.path("pin"))
 	if err != nil {
@@ -55,19 +55,24 @@ func principalPin(f ownerDMFiles) (map[string]bool, error) {
 	}
 	var raw map[string]json.RawMessage
 	var p principalDMPin
-	if json.Unmarshal(b, &raw) != nil || len(raw) != 1 || raw["principals"] == nil || json.Unmarshal(raw["principals"], &p.Principals) != nil || p.Principals == nil {
+	if config.DecodeConnectionJSON(b, &p) != nil || json.Unmarshal(b, &raw) != nil || len(raw) != 1 || raw["principals"] == nil || json.Unmarshal(raw["principals"], &p.Principals) != nil || p.Principals == nil {
 		return nil, fmt.Errorf("invalid principal-dm pin %s: expected {\"principals\":[...]}", f.path("pin"))
 	}
 	for _, m := range p.Principals {
-		if !ownerMXID.MatchString(m) || out[m] {
+		if !validPrincipalID(m) || out[m] {
 			return nil, fmt.Errorf("invalid principal-dm pin %s: bad or duplicate principal", f.path("pin"))
+		}
+		for _, id := range forbidden {
+			if id != "" && strings.EqualFold(m, id) {
+				return nil, errors.New("invalid principal-dm pin: may not list the pinned owner (use owner-dm) or self (is this identity)")
+			}
 		}
 		out[m] = true
 	}
 	return out, nil
 }
 
-func principalLoad(f ownerDMFiles) (principalDMState, error) {
+func principalLoad(f ownerDMFiles, clock ...time.Time) (principalDMState, error) {
 	out := principalDMState{V: 1, DMs: map[string]principalDM{}}
 	b, st, err := ownerRead(f.path("json"))
 	if err != nil {
@@ -75,6 +80,10 @@ func principalLoad(f ownerDMFiles) (principalDMState, error) {
 	}
 	if st == nil {
 		return out, nil
+	}
+	now := time.Now()
+	if len(clock) != 0 {
+		now = clock[0]
 	}
 	bad := fmt.Errorf("invalid principal-dm config %s", f.path("json"))
 	var top struct {
@@ -92,7 +101,7 @@ func principalLoad(f ownerDMFiles) (principalDMState, error) {
 		var fields map[string]json.RawMessage
 		var d principalDM
 		if !ownerMXID.MatchString(m) || json.Unmarshal(entry, &fields) != nil || len(fields) != len(shape) || ownerObject(entry, shape, &d) != nil ||
-			!ownerRoomID.MatchString(d.Room) || d.Generation == 0 || d.CreatedAt <= 0 || (d.Active && d.Pending) || ((d.Active || d.Pending) && d.SubID == "") {
+			!ownerRoomID.MatchString(d.Room) || d.Generation == 0 || d.CreatedAt <= 0 || d.CreatedAt > now.UnixMilli() || (d.Active && d.Pending) || ((d.Active || d.Pending) && d.SubID == "") {
 			return out, fmt.Errorf("invalid principal-dm config %s: entry %s", f.path("json"), sanitizeLine(m))
 		}
 		out.DMs[m] = d
@@ -115,11 +124,19 @@ func (s *session) principalSubscription(ctx context.Context, principal, room, ol
 		// Keep mandatory sender coverage independent of the DM lifecycle,
 		// including a stale config that names a protected principal row.
 		c := ownerDMConfig{Owner: principal, Room: room, SubID: old}
+		if add {
+			c.SubID = ""
+		}
 		changed := changeOwnerSubscription(list, &c, add, configured, s.app.Now())
 		id = c.SubID
 		return changed, nil
 	})
 	return id, err
+}
+
+// Principal rooms require joined history without changing Owner DM S1's policy.
+func (s *session) principalAudience(ctx context.Context, room, principal string, allowInvite bool) (bool, error) {
+	return s.dmAudience(ctx, room, principal, allowInvite, true)
 }
 
 func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
@@ -155,7 +172,7 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 		return usagef("unknown principal-dm command %q", action)
 	}
 	principal := args[1]
-	if !ownerMXID.MatchString(principal) {
+	if !validPrincipalID(principal) {
 		return usagef("invalid principal %q: expected @user:server", sanitizeLine(principal))
 	}
 	body := ""
@@ -170,7 +187,11 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 			return usagef("message body over %d bytes refused", principalDMMaxBody)
 		}
 	}
-	if err = principalAdmitted(f, ownerFiles(p, name), principal, action); err != nil {
+	meta, err := config.LoadCredentialMetadata(p, name, a.human)
+	if err != nil {
+		return err
+	}
+	if err = principalAdmitted(f, ownerFiles(p, name), principal, action, meta.UserID); err != nil {
 		return err
 	}
 	if action != "say" {
@@ -182,7 +203,7 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if principal == s.creds.UserID {
+	if strings.EqualFold(principal, s.creds.UserID) {
 		return errors.New("principal-dm: the principal is this identity")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -193,10 +214,10 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 	}
 	defer unlock()
 	// Re-read every host input after waiting for another writer.
-	if err = principalAdmitted(f, ownerFiles(p, name), principal, action); err != nil {
+	if err = principalAdmitted(f, ownerFiles(p, name), principal, action, s.creds.UserID); err != nil {
 		return err
 	}
-	state, err := principalLoad(f)
+	state, err := principalLoad(f, a.Now())
 	if err != nil {
 		return err
 	}
@@ -207,39 +228,40 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 			a.printf("never-configured\n")
 			return nil
 		}
+		if d.Active || d.Pending {
+			next, err := ownerNext(&ownerDMConfig{Generation: d.Generation})
+			if err != nil {
+				return err
+			}
+			d.Generation, d.Active, d.Pending = next, false, false
+			state.DMs[principal] = d
+			if err = ownerWrite(ctx, f.path("json"), state); err != nil {
+				return err
+			}
+		}
 		if _, err = s.principalSubscription(ctx, principal, d.Room, d.SubID, false); err != nil {
-			return err
+			return fmt.Errorf("principal-dm inactive; subscription cleanup pending; retry unset: %w", err)
 		}
-		next, err := ownerNext(&ownerDMConfig{Generation: d.Generation})
-		if err != nil {
-			return err
-		}
-		d = principalDM{Generation: next, Room: d.Room, CreatedAt: d.CreatedAt}
+		d.SubID = ""
 		state.DMs[principal] = d
 		if err = ownerWrite(ctx, f.path("json"), state); err != nil {
 			return err
 		}
+		a.printf("principal-dm unset: inactive; subscription cleanup complete\n")
 		a.printf("principal-dm unset: %s, generation %d, room %s left in place\n", sanitizeLine(principal), d.Generation, sanitizeLine(d.Room))
 		return nil
 	case "say":
 		if !known || !(d.Active || d.Pending) || a.principalExpired(d) {
 			return errors.New("principal-dm: no active room for this principal; the host runs ensure")
 		}
-		joined, err := s.ownerAudience(ctx, d.Room, principal, d.Pending)
+		joined, err := s.principalAudience(ctx, d.Room, principal, d.Pending)
 		if err != nil {
 			return err
 		}
 		if d.Pending && !joined {
 			return errors.New("principal-dm: pending until the principal joins")
 		}
-		if d.Pending {
-			d.Pending, d.Active = false, true
-			state.DMs[principal] = d
-			if err = ownerWrite(ctx, f.path("json"), state); err != nil {
-				return err
-			}
-		}
-		if err = principalAdmitted(f, ownerFiles(p, name), principal, action); err != nil {
+		if err = principalAdmitted(f, ownerFiles(p, name), principal, action, s.creds.UserID); err != nil {
 			return err
 		}
 		txn := make([]byte, 12)
@@ -250,20 +272,27 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
+		if d.Pending {
+			d.Pending, d.Active = false, true
+			state.DMs[principal] = d
+			if err = ownerWrite(ctx, f.path("json"), state); err != nil {
+				return err
+			}
+		}
 		a.printf("sent %s to %s\n", sanitizeLine(id), sanitizeLine(principal))
 		return nil
 	}
 	// ensure: an active room stays; a live pending claim activates or refuses;
 	// a missing, inactive or expired one gets a fresh room.
 	if known && d.Active {
-		if _, err = s.ownerAudience(ctx, d.Room, principal, false); err != nil {
+		if _, err = s.principalAudience(ctx, d.Room, principal, false); err != nil {
 			return fmt.Errorf("%w; run principal-dm unset, then ensure", err)
 		}
 		a.printf("principal-dm ensure: %s already active, generation %d, room %s\n", sanitizeLine(principal), d.Generation, sanitizeLine(d.Room))
 		return nil
 	}
 	if known && d.Pending && !a.principalExpired(d) {
-		joined, err := s.ownerAudience(ctx, d.Room, principal, true)
+		joined, err := s.principalAudience(ctx, d.Room, principal, true)
 		if err != nil {
 			return err
 		}
@@ -286,63 +315,97 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err = principalAdmitted(f, ownerFiles(p, name), principal, action); err != nil {
+	if err = principalAdmitted(f, ownerFiles(p, name), principal, action, s.creds.UserID); err != nil {
+		return err
+	}
+	// Serialise with archive inventory and reserve a fail-closed exclusion
+	// before creating anything. A failed exact-room write retains the fence.
+	of := ownerFiles(p, name)
+	ownerUnlock, err := of.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer ownerUnlock()
+	exclusions, err := of.exclusions()
+	if err != nil {
+		return err
+	}
+	reserved := exclusions[principalArchiveReservation]
+	if err = of.exclude(ctx, principalArchiveReservation); err != nil {
 		return err
 	}
 	room, err := s.ownerNewRoom(ctx, principal)
 	if err != nil {
 		return err
-	}
-	// Exclude the new room from archive before anything else can fail, so an
-	// orphan left by a later failure is still never exported. The exclusion
-	// file belongs to owner-dm: take its lock too (principal first, then owner;
-	// owner-dm never takes the principal lock).
-	ownerUnlock, err := ownerFiles(p, name).lock(ctx)
-	if err != nil {
-		return fmt.Errorf("%w; room %s was created but not recorded", err, sanitizeLine(room))
-	}
-	err = ownerFiles(p, name).exclude(ctx, room)
-	ownerUnlock()
-	if err != nil {
-		return fmt.Errorf("%w; room %s was created but not recorded", err, sanitizeLine(room))
-	}
-	joined, err := s.ownerAudience(ctx, room, principal, true)
-	if err != nil {
-		return fmt.Errorf("%w; room %s was created but not recorded", err, sanitizeLine(room))
-	}
-	sub, err := s.principalSubscription(ctx, principal, room, d.SubID, true)
-	if err != nil {
-		return err
-	}
-	d = principalDM{Generation: generation, Room: room, Pending: !joined, Active: joined, SubID: sub, CreatedAt: a.Now().UnixMilli()}
-	state.DMs[principal] = d
-	if err = ownerWrite(ctx, f.path("json"), state); err != nil {
-		// Do not leave an all-events subscription nothing can name: drop the one
-		// just added (best effort, on a fresh deadline).
+	} // Unknown server outcome: keep the reservation.
+	orphan := func(cause error, sub string) error {
 		cleanup, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancelCleanup()
-		if _, e := s.principalSubscription(cleanup, principal, room, sub, false); e != nil {
-			return fmt.Errorf("%w; also failed to remove subscription %s: %v", err, sub, e)
+		// Re-read account data even after a failed Put (lost response/local
+		// state-save failure). The tentative ID is known before the Put.
+		if sub != "" {
+			if _, e := s.principalSubscription(cleanup, principal, room, sub, false); e != nil {
+				cause = fmt.Errorf("%w; subscription cleanup pending for %s: %v", cause, sub, e)
+			}
 		}
-		return fmt.Errorf("%w; room %s was created but not recorded", err, sanitizeLine(room))
+		return fmt.Errorf("%w; room %s was created but not recorded", cause, sanitizeLine(room))
 	}
+	if err = of.exclude(ctx, room); err != nil {
+		return orphan(err, "")
+	}
+	// Only our own reservation can be released. A prior unresolved creation
+	// keeps archive closed until the host accounts for every orphan room.
+	if !reserved {
+		exclusions, err = of.exclusions()
+		if err != nil {
+			return orphan(err, "")
+		}
+		delete(exclusions, principalArchiveReservation)
+		if err = writeSettings(of.path("archive-exclude"), []byte(strings.Join(sortedKeys(exclusions), "\n")+"\n"), 0600); err != nil {
+			return orphan(err, "")
+		}
+	}
+	joined, err := s.principalAudience(ctx, room, principal, true)
+	if err != nil {
+		return orphan(err, "")
+	}
+	sub, err := s.principalSubscription(ctx, principal, room, "", true)
+	if err != nil {
+		return orphan(err, sub)
+	}
+	next := principalDM{Generation: generation, Room: room, Pending: !joined, Active: joined, SubID: sub, CreatedAt: a.Now().UnixMilli()}
+	state.DMs[principal] = next
+	if err = ownerWrite(ctx, f.path("json"), state); err != nil {
+		return orphan(err, sub)
+	}
+	// New subscription and local config are confirmed before retiring the old
+	// row. Never trade away the old row on an uncertain add.
+	if d.SubID != "" {
+		if _, err = s.principalSubscription(ctx, principal, d.Room, d.SubID, false); err != nil {
+			return fmt.Errorf("principal-dm recorded; old subscription cleanup pending: %w", err)
+		}
+	}
+	d = next
 	a.printf("principal-dm ensure: %s generation %d, room %s, active=%t pending_join=%t\n", sanitizeLine(principal), d.Generation, sanitizeLine(d.Room), d.Active, d.Pending)
 	return nil
 }
 
 // A principal must be pinned, and the pinned owner keeps using owner-dm.
 // Unset stays possible after the pin drops the principal.
-func principalAdmitted(f, owner ownerDMFiles, principal, action string) error {
-	pinned, err := principalPin(f)
+func principalAdmitted(f, owner ownerDMFiles, principal, action, self string) error {
+	_, st, err := ownerRead(owner.path("pin"))
+	if err != nil || (st != nil && !validPrincipalID(owner.pin().Owner)) {
+		return errors.New("principal-dm: owner-dm pin is present but invalid; fix it first")
+	}
+	if strings.EqualFold(principal, owner.pin().Owner) {
+		return errors.New("principal-dm: this principal is the pinned owner; use owner-dm")
+	}
+	pinned, err := principalPin(f, owner.pin().Owner, self)
 	if err != nil {
 		return err
 	}
-	_, st, err := ownerRead(owner.path("pin"))
-	if err != nil || (st != nil && owner.pin().Owner == "") {
-		return errors.New("principal-dm: owner-dm pin is present but invalid; fix it first")
-	}
-	if principal == owner.pin().Owner {
-		return errors.New("principal-dm: this principal is the pinned owner; use owner-dm")
+	if strings.EqualFold(principal, self) {
+		return errors.New("principal-dm: the principal is this identity")
 	}
 	if action != "unset" && !pinned[principal] {
 		return errors.New("principal-dm: principal is not in the host pin")
@@ -351,8 +414,11 @@ func principalAdmitted(f, owner ownerDMFiles, principal, action string) error {
 }
 
 func (a *App) principalStatus(ctx context.Context, f ownerDMFiles, only []string) error {
-	pinned, perr := principalPin(f)
-	state, err := principalLoad(f)
+	p, _ := a.paths()
+	name, _ := a.identity()
+	meta, _ := config.LoadCredentialMetadata(p, name, a.human)
+	pinned, perr := principalPin(f, ownerFiles(p, name).pin().Owner, meta.UserID)
+	state, err := principalLoad(f, a.Now())
 	if err != nil {
 		fmt.Fprintln(a.Stderr, "a2a: "+sanitizeLine(err.Error()))
 		a.printf("invalid: %s\n", sanitizeLine(err.Error()))
@@ -404,7 +470,7 @@ func (a *App) principalStatus(ctx context.Context, f ownerDMFiles, only []string
 				}
 			}
 			if s != nil {
-				joined, e := s.ownerAudience(ctx, d.Room, m, d.Pending)
+				joined, e := s.principalAudience(ctx, d.Room, m, d.Pending)
 				switch {
 				case e != nil:
 					audience = e.Error()
@@ -418,4 +484,30 @@ func (a *App) principalStatus(ctx context.Context, f ownerDMFiles, only []string
 		a.printf("%s %s generation %d room %s audience: %s\n", line, st, d.Generation, sanitizeLine(d.Room), sanitizeLine(audience))
 	}
 	return nil
+}
+
+// Expiry is effective on inbound admission too, without mutating account data
+// or granting the pin any mandatory-sender authority.
+func (s *session) principalLiveSubscriptions(subs []Sub) ([]Sub, error) {
+	// Pure classifiers have no filesystem namespace. Operational sessions do.
+	if s.paths.Base == "" {
+		return subs, nil
+	}
+	state, err := principalLoad(principalFiles(s.paths, s.name), s.app.Now())
+	if err != nil {
+		return nil, err
+	}
+	inactive := map[string]bool{}
+	for _, d := range state.DMs {
+		if !(d.Active || d.Pending) || s.app.principalExpired(d) {
+			inactive[d.SubID] = true
+		}
+	}
+	out := make([]Sub, 0, len(subs))
+	for _, sub := range subs {
+		if !inactive[sub.ID] {
+			out = append(out, sub)
+		}
+	}
+	return out, nil
 }

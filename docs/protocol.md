@@ -362,6 +362,14 @@ ensure with the same effective-state behavior as bind (pending refusal, active
 flags only, new room when never-configured/inactive), or explicitly set an
 existing valid room with TTY/type-back;
 agents must use bind/unbind --event or status instead.
+Terminal ensure/unset accept only `a2a owner-dm <subcommand> ...`, selecting
+identity with `A2A_AGENT` and the current config connection. Global flags
+(including `--as`/`-as`, profile, fingerprint and human selectors, and `=` forms)
+refuse anywhere before `--`; local ensure tag/mirror/render options remain.
+Unset marks config inactive locally before removing its subscription. Remote
+failure leaves inactive-but-subscribed with the cleanup ID retained; retry
+unset is idempotent, reports cleanup completion and keeps generation unchanged.
+Owner-channel unbind keeps its existing ordering.
 
 Every accepted owner-channel mutation advances the persisted per-owner order
 watermark, including unbind. Later requests require a greater timestamp or
@@ -413,35 +421,63 @@ enforcement was not exercised; live activation remains separately gated.
 
 The Owner DM S1 room shape for other human principals. A host-written
 per-identity pin `principal-dm/<name>.pin` lists principal MXIDs; it is never
-learned from Matrix, and the owner pinned for owner-dm cannot be listed (use
-owner-dm). There is no Matrix-triggered bind, no mirror and no trust change:
+learned from Matrix. Owner and self cannot be listed, including case variants;
+a duplicate JSON key, malformed MXID or bad owner routing refuses. Use owner-dm
+for the owner. Case-insensitive comparison here is refusal only and grants no
+authority to a differently cased identity. There is no Matrix-triggered bind,
+no mirror and no trust change:
 a principal's messages keep that principal's host scope, and the room grants
 nothing.
 
 Only the host terminal creates or retires a room: `ensure` and `unset` require
 interactive stdin/stdout and the principal MXID typed back, and `ensure` also
-requires the principal in the pin. Ensure creates a fresh private_chat,
+requires the principal in the pin. Both accept only canonical
+`a2a principal-dm <subcommand> ...`, selecting identity through `A2A_AGENT`.
+Every global flag before `--`, including `=` forms or flags interposed between
+verb and subcommand, refuses with the canonical form. Ensure creates a fresh
+private_chat,
 is_direct, invite-only, unencrypted room with joined history, inviting only
 that principal; it excludes the room from archive and installs one all-events
 subscription. The room is pending until the principal joins and expires after
-24 hours. A live pending claim refuses a second one; an active room is kept;
+24 hours. A future created_at refuses. At expiry its DM-only inbound row is
+ignored as for an inactive room; independent subscriptions, mandatory
+host-principal delivery and previously retained mail keep their ordinary
+behavior. A live pending claim refuses a second one; an active room is kept;
 an inactive, unset or expired one is replaced by a fresh room. No existing room
-or invite is adopted. Unset removes the subscription and deactivates, leaving
-the room and its archive exclusion. The room is excluded from archive right
-after creation; if a later step fails (audience check, subscription, config
-write) ensure reports the created room as not recorded, removes a subscription
-it just added, and the room stays behind invited but unused, as with owner-dm.
+or invite is adopted. Unset persists inactive locally before removing its
+subscription, retaining the cleanup ID after remote failure. An idempotent retry
+reports cleanup completion without another generation advance. The room and
+archive exclusion remain.
+
+Before CreateRoom, ensure takes the owner/archive lock and writes a durable
+`*principal-dm-creation*` reservation in the shared archive-exclude file. Archive
+holds the same lock through export and refuses all export while that reservation
+exists. After creation, the exact room is excluded before this invocation's
+reservation is removed. A CreateRoom error/uncertain response or exact-exclusion
+write failure retains the reservation across retries: the host must account for
+all orphan rooms and record their exact exclusions before removing it.
+If a step after creation fails (exclusion, audience, subscription or config
+write), ensure reports the room as created but not recorded and removes any
+just-added subscription, re-reading remote account data after a failed Put
+because it may have applied. Cleanup errors are reported with the same orphan
+report. The old row is never removed before the new row and config are
+confirmed. The next ensure creates a fresh room rather than adopting the orphan.
 
 The TTY and type-back are friction, not authenticated consent: an agent can
-allocate a PTY. As for owner-dm, `hook install` therefore also denies
+allocate a PTY. Shell-quoted spellings such as `'ens'ure` can evade a string
+glob; shell wrappers and unlisted binary spellings can evade argv-prefix rules.
+TTY plus type-back stays friction, not authentication. As for owner-dm,
+`hook install` also denies
 `principal-dm ensure` and `principal-dm unset` to the agent runtime (Claude
 `permissions.deny`, Codex forbidden prefix rules); status and say stay allowed.
+Muse has no hook install, so no terminal-verb deny applies there.
 An owner-dm pin that is present but invalid refuses every principal-dm
 mutation, so the owner cannot slip into this feature.
 
 Agents may run `status` (read-only) and `say`, which sends plain text only
 after the same audience check as owner-dm: exactly the joined identity and the
-principal (invited while pending), invite join rule, non-world-readable history,
-no encryption. A first passing say after the principal's join activates the
-room. The check/send race, homeserver compromise and same-UID edits are
+principal (invited while pending), invite join rule, exactly `joined` history,
+no encryption. Only a successful first say after the principal's join activates
+the room; a refused or failed send leaves it pending. The check/send race,
+homeserver compromise and same-UID edits are
 outside S1, as for owner-dm.

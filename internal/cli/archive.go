@@ -498,7 +498,16 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Pair exclusion snapshot and room inventory/export with DM creation.
+	unlock, err := ownerFiles(s.paths, s.name).lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	excluded, err := ownerFiles(s.paths, s.name).exclusions()
+	if err == nil && excluded[principalArchiveReservation] {
+		return errors.New("archive: principal-dm creation reservation excludes all rooms; host reconciliation required")
+	}
 	if err != nil {
 		return err
 	}

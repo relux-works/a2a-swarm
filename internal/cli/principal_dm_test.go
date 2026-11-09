@@ -43,7 +43,8 @@ func principalFixture(t *testing.T) (*env, ownerDMFiles, string) {
 }
 func principalEntry(t *testing.T, f ownerDMFiles, who string) principalDM {
 	t.Helper()
-	st, err := principalLoad(f)
+	var st principalDMState
+	err := json.Unmarshal([]byte(readFile(t, f.path("json"))), &st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +179,11 @@ func TestPrincipalDMAudienceAndExpiry(t *testing.T) {
 			r.state["m.room.join_rules|"] = json.RawMessage(`{"join_rule":"public"}`)
 		}
 		e.hs.mu.Unlock()
+		before := principalSnapshot(t, e, f)
 		e.as("bob", "principal-dm", "say", carol, "leak").failsWith(t, ExitError, map[string]string{"member": "expected only joined identity", "encryption": "encrypted", "public": "join_rule must be invite"}[drift])
+		if principalSnapshot(t, e, f) != before {
+			t.Fatal("say repaired or mutated state")
+		}
 		if b := ownerBodies(e, d.Room); len(b) != 1 {
 			t.Fatal(drift, "sent despite drift", b)
 		}
@@ -260,11 +265,13 @@ func TestPrincipalDMMissingPinInvalidConfigAndHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.as("bob", "principal-dm", "ensure", carol).failsWith(t, ExitError, "owner-dm pin is present but invalid")
+	e.as("bob", "principal-dm", "unset", carol).failsWith(t, ExitError, "owner-dm pin is present but invalid")
 	if err := os.Chmod(ownerPin, 0600); err != nil {
 		t.Fatal(err)
 	}
 	ownerPut(t, ownerPin, map[string]any{"mode": "bogus", "owner": "@alice:" + testServer})
 	e.as("bob", "principal-dm", "ensure", carol).failsWith(t, ExitError, "owner-dm pin is present but invalid")
+	e.as("bob", "principal-dm", "unset", carol).failsWith(t, ExitError, "owner-dm pin is present but invalid")
 	ownerPut(t, ownerPin, ownerDMPin{Mode: "host", Owner: "@alice:" + testServer})
 	for _, bad := range []string{
 		`{"v":1,"dms":{"@carol:test.local":{"generation":0,"active":false,"pending_join":true,"room":"!r","sub_id":"s","created_at":1}}}`,

@@ -73,7 +73,7 @@ func TestOwnerDMInstallDenials(t *testing.T) {
 						t.Fatal("principal terminal rule missing", verb)
 					}
 				}
-				if strings.Count(text, `decision = "forbidden"`) != 10 || strings.Contains(text, `"status"`) || strings.Contains(text, `"bind"`) || strings.Contains(text, `"say"`) {
+				if strings.Count(text, `decision = "forbidden"`) != 5 || strings.Contains(text, `"--as"`) || strings.Contains(text, `"status"`) || strings.Contains(text, `"bind"`) || strings.Contains(text, `"say"`) {
 					t.Fatal("wrong deny scope")
 				}
 				e.run("hook", "install", "--agent", "bob", "--runtime", runtime, "--settings", file).ok(t)

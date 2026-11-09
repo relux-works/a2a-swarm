@@ -368,13 +368,25 @@ func TestOwnerDMDenySubcommandBoundary(t *testing.T) {
 				}
 				return false
 			}
-			for _, prefix := range []string{"a2a", "a2a --as bob", "/usr/local/bin/a2a --as bob"} {
+			for _, prefix := range []string{"a2a", "bin/a2a", "./bin/a2a", "/usr/local/bin/a2a"} {
 				for _, verb := range []string{"ensure", "set", "unset"} {
 					for _, suffix := range []string{"", " --room !room"} {
 						command := prefix + " owner-dm " + verb + suffix
 						if !matches(command) {
 							t.Fatal("terminal verb not denied", command)
 						}
+					}
+				}
+				for _, verb := range []string{"ensure", "unset"} {
+					command := prefix + " principal-dm " + verb + " @carol:test.local"
+					if !matches(command) {
+						t.Fatal("principal terminal verb not denied", command)
+					}
+				}
+				for _, verb := range []string{"status", "say"} {
+					command := prefix + " principal-dm " + verb + " @ensure-unset:test.local"
+					if matches(command) {
+						t.Fatal("principal agent verb denied", command)
 					}
 				}
 				for _, verb := range []string{"bind", "unbind"} {
