@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,8 +27,16 @@ func (n ownerNoNetwork) RoundTrip(*http.Request) (*http.Response, error) {
 
 func ownerCLI(t *testing.T) *env {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
 	e := newEnv(t)
+	e.dir, err = filepath.EvalSymlinks(e.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.agent("alice")
 	e.agent("bob")
 	e.extra[config.EnvAgent] = "alice"
@@ -227,5 +239,100 @@ func TestMonitorOwnerWatchNeverAdmits(t *testing.T) {
 	e.as("alice", "hook", "session-start", "--runtime", "muse").ok(t)
 	if o := e.state("alice").MonitorOwner; o == nil || !strings.EqualFold(o.SessionIDHash, cliOwnerHash("native")) {
 		t.Fatal("valid neighbour", o)
+	}
+}
+
+// Equal/backwards Start must fail at the CLI, never claim an admission that
+// silently leaves a different (or indistinguishable same-session) owner.
+func TestMonitorOwnerHookNonIncreasingStart(t *testing.T) {
+	for _, runtime := range []string{"muse", "claude", "codex"} {
+		for _, delta := range []time.Duration{0, -time.Hour} {
+			t.Run(runtime+"/"+delta.String(), func(t *testing.T) {
+				e := ownerCLI(t)
+				now := time.Now().UTC()
+				e.now = func() time.Time { return now }
+				e.stdin = `{"session_id":"native-A","hook_event_name":"SessionStart"}`
+				e.as("alice", "hook", "session-start", "--runtime", runtime).ok(t)
+				before := e.state("alice").MonitorOwner
+				now = now.Add(delta)
+				e.stdin = `{"session_id":"native-B","hook_event_name":"SessionStart"}`
+				r := e.as("alice", "hook", "session-start", "--runtime", runtime)
+				diagnostic := "owner_unknown"
+				if runtime == "muse" {
+					diagnostic = "delivery_error"
+				}
+				// Hooks intentionally exit zero; a closed diagnostic is their failure signal.
+				if !strings.Contains(r.stderr, diagnostic) || !reflect.DeepEqual(before, e.state("alice").MonitorOwner) {
+					t.Fatal("ambiguous Start silently accepted", r)
+				}
+			})
+		}
+	}
+}
+
+// The shim deliberately lets non-Start owner refusals, including wrapped
+// malformed owner State, reach legacy delivery. It never repairs the bytes;
+// Start still aborts. Delivery's own State checks remain in force.
+func TestMonitorOwnerHookWrappedRefusal(t *testing.T) {
+	e := ownerCLI(t)
+	path := e.paths().StateFile("alice")
+	bad := []byte(`{"monitor_owner":{}}`)
+	if err := os.WriteFile(path, bad, 0600); err != nil {
+		t.Fatal(err)
+	}
+	in := hookInput{SessionID: "native", HookEventName: "UserPromptSubmit", Payload: []byte(`{"session_id":"native","hook_event_name":"UserPromptSubmit"}`)}
+	a := eApp(e)
+	a.as = "alice"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := a.recordHookOwner(ctx, hookRuntime{name: "muse"}, hookEvent{arg: "prompt", name: "UserPromptSubmit"}, in); err != nil {
+		t.Fatal("wrapped non-Start refusal did not fall through", err)
+	}
+	in.HookEventName = "SessionStart"
+	in.Payload = []byte(`{"session_id":"native","hook_event_name":"SessionStart"}`)
+	if err := a.recordHookOwner(ctx, hookRuntime{name: "muse"}, hookEvent{arg: "session-start", name: "SessionStart"}, in); !errors.Is(err, config.ErrMonitorOwner) {
+		t.Fatal("malformed Start did not abort", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(bad, after) {
+		t.Fatal("shim repaired malformed State", err)
+	}
+	e.stdin = `{"session_id":"native","hook_event_name":"UserPromptSubmit"}`
+	if r := e.as("alice", "hook", "prompt", "--runtime", "muse"); !strings.Contains(r.stderr, "delivery_error") || r.stdout != "" {
+		t.Fatal("legacy delivery ignored malformed State")
+	}
+}
+
+// A successful native bind, terminal bind refusal and unsupported sweep entry
+// points cannot manufacture or refresh owner evidence from ambient/session IDs.
+// There is no production sweep command; its negative CLI admission is explicit.
+func TestMonitorOwnerBindAndSweepNeverWrite(t *testing.T) {
+	for _, admitted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("admitted=%t", admitted), func(t *testing.T) {
+			e, _, n, _ := runtimeWorld(t)
+			canonical, err := filepath.EvalSymlinks(e.dir)
+			e.dir = canonical
+			if err != nil {
+				t.Fatal(err)
+			}
+			if admitted {
+				if err := config.RecordMonitorOwnerHook(e.paths(), "alice", time.Now().Add(time.Second), "muse", "native", "SessionStart", false, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := e.state("alice").MonitorOwner
+			e.as("alice", append([]string{"runtime", "bind"}, runtimeStatusBindArgs(n)...)...).ok(t)
+			if !reflect.DeepEqual(before, e.state("alice").MonitorOwner) {
+				t.Fatal("native bind wrote owner")
+			}
+			e.extra[EnvSessionID] = "ambient"
+			for _, args := range [][]string{{"bind", "--runtime", "muse", "--session-id", "ambient"}, {"sweep"}, {"hook", "sweep", "--runtime", "muse"}} {
+				e.stdin = `{"session_id":"ambient","hook_event_name":"SessionStart"}`
+				r := e.as("alice", args...)
+				if (r.code == 0 && r.stderr == "") || !reflect.DeepEqual(before, e.state("alice").MonitorOwner) {
+					t.Fatal("unsupported/refused invocation admitted owner", args, r)
+				}
+			}
+		})
 	}
 }

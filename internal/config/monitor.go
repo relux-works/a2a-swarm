@@ -212,7 +212,7 @@ func WithMonitorGeneration(p Paths, name string, deadline time.Time, entry Monit
 			}
 			// Only explicit arm with an admitted owner may clear a valid sticky
 			// fence. Missing ownership must never mask that retained evidence.
-			if !old.Writer.ForeignSeen.IsZero() && (entry != MonitorArm || !old.currentMonitorOwner(time.Now())) {
+			if !old.Writer.ForeignSeen.IsZero() && (entry != MonitorArm || !old.monitorOwnerMatches(record, time.Now())) {
 				return old, ErrIncompatibleWriter
 			}
 			// Invalidation intentionally retains the old row. Once a compatible
@@ -282,6 +282,10 @@ func (g *MonitorGeneration) stopMemory(reason string) {
 // State is byte-identical on return; only in-memory status/authority is stopped.
 // Callers hold g.mu, but no state/control lock while executing sink I/O.
 func (g *MonitorGeneration) guarded(generation string, stop bool, renew bool) error {
+	return g.guardedStatus(generation, stop, renew, false)
+}
+
+func (g *MonitorGeneration) guardedStatus(generation string, stop, renew, status bool) error {
 	if !g.active || g.release == nil || generation != g.record.Generation {
 		return ErrMonitorGeneration
 	}
@@ -325,6 +329,11 @@ func (g *MonitorGeneration) guarded(generation string, stop bool, renew bool) er
 		return err
 	})
 	if err != nil {
+		// Observation cannot revoke a healthy handle merely because a lock is busy.
+		// Effectful boundaries retain their fail-closed timeout behavior.
+		if status && errors.Is(err, ErrLockTimeout) {
+			return ErrLockTimeout
+		}
 		err = closedMonitorError(err)
 		reason := "unavailable"
 		if errors.Is(err, ErrIncompatibleWriter) || errors.Is(err, ErrMonitorState) {
@@ -378,6 +387,7 @@ func (g *MonitorGeneration) Announce(generation string, emit func() error) error
 }
 
 // Status contains only closed local tokens; it never persists an invalidation.
+// A lock timeout returns an unavailable observation without releasing authority.
 func (g *MonitorGeneration) Status() (active bool, reason string) {
 	if g == nil {
 		return false, "unavailable"
@@ -385,7 +395,9 @@ func (g *MonitorGeneration) Status() (active bool, reason string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.active {
-		_ = g.guarded(g.record.Generation, false, false)
+		if err := g.guardedStatus(g.record.Generation, false, false, true); errors.Is(err, ErrLockTimeout) {
+			return false, "lock_timeout"
+		}
 	}
 	return g.active, g.reason
 }
