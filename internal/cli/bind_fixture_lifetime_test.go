@@ -28,6 +28,7 @@ type bindFixtureProcess struct {
 }
 
 type bindFixtureRecord struct {
+	Reaper  bindFixtureProcess // Live observer reserves its killed-owner controls.
 	Owner   bindFixtureProcess
 	Server  bindFixtureProcess
 	Fixture bindFixtureProcess
@@ -74,6 +75,16 @@ func privateBindFixturePath(path string, dir bool) bool {
 	}
 	owner, ok := s.Sys().(*syscall.Stat_t)
 	return ok && owner.Uid == uint32(os.Getuid()) && s.Mode().Perm() == map[bool]os.FileMode{true: 0700, false: 0600}[dir]
+}
+
+func bindFixtureReaper() (bindFixtureProcess, error) {
+	var p bindFixtureProcess
+	if raw := os.Getenv("A2A_RUN_BIND_FIXTURE_REAPER"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &p); err != nil || p.PID <= 1 || p.Birth == "" {
+			return p, errors.New("invalid bind fixture reaper")
+		}
+	}
+	return p, nil
 }
 
 func bindFixtureRoot() (string, error) {
@@ -207,6 +218,10 @@ func sweepBindFixtures(root string) error {
 	if !privateBindFixturePath(root, true) {
 		return errors.New("unsafe bind fixture registry")
 	}
+	reaper, err := bindFixtureReaper()
+	if err != nil {
+		return err
+	}
 	lock, err := os.OpenFile(filepath.Join(root, "sweep.lock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return err
@@ -232,7 +247,7 @@ func sweepBindFixtures(root string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "fixture-") {
+		if !entry.IsDir() || (!strings.HasPrefix(entry.Name(), "fixture-") && !strings.HasPrefix(entry.Name(), "control-")) {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
@@ -240,6 +255,11 @@ func sweepBindFixtures(root string) error {
 		if err != nil {
 			continue
 		} // An incomplete/untrusted record grants no signal authority.
+		// A different live observer owns the next-run assertion. If it dies,
+		// ordinary future runs may still recover the abandoned controls.
+		if r.Reaper.PID != 0 && r.Reaper != reaper && !r.Reaper.gone() {
+			continue
+		}
 		if r.Owner.live() {
 			continue
 		}
@@ -266,7 +286,15 @@ func newBindFixtureDir(t *testing.T) (string, bindFixtureRecord) {
 	if err = sweepBindFixtures(root); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := os.MkdirTemp(root, "fixture-")
+	reaper, err := bindFixtureReaper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "fixture-"
+	if reaper.PID != 0 {
+		prefix = "control-" // Older fixture sweepers only recognize fixture-.
+	}
+	dir, err := os.MkdirTemp(root, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +302,7 @@ func newBindFixtureDir(t *testing.T) (string, bindFixtureRecord) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := bindFixtureRecord{Owner: owner}
+	r := bindFixtureRecord{Owner: owner, Reaper: reaper}
 	if err = writeBindFixtureRecord(dir, r); err != nil {
 		t.Fatal(err)
 	}
