@@ -7,15 +7,6 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/courierenroll"
 )
 
-// cmdCourier is the enroll-only dispatch seam. The Courier server command owns
-// the combined namespace; composition adds enroll to that dispatch table.
-func cmdCourier(ctx context.Context, a *App, args []string) error {
-	if len(args) == 0 || args[0] != "enroll" {
-		return usagef("courier: expected enroll")
-	}
-	return cmdCourierEnroll(ctx, a, args[1:])
-}
-
 func cmdCourierEnroll(_ context.Context, a *App, args []string) error {
 	fs := newFlagSet("courier enroll")
 	dir := fs.String("dir", "", "station home enrollment directory")
