@@ -59,7 +59,8 @@ func (l *lockedLog) Write(b []byte) (int, error) {
 	defer l.mu.Unlock()
 	return l.b.Write(b)
 }
-func (l *lockedLog) text() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+func (l *lockedLog) TryCourierLog(p []byte) (int, error) { return l.Write(p) }
+func (l *lockedLog) text() string                        { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
 
 type running struct {
 	home, path string
@@ -225,8 +226,8 @@ func TestAuthenticationAndUniformRefusals(t *testing.T) {
 				t.Fatal("request write failed")
 			}
 			assertRefused(t, c)
-			// EOF follows log completion only after the handler's deferred close.
-			if r.log.text() != refusalLine {
+			// Logs are asynchronous; wait for the sink without delaying the server.
+			if !awaitLog(t, r, refusalLine) {
 				t.Fatal("refusal log is not exactly one fixed line")
 			}
 			if tc.uid {
@@ -260,7 +261,7 @@ func TestKernelPeerUIDAndFreshNonceReplay(t *testing.T) {
 	// A second hello on an already authenticated connection is never executed.
 	writeFrame(a, request)
 	assertRefused(t, a)
-	if r.log.text() != refusalLine+refusalLine {
+	if !awaitLog(t, r, refusalLine+refusalLine) {
 		t.Fatal("replay/second hello logs differ")
 	}
 	assertAccepted(t, r, r.secret)
@@ -395,7 +396,7 @@ func TestWireOversizeFragmentedAndTimeout(t *testing.T) {
 		t.Fatal("fragmented hello refused")
 	}
 	c.Close()
-	if strings.Count(r.log.text(), refusalLine) != 5 {
+	if !awaitLog(t, r, strings.Repeat(refusalLine, 5)) {
 		t.Fatal("wire refusals not uniform")
 	}
 }
@@ -527,7 +528,7 @@ func TestConnectionLimitCancellationAndSocketCustody(t *testing.T) {
 	extra.SetDeadline(time.Now().Add(3 * time.Second))
 	assertRefused(t, extra)
 	extra.Close()
-	if r.log.text() != refusalLine {
+	if !awaitLog(t, r, refusalLine) {
 		t.Fatal("capacity refusal log differs")
 	}
 	st, err := os.Lstat(r.path)
@@ -583,7 +584,7 @@ func TestUniformRegistryAndPeerProbeRefusals(t *testing.T) {
 			c, n := connect(t, r)
 			writeFrame(c, hello(r.secret, n, "station", "identity"))
 			assertRefused(t, c)
-			if r.log.text() != refusalLine {
+			if !awaitLog(t, r, refusalLine) {
 				t.Fatal("registry/probe error leaked into log")
 			}
 			if kind == "registry_mode" {
@@ -756,7 +757,7 @@ func TestPublicSocketAccessAndForeignUIDAuth(t *testing.T) {
 		t.Fatal("foreign UID registration failed")
 	}
 	assertAccepted(t, r, key)
-	if r.log.text() != refusalLine+refusalLine {
+	if !awaitLog(t, r, refusalLine+refusalLine) {
 		t.Fatal("foreign UID refusals are not uniform")
 	}
 	home, err := os.Lstat(r.home)
@@ -841,5 +842,25 @@ func TestSocketPermissionsStayWithDirectoryInode(t *testing.T) {
 	}
 	if st, err := os.Lstat(socket); err != nil || st.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("cleanup removed a replacement path")
+	}
+}
+
+func awaitLog(t *testing.T, r *running, want string) bool {
+	t.Helper()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		if r.log.text() == want {
+			return true
+		}
+		select {
+		case <-r.done:
+			return false
+		case <-timer.C:
+			return false
+		case <-tick.C:
+		}
 	}
 }

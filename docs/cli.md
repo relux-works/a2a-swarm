@@ -4054,3 +4054,100 @@ unreadable State refuses authentication/effects rather than assuming no fence.
 A running bind may retry such a read with its existing bounded diagnostics and
 no dispatch; a valid migration fence terminates admission with
 `identity_migrated`. Muse retains its runtime-specific closed diagnostic format.
+
+## Courier streaming, cancellation and station hooks
+
+In station mode, `A2A_CONFIG_DIR` is a2a's managed config base. Its `.a2a/`
+child contains exactly `courier.sock`, `identity`, `station.key`, and `station`.
+Commands execute in the authenticated identity's Courier home. The station
+never writes a mailbox, State, credentials, a journal or a saved inbox. The only
+additional station file is `state/courier-hook-failures.log` (0600), created on
+its first failed-open hook. `courier status` reads local counts without contacting
+the daemon or loading identity credentials.
+
+Silent `wait` and `watch` invocations have no Courier execution idle cutoff.
+The command's own timeout decides when it ends. The daemon sends invisible
+`keepalive` frames every 20 seconds; the station read deadline is three intervals
+(60 seconds). Missing liveness yields `courier_idle_timeout`. Disconnect cancels
+the invocation context. Its consumer and state/lease locks must release within
+five seconds. SIGINT closes the station connection and returns 130. SIGTERM
+cancels the daemon's in-flight invocations, which report `courier_unavailable`.
+An unacknowledged receipt is never completed by shutdown.
+
+Output is sent in bounded chunks, with one chunk awaiting a flow ACK after the
+station writes and flushes it. The daemon blocks the command writer until that
+ACK arrives. A stalled reader gets a framed `courier_idle_timeout`; there is no
+unbounded output queue. Flow ACKs are bound to invocation, chunk batch and
+identity, and cannot complete receipts. Receipts still require the separate
+`delivery`/`ack` barrier after stdout write and flush. Watch, wait and hook
+doorbells make no receipts.
+
+The station errors form a closed set and contain no request operands:
+
+| Class | Meaning |
+| --- | --- |
+| `enrollment_invalid` | Invalid/incomplete enrollment or authentication; the only class that suggests re-running enroll |
+| `courier_unavailable` | Endpoint unavailable, shutdown, or a closed execution failure |
+| `identity_mismatch` | Requested `--as` differs from the authenticated binding |
+| `not_allowed` | Command, option, input or connection assertion is outside the closed schema |
+| `courier_idle_timeout` | Missing liveness, stalled output/ACK, or exhausted hook work budget |
+| `courier_busy` | Per-station, global invocation, or execution connection capacity reached |
+
+Missing environment discovery or failed config-base resolution refuses explicitly;
+it cannot fall through into local execution. `--envelope=@file`, `--body=@file`,
+`--from=@file` and `topic new --json` are admitted alongside their spaced forms.
+Conflicting duplicate profile assertions and `--id-file` remain refused.
+
+A station hook has a five-second total budget, reserving its final 250 milliseconds
+for local failure accounting. Unreachable, refused, busy, timed-out or failed
+invocations fail open: exit 0 and empty stdout. Partial hook stdout/stderr is held
+in bounded memory until a successful exit. A successful hook preserves its
+existing `--as` and doorbell output contract.
+
+Each failed-open delivery appends a UTC timestamp, one fixed hook event name and
+one closed error class to `state/courier-hook-failures.log`. No bodies, tokens,
+argv or paths are recorded. The newest 256 failure lines are retained, dropping
+oldest lines at the cap. Pending count and oldest unreported UTC time are stored
+in the same file's `user.a2a.courier-hook-gap` extended attribute, under the file's
+lock, so no counter sidecar or fifth enrolled entry is created. The local
+filesystem must support file extended attributes. Accounting errors are visible
+as a closed `courier_unavailable` line on stderr; hooks still exit 0.
+
+The next successful hook emits one counts-only line on stderr:
+`courier: N hook deliveries failed open since UTC_TIME`. It then resets the gap
+counter and keeps the failure history. With no failures there is no log file or
+gap line. `a2a courier status` prints `hook_failures` and `oldest_unreported`.
+No native idle-wake reliability is established by a doorbell or these tests;
+external watchdog, sweep and soak qualification are separate work.
+
+| Named bound | Value |
+| --- | --- |
+| `KeepaliveInterval` | 20 s |
+| `StationReadDeadline` | 3 intervals = 60 s |
+| `LockReleaseBound` | 5 s |
+| `HookBudget` | 5 s |
+| `HookStateReserve` | 250 ms; hook transport/input work gets 4.75 s |
+| `MaxStationInvocations` | 4 |
+| `MaxInvocations` | 32 |
+| `MaxConnections` | 64; no unbounded accept/invocation queue |
+| `OutputChunkBytes` | 1024 bytes, one unacknowledged chunk per invocation |
+| `MaxFrameBytes` | 65536 bytes, including the request and its inputs |
+| `HookOutputBytes` | 1 MiB per buffered stdout/stderr stream |
+| `HookFailureLines` | 256; `hookFailureLineBytes` bounds accounting input at 128 bytes per line |
+| `LogQueueLines` | 64 fixed daemon diagnostic lines |
+| `AcceptBackoff` | 50 ms for EMFILE, ENFILE, ECONNABORTED or EINTR |
+| `stationInputPoll` | 20 ms; cancellation checks during hook input and local log-lock waits |
+| `handshakeTimeout`, `idleTimeout` | 5 s handshake/request or authentication-only idle bound |
+| `writeTimeout` | 1 s for closed refusals |
+| `executionIdle` | 60 s output/ACK write bound; no silent-command cutoff |
+
+Daemon logs pass through a bounded, non-blocking sink outside the connection
+mutex. A full queue or undrained file stderr drops and counts lines; it cannot
+hold up a connection or shutdown. File stderr uses nonblocking kernel writes and
+restores its original flags on shutdown. In-process embeddings can supply
+`NonblockingLogWriter` with a promptly returning `TryCourierLog`; unclassified
+writer adapters are dropped and counted rather than called without a cancellation
+contract. In-memory byte buffers and discarded output are also supported.
+Registry lookup uses shared locks so valid station hellos can run concurrently.
+New registry and lock files use explicit modes regardless of umask. A startup
+refusal after binding removes only the socket inode it created.

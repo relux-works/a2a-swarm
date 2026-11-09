@@ -78,7 +78,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 			switch name {
 			case "--as", "-as":
 				if value != identity {
-					return p, errRefused
+					return p, IdentityMismatch
 				}
 				p.Selection.As = value
 			case "--profile":
@@ -137,6 +137,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		}
 		start = 2
 		values = "body to kind"
+		bools = "json"
 		minPos = 3
 		maxPos = 256
 	case "attach":
@@ -224,9 +225,6 @@ func Authorize(argv []string, identity string) (Plan, error) {
 				p.Stdin = true
 			}
 			if (p.Command == "topic" && name == "body" || p.Command == "post" && name == "envelope" || p.Command == "inbox" && name == "from") && strings.HasPrefix(value, "@") {
-				if eq {
-					return p, errRefused
-				}
 				p.Inputs[indices[vi]] = false
 			}
 			// inbox show --from is a path, so only explicit streamed @input is admitted.

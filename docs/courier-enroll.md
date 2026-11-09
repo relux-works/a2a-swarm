@@ -58,12 +58,15 @@ rotation; macOS uses `renameatx_np(RENAME_EXCL/RENAME_SWAP)`. Unsupported filesy
 fail closed. There is no sequential rename fallback. No temporary entry is
 admitted inside `.a2a`.
 
-A rotation atomically exchanges complete directories and retains the previous
-generation under the staging sibling name. **Readers must open `.a2a` once and
+A rotation atomically exchanges complete directories and removes the previous
+generation and its old `station.key` staging copy after successful verification
+and parent sync. **Readers must open `.a2a` once and
 open all four files relative to that directory descriptor.** Opening individual
 absolute file paths across a rotation cannot provide a consistent snapshot.
-Old generations remain intact so a pinned reader can finish opening its files.
-The station reader uses that pinned-descriptor protocol. A legacy three-file
+Files already open remain readable after unlink. A reader still opening files
+or checking the namespace can refuse during rotation and retry with the current
+generation. The station reader uses the pinned-descriptor protocol and checks
+that the directory remains the current namespace before returning its snapshot. A legacy three-file
 generation is incomplete and requires re-running enroll.
 
 An ordinary failure before exchange leaves the previous enrollment unchanged;
@@ -71,10 +74,16 @@ an ordinary verification/durability failure after exchange exchanges it back.
 A failed rollback reports an explicitly uncertain outcome and retains staging
 for inspection. A crash before exchange leaves the previous enrollment, plus
 possibly partial sibling staging; a crash after exchange leaves a complete new
-enrollment and complete old sibling. Retrying never auto-promotes or deletes an
+enrollment and may leave a complete or partly removed old sibling. A failure
+during old-generation removal or its final sync reports an uncertain outcome
+without rolling back the verified new enrollment. Retrying never auto-promotes or deletes an
 orphan. Inspect the four files using a pinned descriptor before deciding which
 complete generation to retain. The operator may remove confirmed obsolete
-siblings only after readers have stopped. No automatic cleanup service or new
+siblings only after readers have stopped. Ordinary successful rotation retains
+no old key copy. Filesystem snapshots, backups, previously copied keys and
+power-loss recovery are outside this cleanup guarantee. Enrollment is a local
+file operation; registration/key rotation in the daemon and custody of the input
+pipe remain separate operator steps. No automatic cleanup service or new
 authority is implied. Whole-machine power-loss durability and native macOS
 filesystem behavior require separate qualification.
 

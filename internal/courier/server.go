@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -42,14 +43,19 @@ type server struct {
 	handshake, idle time.Duration
 	handler         Handler
 	executionIdle   time.Duration
+	keepalive       time.Duration
+	ctx             context.Context
+	active          map[string]int
+	invocations     int
+	sink            *logSink
+	permissions     func(*os.File, string, os.FileInfo) error
+	accept          func(*net.UnixListener) (*net.UnixConn, error)
 }
 
 func (s *server) refuse(c *net.UnixConn) {
 	c.SetWriteDeadline(time.Now().Add(writeTimeout))
 	_ = writeFrame(c, refusalFrame)
-	s.mu.Lock()
-	_, _ = io.WriteString(s.log, refusalLine)
-	s.mu.Unlock()
+	s.sink.write(refusalLine)
 }
 
 func parseHello(data []byte) (station, identity string, mac []byte, err error) {
@@ -129,7 +135,7 @@ func (s *server) handle(c *net.UnixConn) {
 		return
 	}
 	if s.handler != nil {
-		s.execute(c, e.Identity)
+		s.execute(c, station, e.Identity)
 		return
 	}
 	_ = c.SetDeadline(time.Now().Add(s.idle))
@@ -156,6 +162,9 @@ func Serve(ctx context.Context, home, socket string, log io.Writer) error {
 }
 
 func (s *server) serve(ctx context.Context, socket string, ready func()) error {
+	s.ctx = ctx
+	s.sink = newLogSink(s.log)
+	defer s.sink.close()
 	if !validSocket(socket) {
 		return errRefused
 	}
@@ -197,7 +206,11 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 			_ = unix.Unlinkat(int(dir.Fd()), filepath.Base(socket), 0)
 		}
 	}()
-	if setSocketPermissions(dir, socket, info) != nil {
+	permissions := s.permissions
+	if permissions == nil {
+		permissions = setSocketPermissions
+	}
+	if permissions(dir, socket, info) != nil {
 		return errRefused
 	}
 
@@ -216,10 +229,24 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 	}
 	defer wg.Wait()
 	for {
-		c, err := listener.AcceptUnix()
+		accept := s.accept
+		if accept == nil {
+			accept = func(l *net.UnixListener) (*net.UnixConn, error) { return l.AcceptUnix() }
+		}
+		c, err := accept(listener)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if transientAccept(err) {
+				timer := time.NewTimer(AcceptBackoff)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil
+				case <-timer.C:
+				}
+				continue
 			}
 			return errRefused
 		}
@@ -235,7 +262,11 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 		}
 		s.mu.Unlock()
 		if full {
-			s.refuse(c)
+			if s.handler != nil {
+				s.diagnostic(c, Busy, "")
+			} else {
+				s.refuse(c)
+			}
 			c.Close()
 			continue
 		}
@@ -279,4 +310,8 @@ func setSocketPermissions(dir *os.File, path string, info os.FileInfo) error {
 		return errRefused
 	}
 	return nil
+}
+
+func transientAccept(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EINTR)
 }

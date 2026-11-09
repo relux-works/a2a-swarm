@@ -222,6 +222,12 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if a.HTTP == nil {
 		a.HTTP = &http.Client{}
 	}
+	command := stationCommand(args)
+	if command != "fetch" && command != "courier" && command != "help" && command != "--help" && command != "-h" && command != "" && !a.courierEngine {
+		if handled, code := a.stationInvocation(ctx, args); handled {
+			return code
+		}
+	}
 	globalFailure := func(err error) int {
 		if rest := associationInvocation(args); rest != nil {
 			// Global guards still refuse, through the association's closed output.
@@ -244,11 +250,12 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			return a.fail(err)
 		}
 	}
-	if len(rest) > 0 && rest[0] != "courier" && !a.courierEngine {
+	if command == "fetch" && !a.courierEngine {
 		if handled, code := a.stationInvocation(ctx, args); handled {
 			return code
 		}
 	}
+
 	if a.human && !a.interactive() {
 		// Agents' tool calls have no terminal on stdin, so an agent cannot use a
 		// human's account even when it knows the flag.
