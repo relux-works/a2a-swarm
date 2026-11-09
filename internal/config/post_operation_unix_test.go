@@ -15,6 +15,8 @@ type operationForeignInfo struct {
 }
 
 func (s operationForeignInfo) Sys() any { return &s.stat }
+
+// Claim: Own private directories pass and foreign UID metadata fails; synthetic stat, not a real chown.
 func TestPostJournalForeignOwnerRefused(t *testing.T) {
 	_, j := operationFixture(t)
 	st, err := j.root.Stat(".")
@@ -31,6 +33,7 @@ func TestPostJournalForeignOwnerRefused(t *testing.T) {
 	}
 }
 
+// Claim: FIFO record/lock opens refuse after a valid record control; local Unix FIFO fixtures, not a timing benchmark.
 func TestPostJournalNonregularEntriesRefuseWithoutBlocking(t *testing.T) {
 	p, j := operationFixture(t)
 	mustPrepareOperation(t, j, operationCandidate("fifo", 1))

@@ -7,11 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"testing"
 )
 
+// Claim: Open creates a private empty lock and reuses its inode; serial opens on a local filesystem only.
 func TestPostJournalLockCreatedAtOpen(t *testing.T) {
 	p, j := operationFixture(t)
 	st, err := j.root.Lstat(".lock")
@@ -29,6 +29,7 @@ func TestPostJournalLockCreatedAtOpen(t *testing.T) {
 	}
 }
 
+// Claim: Missing later lock refuses reads/transitions without recreation or record changes; isolated unlink, not hostile continuous replacement.
 func TestPostJournalMissingLaterLockRefuses(t *testing.T) {
 	for _, phase := range []string{"prepare", "reserve", "ack", "read_empty", "read_record"} {
 		t.Run(phase, func(t *testing.T) {
@@ -84,6 +85,7 @@ func TestPostJournalMissingLaterLockRefuses(t *testing.T) {
 	}
 }
 
+// Claim: Only absent/valid initial locks open; unsafe neighbors refuse unchanged; local fixture types, synthetic foreign-UID coverage elsewhere.
 func TestPostJournalInitialLockNeighbors(t *testing.T) {
 	for _, neighbor := range []string{"missing", "existing", "symlink", "dangling", "mode", "directory", "fifo", "content"} {
 		t.Run(neighbor, func(t *testing.T) {
@@ -160,6 +162,7 @@ func TestPostJournalInitialLockNeighbors(t *testing.T) {
 	}
 }
 
+// Claim: Success and injected failures unlock before close exactly once; callback observation, not cross-process scheduling.
 func TestPostJournalLockReleaseOrder(t *testing.T) {
 	for _, stage := range []string{"success", "lock_sync", "create"} {
 		t.Run(stage, func(t *testing.T) {
@@ -197,6 +200,7 @@ func TestPostJournalLockReleaseOrder(t *testing.T) {
 	}
 }
 
+// Claim: Foreign UID metadata fails the lock owner predicate; synthetic stat, not a real chown.
 func TestPostJournalForeignLockOwnerPredicate(t *testing.T) {
 	_, j := operationFixture(t)
 	st, err := j.root.Lstat(".lock")
@@ -210,29 +214,32 @@ func TestPostJournalForeignLockOwnerPredicate(t *testing.T) {
 	}
 }
 
+// Claim: Fresh cooperating goroutines open one usable journal and retain the record; concurrency across processes is out of scope.
 func TestPostJournalConcurrentFreshOpen(t *testing.T) {
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := Paths{Base: base}
-	var wg sync.WaitGroup
+	done, failure := make(chan struct{}, 12), make(chan error, 12)
 	for range 12 {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			j, e := OpenPostJournal(p, "alice", false, true)
 			if e != nil {
-				t.Error(e)
+				failure <- e
 				return
 			}
 			defer j.Close()
 			if _, _, e = j.Prepare(operationCandidate("fresh", 1)); e != nil {
-				t.Error(e)
+				failure <- e
+				return
 			}
+			done <- struct{}{}
 		}()
 	}
-	wg.Wait()
+	for range 12 {
+		awaitOperationSignal(t, done, failure)
+	}
 	j, err := OpenPostJournal(p, "alice", false, false)
 	if err != nil {
 		t.Fatal(err)

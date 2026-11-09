@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
@@ -135,14 +134,17 @@ func (a *App) emitPostInvocation(r config.PostOperation, reason string) error {
 }
 
 func cmdPostOperation(_ context.Context, a *App, args []string) error {
-	fs := newFlagSet("post-operation status")
+	fs := newFlagSet("post-operation")
 	asJSON := fs.Bool("json", false, "print local retained evidence only")
+	acknowledged := fs.Bool("acknowledged", false, "explicitly retire acknowledged records only")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 2 || pos[0] != "status" || !*asJSON || !config.ValidPostOperationID(pos[1]) || a.secrets.Scrub(pos[1]) != pos[1] {
-		return usagef("usage: a2a post-operation status <operation-id> --json")
+	prune := len(pos) == 1 && pos[0] == "prune" && *acknowledged && !flagPresent(fs, "json")
+	status := len(pos) == 2 && pos[0] == "status" && *asJSON && !flagPresent(fs, "acknowledged") && config.ValidPostOperationID(pos[1]) && a.secrets.Scrub(pos[1]) == pos[1]
+	if !prune && !status {
+		return usagef("usage: a2a post-operation status <operation-id> --json | a2a post-operation prune --acknowledged")
 	}
 	own, err := a.operationContext()
 	if err != nil {
@@ -150,9 +152,22 @@ func cmdPostOperation(_ context.Context, a *App, args []string) error {
 	}
 	journal, err := config.OpenPostJournal(own.paths, own.name, a.human, false)
 	if err != nil {
+		if prune {
+			return errors.New("post operation prune refused: local_evidence_unavailable")
+		}
 		return errors.New("post operation status refused: local_evidence_unavailable; absence does not prove non-application")
 	}
 	defer journal.Close()
+	if prune {
+		if err := a.recheckOperation(own); err != nil {
+			return err
+		}
+		removed, retained, err := journal.PruneAcknowledged()
+		if err != nil {
+			return errors.New("post operation prune refused: local_evidence_unavailable")
+		}
+		return writeCLIOutput(a.Stdout, fmt.Sprintf("removed=%d retained=%d\n", removed, retained))
+	}
 	r, ok, err := journal.Read(pos[1])
 	if err != nil || !ok {
 		return errors.New("post operation status refused: local_evidence_unavailable; absence does not prove non-application")
@@ -239,6 +254,9 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 		TransactionID: matrix.NewTxnID(), IntentDigest: digest, ContentDigest: config.PostOperationDigest(request), RequestLength: len(request), Request: request, Outcome: "not_submitted"}
 	record, created, err := journal.Prepare(candidate)
 	if err != nil {
+		if errors.Is(err, config.ErrPostOperationCapacity) {
+			return errors.New("post operation refused: journal_capacity; run a2a post-operation prune --acknowledged; no send")
+		}
 		return errors.New("post operation refused: prepare_failed; no send")
 	}
 	if !created {
@@ -255,6 +273,9 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 	reserve := func() error { var e error; record, e = journal.ReserveAttempt(record); return e }
 	if !a.postOperationLateReserve {
 		if err := reserve(); err != nil {
+			if errors.Is(err, config.ErrPostOperationCapacity) {
+				return errors.New("post operation refused: journal_capacity; run a2a post-operation prune --acknowledged; no send")
+			}
 			return errors.New("post operation refused: reservation_failed; no send")
 		}
 	}
@@ -307,13 +328,7 @@ func (a *App) unknownPostACK(reserved config.PostOperation, reason string) error
 }
 
 func durablePostInvocation(args []string) bool {
-	for _, arg := range args {
-		if arg == "--" {
-			return false
-		}
-		if arg == "--operation-id" || arg == "-operation-id" || strings.HasPrefix(arg, "--operation-id=") || strings.HasPrefix(arg, "-operation-id=") {
-			return true
-		}
-	}
-	return false
+	fs, _ := postFlagSet()
+	_, _ = parseInterspersed(fs, args)
+	return flagPresent(fs, "operation-id")
 }
