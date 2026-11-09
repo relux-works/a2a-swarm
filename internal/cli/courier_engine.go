@@ -20,6 +20,9 @@ import (
 func (a *App) courierHandler(home string) courier.Handler {
 	return func(ctx context.Context, inv courier.Invocation) int {
 		refuse := func(message string) int { _, _ = io.WriteString(inv.Stderr, message); return ExitError }
+		if inv.Request.Session != "" && !courier.ValidSession(inv.Request.Session) {
+			return refuse("courier: not_allowed\n")
+		}
 		plan, err := courier.Authorize(inv.Request.Argv, inv.Identity)
 		if err != nil {
 			return refuse("courier: not_allowed\n")
@@ -43,6 +46,9 @@ func (a *App) courierHandler(home string) courier.Handler {
 		request.Getenv = func(k string) string {
 			if k == config.EnvConfigDir {
 				return root
+			}
+			if k == EnvSessionID {
+				return inv.Request.Session
 			}
 			return ""
 		}
@@ -111,7 +117,14 @@ func (a *App) courierHandler(home string) courier.Handler {
 			if cmd.name != plan.Command {
 				continue
 			}
-			if err := cmd.run(ctx, request, plan.Args); err != nil {
+			err := cmd.run(ctx, request, plan.Args)
+			if errors.Is(err, config.ErrMonitorConflict) || request.courierLeaseConflict {
+				if inv.Refuse != nil {
+					return inv.Refuse(courier.LeaseConflict)
+				}
+				return refuse("courier: courier_lease_conflict\n")
+			}
+			if err != nil {
 				// Error values may include peer message bodies, private paths or backend
 				// diagnostics. Do not send them to the daemon log or expose their bytes.
 				return refuse("courier: courier_unavailable\n")

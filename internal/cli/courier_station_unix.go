@@ -116,6 +116,10 @@ func (a *App) stationInvocationRun(ctx context.Context, args []string, event str
 			return refuse(courier.NotAllowed)
 		}
 	}
+	r.Session, err = stationSession(p, r.Stdin, a.Getenv)
+	if err != nil {
+		return refuse(courier.NotAllowed)
+	}
 	for index, attachment := range p.Inputs {
 		path := args[index]
 		if _, value, eq := strings.Cut(path, "="); !attachment && eq && strings.HasPrefix(path, "-") {

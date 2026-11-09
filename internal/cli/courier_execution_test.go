@@ -175,7 +175,7 @@ func (f *courierFixture) app(name, input string, out, diag io.Writer) *App {
 		case envSecretStore:
 			return "poison"
 		case EnvSessionID:
-			return "ambient-session"
+			return "" // Session is now admitted explicitly by session-evidence/1.
 		}
 		return ""
 	}, connectionSecretStore: courierSecretTrap{}}

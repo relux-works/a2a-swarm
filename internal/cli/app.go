@@ -31,6 +31,7 @@ const (
 // App carries the process environment so tests can run commands in-process.
 type App struct {
 	courierEngine            bool
+	courierLeaseConflict     bool
 	courierFiles             map[string]courier.InputFile
 	Stdout                   io.Writer
 	Stderr                   io.Writer

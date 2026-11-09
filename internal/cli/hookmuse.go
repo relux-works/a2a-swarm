@@ -241,6 +241,7 @@ func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
 		return nil
 	}()
 	if err != nil {
+		a.noteCourierError(err)
 		fail(museFailureClass(err))
 	}
 }

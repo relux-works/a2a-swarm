@@ -4101,6 +4101,33 @@ The station errors form a closed set and contain no request operands:
 | `not_allowed` | Command, option, input or connection assertion is outside the closed schema |
 | `courier_idle_timeout` | Missing liveness, stalled output/ACK, or exhausted hook work budget |
 | `courier_busy` | Per-station, global invocation, or execution connection capacity reached |
+| `courier_lease_conflict` | Another owner holds this identity's lease; the active monitor refused the claimed session |
+
+The seven classes above are the complete station diagnostic set. Invocation
+session evidence is optional and negotiated per connection. A station that has
+a session offers `session-evidence/1` in its hello; the daemon advertises that
+capability in its authenticated hello response only for an opted-in station.
+Legacy four-field hellos and their original response remain valid. A strict old
+daemon may refuse the extended hello before execution; the station retries once
+with the legacy hello. No command is retried after a request has been sent.
+
+Only an advertised connection may carry the optional request `session` string.
+The string is 1–128 bytes of ASCII letters, digits, dot, underscore or hyphen,
+excluding the hook key's `-` sentinel. An empty typed value is omitted; an empty
+but present wire value, invalid grammar or unadvertised field refuses with
+`not_allowed`, without execution. Values are never truncated or repaired.
+Without the capability the station omits evidence and keeps legacy behavior.
+
+The station resolves ordinary session evidence from `A2A_SESSION_ID`, then
+`CODEX_THREAD_ID`, then `CLAUDE_CODE_SESSION_ID`, using the local validators and
+precedence. Watch and unbounded wait ignore ambient runtime IDs; only an
+explicit `A2A_SESSION_ID` may name their session. Hooks use their own stdin
+`session_id`, never an ambient ID. The daemon's invocation environment admits
+only the identity config directory and this request session. It never borrows
+daemon environment IDs or infers an owner from State. Session evidence is a
+claim from an authenticated station for its bound identity, not independent
+owner authentication. L02/L03 still require the exact unexpired same-host owner
+lease; another identity's session or a PID fallback cannot bypass a monitor.
 
 Missing environment discovery or failed config-base resolution refuses explicitly;
 hooks retain exit 0. It cannot fall through into local execution. `--envelope=@file`, `--body=@file`,

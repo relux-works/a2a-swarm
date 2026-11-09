@@ -209,6 +209,7 @@ func cmdHook(ctx context.Context, a *App, args []string) error {
 // never fails the process (a failing hook must not break the session).
 func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 	fail := func(err error) {
+		a.noteCourierError(err)
 		if errors.Is(err, matrix.ErrAuth) {
 			err = fmt.Errorf("authentication failed; ask the keeper to rotate credentials")
 		}
