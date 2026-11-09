@@ -55,7 +55,11 @@ const installedFresh = `{
       "Bash(*owner-dm set)",
       "Bash(*owner-dm set *)",
       "Bash(*owner-dm unset)",
-      "Bash(*owner-dm unset *)"
+      "Bash(*owner-dm unset *)",
+      "Bash(*principal-dm ensure)",
+      "Bash(*principal-dm ensure *)",
+      "Bash(*principal-dm unset)",
+      "Bash(*principal-dm unset *)"
     ]
   }
 }
@@ -108,7 +112,7 @@ func compactJSON(t *testing.T, s string) string {
 func TestHookInstallFresh(t *testing.T) {
 	e := newEnv(t)
 	e.exePath("/usr/local/bin/a2a")
-	path := filepath.Join(t.TempDir(), ".claude", "settings.local.json")
+	path := filepath.Join(principalDMTestRoot(t), ".claude", "settings.local.json")
 	tuitestkit.ContainsStr(t, e.run("hook", "install", "--runtime", "claude", "--agent", "alice", "--settings", path).ok(t).stdout, "installed")
 	if got := readFile(t, path); got != installedFresh {
 		t.Fatalf("installed:\n%s", got)
@@ -133,7 +137,7 @@ func TestHookInstallFresh(t *testing.T) {
 func TestHookInstallMergesIdempotently(t *testing.T) {
 	e := newEnv(t)
 	e.exePath("/opt/a2a tools/a2a")
-	path := filepath.Join(t.TempDir(), "settings.json")
+	path := filepath.Join(principalDMTestRoot(t), "settings.json")
 	if err := os.WriteFile(path, []byte(userSettings), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +153,7 @@ func TestHookInstallMergesIdempotently(t *testing.T) {
 	if err := json.Unmarshal([]byte(first), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Env["OTHER"] != "1" || got.Env["A2A_AGENT"] != "alice" || got.Model != "opus" || compactJSON(t, string(got.Permissions)) != `{"allow":["Bash(ls)"],"deny":["Bash(*owner-dm ensure)","Bash(*owner-dm ensure *)","Bash(*owner-dm set)","Bash(*owner-dm set *)","Bash(*owner-dm unset)","Bash(*owner-dm unset *)"]}` {
+	if got.Env["OTHER"] != "1" || got.Env["A2A_AGENT"] != "alice" || got.Model != "opus" || compactJSON(t, string(got.Permissions)) != `{"allow":["Bash(ls)"],"deny":["Bash(*owner-dm ensure)","Bash(*owner-dm ensure *)","Bash(*owner-dm set)","Bash(*owner-dm set *)","Bash(*owner-dm unset)","Bash(*owner-dm unset *)","Bash(*principal-dm ensure)","Bash(*principal-dm ensure *)","Bash(*principal-dm unset)","Bash(*principal-dm unset *)"]}` {
 		t.Fatalf("unrelated keys changed: %s", first)
 	}
 	stop := `{"hooks":[{"type":"command","command":"'/opt/a2a tools/a2a' --as alice hook stop --runtime claude"}]}`
@@ -187,7 +191,7 @@ func TestHookInstallMergesIdempotently(t *testing.T) {
 func TestHookUninstall(t *testing.T) {
 	e := newEnv(t)
 	e.exePath("/usr/local/bin/a2a")
-	path := filepath.Join(t.TempDir(), "settings.json")
+	path := filepath.Join(principalDMTestRoot(t), "settings.json")
 	if err := os.WriteFile(path, []byte(userSettings), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -201,13 +205,13 @@ func TestHookUninstall(t *testing.T) {
 	if readFile(t, path) != before {
 		t.Fatal("second uninstall changed the file")
 	}
-	fresh := filepath.Join(t.TempDir(), "settings.local.json")
+	fresh := filepath.Join(principalDMTestRoot(t), "settings.local.json")
 	e.run("hook", "install", "--runtime", "claude", "--settings", fresh, "--agent", "alice").ok(t)
 	e.run("hook", "uninstall", "--runtime", "claude", "--settings", fresh).ok(t)
 	if got := readFile(t, fresh); got != "{}\n" {
 		t.Fatalf("fresh uninstall left %q", got)
 	}
-	missing := filepath.Join(t.TempDir(), "none.json")
+	missing := filepath.Join(principalDMTestRoot(t), "none.json")
 	tuitestkit.ContainsStr(t, e.run("hook", "uninstall", "--runtime", "claude", "--settings", missing).ok(t).stdout, "no such file")
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Fatal("uninstall created a file")

@@ -181,6 +181,10 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 }
 
 func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
+	subs, err := s.principalLiveSubscriptions(subs)
+	if err != nil {
+		return batch{}, err
+	}
 	b := batch{muted: slices.Clone(st.Muted)}
 	st.ThreadEvents = slices.Clone(st.ThreadEvents)
 	me := s.creds.UserID

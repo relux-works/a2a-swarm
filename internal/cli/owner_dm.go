@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ import (
 
 // ownerAudience evaluates one current-state response. It never repairs state.
 func (s *session) ownerAudience(ctx context.Context, room, owner string, allowInvite bool) (bool, error) {
+	return s.dmAudience(ctx, room, owner, allowInvite, false)
+}
+
+func (s *session) dmAudience(ctx context.Context, room, owner string, allowInvite, joinedHistory bool) (bool, error) {
 	events, err := s.client.GetRoomState(ctx, room)
 	if err != nil {
 		return false, fmt.Errorf("audience unavailable: %w", err)
@@ -73,7 +78,7 @@ func (s *session) ownerAudience(ctx context.Context, room, owner string, allowIn
 	if rule != "invite" {
 		return false, errors.New("audience: join_rule must be invite")
 	}
-	if history == "" || history == "world_readable" {
+	if history == "" || history == "world_readable" || (joinedHistory && history != "joined") {
 		return false, errors.New("audience: invalid history_visibility")
 	}
 	if len(members) != 2 || members[s.creds.UserID] != "join" || (members[owner] != "join" && !(allowInvite && members[owner] == "invite")) {
@@ -524,14 +529,32 @@ func cmdOwnerDM(ctx context.Context, a *App, args []string) error {
 			a.printf("never-configured\n")
 			return nil
 		}
-		if err = s.ownerSubscription(ctx, c, false); err != nil {
-			return err
-		}
-		c.Generation = generation
-		c.Active = false
-		c.Pending = false
-		if err = ownerWrite(ctx, f.path("json"), c); err != nil {
-			return err
+		if action == "unset" {
+			// Preserve the cleanup handle until remote removal is confirmed.
+			if c.Active || c.Pending {
+				c.Generation, c.Active, c.Pending = generation, false, false
+				if err = ownerWrite(ctx, f.path("json"), c); err != nil {
+					return err
+				}
+			}
+			retry := c.SubID != ""
+			if err = s.ownerSubscription(ctx, c, false); err != nil {
+				return fmt.Errorf("owner-dm inactive; subscription cleanup pending; retry unset: %w", err)
+			}
+			if err = ownerWrite(ctx, f.path("json"), c); err != nil {
+				return err
+			}
+			if retry {
+				a.printf("owner-dm unset: inactive; subscription cleanup complete\n")
+			}
+		} else {
+			if err = s.ownerSubscription(ctx, c, false); err != nil {
+				return err
+			}
+			c.Generation, c.Active, c.Pending = generation, false, false
+			if err = ownerWrite(ctx, f.path("json"), c); err != nil {
+				return err
+			}
 		}
 	} else {
 		if action != "set" {
@@ -573,10 +596,16 @@ func (a *App) ownerTypeBack(want string) error {
 	if a.ownerConfirm != nil {
 		return a.ownerConfirm(want)
 	}
-	if !isatty.IsTerminal(os.Stdin.Fd()) || !isatty.IsTerminal(os.Stdout.Fd()) {
-		return errors.New("owner-dm terminal command requires interactive stdin and stdout")
+	var tty io.ReadWriteCloser
+	var err error
+	if a.ownerTerminal != nil {
+		tty, err = a.ownerTerminal()
+	} else {
+		if !isatty.IsTerminal(os.Stdin.Fd()) || !isatty.IsTerminal(os.Stdout.Fd()) {
+			return errors.New("owner-dm terminal command requires interactive stdin and stdout")
+		}
+		tty, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}

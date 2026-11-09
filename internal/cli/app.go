@@ -103,6 +103,7 @@ type App struct {
 	leaseGOOS string
 	// Owner terminal/deadline seams are tests only; production uses /dev/tty.
 	ownerConfirm      func(string) error
+	ownerTerminal     func() (io.ReadWriteCloser, error)
 	ownerMirrorBudget time.Duration
 	// Native transport/fault hooks are test-only seams.
 	postOperationFault                func(string) error
@@ -144,6 +145,7 @@ func commands() []command {
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
+		{"principal-dm", "principal-dm ensure|unset @user:server | status [@user:server] | say @user:server <text|@file|->   direct room with a host-pinned principal (default off)", cmdPrincipalDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"availability", "availability <localpart|@localpart:server> [--json]   read selected-server registration availability (no existence guarantee)", cmdAvailability},
 		{"host", "host init <slug> [--force] | host show | host principals set|show|clear   this machine's host slug, the first part of every identity", cmdHost},
@@ -229,6 +231,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		}
 		return a.fail(err)
 	}
+	if err := terminalDMInvocation(args); err != nil {
+		return a.fail(err)
+	}
 	if err := verificationGlobalSelection(args); err != nil {
 		return globalFailure(err)
 	}
@@ -300,6 +305,63 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		}
 	}
 	return a.fail(usagef("unknown command %q (see: a2a help)", rest[0]))
+}
+
+// Terminal DM mutations have one spelling before global extraction. Local
+// owner flags remain supported after the subcommand; global selectors do not.
+func terminalDMInvocation(args []string) error {
+	end := len(args)
+	for i, arg := range args {
+		if arg == "--" {
+			end = i
+			break
+		}
+	}
+	probe := &App{}
+	parsed, _ := probe.extractGlobal(args)
+	if len(parsed) > 0 && parsed[0] != "owner-dm" && parsed[0] != "principal-dm" && !strings.HasPrefix(parsed[0], "-") {
+		return nil
+	}
+	for i, arg := range args[:end] {
+		if arg != "owner-dm" && arg != "principal-dm" {
+			continue
+		}
+		sub := ""
+		if len(parsed) > 1 && parsed[0] == arg && (parsed[1] == "ensure" || parsed[1] == "unset") {
+			sub = parsed[1]
+		}
+		if sub == "" {
+			for _, word := range args[i+1 : end] {
+				if word == "ensure" || word == "unset" {
+					sub = word
+					break
+				}
+				if word == "say" || word == "status" || word == "bind" || word == "unbind" || word == "set" {
+					break
+				}
+			}
+		}
+		if sub == "" {
+			continue
+		}
+		bad := i != 0 || len(args) < 2 || args[1] != sub
+		for j, word := range args[:end] {
+			if !strings.HasPrefix(word, "-") {
+				continue
+			}
+			key := strings.SplitN(word, "=", 2)[0]
+			// These are local owner ensure options, not global flags.
+			if arg == "owner-dm" && sub == "ensure" && j > 1 && (key == "--tag" || key == "-tag" || key == "--mirror" || key == "-mirror" || key == "--render" || key == "-render") {
+				continue
+			}
+			bad = true
+		}
+		if bad {
+			return usagef("terminal DM command requires canonical form: a2a %s %s <args...>; select identity with A2A_AGENT; global flags are forbidden", arg, sub)
+		}
+		return nil
+	}
+	return nil
 }
 
 // extractGlobal removes --as from anywhere in args.

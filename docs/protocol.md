@@ -86,7 +86,7 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
     - `#system` is a projection room. When enabled, the projector mirrors selected kinds from explicit `--source` rooms to one configured `--system` target, with a link to the original. Product membership is metadata only; it does not select another destination (see `docs/cli.md`).
       The projector is OFF pending a separate source/live window. Coordinate visibility with the product keeper and meta-keeper through subscriptions to original rooms; do not rely on projection delivery.
     - New-room provisioning routes through the meta-keeper, with the product keeper coordinating product scope. The owner authorizes the identity; onboarding continues only when rooms and membership are ready.
-      The CLI can still create a missing project room during plain `identity ensure`; this is capability, not policy permission. New agents must not use it for provisioning. The sole agent room-creation exception is admitted F1 owner-DM binding: only after a verified owner event, create the unencrypted invite-only private room for the exact host-pinned owner (Owner DM S1 below).
+      The CLI can still create a missing project room during plain `identity ensure`; this is capability, not policy permission. New agents must not use it for provisioning. The sole agent room-creation exception is admitted F1 owner-DM binding: only after a verified owner event, create the unencrypted invite-only private room for the exact host-pinned owner (Owner DM S1 below). The host terminal may also create the same room shape for a host-pinned non-owner principal (Principal DM S1 below); agents never create those rooms themselves.
       There are no automatic keeper/projector invites or power grants; do not recreate or invite the retired meta-orchestrator account as an onboarding recipe.
     - Room subscriptions (owner requirement, 2026-09-29): joining a room (`a2a join`, accepting an invite with `a2a join`, `identity ensure`)
       subscribes the session identity to that ordinary message room's kinds system, owner-needed and decision in the same step, printed; `a2a leave` removes them.
@@ -362,6 +362,14 @@ ensure with the same effective-state behavior as bind (pending refusal, active
 flags only, new room when never-configured/inactive), or explicitly set an
 existing valid room with TTY/type-back;
 agents must use bind/unbind --event or status instead.
+Terminal ensure/unset accept only `a2a owner-dm <subcommand> ...`, selecting
+identity with `A2A_AGENT` and the current config connection. Global flags
+(including `--as`/`-as`, profile, fingerprint and human selectors, and `=` forms)
+refuse anywhere before `--`; local ensure tag/mirror/render options remain.
+Unset marks config inactive locally before removing its subscription. Remote
+failure leaves inactive-but-subscribed with the cleanup ID retained; retry
+unset is idempotent, reports cleanup completion and keeps generation unchanged.
+Owner-channel unbind keeps its existing ordering.
 
 Every accepted owner-channel mutation advances the persisted per-owner order
 watermark, including unbind. Later requests require a greater timestamp or
@@ -408,3 +416,71 @@ observations, rendering presentation; protected authority is B4, not S1.
 See docs/cli.md for storage, commands, pinned payload provenance, discovery
 limits, orchestrator discovery evidence and runtime deny wiring. Deny-rule
 enforcement was not exercised; live activation remains separately gated.
+
+## Principal DM S1 (owner request, Ivan, 2026-11-03; issue #173; default off)
+
+The Owner DM S1 room shape for other human principals. A host-written
+per-identity pin `principal-dm/<name>.pin` lists principal MXIDs; it is never
+learned from Matrix. Owner and self cannot be listed, including case variants;
+a duplicate JSON key, malformed MXID or bad owner routing refuses. Use owner-dm
+for the owner. Case-insensitive comparison here is refusal only and grants no
+authority to a differently cased identity. There is no Matrix-triggered bind,
+no mirror and no trust change:
+a principal's messages keep that principal's host scope, and the room grants
+nothing.
+
+Only the host terminal creates or retires a room: `ensure` and `unset` require
+interactive stdin/stdout and the principal MXID typed back, and `ensure` also
+requires the principal in the pin. Both accept only canonical
+`a2a principal-dm <subcommand> ...`, selecting identity through `A2A_AGENT`.
+Every global flag before `--`, including `=` forms or flags interposed between
+verb and subcommand, refuses with the canonical form. Ensure creates a fresh
+private_chat,
+is_direct, invite-only, unencrypted room with joined history, inviting only
+that principal; it excludes the room from archive and installs one all-events
+subscription. The room is pending until the principal joins and expires after
+24 hours. A future created_at refuses. At expiry its DM-only inbound row is
+ignored as for an inactive room; independent subscriptions, mandatory
+host-principal delivery and previously retained mail keep their ordinary
+behavior. A live pending claim refuses a second one; an active room is kept;
+an inactive, unset or expired one is replaced by a fresh room. No existing room
+or invite is adopted. Unset persists inactive locally before removing its
+subscription, retaining the cleanup ID after remote failure. An idempotent retry
+reports cleanup completion without another generation advance. The room and
+archive exclusion remain.
+
+Before CreateRoom, ensure takes the owner/archive lock and writes a durable
+`*principal-dm-creation*` reservation in the shared archive-exclude file. Archive
+snapshots candidate rooms first, then holds the same lock through export if a
+lock or exclusion file exists, and refuses all export while that reservation
+exists. With neither file, including a pin alone, archive skips coordination
+without provisioning files; a room created later cannot enter the candidate
+snapshot. After creation, the exact room is excluded before this invocation's
+reservation is removed. A CreateRoom error/uncertain response or exact-exclusion
+write failure retains the reservation across retries: the host must account for
+all orphan rooms and record their exact exclusions before removing it.
+If a step after creation fails (exclusion, audience, subscription or config
+write), ensure reports the room as created but not recorded and removes any
+just-added subscription, re-reading remote account data after a failed Put
+because it may have applied. Cleanup errors are reported with the same orphan
+report. The old row is never removed before the new row and config are
+confirmed. The next ensure creates a fresh room rather than adopting the orphan.
+
+The TTY and type-back are friction, not authenticated consent: an agent can
+allocate a PTY. Shell-quoted spellings such as `'ens'ure` can evade a string
+glob; shell wrappers and unlisted binary spellings can evade argv-prefix rules.
+TTY plus type-back stays friction, not authentication. As for owner-dm,
+`hook install` also denies
+`principal-dm ensure` and `principal-dm unset` to the agent runtime (Claude
+`permissions.deny`, Codex forbidden prefix rules); status and say stay allowed.
+Muse has no hook install, so no terminal-verb deny applies there.
+An owner-dm pin that is present but invalid refuses every principal-dm
+mutation, so the owner cannot slip into this feature.
+
+Agents may run `status` (read-only) and `say`, which sends plain text only
+after the same audience check as owner-dm: exactly the joined identity and the
+principal (invited while pending), invite join rule, exactly `joined` history,
+no encryption. Only a successful first say after the principal's join activates
+the room; a refused or failed send leaves it pending. The check/send race,
+homeserver compromise and same-UID edits are
+outside S1, as for owner-dm.

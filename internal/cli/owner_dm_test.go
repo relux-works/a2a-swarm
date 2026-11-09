@@ -712,7 +712,8 @@ func TestOwnerDMInvalidFilesAndWriterDeadline(t *testing.T) {
 	before := ownerSnapshot(t, f)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	r := e.runCtx(ctx, "--as", "bob", "owner-dm", "unset")
+	e.extra[config.EnvAgent] = "bob"
+	r := e.runCtx(ctx, "owner-dm", "unset")
 	unlock()
 	r.failsWith(t, ExitError, "owner-dm lock")
 	ownerUnchanged(t, f, before)

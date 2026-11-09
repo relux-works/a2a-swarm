@@ -165,5 +165,17 @@ func world(t *testing.T) (*env, string) {
 
 func (e *env) as(name string, args ...string) result {
 	e.t.Helper()
+	if len(args) > 1 && (args[0] == "owner-dm" || args[0] == "principal-dm") && (args[1] == "ensure" || args[1] == "unset") {
+		old, present := e.extra[config.EnvAgent]
+		e.extra[config.EnvAgent] = name
+		defer func() {
+			if present {
+				e.extra[config.EnvAgent] = old
+			} else {
+				delete(e.extra, config.EnvAgent)
+			}
+		}()
+		return e.run(args...)
+	}
 	return e.run(append([]string{"--as", name}, args...)...)
 }

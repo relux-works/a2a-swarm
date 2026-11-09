@@ -145,6 +145,11 @@ func ownerWrite(ctx context.Context, path string, v any) error {
 	}
 	return writeSettings(path, append(b, '\n'), 0600)
 }
+
+// A durable reservation closes archive while an as-yet unknown principal
+// room ID is being created. It is never automatically cleared after uncertainty.
+const principalArchiveReservation = "*principal-dm-creation*"
+
 func (f ownerDMFiles) exclusions() (map[string]bool, error) {
 	b, st, err := ownerRead(f.path("archive-exclude"))
 	if err != nil {
@@ -158,7 +163,7 @@ func (f ownerDMFiles) exclusions() (map[string]bool, error) {
 		if line == "" {
 			continue
 		}
-		if !ownerRoomID.MatchString(line) {
+		if line != principalArchiveReservation && !ownerRoomID.MatchString(line) {
 			return nil, fmt.Errorf("archive: invalid %s", f.path("archive-exclude"))
 		}
 		out[line] = true

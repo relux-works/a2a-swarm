@@ -368,13 +368,25 @@ func TestOwnerDMDenySubcommandBoundary(t *testing.T) {
 				}
 				return false
 			}
-			for _, prefix := range []string{"a2a", "a2a --as bob", "/usr/local/bin/a2a --as bob"} {
+			for _, prefix := range []string{"a2a", "bin/a2a", "./bin/a2a", "/usr/local/bin/a2a"} {
 				for _, verb := range []string{"ensure", "set", "unset"} {
 					for _, suffix := range []string{"", " --room !room"} {
 						command := prefix + " owner-dm " + verb + suffix
 						if !matches(command) {
 							t.Fatal("terminal verb not denied", command)
 						}
+					}
+				}
+				for _, verb := range []string{"ensure", "unset"} {
+					command := prefix + " principal-dm " + verb + " @carol:test.local"
+					if !matches(command) {
+						t.Fatal("principal terminal verb not denied", command)
+					}
+				}
+				for _, verb := range []string{"status", "say"} {
+					command := prefix + " principal-dm " + verb + " @ensure-unset:test.local"
+					if matches(command) {
+						t.Fatal("principal agent verb denied", command)
 					}
 				}
 				for _, verb := range []string{"bind", "unbind"} {
@@ -395,7 +407,7 @@ func TestOwnerDMDenySubcommandBoundary(t *testing.T) {
 func TestOwnerDMDenyMigration(t *testing.T) {
 	e := newEnv(t)
 	e.exePath("/usr/local/bin/a2a")
-	path := t.TempDir() + "/settings.json"
+	path := principalDMTestRoot(t) + "/settings.json"
 	old := `{"permissions":{"deny":["Bash(rm *)","Bash(*owner-dm*ensure*)","Bash(*owner-dm*set*)","Bash(*owner-dm*unset*)"]}}`
 	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
 		t.Fatal(err)
@@ -409,7 +421,7 @@ func TestOwnerDMDenyMigration(t *testing.T) {
 	if err := json.Unmarshal([]byte(readFile(t, path)), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Permissions.Deny) != 7 || !contains(got.Permissions.Deny, "Bash(rm *)") {
+	if len(got.Permissions.Deny) != 11 || !contains(got.Permissions.Deny, "Bash(rm *)") {
 		t.Fatal("lost user/managed rules", got)
 	}
 	for _, legacy := range []string{"Bash(*owner-dm*ensure*)", "Bash(*owner-dm*set*)", "Bash(*owner-dm*unset*)"} {
