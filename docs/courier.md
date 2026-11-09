@@ -28,7 +28,7 @@ one connection: its own `connections.json` current profile and bound credential
 metadata, or its own legacy configuration and credential file. Named connection
 state uses the existing connection/identity paths beneath this base. No request
 selects a profile, credential backend or alternate config base. Missing or
-invalid identity configuration returns `courier: identity unavailable`, with no
+invalid identity configuration returns `courier: courier_unavailable`, with no
 Matrix request. This component does not provision or migrate those identities.
 
 The socket defaults to `/private/var/run/a2a/courier.sock` on macOS and
@@ -43,7 +43,8 @@ shared groups are created. Same-UID stations are not a security boundary.
 Serve takes a nonblocking `.courier.lock`. Shutdown closes connections and
 removes only its own unchanged socket inode. A stale socket needs explicit
 operator inspection while serving is stopped. Registry operations likewise
-refuse a busy nonblocking lock; simultaneous authentication attempts can refuse.
+refuse a busy nonblocking lock. Authentication lookups hold shared registry
+locks, so simultaneous valid hellos do not exclude each other.
 
 ## Station behavior and authorization
 
@@ -62,8 +63,8 @@ administrative and Courier operations are refused by the execution engine.
 `--as` must match the enrolled identity on the client and the authenticated
 registration on the daemon. `--profile` and `--connection-fingerprint` are
 assertions against the daemon's independently resolved identity binding. Wrong
-assertions return the same fixed refusal as a wrong identity, without reselection
-or fallback. Daemon identity, config and session environment values are ignored.
+profile/fingerprint assertions return `not_allowed`; a mismatching `--as`
+returns `identity_mismatch`, without reselection or fallback. Daemon identity, config and session environment values are ignored.
 Every invocation constructs its own identity, connection, secret-store selection
 and state paths; previous and concurrent requests supply none of these values.
 `whoami` uses the registered identity and its own resolved connection.
@@ -73,8 +74,8 @@ captions are sent as contents. The daemon opens only invocation-owned memory for
 these inputs. `inbox show` accepts an explicit streamed `--from @file`; it does
 not reopen a retained station path. Output paths (`--out`, `--id-file`), implicit
 file-saving modes (`--brief`), voice side effects and other path options are
-refused. Save streamed stdout on the station instead. Input file arguments using
-an option's `=...` spelling are refused; use separate option and value arguments.
+refused. Save streamed stdout on the station instead. The `--envelope=@file`, `--body=@file` and `--from=@file` spellings are admitted
+alongside separate option and value arguments; `topic new --json` is admitted.
 A request, including argv, stdin and base64 file contents, must fit one frame;
 large attachments are refused rather than truncated. Ordinary local commands
 retain their existing filesystem behavior.
@@ -113,8 +114,10 @@ keeps its identity binding until it ends. Raw concatenation is not globally
 self-delimiting: authorization depends on the exact registry lookup and its
 independently generated secret, UID and identity, not concatenation alone.
 
-`stdout` and `stderr` frames carry the invocation `id` and base64 `data`; the
-client decodes them as opaque bytes without peer-controlled framing additions.
+`stdout` and `stderr` frames carry the invocation `id`, authenticated `identity`,
+a fresh chunk `batch` and base64 `data`. The client decodes opaque output bytes,
+writes and flushes them, then sends `output_ack` bound to that invocation, batch
+and identity. Only one chunk is outstanding; flow ACKs never complete receipts.
 An `exit` frame carries the same `id` and an integer `code`. Known identity
 secrets are scrubbed before transport chunking. Command errors have fixed text;
 backend errors containing peer bodies or private paths are not daemon logs.
@@ -128,13 +131,26 @@ missing ACKs and ACKs for other invocations, batches or identities cannot receip
 A crash after output but before receipt can print those entries again on retry.
 Wait/watch mark shown and hooks ring their doorbell; none of them receipt mail.
 
-Wait and watch stream over the connection. Disconnect cancels the request.
-There are at most 64 connections; hello has a five-second total deadline, the
-first request a five-second deadline, and execution a sixty-second idle budget.
-Output activity renews the execution idle budget. Refusal writes have a
-one-second deadline. Registry size remains bounded to 512 KiB and 1024 stations.
-Longer streaming hardening, service management, an admin socket, migration and
-unrelated delivery repairs remain separate work.
+Wait and watch stream over the connection without a silent-command idle cutoff.
+Invisible keepalive frames arrive every 20 seconds; the station read deadline is
+three intervals (60 seconds). Disconnect and daemon shutdown cancel the request.
+Station SIGINT returns 130; daemon SIGTERM reports `courier_unavailable` and does
+not complete unacknowledged receipts. At most four invocations per station and
+32 globally execute, within the 64-connection cap. Excess execution requests get
+`courier_busy`; there is no invocation queue. Output chunks are at most 1024
+bytes and block until their flow ACK, with a 60-second deadline and a framed
+`courier_idle_timeout` on a stalled reader. Hello and first-request deadlines
+are five seconds; fixed refusal writes have a one-second deadline. Registry size
+remains bounded to 512 KiB and 1024 stations.
+
+Station hooks fail open with empty stdout and exit 0 on a refusal, unreachable
+endpoint, saturation or exhausted five-second budget. Their only station-local
+write is the bounded, redacted failure log; the next successful hook reports
+counts on stderr once. See [streaming, hooks and named bounds](cli.md#courier-streaming-cancellation-and-station-hooks)
+for accounting, all closed diagnostics, resource constants and logging behavior.
+No native idle-wake reliability follows from this hook path. Service management,
+an admin socket, migration and external reliability qualification remain separate
+work.
 
 Tests use synthetic registrations, kernel Unix sockets and fake Matrix. They
 qualify same-UID serving, explicit UID mismatch checks, delivery barriers,
