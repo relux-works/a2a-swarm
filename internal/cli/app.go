@@ -135,6 +135,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
+		{"courier", "courier enroll --dir HOME/.a2a --from - [--rotate]   install station enrollment from a pipe", cmdCourier},
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room   named Matrix routing", cmdConnection},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
@@ -246,6 +247,11 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	for _, c := range commands() {
 		if c.name == rest[0] {
+			// Enrollment is a local operator command; it must not read a
+			// connection, credentials, environment identity or owner-DM state.
+			if c.name == "courier" && len(rest) > 1 && rest[1] == "enroll" {
+				return a.fail(cmdCourierEnroll(ctx, a, rest[2:]))
+			}
 			// Stored association is effect-free and has its own closed JSON
 			// refusals. Both preflight and owner warnings read unrelated state.
 			if c.name == "bind" && len(rest) > 1 && rest[1] == "association" {
