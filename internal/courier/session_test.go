@@ -62,7 +62,20 @@ func TestCourierSessionNegotiation(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "new", true: "legacy"}[legacy], func(t *testing.T) {
 			seen := make(chan string, 3)
+			var calls atomic.Int32
+			// Register before server cleanup: assert only after all connections
+			// have joined, so a late duplicate cannot escape the live check.
+			wantFinal := int32(1)
+			if !legacy {
+				wantFinal = 2 // explicit old-station neighbor below
+			}
+			t.Cleanup(func() {
+				if calls.Load() != wantFinal {
+					t.Error("final request count", calls.Load(), wantFinal)
+				}
+			})
 			r := executionServerOptions(t, func(ctx context.Context, inv Invocation) int {
+				calls.Add(1)
 				select {
 				case seen <- inv.Request.Session:
 					return 0
@@ -77,6 +90,9 @@ func TestCourierSessionNegotiation(t *testing.T) {
 			}
 			if code != 0 || err != nil {
 				t.Fatal("negotiated invocation", code, err)
+			}
+			if calls.Load() != 1 {
+				t.Fatal("negotiated invocation must execute exactly one request", calls.Load())
 			}
 			select {
 			case got := <-seen:

@@ -267,6 +267,9 @@ func TestCourierEightConcurrentHellos(t *testing.T) {
 // Proves transient Accept failures back off and preserve the endpoint; a
 // successful neighbor executes after both injected kernel error classes.
 func TestCourierTransientAccept(t *testing.T) {
+	if AcceptBackoff != 50*time.Millisecond {
+		t.Fatal("accept backoff must remain 50 ms")
+	}
 	var calls atomic.Int32
 	var first, second atomic.Int64
 	r := executionServerOptions(t, func(context.Context, Invocation) int { return 0 }, time.Second, func(s *server) {
