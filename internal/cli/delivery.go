@@ -619,6 +619,14 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}
+	releaseConsumer, err := config.AcquireRawConsumerLock(s.paths, s.name, time.Now().Add(100*time.Millisecond))
+	if err != nil {
+		return err
+	}
+	defer releaseConsumer()
+	if err := refuseBoundWait(ctx, s); err != nil {
+		return err
+	}
 	s.longConsumer = *timeout == 0
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
@@ -819,6 +827,14 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	if err := s.creds.ValidateWaitKeywords(); err != nil {
 		return err
 	}
+	if err := refuseBoundWait(ctx, s); err != nil {
+		return err
+	}
+	releaseConsumer, err := config.AcquireRawConsumerLock(s.paths, s.name, time.Now().Add(100*time.Millisecond))
+	if err != nil {
+		return err
+	}
+	defer releaseConsumer()
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}

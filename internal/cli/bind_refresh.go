@@ -357,6 +357,9 @@ func terminalRefreshAuthorityReason(ctx context.Context, a *App, s *session, gen
 		if err != nil {
 			return err
 		}
+		if err := st.RefuseMonitorConsumer(); err != nil {
+			return err
+		}
 		probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 		birth, err := tmuxwake.Birth(probe, os.Getpid())
 		cancel()

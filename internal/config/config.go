@@ -336,6 +336,11 @@ type State struct {
 	// opaque retains unknown top-level values as data, never as authority.
 	// It is immutable after loading; saving a State copy must not mutate it.
 	opaque map[string]json.RawMessage
+	// rawState is the immutable disk input, not a serialization of edited fields.
+	// The writer seal must be checked against this input before callbacks/effects.
+	rawState []byte
+	Writer   *StateWriter `json:"writer,omitempty"`
+	Monitor  *Monitor     `json:"monitor,omitempty"`
 
 	MailAlarmConfig *MailAlarmConfig `json:"mail_alarm_config,omitempty"`
 	MailAlarm       MailAlarm        `json:"mail_alarm,omitempty"`
@@ -607,32 +612,76 @@ func LoadState(p Paths, name string) (State, error) {
 
 // SaveState writes state/<name>.json atomically (temp file + rename) with mode 0600.
 func SaveState(p Paths, name string, s State) error {
+	if s.HostEnrollment != nil {
+		if s.HostEnrollment.Validate() != nil {
+			return ErrHostEnrollment
+		}
+		// Taking the new cooperative state lock must not provision a v2
+		// Host namespace that the existing strict writer would refuse.
+		if s.HostEnrollment.Version == 2 {
+			base, err := os.OpenRoot(p.Base)
+			if err != nil {
+				return ErrHostStateScope
+			}
+			if err := base.Close(); err != nil {
+				return ErrHostStateScope
+			}
+		}
+	}
+	_, err := withStateLock(p, name, lockFile, func(old State) (State, error) {
+		fence := ordinaryWriterFence(old, time.Now())
+		return saveStateLocked(p, name, old, s, fence, false)
+	})
+	return err
+}
+
+// saveStateLocked never reacquires the state lock. Only monitor lifecycle code
+// may alter the monitor record or explicitly clear the sticky writer fence.
+func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monitor bool) (State, error) {
 	if s.HostEnrollment != nil && s.HostEnrollment.Validate() != nil {
-		return ErrHostEnrollment
+		return old, ErrHostEnrollment
 	}
 	// Refuse lossy writes through this cooperative API once custody exists.
-	old, err := LoadState(p, name)
-	if err != nil {
-		return err
-	}
 	if !validHostNotificationWrite(old, s) {
-		return ErrHostEnrollment
+		return old, ErrHostEnrollment
+	}
+	if !monitor && !sameMonitor(old.Monitor, s.Monitor) {
+		return old, ErrMonitorConflict
+	}
+	if s.Monitor != nil && s.Monitor.Validate() != nil {
+		return old, ErrMonitorState
+	}
+	if !monitor && old.RefuseMonitorConsumer() != nil && !sameMonitorCompanions(old, s) {
+		return old, ErrMonitorConflict
 	}
 	path := p.StateFile(name)
 	strict := s.HostEnrollment != nil && s.HostEnrollment.Version == 2
 	if !strict {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return err
+			return old, err
 		}
 	}
-	data, err := marshalState(s)
+	// Caller-supplied writer metadata never erases an observed fence.
+	s.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
+	data, err := sealedState(s)
 	if err != nil {
-		return err
+		return old, err
 	}
 	if strict {
-		return writeHostStateAtomic(p, name, append(data, '\n'))
+		err = writeHostStateAtomic(p, name, append(data, '\n'))
+	} else {
+		err = writeOrdinaryStateAtomic(path, name, append(data, '\n'), syncStateDirectory)
 	}
-	return writeSecretAtomic(path, name, append(data, '\n'))
+	if err != nil {
+		return old, err
+	}
+	// Return only the representation that successfully persisted, including its
+	// fresh seal/input. A failed save makes no durable-fence claim.
+	var saved State
+	if err := unmarshalState(data, &saved); err != nil {
+		return old, err
+	}
+	return saved, nil
 }
 
 // writeSecretAtomic replaces path with data: a temporary file in the same
@@ -741,6 +790,29 @@ func UpdateStateUntil(p Paths, name string, deadline time.Time, fn func(*State) 
 }
 
 func updateState(p Paths, name string, lock func(string) (func(), error), fn func(*State) error) (State, error) {
+	return withStateLock(p, name, lock, func(old State) (State, error) {
+		fence := ordinaryWriterFence(old, time.Now())
+		// A callback must not mutate the comparison snapshot through shared
+		// lease/runtime/terminal pointers or slices. Decode the same disk input
+		// into an independent working copy before handing it to ordinary code.
+		var s State
+		if len(old.rawState) != 0 {
+			if err := unmarshalState(old.rawState, &s); err != nil {
+				return old, err
+			}
+		}
+		s.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
+		if err := fn(&s); err != nil {
+			return old, err
+		}
+		return saveStateLocked(p, name, old, s, fence, false)
+	})
+}
+
+func withStateLock(p Paths, name string, lock func(string) (func(), error), fn func(State) (State, error)) (State, error) {
+	if err := ValidateName(name); err != nil {
+		return State{}, err
+	}
 	dir := filepath.Dir(p.StateFile(name))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return State{}, err
@@ -754,8 +826,5 @@ func updateState(p Paths, name string, lock func(string) (func(), error), fn fun
 	if err != nil {
 		return State{}, err
 	}
-	if err := fn(&s); err != nil {
-		return s, err
-	}
-	return s, SaveState(p, name, s)
+	return fn(s)
 }

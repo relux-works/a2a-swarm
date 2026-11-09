@@ -270,6 +270,7 @@ func TestBindUsabilityUnbind(t *testing.T) {
 				before.Terminal.Stopped = true
 				before.Terminal.Idle = nil
 				before.Terminal.Outcome = "unbound"
+				before, after = typedStateWithoutWriter(before), typedStateWithoutWriter(after)
 			}
 			if !reflect.DeepEqual(before, after) {
 				t.Fatal("unexpected state/lease mutation")

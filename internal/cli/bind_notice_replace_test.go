@@ -118,10 +118,15 @@ func TestNoticeConsumerMetadata(t *testing.T) {
 				}
 				before.Terminal.DaemonPID = started.DaemonPID
 				before.Terminal.DaemonBirth = started.DaemonBirth
+				before = typedStateWithoutWriter(before)
 			} else if err == nil || err.Error() != "binding changed before consumer startup" {
 				t.Fatal("startup must refuse a retired generation", err)
 			}
-			if !reflect.DeepEqual(before, e.state("alice")) {
+			after := e.state("alice")
+			if mode == "same" {
+				after = typedStateWithoutWriter(after)
+			}
+			if !reflect.DeepEqual(before, after) {
 				t.Fatal("consumer metadata update changed report or other state")
 			}
 		})

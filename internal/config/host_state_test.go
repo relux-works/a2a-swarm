@@ -89,7 +89,7 @@ func TestHostStateV1WriterCompatibility(t *testing.T) {
 		t.Fatalf("v1 writer compatibility: %v", err)
 	}
 	got, err := LoadState(p, "member")
-	if err != nil || !reflect.DeepEqual(got, s) {
+	if err != nil || !sameStatePayload(got, s) || !validWriterSeal(got) {
 		t.Fatalf("v1 reload: %v", err)
 	}
 	before, err := os.ReadFile(p.StateFile("member"))
@@ -113,7 +113,7 @@ func TestHostStateV1WriterCompatibility(t *testing.T) {
 		t.Fatalf("private v2 control: %v", err)
 	}
 	got, err = LoadState(p, "member")
-	if err != nil || !reflect.DeepEqual(got, s) {
+	if err != nil || !sameStatePayload(got, s) || !validWriterSeal(got) {
 		t.Fatalf("v2 reload: %v", err)
 	}
 }
@@ -184,7 +184,9 @@ func TestHostStateReturnedFaults(t *testing.T) {
 				t.Fatalf("non-atomic state: %s %v", got, readErr)
 			}
 			entries, err := os.ReadDir(filepath.Join(p.Base, "state"))
-			if err != nil || len(entries) != 1 || entries[0].Name() != "member.json" {
+			// SaveState now takes the same cooperative state lock as updates;
+			// the persistent lock file is not a leaked write temporary.
+			if err != nil || len(entries) != 2 || entries[0].Name() != "member.json" || entries[1].Name() != "member.lock" {
 				t.Fatalf("temporary leaked: %v %v", entries, err)
 			}
 		})

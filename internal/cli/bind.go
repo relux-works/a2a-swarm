@@ -177,6 +177,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		if err != nil {
 			return err
 		}
+		if err := st.RefuseMonitorConsumer(); err != nil {
+			return err
+		}
 		if st.HostEnrollment != nil {
 			return config.ErrHostEnrollment
 		}
@@ -389,6 +392,9 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 			}
 			st, err := config.LoadState(s.paths, s.name)
 			if err != nil {
+				return err
+			}
+			if err := st.RefuseMonitorConsumer(); err != nil {
 				return err
 			}
 			b := st.Terminal
@@ -662,6 +668,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
+			return err
+		}
+		if err := st.RefuseMonitorConsumer(); err != nil {
 			return err
 		}
 		b := st.Terminal

@@ -1779,6 +1779,102 @@ Only an updated consumer can record these observations; the refresh projection
 does not probe a replacement candidate or trigger replacement. Persistence is best effort under
 the state lock; the token has no screen content, paths, argv or authority.
 
+The notice monitor's L02 foundation adds a typed, closed `monitor` State row
+and a protocol-2 `writer` consistency seal. It is an inert library seam: this
+change adds no notices command, owner-association proof, lease renewal service,
+listener, endpoint publication, or service activation. The later admitted
+pipeline must compose those gates and the closed notice encoder before use.
+
+Every compatible State save takes the existing state lock and checks the actual
+disk input before its transaction callback, mailbox/output callback, lease
+acquire/refresh, or other transaction effect. A missing, protocol-1, or mismatched
+seal does **not** refuse ordinary work: the transaction sets
+`writer.foreign_seen` to its first detection time in UTC, retains an existing
+value, performs the ordinary work, and saves a fresh protocol-2 seal. Later
+compatible writers cannot clear or replace that first timestamp. Direct
+`SaveState` checks disk rather than trusting the caller's possibly stale,
+already-mutated State. Update callbacks use an independent working copy and the
+internal locked save, avoiding recursive state-lock acquisition.
+
+The SHA-256 input is the deterministic JSON encoding of every State member except
+`writer.seal` itself, including `writer.protocol`, `writer.foreign_seen`, and
+complete opaque top-level values and their nested content. Deleting or zeroing
+`foreign_seen` invalidates the seal. Malformed `writer` metadata is ignored on
+load and treated as a missing seal; all other State members remain strict.
+Objects sort recursively by UTF-8 key order; arrays keep order. Strings use Go
+`encoding/json` escaping (including HTML escaping). Insignificant whitespace,
+object order, and equivalent string escapes do not affect the seal. JSON numbers
+retain exact spelling and precision: `1`, `1.0`, `1e0`, `0` and `-0` differ.
+Duplicate object keys are not canonical. Existing known typed fields keep their
+schema semantics; unrelated unknown top-level values are retained as complete
+JSON rather than decoded through floating point. The monitor schema rejects
+unknown fields/versions, malformed records, and duplicate case-folded authority
+members. A matching writer seal at **protocol >= 2** is accepted; this is a
+forward compatibility promise to retain this exclusion contract, not image
+attestation.
+
+A missing State file is a new identity: its first compatible ordinary write
+stores a clean protocol-2 seal without `foreign_seen`. An existing State with a
+missing or invalid seal instead acquires the sticky fence on its next successful
+ordinary write and requires explicit operator arm; automatic/recovery admission
+refuses. Malformed writer metadata reports `incompatible_writer`, not
+`unavailable`, and can be fenced and re-sealed by an ordinary writer.
+
+A monitor generation takes the existing selected identity/connection's
+`runtime-consumer` lock for its lifetime, then control and state locks for
+admission. It refuses Host custody, active/unknown terminal or native bindings,
+and other live consumers before monitor State changes or any sink callback.
+Terminal/native manual, automatic, detached and recovery admission and raw
+wait/watch refuse a retained non-stopped monitor before authority or process
+operations. Raw wait/watch also hold that same consumer lock until exit, closing
+the startup race in both directions on Unix. Where native/monitor locking is
+unsupported, those backends still refuse and legacy raw delivery stays available.
+Ordinary same-owner commands may borrow an
+unexpired matching lease without changing or renewing it; generic acquisition,
+replacement and forced release cannot take monitor authority. Only a private
+admitted generation handle can feed the inert monitor sink; a zero, stale,
+foreign-consumer or second-generation handle cannot emit.
+
+Admission, read-only renewal guards, and each announcement recheck disk under
+the state lock. An invalid seal or `foreign_seen` stops the in-memory generation,
+returns the closed local reason `incompatible_writer` with the operator hint
+“upgrade every a2a image used by this identity; explicit operator arm required”,
+and releases its consumer authority/lock. This detection path leaves State
+**byte-for-byte unchanged**: it saves no stopped row, error row, or repaired seal.
+A restart sees the same invalid input and refuses. The next successful ordinary
+write records the sticky fence. Only explicit operator arm can clear it, with a
+valid existing seal, or a missing seal for the very first arm with no retained
+monitor history. Arm cannot directly repair an existing mismatch/protocol-1
+seal, or bootstrap a missing seal after retained monitor history. Once a valid
+sticky fence exists and the lifetime lock is free, explicit same-scope arm may
+replace the retained generation with a new one. Automatic/recovery entry never
+bootstraps or clears a fence; foreign scope and reused generations refuse.
+A normal matching clean close records stopped State; a crash is not a clean
+stop and retained records are never inferred healthy from timestamps or PIDs.
+
+Seal verification and callbacks are ordered, not an atomic transaction with
+external I/O. On callback failure or a failed final save the first-detection
+value may exist only in memory; no durable preservation is claimed. Ordinary
+successful persistence syncs the parent directory, temp file, rename, and state
+directory. A post-rename directory-sync failure returns an explicitly uncertain
+outcome: new bytes may exist, without a successful durable-fence claim. Host v2
+retains its existing pinned-directory writer and uncertainty rules. A monitor
+checks before output, releases state/control locks for sink I/O, and serializes
+its own generation through that bounded callback. An old write after a check is
+observed at a later boundary; in-flight external output cannot be rolled back.
+
+The seal is unkeyed consistency data under the trusted host UID. It is **not**
+authentication, an installed-image upgrade check, or owning-session proof; no
+image allowlist or process scan supplies L02 admission. A pre-L02 consumer is
+invisible until it changes State; there is **no numeric bound**. Arbitrarily
+many value-preserving old writes can retain a valid seal. Consumer exclusion
+comes from the lease and shared consumer lock. Mail is never lost and peer text
+never reaches the model through the monitor: no body, topic, display name, raw
+kind or raw error has a data path through this foundation. The fixture controls
+check those invariants at these boundaries; they do not prove universal absence
+of loss or injection or qualify a native runtime. A shared UID is trusted and
+does not isolate hostile same-UID processes.
+
 `bind status` also warns about a selected identity's hook or active local bound
 consumer using a libexec image known to predate the opaque State preservation
 fix `5f2b843`. These older writers can erase newer State fields such as
