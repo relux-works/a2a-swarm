@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -796,4 +797,31 @@ func TestCourierHookFailureStateCustody(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Proves an attachment's literal operand cannot be reinterpreted as an inline
+// option value. A normal relative filename is the valid neighbor; a forbidden
+// leading-hyphen operand must never read the file named after its equals sign.
+func TestCourierStationAttachmentOperandBoundary(t *testing.T) {
+	var calls atomic.Int32
+	s := newC5Station(t, func(context.Context, courier.Invocation) int { calls.Add(1); return 0 })
+	root := canonicalRoot(t)
+	t.Chdir(root)
+	if err := os.WriteFile("good.txt", []byte("input"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	good := func() {
+		t.Helper()
+		r := s.run(context.Background(), "", "attach", "room", "--", "good.txt")
+		if r.code != 0 || r.stderr != "" {
+			t.Fatal("valid attachment refused", r)
+		}
+	}
+	good()
+	before := calls.Load()
+	r := s.run(context.Background(), "", "attach", "room", "--", "-input=good.txt")
+	if r.code != ExitError || r.stdout != "" || r.stderr != "a2a: courier: not_allowed\n" || calls.Load() != before {
+		t.Fatal("attachment reinterpreted as option value", r)
+	}
+	good()
 }
