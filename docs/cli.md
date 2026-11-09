@@ -3832,7 +3832,10 @@ complete verified record, including request bytes, length, content and record
 digests, event type and transaction. The bytes sent are the verified reservation
 snapshot. A conflicting replacement before either gate refuses; an ACK mismatch
 remains UNKNOWN. These checks and cooperative locks do not isolate arbitrary
-code running as the same OS user. No journal lock spans remote I/O.
+code running as the same OS user. No journal lock spans remote I/O. A separate
+identity post-attempt lock spans the invocation to exclude Courier migration;
+concurrent active attempts refuse with no send, while local status remains
+available under the short journal lock.
 
 **Privacy cost:** request bytes are stored privately while `not_submitted` or
 `unknown`; a durable ACK replaces them with metadata, content digest and event
@@ -3918,3 +3921,136 @@ user enrollment from a closed v1 pipe payload without consulting credentials.
 The parent is canonicalized once; the final directory and its entries refuse
 symlinks. See the [station enrollment contract](courier-enroll.md) for byte
 formats, canonical ownership checks, pinned readers and atomic rotation.
+
+### Courier identity migration (C4 constituent)
+
+Upgrade the shared `a2a` binary first, then explicitly stop **every session of
+that identity** before running migration. Legacy binaries without the migration
+fence are unsupported during migration: they cannot enforce its exclusion.
+Do not treat the commands below as evidence that a host migration was run.
+This constituent provides migration only; Courier enrollment, serving, engine
+and service installation compose separately.
+
+```
+a2a courier migrate <identity> --to <absolute-courier-base>
+a2a courier migrate <identity> --to <absolute-courier-base> --resume
+a2a courier migrate <identity> --to <absolute-courier-base> --rollback
+```
+
+The source is the selected config resolver's identity, including an explicit
+named connection's separate credential metadata and runtime roots. Conflicting
+metadata at a runtime root is refused; no root is inferred. Human identities
+are excluded. Migration publication requires Linux or macOS atomic
+no-replacement rename support; other platforms refuse before fencing. Source roots and identity directories must be owned by the
+current user and mode 0700; files must be regular, singly linked, owned by that
+user and mode 0600. Symlinks in any path component are refused. The command does
+not change owners or repair existing permissions, and the destination must not
+overlap either source root. Admission compares device/inode identities through
+existing ancestors in both directions, and also folds path case on macOS.
+
+Migration holds locks for the entire operation in this order: consumer,
+credential, post attempt, post journal (when present), then state/lease. The
+post attempt lock spans prepare, reservation, remote send and ACK persistence;
+an in-flight reserved attempt refuses migration immediately. The journal lock
+excludes record replacements while migration inventories, copies and verifies.
+A held consumer lock, any lease
+holder (including an expired retained lease), active terminal/native consumer,
+Host custody or active monitor refuses migration. Stop/release these through
+their existing lifecycle commands first. All lock files stay at their original
+paths and retain their inodes forever; migration and rollback never rename or
+unlink a lock.
+
+Before copying, migration durably writes a sealed source State record:
+`migration: {phase: "in_progress", courier_base, at}`. Successful completion
+changes its phase to `done`. Both phases refuse compatible credential/session
+loading, cached-session connection checks, lease acquisition/renewal, consumer
+admission, hooks, wait, watch and bind with `identity_migrated`. Ordinary State
+callbacks and stale State saves cannot clear the fence.
+
+Credential mutations also refuse under the stable agent credential lock:
+move-human, registration/reservation, metadata rewrites (including creds migrate),
+and named publication. Human rewrites take the human credential lock after the
+agent credential lock. Human credential/session access checks the agent fence,
+including the resolver-selected agent runtime root for named human identities;
+creating a human credential file afterward does not reopen a migrated identity.
+The existing compatible State writer supplies sealing and preserves opaque
+top-level fields and its
+sticky foreign-writer observation; migration does not reset that observation
+or authorize a monitor.
+
+The private target is `<courier-base>/identities/<identity>/`. Its `agents/`,
+`state/`, `owner-dm/` and `post-operations/agents/<identity>/` directories retain
+per-identity files, including the mailbox. Acknowledged and quiesced unknown
+post journals are copied byte-for-byte and digest-verified; target journals
+remain readable. A not_submitted, invalid/reserved or temporary journal refuses
+with `post_operation_pending`: finish any active post, then inspect
+`post-operation status <operation-id> --json` and resolve retained evidence
+before retrying migration. The command never resubmits or deletes such evidence.
+Source locks, shared routing, registration credentials and other
+identities are excluded. Existing identity-prefixed `.migrated` copies refuse
+migration for explicit operator recovery; the command does not delete them.
+The sealed source State snapshot is recovery evidence, not a running Courier
+State. `credential.json` is a verified file backend for subsequent composition;
+`agents/<identity>.json` is an identity snapshot. No daemon starts here.
+
+Before fencing, the credential file must use the admitted credential schema;
+unknown fields (including refresh tokens) and invalid optional metadata refuse
+with `source_credentials_contain_secrets`. Keychain metadata, including legacy
+metadata without a named binding, must contain no access token or password.
+Finish `creds migrate` or explicitly repair the source first. Migration never
+scrubs a remaining source secret to make preflight pass. File-backend access
+tokens and legacy passwords remain in place until the verified tombstone step.
+
+Cutover holds all locks and the sealed `in_progress` fence throughout:
+1. Copy identity files into the private target and verify every digest.
+2. Write and digest-verify `rollback/source-credential.json` (byte-identical
+   source file) and `rollback/credential.json` (materialized backend value).
+   Rollback material exists only inside this Courier-private `rollback/`
+   directory, with 0700 directories and 0600 files. A separately owned service
+   storage boundary is required operationally; directory fixtures do not prove
+   cross-UID access control.
+3. For the file backend, atomically replace the source credential with the
+   closed nonsecret tombstone `{"migrated_to_courier":true,"at":...,"identity":...}`
+   at 0600, using nonsecret temp bytes, fsync and rename. No source `.migrated`
+   credential copy is made. For Keychain, delete the selected item only after
+   private verification, then verify again that the source file contains no secret
+   fields; any failure leaves `in_progress`. Clean source routing metadata stays
+   in place.
+4. Persist the sealed `done` fence.
+
+After private verification and before step 3, the same sealed source fence
+records nonsecret `cutover_started: true`. If the target is lost after that
+point, source metadata or a recreated Keychain item cannot prove a pre-cutover
+abort; recovery requires the private target. The phase remains `in_progress`
+until completion.
+
+Before step 3, source credentials remain in place and fenced. After step 3,
+rollback reads credentials only from the verified private rollback copies,
+restores the original backend (including byte-identical source metadata),
+verifies restoration, and only then explicitly clears the sealed fence.
+Missing or damaged rollback credentials refuse even when redundant identity or
+runtime credential snapshots remain. Keychain errors stay closed; values are
+never printed. Source data and lock inodes remain in place. Private recovery
+copies remain after rollback for explicit operator disposition.
+
+An interrupted operation leaves `in_progress`. A plain rerun refuses; use
+`--resume` or `--rollback` explicitly. An existing destination is accepted only
+with the matching private transaction journal bound to the source roots,
+identity and original fence timestamp. Partial copies can resume from verified
+source bytes; corrupt copies, mismatched journals or failed restoration keep
+the fence closed. An unpublished staging directory may remain after an
+interrupted journal publication. It is not a live target; cleanup belongs to
+the operator after verified recovery. Metadata/journals are bounded to 1 MiB,
+individual payload files to 64 MiB, and copied payloads to 256 MiB and 4096 files.
+
+Qualification uses generated fixtures and injectable fake secret stores only.
+Native macOS Keychain behavior, cross-user handoff and complete Courier
+composition need their own qualification. Stopped sessions and a fully upgraded
+shared binary remain mandatory operational preconditions.
+
+The mandatory migration check also applies to authenticated read-only commands:
+they inspect the selected source State without changing it. Malformed or
+unreadable State refuses authentication/effects rather than assuming no fence.
+A running bind may retry such a read with its existing bounded diagnostics and
+no dispatch; a valid migration fence terminates admission with
+`identity_migrated`. Muse retains its runtime-specific closed diagnostic format.

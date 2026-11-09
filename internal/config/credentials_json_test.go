@@ -144,7 +144,7 @@ func TestOpaqueWaitKeywordsWriters(t *testing.T) {
 						err = RewriteCredentialMetadata(p, "alice", false, func(next *Credentials) error { next.AccessToken = ""; return nil })
 					case "create":
 						path = p.AgentFile("copy")
-						var f *os.File
+						var f *CredentialFile
 						f, err = CreateCredentialFile(p, "copy")
 						if err == nil {
 							err = WriteCredentials(f, c)

@@ -64,7 +64,14 @@ func seedMemberState(t *testing.T, f *namedFixture) {
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, []byte("preserved-"+label+suffix), 0600); err != nil {
+			body := []byte("preserved-" + label + suffix)
+			// Authenticated sessions must now inspect the persistent migration fence.
+			// Keep ordinary State valid; mailbox/auxiliary bytes remain deliberately
+			// opaque. The existing whole-tree hashes still prove there are no writes.
+			if suffix == ".json" {
+				body = []byte(`{"next_batch":"preserved-` + label + `","future":{"fixture":true}}`)
+			}
+			if err := os.WriteFile(path, body, 0600); err != nil {
 				t.Fatal(err)
 			}
 		}

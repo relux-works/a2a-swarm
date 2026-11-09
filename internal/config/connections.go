@@ -423,6 +423,13 @@ func (c Connection) Paths(p Paths, name string, human bool) (Paths, error) {
 	}
 	sum := sha256.Sum256([]byte(b.UserID))
 	out.Base = filepath.Join(base, "identities", b.Class, hex.EncodeToString(sum[:]))
+	if human {
+		agent, err := c.Paths(p, name, false)
+		if err != nil {
+			return Paths{}, err
+		}
+		out.AgentStateBase = agent.Base
+	}
 	if err := checkConnectionDirectories(p.ConfigRoot(), out.Base); err != nil {
 		return Paths{}, err
 	}
@@ -443,6 +450,15 @@ func ValidateBoundCredentials(c Credentials, want ConnectionBinding) error {
 // PublishBoundCredentials never replaces an existing file. A hard link publishes
 // the complete fsynced private file atomically, without an empty public reservation.
 func PublishBoundCredentials(p Paths, name string, human bool, c Credentials) error {
+	guard, err := LockCredentialMutation(p, name, human)
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	return guard.PublishBoundCredentials(c)
+}
+
+func publishBoundCredentials(p Paths, name string, human bool, c Credentials) error {
 	path := p.AgentFile(name)
 	if human {
 		path = p.HumanFile(name)

@@ -53,6 +53,7 @@ type App struct {
 	authorizeRegistration bool
 	beforeNamedPublish    func() error
 	connectionSecretStore connectionSecretStore
+	courierSecrets        config.CourierSecretStore // package-test-only; no external fake selection
 	// human selects a human operator's own account (humans/<name>.json); never
 	// set by agents. It needs --as and ignores A2A_AGENT.
 	human   bool
@@ -138,7 +139,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"courier", "courier serve|register-station|unregister-station|enroll   local Courier and station enrollment", cmdCourier},
+		{"courier", "courier serve|register-station|unregister-station|enroll | migrate <identity> --to <courier-base> [--resume|--rollback]   local Courier, station enrollment and quiesced identity migration", cmdCourier},
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room   named Matrix routing", cmdConnection},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
@@ -542,6 +543,9 @@ func (a *App) sessionAsMode(name string, metadataOnly bool) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := config.CheckIdentityMigration(p, name); err != nil {
+		return nil, err
+	}
 	var creds config.Credentials
 	if metadataOnly {
 		creds, err = a.credentialMetadata(p, name)
@@ -604,7 +608,7 @@ func (a *App) sessionAsMode(name string, metadataOnly bool) (*session, error) {
 	if selected, _ := a.selectedConnection(); selected != nil && selected.AdminRegistration != nil {
 		c.ProtectedRoom = selected.AdminRegistration.RoomID
 	}
-	c.BeforeRequest = s.checkBinding
+	c.BeforeRequest = s.checkConnection
 	if metadataOnly {
 		c.BeforeRequest = func() error { return errors.New("credentials unavailable; metadata session only") }
 	}
@@ -627,6 +631,9 @@ func (a *App) context() context.Context {
 // native dispatch, leases, receipts and terminal operations can run without a
 // Matrix request. Current and unrelated registry edits remain valid.
 func (s *session) checkConnection() error {
+	if err := config.CheckIdentityMigration(s.paths, s.name); err != nil {
+		return err
+	}
 	if s.checkBinding != nil {
 		return s.checkBinding()
 	}

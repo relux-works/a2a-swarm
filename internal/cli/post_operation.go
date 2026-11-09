@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
@@ -192,6 +193,11 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 	if err := a.recheckOperation(own); err != nil {
 		return err
 	}
+	releaseAttempt, err := config.AcquirePostAttempt(own.paths, own.name, a.human, time.Now())
+	if err != nil {
+		return err
+	}
+	defer releaseAttempt()
 	journal, err := config.OpenPostJournal(own.paths, own.name, a.human, true)
 	if err != nil {
 		return errors.New("post operation refused: journal_unavailable; no send")

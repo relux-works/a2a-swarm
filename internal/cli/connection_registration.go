@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
@@ -41,13 +42,33 @@ func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r conf
 	} else if store != "keychain" {
 		return errors.New("file connections cannot create Keychain references")
 	}
+	name, _, ok := strings.Cut(strings.TrimPrefix(r.Account, "@"), ":")
+	if !strings.HasPrefix(r.Account, "@") || !ok || config.ValidateName(name) != nil {
+		return errors.New("invalid selected credential identity")
+	}
+	guard, e := config.LockCredentialMutation(p, name, false)
+	if e != nil {
+		return e
+	}
+	defer guard.Close()
+	return a.createConnectionSecretLocked(ctx, p, r, v)
+}
+
+// The named registration transaction already owns the credential guard over
+// both password/token writes, journal effects and metadata publication.
+func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if store, e := a.selectedStore(); e != nil {
+		return e
+	} else if store != "keychain" {
+		return errors.New("file connections cannot create Keychain references")
+	}
 	if a.connectionSecretStore != nil {
 		return a.connectionSecretStore.Create(ctx, p, r, v)
 	}
 	k := a.keychainStore(p)
 	k.service = r.Service
 	k.createOnly = true
-	return k.write(ctx, r.Account, v)
+	return k.writeLocked(ctx, r.Account, v)
 }
 
 // RegistrationJournal is private recovery evidence, without secret values.
@@ -139,6 +160,11 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	if admin == nil && c.RegistrationTokenRef == nil {
 		return empty, "", errors.New("selected profile has no registration_token_ref")
 	}
+	guard, e := config.LockCredentialMutation(p, name, false)
+	if e != nil {
+		return empty, "", e
+	}
+	defer guard.Close()
 	for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {
 		if _, e = os.Lstat(path); !errors.Is(e, os.ErrNotExist) {
 			return empty, "", errors.New("destination identity metadata exists or cannot be inspected")
@@ -192,7 +218,7 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	// Only Keychain retains a recovery password. File passwords stay in memory;
 	// the secret-free journal still fences every failed/ambiguous attempt.
 	if store == "keychain" {
-		if e = a.createConnectionSecret(ctx, p, passwordRef, password); e != nil {
+		if e = a.createConnectionSecretLocked(ctx, p, passwordRef, password); e != nil {
 			_ = stage("password-store-failed")
 			return empty, "", errors.New("recovery password could not be stored; no registration attempted")
 		}
@@ -255,7 +281,7 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 		return empty, "", errors.New("remote account created; recovery journal unavailable")
 	}
 	if store == "keychain" {
-		if e = a.createConnectionSecret(ctx, p, tokenRef, resp.AccessToken); e != nil {
+		if e = a.createConnectionSecretLocked(ctx, p, tokenRef, resp.AccessToken); e != nil {
 			_ = stage("remote-created-token-store-failed")
 			return empty, "", errors.New("remote account created but token storage failed; recovery password retained in selected store; owner recovery required")
 		}
@@ -284,7 +310,7 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 			return empty, "", publicationError("remote account and token stored; publication interrupted; owner recovery required")
 		}
 	}
-	if e = config.PublishBoundCredentials(p, name, false, creds); e != nil {
+	if e = guard.PublishBoundCredentials(creds); e != nil {
 		return empty, "", publicationError("remote account and token stored; metadata publication pending; owner recovery required")
 	}
 	if e = stage("complete"); e != nil {

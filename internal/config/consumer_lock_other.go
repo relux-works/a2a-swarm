@@ -18,6 +18,9 @@ func AcquireConsumerLock(Paths, string, time.Time) (func(), error) {
 
 // Native/monitor admission still refuses without Unix locking. Raw delivery
 // predates those backends and retains its existing behavior on these platforms.
-func AcquireRawConsumerLock(Paths, string, time.Time) (func(), error) {
+func AcquireRawConsumerLock(p Paths, name string, _ time.Time) (func(), error) {
+	if err := CheckIdentityMigration(p, name); err != nil {
+		return nil, err
+	}
 	return func() {}, nil
 }
