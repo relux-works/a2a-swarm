@@ -16,9 +16,9 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/courier"
 )
 
-// Real waits carry native session evidence and mark shown without receipting.
-// An active monitor still excludes raw wait consumers before lease acquisition;
-// observing the request proves session propagation without weakening that fence.
+// Default and finite waits retain runtime session sharing only after the raw
+// consumer fence admits them. Start without a lease so a PID fallback cannot
+// pass by borrowing an existing owner's lease, including after a clean stop.
 func TestCourierDefaultWaitOwner(t *testing.T) {
 	for _, native := range []string{"CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"} {
 		for _, tc := range []struct {
@@ -28,6 +28,7 @@ func TestCourierDefaultWaitOwner(t *testing.T) {
 			{"default", []string{"wait"}}, {"finite", []string{"wait", "--timeout", "2s"}},
 		} {
 			t.Run(native+"/"+tc.name, func(t *testing.T) {
+				const owner = "wait-owner"
 				seen := make(chan string, 1)
 				f := newCourierFixtureHandler(t, func(next courier.Handler) courier.Handler {
 					return func(ctx context.Context, inv courier.Invocation) int {
@@ -47,7 +48,7 @@ func TestCourierDefaultWaitOwner(t *testing.T) {
 					base := a.Getenv
 					a.Getenv = func(k string) string {
 						if k == native {
-							return "wait-owner"
+							return owner
 						}
 						return base(k)
 					}
@@ -56,11 +57,11 @@ func TestCourierDefaultWaitOwner(t *testing.T) {
 					code := a.Run(ctx, args)
 					return result{code: code, stdout: out.String(), stderr: diag.String()}
 				}
-				claim := func() {
+				claim := func(t *testing.T) {
 					t.Helper()
 					select {
 					case got := <-seen:
-						if got != "wait-owner" {
+						if got != owner {
 							t.Error("station wait lost native owner session")
 						}
 					case <-f.done:
@@ -69,32 +70,96 @@ func TestCourierDefaultWaitOwner(t *testing.T) {
 						t.Fatal("wait request not observed")
 					}
 				}
-				id := f.envs["alice"].hs.inject(f.rooms["alice"], "@bob:"+testServer, ping(1))
-				r := run(tc.args...)
-				claim()
-				if r.code != 0 || strings.Count(r.stdout, id) != 1 || r.stderr != shownHint+"\n" || courierReceiptCount(t, f, "alice", id) != 0 {
-					t.Fatal("native owner wait did not mark shown without receipt", r)
-				}
-				r = run("inbox")
-				if r.code != 0 || r.stderr != "" || strings.Count(r.stdout, id) != 1 || courierReceiptCount(t, f, "alice", id) != 1 {
-					t.Fatal("inbox receipt neighbor", r)
-				}
-				courierOwnerMonitor(t, f, "alice", "wait-owner", func() {
-					before, err := os.ReadFile(f.paths["alice"].StateFile("alice"))
+				consumerFree := func(t *testing.T) {
+					t.Helper()
+					release, err := config.AcquireRawConsumerLock(f.paths["alice"], "alice", time.Now())
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal("wait retained the consumer lock after exit", err)
+					}
+					release()
+				}
+				waitDelivery := func(t *testing.T, id string) {
+					t.Helper()
+					before, err := config.LoadState(f.paths["alice"], "alice")
+					if err != nil || before.Lease != nil {
+						t.Fatal("wait witness must start without a lease", err)
 					}
 					r := run(tc.args...)
-					claim()
-					after, err := os.ReadFile(f.paths["alice"].StateFile("alice"))
-					if r.code != ExitError || r.stdout != "" || r.stderr != "a2a: courier: courier_lease_conflict\n" || err != nil || !bytes.Equal(before, after) {
-						t.Fatal("active monitor raw-consumer fence changed", r, err)
+					claim(t)
+					if r.code != 0 || strings.Count(r.stdout, id) != 1 || r.stderr != shownHint+"\n" || courierReceiptCount(t, f, "alice", id) != 0 {
+						t.Fatal("native owner wait did not mark shown without receipt", r)
 					}
-					id := f.envs["alice"].hs.inject(f.rooms["alice"], "@bob:"+testServer, ping(1))
+					after, err := config.LoadState(f.paths["alice"], "alice")
+					if err != nil || after.Lease == nil || after.Lease.Holder != owner {
+						t.Error("wait did not persist the native runtime session lease")
+					}
+					consumerFree(t)
 					r = run("inbox")
 					if r.code != 0 || r.stderr != "" || strings.Count(r.stdout, id) != 1 || courierReceiptCount(t, f, "alice", id) != 1 {
-						t.Fatal("active owner lease-borrow neighbor", r)
+						t.Fatal("inbox receipt neighbor", r)
 					}
+				}
+				t.Run("no-monitor", func(t *testing.T) {
+					st, err := config.LoadState(f.paths["alice"], "alice")
+					if err != nil || st.Monitor != nil {
+						t.Fatal("no-monitor prerequisite", err)
+					}
+					id := f.envs["alice"].hs.inject(f.rooms["alice"], "@bob:"+testServer, ping(1))
+					waitDelivery(t, id)
+				})
+				var pending string
+				// Keep generation setup outside the phase subtest so selecting
+				// only stopped-monitor still exercises a real clean stop.
+				courierOwnerMonitor(t, f, "alice", owner, func() {
+					pending = f.envs["alice"].hs.inject(f.rooms["alice"], "@bob:"+testServer, ping(1))
+					t.Run("live-monitor", func(t *testing.T) {
+						before, err := os.ReadFile(f.paths["alice"].StateFile("alice"))
+						if err != nil {
+							t.Fatal(err)
+						}
+						unchanged := func() {
+							t.Helper()
+							after, err := os.ReadFile(f.paths["alice"].StateFile("alice"))
+							if err != nil || !bytes.Equal(before, after) || f.received("alice", pending) {
+								t.Fatal("refused wait changed State/lease or receipted mail", err)
+							}
+						}
+						r := run(tc.args...)
+						claim(t)
+						if r.code != ExitError || r.stdout != "" || r.stderr != "a2a: courier: courier_lease_conflict\n" {
+							t.Fatal("active monitor station refusal", r)
+						}
+						unchanged()
+						ctx, cancel := context.WithTimeout(context.Background(), courier.LockReleaseBound)
+						defer cancel()
+						var out, diag bytes.Buffer
+						engine := &App{as: "alice", courierEngine: true, ctx: ctx, Stdout: &out, Stderr: &diag, HTTP: f.daemon.HTTP, Now: time.Now, connectionSecretStore: f.store, Getenv: func(k string) string {
+							switch k {
+							case config.EnvConfigDir:
+								return filepath.Join(f.home, "identities", "alice")
+							case EnvSessionID:
+								return owner
+							}
+							return ""
+						}}
+						if err := cmdWait(ctx, engine, tc.args[1:]); err != config.ErrMonitorConflict || out.Len() != 0 || diag.Len() != 0 {
+							t.Fatal("active monitor engine refusal must be ErrMonitorConflict", err)
+						}
+						unchanged()
+					})
+				})
+				// The legitimate monitor held this lock during both refusals.
+				// Once it closes, no refused waiter may retain another hold.
+				consumerFree(t)
+				t.Run("stopped-monitor", func(t *testing.T) {
+					st, err := config.UpdateState(f.paths["alice"], "alice", func(st *config.State) error {
+						st.Lease = nil
+						return nil
+					})
+					if err != nil || st.Monitor == nil || st.Monitor.Phase != "stopped" || pending == "" {
+						t.Fatal("clean-stopped monitor prerequisite", err)
+					}
+					waitDelivery(t, pending)
 				})
 			})
 		}

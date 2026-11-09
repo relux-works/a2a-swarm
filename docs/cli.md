@@ -326,8 +326,12 @@ The state file holds `lease: {holder, pid, expires}`. `wait`, `watch`, `inbox` a
 session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise a valid native `CODEX_THREAD_ID`, otherwise a valid
 `CLAUDE_CODE_SESSION_ID` when neither higher-priority environment selector is set, otherwise `pid:<pid>@<host>` (the OS hostname, independent of the identity naming slug).
 `watch` and unbounded `wait --timeout 0` ignore both ambient native runtime IDs: unless explicitly owned through `A2A_SESSION_ID` (or a supplied hook id),
-their holder is their own PID with the process birth where supported below. All renewals, including retries, use that same process scope. Finite waits,
-`inbox` and hooks retain session sharing. Native bound consumers already use the binding's explicit session id; this does not change their ownership or exclusive consumer locks.
+their holder is their own PID with the process birth where supported below. All renewals, including retries, use that same process scope. Default `wait` (25 minutes), other finite waits,
+`inbox` and hooks retain session sharing. Every raw `wait` and `watch`, including default and finite waits from the monitor owner,
+refuses a retained non-stopped monitor before acquiring a lease or consumer lock. An enrolled station reports `courier_lease_conflict`.
+With a cleanly stopped monitor or no monitor record, default and finite station waits retain ambient runtime session evidence.
+A newly acquired lease records that runtime session as its holder.
+Native bound consumers already use the binding's explicit session id; this does not change their ownership or exclusive consumer locks.
 - Another holder while the lease is unexpired is refused: `wait`, `watch` and `inbox` exit 1 with
   `identity <name> is held by <holder> until <time>` before any sync; a hook prints nothing, writes that line to stderr and exits 0.
 - An expired lease is taken over. A `pid:` holder on this host whose process has exited counts as expired.
