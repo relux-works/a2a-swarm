@@ -815,25 +815,14 @@ func cmdAck(ctx context.Context, a *App, args []string) error {
 // each, marked shown after the write. It receipts nothing: a reader that dies
 // after the write loses nothing, `a2a inbox` still prints the entries.
 func cmdWatch(ctx context.Context, a *App, args []string) error {
-	fs := newFlagSet("watch")
-	predicateFlags := addDeliveryPredicateFlags(fs)
-	var rooms stringList
-	fs.Var(&rooms, "room", "room to watch (repeatable; default: all joined rooms)")
-	asJSON := fs.Bool("json", false, "one JSON object per event")
-	all := fs.Bool("all", false, "every new message in the --room rooms, not only relevant ones")
-	pos, err := parseInterspersed(fs, args)
+	o, err := parseWatchOptions(args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 0 {
-		return usagef("usage: a2a watch [--room R ...] [--all] [--json]")
-	}
-	if *all && len(rooms) == 0 {
-		return usagef("--all needs at least one --room")
-	}
-	predicates, err := predicateFlags.check()
-	if err != nil {
-		return err
+	rooms, predicates := o.rooms, o.predicates
+	all, asJSON := &o.all, &o.json
+	if o.notices {
+		return a.watchNotices(ctx, rooms, *all, *asJSON, o.listen, predicates)
 	}
 	s, err := a.session()
 	if err != nil {

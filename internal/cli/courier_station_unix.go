@@ -103,6 +103,15 @@ func (a *App) stationInvocationRun(ctx context.Context, args []string, event str
 		}
 		return refuse(class)
 	}
+	if p.Command == "watch" {
+		o, err := parseWatchOptions(p.Args)
+		if err != nil {
+			return refuse(courier.NotAllowed)
+		}
+		if o.listen {
+			return true, a.stationNoticeListener(ctx, paths.Base, e, args)
+		}
+	}
 	r := courier.Request{Argv: append([]string(nil), args...), Files: map[int]courier.InputFile{}}
 	// Read stdin only for commands that consume it. An interactive read/wait
 	// must not block on a terminal simply to send an unused empty stdin field.
