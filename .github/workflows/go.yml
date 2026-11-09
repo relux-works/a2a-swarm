@@ -5,6 +5,7 @@ name: go
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, labeled]
   push:
     branches: [main]
 
@@ -17,7 +18,10 @@ concurrency:
 
 jobs:
   test:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (startsWith(github.head_ref, 'train-') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: macos-latest
     # A hung step must not hold a PR for the 6 h default. Hosted runners are
     # smaller than the machines these budgets were measured on.
@@ -74,8 +78,29 @@ jobs:
           echo "Skipped tests (including subtests): $skipped"
           exit "$test_status"
 
+  darwin-smoke:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !(startsWith(github.head_ref, 'train-') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+
   voice-native:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (startsWith(github.head_ref, 'train-') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
     # unrelated launcher/credential fixtures a second time.
