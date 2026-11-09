@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"os"
@@ -79,6 +80,12 @@ type orphanDispatchFixture struct {
 	rev       int
 }
 
+const orphanFixtureStep = time.Second
+
+// Allow ten fixture steps for a loaded runner to render/acknowledge a change;
+// retain the original 3s floor if the fixture step is shortened in the future.
+const orphanScreenWaitTimeout = max(3*time.Second, 10*orphanFixtureStep)
+
 func newOrphanDispatchFixture(t *testing.T) *orphanDispatchFixture {
 	return newOrphanDispatchFixtureScript(t, orphanFixture)
 }
@@ -145,7 +152,7 @@ func newOrphanDispatchFixtureScript(t *testing.T, source string) *orphanDispatch
 		t.Fatal(err)
 	}
 	f.update(func(st *config.State) {
-		st.Terminal = &config.TerminalBinding{Generation: "orphan-gen", SessionID: "owned-thread", Host: machineLabel(), OwnerPID: state.PID, OwnerBirth: birth, Target: target, Interval: time.Second, RetryMax: 2 * time.Second, MaxWakes: 30}
+		st.Terminal = &config.TerminalBinding{Generation: "orphan-gen", SessionID: "owned-thread", Host: machineLabel(), OwnerPID: state.PID, OwnerBirth: birth, Target: target, Interval: orphanFixtureStep, RetryMax: 2 * time.Second, MaxWakes: 30}
 	})
 	f.rendered()
 	return f
@@ -168,9 +175,11 @@ func (f *orphanDispatchFixture) rendered() {
 	})
 }
 
+// Only a decoded fixture screen satisfying match succeeds. A timeout remains a
+// failure; one bounded pane capture supplies metadata, never private screen text.
 func (f *orphanDispatchFixture) wait(match func(orphanScreen) bool) orphanScreen {
 	f.t.Helper()
-	until := time.Now().Add(3 * time.Second)
+	until := time.Now().Add(orphanScreenWaitTimeout)
 	for time.Now().Before(until) {
 		b, err := os.ReadFile(filepath.Join(f.dir, "screen.json"))
 		var s orphanScreen
@@ -179,7 +188,15 @@ func (f *orphanDispatchFixture) wait(match func(orphanScreen) bool) orphanScreen
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	f.t.Fatal("private screen condition not reached")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	screen, err := exec.CommandContext(ctx, "tmux", "-S", filepath.Join(f.dir, "socket"), "capture-pane", "-p", "-t", "%0").Output()
+	lines := strings.Count(string(screen), "\n")
+	if len(screen) > 0 && screen[len(screen)-1] != '\n' {
+		lines++
+	}
+	digest := sha256.Sum256(screen)
+	f.t.Fatalf("private screen condition not reached: screen_bytes=%d screen_lines=%d screen_sha256=%x capture_ok=%t", len(screen), lines, digest[:6], err == nil)
 	return orphanScreen{}
 }
 func (f *orphanDispatchFixture) control(mode map[string]any) {
@@ -209,7 +226,7 @@ func (f *orphanDispatchFixture) dispatch() {
 		f.t.Fatal(err)
 	}
 }
-func (f *orphanDispatchFixture) step() { f.now = f.now.Add(time.Second); f.dispatch() }
+func (f *orphanDispatchFixture) step() { f.now = f.now.Add(orphanFixtureStep); f.dispatch() }
 func (f *orphanDispatchFixture) mail() string {
 	return runtimeMail(f.e, f.room, "SYNTHETIC_ORPHAN_MAIL")
 }

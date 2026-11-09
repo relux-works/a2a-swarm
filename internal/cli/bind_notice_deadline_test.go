@@ -45,6 +45,9 @@ func noticeDeadlineFixture(t *testing.T) (*env, *App, *session) {
 
 // Stalled resolve/PUT requests remain bounded while same-identity state writers
 // can acquire the lock; completion preserves their edits, notice evidence and mail.
+// Real-transport defaults must stall for at least nativeRPCTimeout - 1s and
+// return within nativeRPCTimeout + 2s (+ 5s under race for loaded runners).
+// This bounds observed completion with scheduler slack, not precise RPC timing.
 func TestNoticePublicationNetworkBound(t *testing.T) {
 	isolateBindTest(t)
 	for _, kind := range []string{"put-default", "resolve-default", "put-deadline", "resolve-deadline", "put-cancel", "resolve-cancel", "consumer-deadline"} {
@@ -108,6 +111,10 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 				ctx, cancel = context.WithCancel(ctx)
 			}
 			defer cancel()
+			slack := 2 * time.Second
+			if raceEnabled && strings.HasSuffix(kind, "default") {
+				slack = 5 * time.Second
+			}
 			done := make(chan struct{})
 			// Join the publisher and competing writer after releasing safety,
 			// before temporary config cleanup, including expected-red plants.
@@ -129,6 +136,13 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 				}
 			}()
 			start := time.Now()
+			var elapsed time.Duration
+			defer func() {
+				if elapsed == 0 {
+					elapsed = time.Since(start)
+				}
+				t.Logf("%s publication elapsed=%v budget=%v upper-slack=%v race=%t", kind, elapsed, budget, slack, raceEnabled)
+			}()
 			go func() {
 				defer close(done)
 				if kind == "consumer-deadline" {
@@ -171,11 +185,12 @@ func TestNoticePublicationNetworkBound(t *testing.T) {
 			}
 			select {
 			case <-done:
-			case <-time.After(time.Until(start.Add(budget + 2*time.Second))):
+			case <-time.After(time.Until(start.Add(budget + slack))):
+				elapsed = time.Since(start)
 				t.Error("publication exceeded network bound")
 				return
 			}
-			elapsed := time.Since(start)
+			elapsed = time.Since(start)
 			if strings.HasSuffix(kind, "default") && elapsed < nativeRPCTimeout-time.Second {
 				t.Errorf("default stall ended too early: %v", elapsed)
 			}
