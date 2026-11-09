@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -226,5 +227,81 @@ func TestCMListenerArgvCompatibility(t *testing.T) {
 				t.Fatal("valid grammar lost the closed projection neighbour")
 			}
 		})
+	}
+}
+
+type cmBlockedDiagnostic struct {
+	target  io.Writer
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *cmBlockedDiagnostic) Write(p []byte) (int, error) {
+	if strings.HasPrefix(string(p), "courier notice listener: ") {
+		b.once.Do(func() { close(b.entered) })
+		<-b.release
+	}
+	return b.target.Write(p)
+}
+
+func TestCMDeathWhileDiagnosticBlocked(t *testing.T) {
+	admitted := make(chan struct{})
+	s := newC5Station(t, func(ctx context.Context, _ courier.Invocation) int { close(admitted); <-ctx.Done(); return 0 })
+	blocked := &cmBlockedDiagnostic{entered: make(chan struct{}), release: make(chan struct{})}
+	l := cmStart(t, s.home, func(ctx context.Context, diag io.Writer) result {
+		blocked.target = diag
+		a := &App{Stdout: io.Discard, Stderr: blocked, Getenv: func(k string) string {
+			if k == "A2A_CONFIG_DIR" {
+				return s.home
+			}
+			return ""
+		}}
+		return result{code: a.Run(ctx, []string{"watch", "--notices", "--listen"})}
+	})
+	var release sync.Once
+	unblock := func() { release.Do(func() { close(blocked.release) }) }
+	t.Cleanup(unblock)
+	c := cmConnect(t, l)
+	select {
+	case <-admitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy neighbour not admitted")
+	}
+	refused := make(chan bool, 1)
+	go func() {
+		client, r, err := cmDial(t, l, strings.Repeat("0", 64))
+		if client != nil {
+			client.CloseNow()
+		}
+		valid := err != nil && r != nil && r.StatusCode == http.StatusForbidden
+		if r != nil {
+			body, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			valid = valid && string(body) == "not_allowed\n"
+		}
+		refused <- valid
+	}()
+	select {
+	case <-blocked.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("diagnostic control not reached")
+	}
+	s.cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, err := c.Read(ctx)
+	var closed websocket.CloseError
+	if !errors.As(err, &closed) || closed.Reason != "courier_unavailable" {
+		t.Fatal("daemon death blocked behind diagnostic I/O")
+	}
+	unblock()
+	select {
+	case valid := <-refused:
+		if !valid {
+			t.Fatal("refusal reason changed after log release")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("refusal did not complete")
 	}
 }

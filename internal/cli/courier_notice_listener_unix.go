@@ -35,6 +35,7 @@ type noticeListener struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	mu      sync.Mutex
+	logMu   sync.Mutex
 	client  *websocket.Conn
 	claimed bool
 	ready   chan struct{}
@@ -70,7 +71,7 @@ func (a *App) stationNoticeListener(ctx context.Context, home string, e couriere
 	clear(secret[:])
 	socket, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "a2a: courier: %s\n", courier.Class(err))
+		l.closedLog("a2a: courier: ", courier.Class(err))
 		return ExitError
 	}
 	defer socket.Close()
@@ -83,7 +84,7 @@ func (a *App) stationNoticeListener(ctx context.Context, home string, e couriere
 	defer func() { _ = server.Close(); <-serveDone }()
 	remove, err := publishNoticeEndpoint(home, "ws://"+socket.Addr().String()+"/ "+capability+"\n")
 	if err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "a2a: courier: %s\n", courier.Class(err))
+		l.closedLog("a2a: courier: ", courier.Class(err))
 		return ExitError
 	}
 	defer remove()
@@ -110,7 +111,7 @@ func (a *App) stationNoticeListener(ctx context.Context, home string, e couriere
 	if canceled {
 		return 130
 	}
-	_, _ = fmt.Fprintf(a.Stderr, "a2a: courier: %s\n", reason)
+	l.closedLog("a2a: courier: ", reason)
 	if err != nil || code == 0 {
 		return ExitError
 	}
@@ -121,21 +122,28 @@ func (a *App) noticeUnavailable() int {
 	_, _ = io.WriteString(a.Stderr, "a2a: courier: courier_unavailable\n")
 	return ExitError
 }
+
+// Diagnostic backpressure must never hold the client admission/liveness lock.
+// In particular, daemon death closes the socket before writing its diagnostic.
+func (l *noticeListener) closedLog(prefix string, reason courier.Diagnostic) {
+	l.logMu.Lock()
+	defer l.logMu.Unlock()
+	_, _ = fmt.Fprintf(l.log, "%s%s\n", prefix, reason)
+}
+
 func (l *noticeListener) accept(w http.ResponseWriter, r *http.Request, capability string) {
-	refuse := func(reason string, status int) {
-		l.mu.Lock()
-		_, _ = fmt.Fprintf(l.log, "courier notice listener: %s\n", reason)
-		l.mu.Unlock()
-		http.Error(w, reason, status)
+	refuse := func(reason courier.Diagnostic, status int) {
+		l.closedLog("courier notice listener: ", reason)
+		http.Error(w, string(reason), status)
 	}
 	if r.Method != "GET" || r.URL.Path != "/" || r.URL.RawQuery != "" || len(r.Header.Values("Authorization")) != 1 || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+capability)) != 1 {
-		refuse("not_allowed", http.StatusForbidden)
+		refuse(courier.NotAllowed, http.StatusForbidden)
 		return
 	}
 	l.mu.Lock()
 	if l.claimed {
 		l.mu.Unlock()
-		refuse("courier_busy", http.StatusConflict)
+		refuse(courier.Busy, http.StatusConflict)
 		return
 	}
 	l.claimed = true
@@ -145,9 +153,7 @@ func (l *noticeListener) accept(w http.ResponseWriter, r *http.Request, capabili
 		l.mu.Lock()
 		l.claimed = false
 		l.mu.Unlock()
-		l.mu.Lock()
-		_, _ = io.WriteString(l.log, "courier notice listener: not_allowed\n")
-		l.mu.Unlock()
+		l.closedLog("courier notice listener: ", courier.NotAllowed)
 		return
 	}
 	l.mu.Lock()
@@ -161,9 +167,7 @@ func (l *noticeListener) accept(w http.ResponseWriter, r *http.Request, capabili
 	client.SetReadLimit(-1)
 	_, _, err = client.Reader(l.ctx)
 	if err == nil {
-		l.mu.Lock()
-		_, _ = io.WriteString(l.log, "courier notice listener: not_allowed\n")
-		l.mu.Unlock()
+		l.closedLog("courier notice listener: ", courier.NotAllowed)
 		_ = client.Close(websocket.StatusPolicyViolation, "not_allowed")
 	}
 }
