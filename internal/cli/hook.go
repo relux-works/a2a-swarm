@@ -432,7 +432,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	key := hookSessionKey(in.SessionID)
 	if stop && in.StopHookActive && st.HookBlocks(key) >= hookGuardMax {
 		// Loop guard: let this stop happen; the events wait for the next hook or turn.
-		if _, err := config.UpdateStateBy(s.paths, s.name, deadline, func(cur *config.State) error {
+		if _, err := a.updateStateBy(s.paths, s.name, deadline, func(cur *config.State) error {
 			cur.SetHookBlocks(key, 0)
 			return nil
 		}); err != nil {
@@ -462,7 +462,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 		members = s.verifySenders(ctx, itemsOf(mb.Pending(), s.server))
 	}
 	limited := false
-	err = config.WithRuntimeLock(s.paths, s.name, "control", deadline, func() error {
+	err = a.withRuntimeLock(s.paths, s.name, "control", deadline, func() error {
 		current, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
@@ -793,8 +793,8 @@ func cmdHookPause(a *App, args []string, pause bool) error {
 	if err != nil {
 		return err
 	}
-	if err := config.WithRuntimeLock(p, *agent, "control", time.Now().Add(nativeRPCTimeout), func() error {
-		_, err := config.UpdateStateBy(p, *agent, time.Now().Add(nativeRPCTimeout), func(cur *config.State) error {
+	if err := a.withRuntimeLock(p, *agent, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		_, err := a.updateStateBy(p, *agent, time.Now().Add(nativeRPCTimeout), func(cur *config.State) error {
 			cur.HooksPaused = pause
 			if cur.Terminal != nil {
 				cur.Terminal.Idle = nil

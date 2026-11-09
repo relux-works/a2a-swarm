@@ -693,7 +693,7 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 	}
 	var removed []string
 	var kept []Sub
-	err = config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+	err = a.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		configured, err := ownerFiles(s.paths, s.name).principals()
 		if err != nil {
 			return err

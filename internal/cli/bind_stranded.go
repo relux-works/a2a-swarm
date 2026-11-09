@@ -32,7 +32,7 @@ func (a *App) reportStrandedTerminalNoticeMode(ctx context.Context, s *session, 
 	deadline, _ := reportCtx.Deadline()
 	var pending *config.NoticeReport
 	var reportErr error
-	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	_, err := a.updateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func (a *App) reportStrandedTerminalNoticeMode(ctx context.Context, s *session, 
 	if pending == nil {
 		return reportErr
 	}
-	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	_, err = a.updateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -250,7 +250,7 @@ func (a *App) reportTerminalIncident(ctx context.Context, s *session, generation
 		return
 	}
 	outcome := ""
-	_, err = config.UpdateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
+	_, err = a.updateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
 		b := st.Terminal
 		if b == nil || b.Generation != generation || b.NoticeReport == nil {
 			return errors.New("incident report changed before logging")

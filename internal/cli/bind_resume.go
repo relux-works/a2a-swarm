@@ -17,7 +17,7 @@ func (a *App) sendTerminalAttempt(ctx context.Context, s *session, expected conf
 	defer cancel()
 	var fenceErr error
 	result, err := boundTerminal(expected).Send(ctx, expected.NoticeCount, key, func() {
-		_, fenceErr = config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		_, fenceErr = a.updateState(s.paths, s.name, func(st *config.State) error {
 			b := st.Terminal
 			if b == nil || b.Stopped || !sameTerminalScope(*b, expected) || b.NotificationToken != expected.NotificationToken || b.Notice != expected.Notice || !b.AttemptAt.Equal(expected.AttemptAt) || !slices.Equal(b.AttemptIDs, expected.AttemptIDs) || st.HooksPaused || manualWakeGate(*st) != "" {
 				return errors.New("terminal typing attempt changed")
@@ -102,7 +102,7 @@ func (a *App) reserveTerminalRecovery(ctx context.Context, s *session, generatio
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
-	_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	_, err := a.updateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
 		if ctx.Err() != nil || !time.Now().Before(deadline) {
 			return tmuxwake.ErrEnterFenceTimeout
 		}

@@ -156,7 +156,7 @@ func (a *App) hasTrailingConsumer(ctx context.Context, s *session, st config.Sta
 		return false
 	}
 	held := false
-	err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil })
+	err := a.withRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil })
 	if errors.Is(err, config.ErrLockTimeout) {
 		held = true
 	} else if err != nil {
@@ -235,7 +235,7 @@ func (a *App) nativeConsumer(ctx context.Context, s *session, generation string,
 			return err
 		}
 	}
-	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	return a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		_, err := s.lockedDeliver(ctx, time.Now().Add(nativeRPCTimeout), false, func(st *config.State, _ *config.Mailbox) ([]string, error) {
 			b := st.Runtime
 			if b == nil || b.Generation != generation {

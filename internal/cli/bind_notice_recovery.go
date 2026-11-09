@@ -23,7 +23,7 @@ func carryTerminalNoticeEpisode(old, next *config.TerminalBinding, automatic boo
 // pin and ACK under the same state lock that installs the replacement, never
 // from bind's earlier journal snapshot. Identity/connection scope is s.paths/name.
 func persistTerminalReplacement(s *session, next *config.TerminalBinding, automatic bool) error {
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := s.app.updateState(s.paths, s.name, func(st *config.State) error {
 		carryTerminalNoticeEpisode(st.Terminal, next, automatic)
 		st.Terminal = next
 		return nil
@@ -34,7 +34,7 @@ func persistTerminalReplacement(s *session, next *config.TerminalBinding, automa
 // Consumer startup records only its metadata; a report committed since the
 // replacement was installed remains authoritative under this state lock too.
 func persistTerminalConsumer(s *session, started *config.TerminalBinding) error {
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := s.app.updateState(s.paths, s.name, func(st *config.State) error {
 		if st.Terminal == nil || st.Terminal.Generation != started.Generation {
 			return errors.New("binding changed before consumer startup")
 		}

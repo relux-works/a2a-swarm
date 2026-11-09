@@ -103,9 +103,9 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 		if len(pos) != 0 {
 			return usagef("runtime abandon takes no positional arguments")
 		}
-		return config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error {
-			return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
-				_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		return a.withRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error {
+			return a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+				_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 					if st.Runtime == nil || st.Runtime.Generation != *generation || st.Runtime.Identity != s.name || st.Runtime.Host != machineLabel() {
 						return errors.New("runtime stale generation")
 					}
@@ -146,8 +146,8 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 		default:
 			return usagef("invalid runtime gate")
 		}
-		return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
-			_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		return a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+			_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 				if st.Runtime == nil || st.Runtime.Generation != *generation || st.Runtime.Identity != s.name || st.Runtime.Host != machineLabel() {
 					return errors.New("runtime stale generation")
 				}
@@ -174,7 +174,7 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 		if len(pos) != 0 {
 			return usagef("runtime dispatch takes no positional arguments")
 		}
-		return config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error { return a.dispatchNative(ctx, s, *generation) })
+		return a.withRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), func() error { return a.dispatchNative(ctx, s, *generation) })
 	default:
 		return usagef("unknown runtime operation")
 	}
@@ -248,7 +248,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 		var binding codexwake.Binding
 		var preserve *config.AgentStatus
 		preserveSource := "runtime"
-		err = config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		err = a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 			state, err := config.LoadState(s.paths, s.name)
 			if err != nil {
 				return err
@@ -307,7 +307,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 			if err := a.acquireLease(s, *thread, time.Now().Add(nativeRPCTimeout)); err != nil {
 				return err
 			}
-			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
+			_, err = a.updateState(s.paths, s.name, func(st *config.State) error {
 				if st.Runtime != nil && sameRuntime(*st.Runtime, binding) {
 					binding.Generation = st.Runtime.Generation
 				} else {
@@ -349,7 +349,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 		return a.runNative(ctx, s, binding.Generation)
 	}
 	if *watch {
-		return config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), bindAndRun)
+		return a.withRuntimeLock(s.paths, s.name, "consumer", time.Now().Add(100*time.Millisecond), bindAndRun)
 	}
 	return bindAndRun()
 }
@@ -373,7 +373,7 @@ func (a *App) runtimeOutcome(s *session, generation, outcome string) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -393,7 +393,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	return a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -454,7 +454,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 				return a.runtimeOutcome(s, generation, "wake uncertain: acceptance history unavailable; no retry")
 			}
 			if turn != "" {
-				_, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+				_, err := a.updateState(s.paths, s.name, func(cur *config.State) error {
 					token := ""
 					if cur.Wake.Attempt != nil {
 						token = cur.Wake.Attempt.NotificationToken
@@ -480,7 +480,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			if err != nil {
 				return a.runtimeOutcome(s, generation, "unavailable: accepted turn state")
 			}
-			_, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error { cur.Wake.LastTurnStatus = status; return nil })
+			_, err = a.updateState(s.paths, s.name, func(cur *config.State) error { cur.Wake.LastTurnStatus = status; return nil })
 			if err != nil {
 				return err
 			}
@@ -563,7 +563,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		turn, err := client.Wake(probe, b.ThreadID, attempt.Output)
 		if err != nil {
 			if codexwake.DefinitiveRefusal(err) {
-				_, updateErr := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+				_, updateErr := a.updateState(s.paths, s.name, func(cur *config.State) error {
 					if cur.Runtime == nil || cur.Runtime.Generation != generation || cur.Wake.Attempt == nil || cur.Wake.Attempt.ID != attempt.ID {
 						return errors.New("runtime stale refusal")
 					}
@@ -589,7 +589,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 				return err
 			}
 		}
-		_, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+		_, err = a.updateState(s.paths, s.name, func(cur *config.State) error {
 			if cur.Runtime == nil || cur.Runtime.Generation != generation || cur.Wake.Attempt == nil || cur.Wake.Attempt.ID != attempt.ID {
 				return errors.New("runtime stale submission")
 			}
