@@ -2,6 +2,12 @@
 // The implementer supplies the harness: an adversarial harness can special-case
 // markers or fabricate observations. This is a contract for honest implementers,
 // not an adversarial proof. Per-run markers reduce accidental special-casing.
+//
+// Compatibility: PrincipalReferences, ConversationReferences and ReceivedRawAtSize
+// are optional fixture hooks. Missing hooks report named skips at
+// addressing/principal_references, addressing/conversation_references and
+// raw_bounds/received respectively; these checks are unverified, never passes.
+// Existing required hooks and fixture data remain required.
 package conformancetest
 
 import (
@@ -11,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -34,6 +41,17 @@ type Fixture struct {
 	Extensions   map[string]json.RawMessage
 	nonce        string
 	Conversation tr.ConversationID
+	// PrincipalReferences returns a valid reference for B and an invalid reference
+	// in this transport's grammar. Optional; nil skips addressing/principal_references.
+	PrincipalReferences func() (valid, invalid string)
+	// ConversationReferences returns a valid reference for Conversation and an
+	// invalid reference. Optional; nil skips addressing/conversation_references.
+	ConversationReferences func() (valid, invalid string)
+	// ReceivedRawAtSize publishes an authenticated event from A, visible to B,
+	// with exactly n Raw bytes at the receive boundary and otherwise valid content.
+	// It bypasses send-size limits, not receive validation, and returns the wire ID.
+	// Optional; nil skips raw_bounds/received.
+	ReceivedRawAtSize func(n int) tr.EventID
 	// RestartB reopens the same identity without resetting the world.
 	RestartB        func() tr.Transport
 	FailAfterSubmit func()
@@ -42,7 +60,11 @@ type Fixture struct {
 	// PartWireCalls snapshots actual delivery attempts by recipient for one send key.
 	PartWireCalls   func(string) map[tr.PrincipalID]int
 	DefiniteRefusal func()
-	// PreSubmitFailure returns a context for a transient failure before submission.
+	// PreSubmitFailure either arms a one-shot transport-internal transient failure
+	// and returns a live context, or returns an already-cancelled context. The next
+	// Send must fail before any wire call with unavailable.
+	// For a cancelled context only, errors.Is(err, context.Canceled) is also accepted.
+	// The hook must not publish.
 	PreSubmitFailure func() context.Context
 	// InduceLoss drops already published events beyond the transport window.
 	InduceLoss func()
@@ -70,8 +92,16 @@ func fixture(t *testing.T, h Harness) *Fixture {
 	if f == nil || f.A == nil || f.B == nil {
 		t.Fatal("harness missing identities")
 	}
-	required(t, "StateDir", f.StateDir != "")
-	required(t, "SentinelDir", f.SentinelDir != "")
+	// Reject incomplete fixtures before exercising a transport; otherwise missing
+	// recipients/extensions or unchecked filesystem roots could masquerade as coverage.
+	for _, field := range []struct {
+		name string
+		ok   bool
+	}{{"C", f.C != nil}, {"Extensions", len(f.Extensions) > 0}, {"StateDir", f.StateDir != ""}, {"SentinelDir", f.SentinelDir != ""}} {
+		if !field.ok {
+			t.Fatalf("harness missing fixture field %s", field.name)
+		}
+	}
 	f.nonce = marker()
 	before := snapshot(t, f.SentinelDir)
 	t.Cleanup(func() {
@@ -456,9 +486,14 @@ func Run(t *testing.T, h Harness) {
 		bad := f.UnverifiableSender(principal.ID, marker())
 		b := syncBatch(t, f, c, false)
 		one(t, b, good.Event)
+		// Catch a transport that rewrites an unauthenticated event's ID but still
+		// attributes it to B. This fixture publishes no authenticated event from B.
 		for _, e := range b.Events {
 			if e.ID == bad {
 				t.Fatal("unverifiable sender delivered")
+			}
+			if e.Sender == principal.ID {
+				t.Fatal("unauthenticated claim of B delivered")
 			}
 		}
 		if b.Dropped < 1 {
@@ -569,7 +604,7 @@ func Run(t *testing.T, h Harness) {
 			t.Fatal("supported neighbour refused")
 		}
 	})
-	// Proves grammar round trips beside unsupported references, without transport-specific syntax.
+	// Proves the formatter round trip; optional probes use implementer-supplied grammar.
 	t.Run("addressing", func(t *testing.T) {
 		f := fixture(t, h)
 		p, e := f.B.Self(ctx(t))
@@ -580,15 +615,33 @@ func Run(t *testing.T, h Harness) {
 		if id, e := addr.Principal(addr.Format(p.ID)); e != nil || id != p.ID {
 			t.Fatal("principal round trip changed")
 		}
-		if c, e := addr.Conversation(ctx(t), string(f.Conversation)); e != nil || c != f.Conversation {
-			t.Fatal("conversation round trip changed")
-		}
-		if _, e := addr.Principal("invalid-" + marker()); tr.Code(e) != tr.InvalidReference {
-			t.Fatal("invalid principal reference accepted")
-		}
-		if _, e := addr.Conversation(ctx(t), "invalid-"+marker()); tr.Code(e) != tr.InvalidReference {
-			t.Fatal("invalid conversation reference accepted")
-		}
+		// Proves valid principal parsing beside rejection; catches an accept-all parser.
+		t.Run("principal_references", func(t *testing.T) {
+			if f.PrincipalReferences == nil {
+				t.Skip("harness missing optional hook PrincipalReferences")
+			}
+			valid, invalid := f.PrincipalReferences()
+			if id, e := addr.Principal(valid); e != nil || id != p.ID {
+				t.Fatal("valid principal reference changed")
+			}
+			if _, e := addr.Principal(invalid); tr.Code(e) != tr.InvalidReference {
+				t.Fatal("invalid principal reference accepted")
+			}
+		})
+		// Proves conversation resolution without requiring IDs to be references;
+		// catches an accept-all resolver beside a supported reference.
+		t.Run("conversation_references", func(t *testing.T) {
+			if f.ConversationReferences == nil {
+				t.Skip("harness missing optional hook ConversationReferences")
+			}
+			valid, invalid := f.ConversationReferences()
+			if c, e := addr.Conversation(ctx(t), valid); e != nil || c != f.Conversation {
+				t.Fatal("valid conversation reference changed")
+			}
+			if _, e := addr.Conversation(ctx(t), invalid); tr.Code(e) != tr.InvalidReference {
+				t.Fatal("invalid conversation reference accepted")
+			}
+		})
 	})
 	// Proves known/unknown conversation capability discrimination.
 	t.Run("conversation_caps", func(t *testing.T) {
@@ -637,9 +690,6 @@ func Run(t *testing.T, h Harness) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		if len(f.Extensions) == 0 {
-			t.Fatal("harness missing message extensions")
-		}
 		m := tr.Message{Text: marker(), Kind: "notice", Re: anchor.Event, Thread: anchor.Event, To: []tr.PrincipalID{p.ID}, Attachments: []tr.MediaRef{ref}, Extensions: f.Extensions}
 		r, e := f.A.Send(ctx(t), tr.SendRequest{Conversation: f.Conversation, IdempotencyKey: marker(), Message: m})
 		if e != nil || r.Outcome != tr.ACK {
@@ -687,9 +737,15 @@ func Run(t *testing.T, h Harness) {
 		checkOutcome(t, r)
 		req.IdempotencyKey = marker()
 		failureContext := f.PreSubmitFailure()
+		if failureContext == nil {
+			t.Fatal("PreSubmitFailure returned nil context")
+		}
 		calls := f.WireCalls()
 		_, e = f.A.Send(failureContext, req)
-		if e == nil || tr.Code(e) != tr.Unavailable || f.WireCalls() != calls {
+		// Catch transient-as-refusal and post-I/O errors. Wrapped
+		// cancellation is allowed only when the supplied context is itself cancelled.
+		cancelled := errors.Is(failureContext.Err(), context.Canceled) && errors.Is(e, context.Canceled)
+		if e == nil || (tr.Code(e) != tr.Unavailable && !cancelled) || f.WireCalls() != calls {
 			t.Fatal("pre-submit failure must give error with zero wire calls")
 		}
 	})
@@ -738,6 +794,49 @@ func Run(t *testing.T, h Harness) {
 				t.Fatal("Event.Raw exceeds MaxRawBytes")
 			}
 		}
+		// Proves receipt accepts the exact Raw boundary and drops its +1 neighbour
+		// across Sync, History and Event. Catches transports that omit receive-side
+		// size validation, clamp oversized Raw, or reject all large received events.
+		t.Run("received", func(t *testing.T) {
+			if f.ReceivedRawAtSize == nil {
+				t.Skip("harness missing optional hook ReceivedRawAtSize")
+			}
+			exact := f.ReceivedRawAtSize(tr.MaxRawBytes)
+			over := f.ReceivedRawAtSize(tr.MaxRawBytes + 1)
+			if exact == "" || over == "" || exact == over {
+				t.Fatal("ReceivedRawAtSize must return distinct nonempty IDs")
+			}
+			b := syncBatch(t, f, start, false)
+			page, e := f.B.History(ctx(t), f.Conversation, nil, 10)
+			if e != nil {
+				t.Fatal(e)
+			}
+			for _, events := range [][]tr.Event{b.Events, page.Events} {
+				one(t, tr.Batch{Events: events}, r.Event)
+				one(t, tr.Batch{Events: events}, exact)
+				for _, ev := range events {
+					if ev.ID == over {
+						t.Fatal("oversized received event delivered")
+					}
+					if len(ev.Raw) > tr.MaxRawBytes {
+						t.Fatal("Event.Raw exceeds MaxRawBytes")
+					}
+					if ev.ID == exact && len(ev.Raw) != tr.MaxRawBytes {
+						t.Fatal("exact-bound received Raw changed")
+					}
+				}
+			}
+			if b.Dropped < 1 || page.Dropped < 1 {
+				t.Fatal("oversized received event not counted on Sync and History")
+			}
+			direct, e := f.B.Event(ctx(t), f.Conversation, exact)
+			if e != nil || direct.ID != exact || len(direct.Raw) != tr.MaxRawBytes {
+				t.Fatal("exact-bound received Event unavailable or changed")
+			}
+			if _, e = f.B.Event(ctx(t), f.Conversation, over); tr.Code(e) != tr.InvalidReference {
+				t.Fatal("oversized received Event not refused")
+			}
+		})
 	})
 
 	// Proves idempotent Close and closed-code operations; pure metadata remains usable.

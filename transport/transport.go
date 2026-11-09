@@ -5,7 +5,8 @@
 // Returned cursors, Raw, slices and maps belong to the caller and may be retained:
 // transports never mutate them after return. Inputs are borrowed only for the call.
 // After Close, operations that return an error return unavailable; Close is idempotent.
-// Pure metadata methods (Caps, Addressing and Format) remain usable after Close.
+// Caps remains usable after Close. Within Addressing, only Addressing() and Format
+// survive Close; Principal and Conversation return unavailable.
 package transport
 
 import (
