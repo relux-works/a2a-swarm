@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -63,7 +64,10 @@ func (a *App) recordHookOwner(ctx context.Context, rt hookRuntime, ev hookEvent,
 	err = config.RecordMonitorOwnerHook(p, name, deadline, rt.name, in.SessionID, ev.name, ev.arg == "stop" && in.StopReason == "exit", a.Now())
 	// A non-owner hook must not invent an owner. Existing hook delivery retains
 	// its own lease guard and legacy behavior independently of this association.
-	if err == config.ErrMonitorOwner && ev.arg != "session-start" {
+	// Wrapped malformed owner State also falls through this shim for non-Start
+	// hooks. Legacy delivery still performs its own State/lease checks; this
+	// grants no monitor authority and does not repair malformed State.
+	if errors.Is(err, config.ErrMonitorOwner) && ev.arg != "session-start" {
 		return nil
 	}
 	return err

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -23,7 +24,7 @@ func ownerHook(t *testing.T, p Paths, runtime, session, event string, exit bool,
 func TestMonitorOwnerLifecycle(t *testing.T) {
 	for _, runtime := range []string{"muse", "claude", "codex"} {
 		t.Run(runtime, func(t *testing.T) {
-			p := testPaths(t)
+			p := monitorPaths(t)
 			now := time.Now().UTC()
 			ownerHook(t, p, runtime, "session-A", "SessionStart", false, now)
 			s := monitorLoad(t, p)
@@ -45,7 +46,9 @@ func TestMonitorOwnerLifecycle(t *testing.T) {
 					t.Fatal("old owner changed replacement", event, err)
 				}
 			}
-			ownerHook(t, p, runtime, "session-A", "SessionStart", false, now) // delayed Start
+			if err := RecordMonitorOwnerHook(p, "a", time.Now().Add(time.Second), runtime, "session-A", "SessionStart", false, now); !errors.Is(err, ErrMonitorOwner) {
+				t.Fatal("delayed Start silently accepted", err)
+			}
 			if !bytes.Equal(before, monitorDisk(t, p)) {
 				t.Fatal("delayed Start replaced newer owner")
 			}
@@ -78,14 +81,14 @@ func TestMonitorOwnerLifecycle(t *testing.T) {
 // each next to an admitted hook control. Host-account callers remain trusted.
 func TestMonitorOwnerWriteBoundary(t *testing.T) {
 	for _, session := range []string{"A", ".", "_", "-", "native._-session", "01234567-89ab-cdef-0123-456789abcdef", strings.Repeat("x", 128)} {
-		p := testPaths(t)
+		p := monitorPaths(t)
 		ownerHook(t, p, "muse", session, "SessionStart", false, time.Now())
 		if monitorLoad(t, p).MonitorOwner.SessionIDHash != ownerHash(session) {
 			t.Fatal("valid shape rejected", session)
 		}
 	}
 	for _, session := range []string{"", "bad/shape", "bad\nshape", strings.Repeat("x", 129)} {
-		p := testPaths(t)
+		p := monitorPaths(t)
 		if err := RecordMonitorOwnerHook(p, "a", time.Now().Add(time.Second), "muse", session, "SessionStart", false, time.Now()); !errors.Is(err, ErrMonitorOwner) {
 			t.Fatal("bad session admitted", err)
 		}
@@ -95,7 +98,7 @@ func TestMonitorOwnerWriteBoundary(t *testing.T) {
 		runtime, event string
 		exit           bool
 	}{{"unknown", "SessionStart", false}, {"muse", "watch", false}, {"muse", "sweep", false}, {"muse", "sessionstart", false}, {"muse", "SessionStart", true}} {
-		p := testPaths(t)
+		p := monitorPaths(t)
 		if err := RecordMonitorOwnerHook(p, "a", time.Now().Add(time.Second), bad.runtime, "valid", bad.event, bad.exit, time.Now()); !errors.Is(err, ErrMonitorOwner) {
 			t.Fatal("bad source/event admitted", err)
 		}
@@ -265,6 +268,11 @@ func TestMonitorOwnerRenewalReplacementRace(t *testing.T) {
 		// fixture so the hook cannot complete before renewal starts.
 		deadline := time.Now().Add(time.Second)
 		for {
+			select {
+			case err := <-replaced:
+				t.Fatal("replacement finished before State release", err)
+			default:
+			}
 			err := WithRuntimeLock(p, "a", "control", time.Now().Add(10*time.Millisecond), func() error { return nil })
 			if errors.Is(err, ErrLockTimeout) {
 				break
@@ -277,11 +285,21 @@ func TestMonitorOwnerRenewalReplacementRace(t *testing.T) {
 		go func() { renewed <- g.RenewOwnerLease(monitorRecord().Generation) }()
 		unlock()
 		unlock = nil
-		if err := <-replaced; err != nil {
-			t.Fatal(err)
+		select {
+		case err := <-replaced:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatal("replacement did not finish")
 		}
-		if err := <-renewed; !errors.Is(err, ErrMonitorOwner) {
-			t.Fatal("old owner renewed", err)
+		select {
+		case err := <-renewed:
+			if !errors.Is(err, ErrMonitorOwner) {
+				t.Fatal("old owner renewed", err)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatal("renewal did not finish")
 		}
 		after := monitorLoad(t, p)
 		if !reflect.DeepEqual(before, after.Lease) || after.MonitorOwner.SessionIDHash != ownerHash("replacement") {
@@ -366,10 +384,15 @@ func TestMonitorOwnerFenceAndDeadline(t *testing.T) {
 // boundary, with clean ownerless and admitted-owner neighbours. Refusals keep
 // State and mailbox bytes and suppress callbacks; no live sink is qualified.
 func TestMonitorOwnerIntegrityPrecedence(t *testing.T) {
-	for _, action := range []string{"admission-arm", "admission-automatic", "admission-recovery", "renewal", "announcement"} {
+	for _, action := range []string{"admission-arm", "admission-automatic", "admission-recovery", "renewal", "renew-owner", "status", "announcement"} {
 		for _, history := range []string{"clean-owner", "clean-no-owner", "invalid-no-owner", "legacy-no-owner", "malformed-owner", "malformed-config"} {
 			t.Run(action+"/"+history, func(t *testing.T) {
 				p := monitorSeed(t)
+				if action == "renew-owner" {
+					if _, err := UpdateState(p, "a", func(s *State) error { s.Lease.Expires = time.Now().Add(time.Minute); return nil }); err != nil {
+						t.Fatal(err)
+					}
+				}
 				want := error(nil)
 				if history == "clean-no-owner" {
 					want = ErrMonitorOwner
@@ -424,20 +447,32 @@ func TestMonitorOwnerIntegrityPrecedence(t *testing.T) {
 						t.Fatal("refused admission changed State")
 					}
 				} else if err := monitorRun(p, MonitorAutomatic, func(g *MonitorGeneration) error {
+					leaseBefore := monitorLoad(t, p).Lease
 					prepare()
 					before := monitorDisk(t, p)
 					called := false
 					var err error
 					if action == "renewal" {
 						err = g.CheckRenewal(monitorRecord().Generation)
+					} else if action == "renew-owner" {
+						err = g.RenewOwnerLease(monitorRecord().Generation)
+					} else if action == "status" {
+						active, reason := g.Status()
+						if active != (want == nil) || reason != map[error]string{nil: "", ErrIncompatibleWriter: "incompatible_writer", ErrMonitorOwner: "owner_unknown"}[want] {
+							t.Fatal("direct status boundary", active, reason)
+						}
+						err = want
 					} else {
 						err = g.Announce(monitorRecord().Generation, func() error { called = true; return nil })
 					}
 					if !errors.Is(err, want) || called != (action == "announcement" && want == nil) {
 						t.Fatalf("boundary = %v, emitted=%v; want %v", err, called, want)
 					}
-					if !bytes.Equal(before, monitorDisk(t, p)) {
-						t.Fatal("read-only boundary changed State")
+					if action == "renew-owner" && want == nil && !monitorLoad(t, p).Lease.Expires.After(leaseBefore.Expires) {
+						t.Fatal("valid effectful renewal did not extend lease")
+					}
+					if (action != "renew-owner" || want != nil) && !bytes.Equal(before, monitorDisk(t, p)) {
+						t.Fatal("refused/read-only boundary changed State")
 					}
 					if want != nil {
 						if active, reason := g.Status(); active || reason != map[error]string{ErrIncompatibleWriter: "incompatible_writer", ErrMonitorOwner: "owner_unknown"}[want] {
@@ -454,5 +489,116 @@ func TestMonitorOwnerIntegrityPrecedence(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// An owner for another session cannot mask sticky integrity evidence on arm.
+// With clean history the same exact mismatch reports the owner refusal.
+func TestMonitorArmStickyOwnerMatch(t *testing.T) {
+	for _, sticky := range []bool{false, true} {
+		for _, matching := range []bool{false, true} {
+			t.Run(fmt.Sprintf("sticky=%t/matching=%t", sticky, matching), func(t *testing.T) {
+				p := monitorSeed(t)
+				if !matching {
+					ownerHook(t, p, "muse", "other-session", "SessionStart", false, time.Now())
+				}
+				if sticky {
+					monitorOldWrite(t, p, func(fields map[string]json.RawMessage) { fields["next_batch"] = json.RawMessage(`"foreign"`) })
+					if _, err := UpdateState(p, "a", func(*State) error { return nil }); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := monitorDisk(t, p)
+				called := false
+				err := monitorRun(p, MonitorArm, func(g *MonitorGeneration) error { called = true; return g.CheckRenewal(monitorRecord().Generation) })
+				var want error
+				if !matching {
+					want = ErrMonitorOwner
+					if sticky {
+						want = ErrIncompatibleWriter
+					}
+				}
+				if !errors.Is(err, want) || called != matching {
+					t.Fatalf("arm=%v called=%t want=%v", err, called, want)
+				}
+				if want != nil && !bytes.Equal(before, monitorDisk(t, p)) {
+					t.Fatal("refusal changed State")
+				}
+				if matching && !monitorLoad(t, p).Writer.ForeignSeen.IsZero() {
+					t.Fatal("explicit matching arm did not clear fence")
+				}
+			})
+		}
+	}
+}
+
+// Non-increasing processing time is an explicit refusal, including for a
+// same-session restart whose FirstSeen could not distinguish the old handle.
+func TestMonitorStartNonIncreasingRefused(t *testing.T) {
+	for _, runtime := range []string{"muse", "claude", "codex"} {
+		for _, delta := range []time.Duration{0, -time.Hour} {
+			for _, session := range []string{"session-A", "session-B"} {
+				t.Run(fmt.Sprintf("%s/%s/%s", runtime, delta, session), func(t *testing.T) {
+					p := monitorPaths(t)
+					now := time.Now().UTC()
+					ownerHook(t, p, runtime, "session-A", "SessionStart", false, now)
+					before := monitorDisk(t, p)
+					err := RecordMonitorOwnerHook(p, "a", time.Now().Add(time.Second), runtime, session, "SessionStart", false, now.Add(delta))
+					if !errors.Is(err, ErrMonitorOwner) || !bytes.Equal(before, monitorDisk(t, p)) {
+						t.Fatal("ambiguous Start admitted or changed State", err)
+					}
+					ownerHook(t, p, runtime, session, "SessionStart", false, now.Add(time.Nanosecond))
+					o := monitorLoad(t, p).MonitorOwner
+					if o.SessionIDHash != ownerHash(session) || !o.FirstSeen.Equal(now.Add(time.Nanosecond)) {
+						t.Fatal("strictly newer Start not admitted")
+					}
+				})
+			}
+		}
+	}
+}
+
+// Busy control and State locks report an unavailable observation but retain
+// the lifetime consumer lock and allow healthy renewal after contention ends.
+func TestMonitorStatusLockTimeoutRetainsHandle(t *testing.T) {
+	for _, lock := range []string{"control", "state"} {
+		t.Run(lock, func(t *testing.T) {
+			p := monitorSeed(t)
+			if err := monitorRun(p, MonitorArm, func(g *MonitorGeneration) error {
+				before := monitorDisk(t, p)
+				observe := func() error {
+					if active, reason := g.Status(); active || reason != "lock_timeout" {
+						t.Fatal("busy status", active, reason)
+					}
+					if !g.active || g.release == nil || !bytes.Equal(before, monitorDisk(t, p)) {
+						t.Fatal("Status revoked handle or changed State")
+					}
+					if release, err := AcquireConsumerLock(p, "a", time.Now().Add(20*time.Millisecond)); !errors.Is(err, ErrLockTimeout) {
+						if release != nil {
+							release()
+						}
+						t.Fatal("consumer lock released", err)
+					}
+					return nil
+				}
+				if lock == "control" {
+					if err := WithRuntimeLock(p, "a", "control", time.Now().Add(time.Second), observe); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					release, err := lockFile(strings.TrimSuffix(p.StateFile("a"), ".json") + ".lock")
+					if err != nil {
+						t.Fatal(err)
+					}
+					func() { defer release(); _ = observe() }()
+				}
+				if active, reason := g.Status(); !active || reason != "" {
+					t.Fatal("healthy status did not recover", active, reason)
+				}
+				return g.RenewOwnerLease(monitorRecord().Generation)
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

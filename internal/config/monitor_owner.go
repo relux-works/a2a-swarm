@@ -130,7 +130,10 @@ func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, s
 			hash := ownerHash(session)
 			if event == "SessionStart" {
 				if o != nil && !now.After(o.LastHookAt) {
-					return old, nil // delayed/replayed Start is not newer
+					// FirstSeen distinguishes same-session restarts for active handles.
+					// Refuse ambiguous event times loudly; never report admission
+					// while retaining a different or indistinguishable association.
+					return old, ErrMonitorOwner
 				}
 				next.MonitorOwner = &MonitorOwner{Runtime: runtime, SessionIDHash: hash, FirstSeen: now.UTC(), LastHookAt: now.UTC()}
 				if next.MonitorConfig == nil {

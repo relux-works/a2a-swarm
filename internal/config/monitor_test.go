@@ -695,12 +695,15 @@ func TestMonitorExplicitRearmRetainedFence(t *testing.T) {
 	}
 	for _, foreign := range []string{"host", "session"} {
 		m := next
+		want := ErrMonitorConflict
 		if foreign == "host" {
 			m.Host = "foreign"
 		} else {
 			m.SessionID = "foreign"
+			// Sticky integrity evidence precedes an exact owner mismatch.
+			want = ErrIncompatibleWriter
 		}
-		if e := WithMonitorGeneration(p, "a", time.Now().Add(time.Second), MonitorArm, m, func(*MonitorGeneration) error { t.Fatal("foreign rearm"); return nil }); !errors.Is(e, ErrMonitorConflict) {
+		if e := WithMonitorGeneration(p, "a", time.Now().Add(time.Second), MonitorArm, m, func(*MonitorGeneration) error { t.Fatal("foreign rearm"); return nil }); !errors.Is(e, want) {
 			t.Fatal(e)
 		}
 	}
