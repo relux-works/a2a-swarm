@@ -67,7 +67,7 @@ func WithRuntimeLockContext(ctx context.Context, p Paths, name, kind string, dea
 	// its one real flock attempt; an already-expired child context would
 	// incorrectly report every unheld consumer as busy.
 	if !deadline.IsZero() && !time.Now().Before(deadline) {
-		return withRuntimeLock(nil, p, name, kind, deadline, fn)
+		return withRuntimeLock(nil, p, name, kind, deadline, func() error { return runtimeLockCallback(ctx, fn) })
 	}
 	if !deadline.IsZero() {
 		var cancel context.CancelFunc
@@ -92,7 +92,7 @@ func withRuntimeLock(ctx context.Context, p Paths, name, kind string, deadline t
 		}
 		// Global status and hook controls retain the platform's existing state
 		// locking behavior. No native producer is supported here to fence.
-		return fn()
+		return runtimeLockCallback(ctx, fn)
 	}
 	path := filepath.Join(p.Base, "state", name+".runtime-"+kind+".lock")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -117,6 +117,19 @@ func withRuntimeLock(ctx context.Context, p Paths, name, kind string, deadline t
 	defer unlock()
 	if kind == "consumer" {
 		if err := CheckIdentityMigration(p, name); err != nil {
+			return err
+		}
+	}
+	return runtimeLockCallback(ctx, fn)
+}
+
+// Check again after the real flock succeeds, before admitting its effect.
+func runtimeLockCallback(ctx context.Context, fn func() error) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return ErrLockTimeout
+			}
 			return err
 		}
 	}

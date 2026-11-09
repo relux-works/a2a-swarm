@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -109,6 +110,25 @@ func sameOwner(a, b *MonitorOwner) bool { return reflect.DeepEqual(a, b) }
 // use L02's control/state locks, seal and sticky ordinary-writer fence; they
 // cannot clear a foreign-writer observation or rearm a monitor.
 func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, session, event string, exit bool, now time.Time) error {
+	return recordMonitorOwnerHook(nil, p, name, deadline, runtime, session, event, exit, now)
+}
+
+// RecordMonitorOwnerHookContext cancels Courier hook lock acquisition and checks
+// cancellation before admitting the owner update. Local hooks keep their
+// existing deadline-only contract through RecordMonitorOwnerHook.
+func RecordMonitorOwnerHookContext(ctx context.Context, p Paths, name string, deadline time.Time, runtime, session, event string, exit bool, now time.Time) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	return recordMonitorOwnerHook(ctx, p, name, deadline, runtime, session, event, exit, now)
+}
+
+func recordMonitorOwnerHook(ctx context.Context, p Paths, name string, deadline time.Time, runtime, session, event string, exit bool, now time.Time) error {
 	if deadline.IsZero() || now.IsZero() || !ownerRuntime(runtime) || !ownerSessionRE.MatchString(session) {
 		return ErrMonitorOwner
 	}
@@ -120,13 +140,34 @@ func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, s
 	if exit && event != "Stop" {
 		return ErrMonitorOwner
 	}
-	return WithRuntimeLock(p, name, "control", deadline, func() error {
-		_, err := withStateLock(p, name, func(path string) (func(), error) { return lockFileBy(path, deadline) }, func(old State) (State, error) {
+	withControl := func(fn func() error) error {
+		if ctx != nil {
+			return WithRuntimeLockContext(ctx, p, name, "control", deadline, fn)
+		}
+		return WithRuntimeLock(p, name, "control", deadline, fn)
+	}
+	stateLock := func(path string) (func(), error) {
+		if ctx == nil {
+			return lockFileBy(path, deadline)
+		}
+		unlock, err := lockFileContext(ctx, path)
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = ErrLockTimeout
+		}
+		return unlock, err
+	}
+	return withControl(func() error {
+		_, err := withStateLock(p, name, stateLock, func(old State) (State, error) {
 			if old.Migration != nil {
 				return old, ErrIdentityMigrated
 			}
 			if old.HostEnrollment != nil {
 				return old, ErrMonitorConflict
+			}
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return old, err
+				}
 			}
 			next := old
 			o := old.MonitorOwner
@@ -155,6 +196,11 @@ func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, s
 					copy := *o
 					copy.LastHookAt = now.UTC()
 					next.MonitorOwner = &copy
+				}
+			}
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return old, err
 				}
 			}
 			return saveStateLocked(p, name, old, next, ordinaryWriterFence(old, now), true, false)
