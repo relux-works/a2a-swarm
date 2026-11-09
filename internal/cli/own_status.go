@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/courier"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -108,7 +109,16 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 	snapshot.NoticeWriteUncertain = priorUncertain
 	previousLiveness, previousNotice := snapshot.Liveness, snapshot.NoticeStatus
 	publicationErr := s.putOwnStatus(writeCtx, &snapshot, record)
-	_, err = config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(st *config.State) error {
+	// Finalize even after cancellation: otherwise a failed publication can keep
+	// its old "published" observation and fence. UpdateStateBy first tries the
+	// nonblocking lock even at an expired deadline, so uncontended cleanup is
+	// possible without extending the original budget. Any contention is capped
+	// by both that budget and the consumer-release bound.
+	cleanupDeadline := time.Now().Add(courier.LockReleaseBound)
+	if deadline.Before(cleanupDeadline) {
+		cleanupDeadline = deadline
+	}
+	_, err = config.UpdateStateBy(s.paths, s.name, cleanupDeadline, func(st *config.State) error {
 		if st.OwnStatusWrite == nil || st.OwnStatusWrite.Token != token {
 			return errors.New("own status publication superseded")
 		}
