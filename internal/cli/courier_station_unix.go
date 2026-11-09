@@ -82,7 +82,7 @@ func (a *App) stationInvocation(ctx context.Context, args []string) (bool, int) 
 	}
 	for index, attachment := range p.Inputs {
 		path := args[index]
-		if _, value, eq := strings.Cut(path, "="); eq && strings.HasPrefix(path, "-") {
+		if _, value, eq := strings.Cut(path, "="); !attachment && eq && strings.HasPrefix(path, "-") {
 			path = value
 		}
 		if !attachment {
