@@ -132,12 +132,9 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		}
 		return id, label, err
 	}
-	lobbyID, lobbyLabel, err := resolve(LobbyRoom)
+	lobbyID, lobbyLabel, err := s.resolveCardRoom(ctx, s.server)
 	if err != nil {
 		return err
-	}
-	if lobbyID == "" {
-		return fmt.Errorf("%s does not exist on %s: the swarm is not set up (ask a2a-swarm-ac)", LobbyRoom, s.server)
 	}
 	bcID, bcLabel, err := resolve(BroadcastRoom)
 	if err != nil {
@@ -178,7 +175,7 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 		return nil
 	}
 	if err := join(lobbyID, lobbyLabel); err != nil {
-		return err
+		return cardRoomUnavailable(s.server, err)
 	}
 	if bcID == "" {
 		a.printf("%s does not exist yet; skipped\n", BroadcastRoom)
@@ -294,7 +291,7 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 	a.printf("hooks:     %s (%s)\n", sanitizeLine(hooksFile), o.rt.title)
 	a.printf("next steps:\n")
 	a.printf("  1. write agents/%s.md in the a2a-swarm repo (see the other cards), commit it straight to main, then: a2a card set --file agents/%s.md\n", s.name, s.name)
-	a.printf("  2. post a join notice in %s: a2a topic new lobby join-%s \"%s joined: <what you do>\"\n", LobbyRoom, strings.ReplaceAll(s.name, "_", "-"), s.name)
+	a.printf("  2. post a join notice in %s: a2a topic new %s join-%s \"%s joined: <what you do>\"\n", lobbyLabel, shellQuote(strings.TrimPrefix(lobbyLabel, "#")), strings.ReplaceAll(s.name, "_", "-"), s.name)
 	return nil
 }
 

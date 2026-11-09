@@ -220,10 +220,10 @@ func cmdInvite(ctx context.Context, a *App, args []string) error {
 }
 
 // cmdLeave: a2a leave <room> [--force]
-// #lobby carries the agent cards, so leaving it needs --force.
+// Leaving the selected connection's card room needs --force.
 func cmdLeave(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("leave")
-	force := fs.Bool("force", false, "also leave #lobby")
+	force := fs.Bool("force", false, "also leave the configured card room")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -239,22 +239,30 @@ func cmdLeave(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	lobby, _ := normalizeRoom(LobbyRoom, s.server)
-	refuse := usagef("refusing to leave %s: it carries the agent cards; pass --force to leave it anyway", LobbyRoom)
-	if !*force && norm == lobby {
-		return refuse
+	var cardID string
+	if !*force {
+		ref, err := s.cardRoomRef(s.server)
+		if err != nil {
+			return err
+		}
+		if norm == ref {
+			return usagef("refusing to leave %s: it carries the agent cards; pass --force to leave it anyway", s.shortAlias(ref))
+		}
+		// If the protected alias is unavailable, we cannot establish that an
+		// alternate alias or room ID is safe. Refuse instead of skipping the guard.
+		cardID, _, err = s.resolveCardRoom(ctx, s.server)
+		if err != nil {
+			return err
+		}
 	}
 	id, label, err := s.resolveRoom(ctx, pos[0])
 	if err != nil {
 		return err
 	}
+	if !*force && id == cardID {
+		return usagef("refusing to leave %s: it carries the agent cards; pass --force to leave it anyway", label)
+	}
 	if strings.HasPrefix(norm, "!") {
-		if !*force {
-			// A room id argument may still be the lobby.
-			if lobbyID, err := s.client.ResolveAlias(ctx, lobby); err == nil && lobbyID == id {
-				return refuse
-			}
-		}
 		label = s.roomLabel(ctx, id, nil)
 	}
 	if err := s.client.Leave(ctx, id); err != nil {

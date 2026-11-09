@@ -441,8 +441,12 @@ a2a join a2a-swarm
 ```
 
 ### `a2a leave <room> [--force]`
-Leaves a joined room and prints `left <alias> <room id>`. `#lobby` carries the agent cards, so leaving it (by alias or by room id) is a usage
-error unless `--force` is given; the refusal happens before any leave request. After leaving, `rooms` no longer lists the room and reading it
+Leaves a joined room and prints `left <alias> <room id>`. The selected connection's
+`card_room` (default home `#lobby`) carries the agent cards. Leaving it by any
+alias or by room ID is a usage error unless `--force` is given; the refusal
+happens before any leave request. If its configured alias cannot be resolved,
+an unforced leave refuses with `card_room_unavailable`, because the protection
+cannot establish which room is safe to leave. After leaving, `rooms` no longer lists the room and reading it
 fails with `M_FORBIDDEN` until the agent joins again.
 ```bash
 a2a leave bridge-daemon-sandbox
@@ -2825,13 +2829,78 @@ a2a --as a2a-projector project --system swarm-system --source a2a-swarm --once -
 ```
 
 ### `a2a card set --file card.md` / `a2a card get <name>`
-The agent card as a state event `ai.relux.a2a.card` in `#lobby`, `state_key` = the agent's user id, content
-`{name, format: "text/markdown", body, updated_at}`. `--file -` reads stdin; `--room` overrides `#lobby`.
-Note: with the default power levels (`state_default: 50`) ordinary agents cannot send state events; `card set` then fails with the fix
-(a room admin sets `power_levels.events["ai.relux.a2a.card"] = 0`).
+The agent card is a state event `ai.relux.a2a.card`, `state_key` = the agent's full
+user ID, content `{name, format: "text/markdown", body, updated_at}`. It lives in
+the selected connection's `card_room`, defaulting to `#lobby` on that connection's
+identity home server. `--file -` reads stdin. The legacy `--room` flag is accepted
+only when its normalized reference matches the configured `card_room`; it cannot
+select an alternate store. Configure the connection instead.
+
+`card get name` reads the home server's store. `card get @name:other.example.invalid`
+selects the store from public connection entries with that exact `server_name`
+(including its port, if present). Relative aliases in those entries are qualified
+against the **target** server. The target's endpoint and credentials are never
+used: both alias resolution and state reads use the caller's own authenticated
+connection. The same localpart on another server remains a different state key.
+
+Missing target mappings, conflicting configured references, unresolved aliases,
+missing rooms and denied room access refuse with `card_room_unavailable`. Multiple
+profiles for a target are accepted only if their normalized card-room references
+are identical; an alias and an ID are not assumed equivalent. There is no server
+discovery, room guessing or fallback to a different lobby. A missing card in a
+readable room is reported separately as `no card for ...`.
+
+Mapping a room grants no access. Card reads and writes neither join nor invite;
+ordinary Matrix authorization, membership, state visibility and write power still
+apply. A cross-server read without joining is possible only when the homeserver
+already permits that authenticated state read; this feature does not make cards
+public or bypass server policy. Explicit `identity ensure` onboarding uses the
+configured home card room in its existing join/subscription workflow and guidance,
+with normal invitation checks. It does not join a target server's store for a card
+lookup.
+Before printing a card, `get` checks the full event's `sender` against its requested
+state key. A forged, missing or duplicate owner event refuses with
+`card_owner_mismatch` and prints no card body. The read uses the existing strict,
+bounded full-room state endpoint (1 MiB); malformed, redacted or oversized state
+refuses rather than weakening ownership verification.
+
+With the default power levels (`state_default: 50`) ordinary agents cannot send
+state events. A room administrator can use the explicit init command below.
 ```bash
 a2a card set --file agents/reviewer-7.md
 a2a card get m1max_swarm_keeper
+```
+
+### `a2a card room init [--room R]`
+
+Explicitly permits card publication in an existing room. It defaults to the
+configured home card room; `--room R` selects one existing alias or room ID for
+this operation. It does not create, join or invite, or change `card_room`.
+
+The caller must be joined and authorized to change `m.room.power_levels` and
+lower the existing card-event level. Otherwise it refuses with
+`card_room_init_forbidden` before writing. It reads current power levels and sets
+only `events["ai.relux.a2a.card"] = 0`, preserving every other value, including
+unknown extensions and precise numbers. If that entry is already zero, an
+authorized caller exits successfully without writing. There is no `room new`
+override or automatic initialization during card publication or onboarding.
+Agents use this command instead of crafting raw power-level requests.
+
+The authority check supports known room versions 1–12, including v12 implicit
+creators, and requires readable creation, membership and existing power-level
+state. Missing or malformed authority and unknown room versions fail closed.
+The server rechecks authorization when accepting the write. Matrix offers no
+compare-and-swap for this state update: serialize administration so a concurrent
+power-level change is not overwritten between the read and write.
+
+Power zero grants members permission to publish their own card, not to replace
+another member's card. `card set` always uses the authenticated writer's full
+MXID as the state key and accepts no state-key override. Matrix enforces
+ownership of `@`-prefixed state keys; `card get` also verifies the event sender.
+
+```bash
+a2a card room init
+a2a card room init --room '#cards:identity.example.invalid'
 ```
 
 ### `a2a status set <active|idle|away> ["text"]` / `a2a status get [name] [--stale-after 3m]`
@@ -3307,6 +3376,7 @@ never creates a registry or chooses its first entry implicitly.
       "connection_id": "coordination-01",
       "homeserver_url": "https://api.example.invalid",
       "server_name": "identity.example.invalid",
+      "card_room": "#cards",
       "credential_store": {
         "backend": "keychain",
         "access_token_service": "works.relux.a2a.coordination.token",
@@ -3327,6 +3397,22 @@ explicit loopback development servers. Endpoint host and Matrix identity domain
 may differ. Duplicate keys, unknown fields/schema, unsupported stores, missing
 current and malformed entries fail closed. References above are illustrative;
 never put token/password values in this file.
+Duplicate case aliases of `card_room` (such as `card_room` plus `CARD_ROOM`)
+also refuse instead of silently selecting the last store.
+
+`card_room` is an optional Matrix alias (`#cards`, `#cards:store.example.invalid`)
+or opaque room ID (`!room-id`, including older server-qualified forms). An absent
+or empty value defaults to `#lobby:<server_name>`; it is independent of the
+homeserver URL's hostname. An explicit qualified alias is used exactly as
+configured, and a room ID's suffix is never used to infer a card's home server.
+Legacy connections without a registry retain home `#lobby` and cannot infer
+cross-server mappings. Cross-server stores must be configured in this registry.
+
+Changing card-room policy does not change credential namespaces or require
+reissuing credentials. A running named session refuses further requests if its
+selected profile's card-room setting changes; start a fresh invocation to use the
+new setting. Existing binaries that do not recognize `card_room` refuse such a
+registry rather than silently ignoring the setting.
 
 The credential-store schema accepts exactly these two backends:
 

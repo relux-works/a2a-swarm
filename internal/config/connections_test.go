@@ -165,3 +165,55 @@ func TestConnectionNamespaceSymlinkRefusal(t *testing.T) {
 		})
 	}
 }
+
+// Card-room normalization depends on the identity server, never URL host or ID
+// suffix. Bad configuration is rejected without reproducing the supplied value.
+func TestConnectionCardRoom(t *testing.T) {
+	for _, tc := range []struct{ ref, want string }{
+		{"", "#lobby:identity.example.invalid"},
+		{"#cards", "#cards:identity.example.invalid"},
+		{"#cards:store.example.invalid", "#cards:store.example.invalid"},
+		{"!opaque:else.example.invalid", "!opaque:else.example.invalid"},
+		{"!opaque", "!opaque"},
+	} {
+		c := testConnection()
+		c.CardRoom = tc.ref
+		got, err := c.CardRoomRef()
+		if err != nil || got != tc.want {
+			t.Fatalf("%q = %q, %v", tc.ref, got, err)
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := c.Binding("alice", false)
+		original := testConnection()
+		old, _ := original.Binding("alice", false)
+		if b.Fingerprint() != old.Fingerprint() {
+			t.Fatal("card policy changed credential namespace")
+		}
+	}
+	for _, ref := range []string{"cards", "!", "#", "#cards:", "#cards:bad/path", "#has space", "!has\ncontrol", "#a#b", "#a/b"} {
+		c := testConnection()
+		c.CardRoom = ref
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "invalid card_room") {
+			t.Fatalf("bad card room accepted: %q, %v", ref, err)
+		}
+	}
+}
+
+func TestConnectionCardRoomCaseShadow(t *testing.T) {
+	c := testConnection()
+	c.CardRoom = "#cards"
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Connection
+	if err := DecodeConnectionJSON(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	raw = []byte(strings.Replace(string(raw), `"card_room":"#cards"`, `"card_room":"#cards","Card_Room":"#other"`, 1))
+	if err := DecodeConnectionJSON(raw, &decoded); err == nil {
+		t.Fatal("connection entry admitted a shadow card_room")
+	}
+}
