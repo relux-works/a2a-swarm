@@ -107,6 +107,11 @@ func Authorize(argv []string, identity string) (Plan, error) {
 	minPos, maxPos := 0, 0
 	bodyPos, attachPos := -1, -1
 	switch p.Command {
+	case "courier":
+		if len(rest) != 2 || rest[1] != "status" {
+			return p, errRefused
+		}
+		start = 2
 	case "post":
 		values = "topic kind re to reply-by trunk subtype subject operation-id envelope"
 		bools = "reply-main json"

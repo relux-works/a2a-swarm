@@ -188,7 +188,7 @@ func (f *courierFixture) run(name, input string, args ...string) result {
 	f.envs[name].assertNoLeak(r)
 	return r
 }
-func (f *courierFixture) rawRun(name string, args ...string) result {
+func (f *courierFixture) rawRun(name string, args ...string) (result, error) {
 	f.t.Helper()
 	e, _, err := courierenroll.Read(filepath.Join(f.stations[name], ".a2a"))
 	if err != nil {
@@ -197,10 +197,7 @@ func (f *courierFixture) rawRun(name string, args ...string) result {
 	defer clear(e.Key)
 	var out, diag bytes.Buffer
 	code, err := courier.Client(context.Background(), e.Socket, e.Station, e.Identity, e.Key, courier.Request{Argv: args}, &out, &diag)
-	if err != nil {
-		return result{code: ExitError, stderr: "courier: " + string(courier.Class(err)) + "\n"}
-	}
-	return result{code: code, stdout: out.String(), stderr: diag.String()}
+	return result{code: code, stdout: out.String(), stderr: diag.String()}, err
 }
 
 func (f *courierFixture) received(name, id string) bool {
@@ -288,8 +285,21 @@ func TestCourierExecutionRefusals(t *testing.T) {
 		if r.code != ExitError || (!strings.Contains(r.stderr, "not_allowed") && !strings.Contains(r.stderr, "identity_mismatch")) {
 			t.Fatal("request not refused with bounded diagnostic")
 		}
-		if raw := f.rawRun("alice", args...); raw.code != ExitError || (raw.stderr != "courier: not_allowed\n" && raw.stderr != "courier: identity_mismatch\n") {
-			t.Fatal("daemon did not independently refuse request")
+		raw, wireErr := f.rawRun("alice", args...)
+		expected := courier.NotAllowed
+		if len(args) > 2 && args[0] == "whoami" && args[1] == "--as" {
+			expected = courier.IdentityMismatch
+		}
+		engineRefusal := len(args) > 2 && args[0] == "whoami" && (args[1] == "--profile" || args[1] == "--connection-fingerprint")
+		if raw.code != ExitError || raw.stdout != "" {
+			t.Fatal("daemon refusal exit/output", raw)
+		}
+		if engineRefusal {
+			if wireErr != nil || raw.stderr != "courier: not_allowed\n" {
+				t.Fatal("real daemon stderr differs", raw, wireErr)
+			}
+		} else if wireErr != expected || raw.stderr != "" {
+			t.Fatal("wire diagnostic differs", raw, wireErr)
 		}
 		if len(f.envs["alice"].hs.Calls()) != before {
 			t.Fatal("refusal called Matrix")

@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/courier"
+	"github.com/relux-works/a2a-swarm/internal/courierenroll"
 	"golang.org/x/sys/unix"
 )
 
@@ -28,6 +30,11 @@ type hookGap struct {
 // Pin each directory/file, refuse links and unsafe preexisting metadata, and
 // lock the log itself. No sidecar, mailbox, journal or credential is written.
 func hookFailureFile(base string, create bool) (*os.File, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), courier.HookBudget)
+	defer cancel()
+	return hookFailureFileContext(ctx, base, create)
+}
+func hookFailureFileContext(ctx context.Context, base string, create bool) (*os.File, error) {
 	canonical, err := filepath.EvalSymlinks(base)
 	if err != nil || canonical != base {
 		return nil, courier.Unavailable
@@ -84,17 +91,23 @@ func hookFailureFile(base string, create bool) (*os.File, error) {
 		f.Close()
 		return nil, courier.Unavailable
 	}
-	deadline := time.Now().Add(courier.HookStateReserve)
 	for {
 		err := unix.Flock(logfd, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			break
 		}
-		if err != unix.EWOULDBLOCK && err != unix.EAGAIN || !time.Now().Before(deadline) {
+		if err != unix.EWOULDBLOCK && err != unix.EAGAIN || ctx.Err() != nil {
 			f.Close()
 			return nil, courier.Unavailable
 		}
-		time.Sleep(min(stationInputPoll, time.Until(deadline)))
+		timer := time.NewTimer(stationInputPoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			f.Close()
+			return nil, courier.Unavailable
+		case <-timer.C:
+		}
 	}
 	return f, nil
 }
@@ -134,7 +147,12 @@ func writeHookGap(f *os.File, g hookGap) error {
 	return nil
 }
 func updateHookFailures(base, event string, class courier.Diagnostic, stderr io.Writer) error {
-	f, err := hookFailureFile(base, class != "")
+	ctx, cancel := context.WithTimeout(context.Background(), courier.HookBudget)
+	defer cancel()
+	return updateHookFailuresContext(ctx, base, event, class, stderr)
+}
+func updateHookFailuresContext(ctx context.Context, base, event string, class courier.Diagnostic, stderr io.Writer) error {
+	f, err := hookFailureFileContext(ctx, base, class != "")
 	if err != nil || f == nil {
 		return err
 	}
@@ -147,16 +165,19 @@ func updateHookFailures(base, event string, class courier.Diagnostic, stderr io.
 		if gap.Count == 0 {
 			return nil
 		}
+		if err := writeHookGap(f, hookGap{}); err != nil {
+			return err
+		}
 		if _, err := fmt.Fprintf(stderr, "courier: %d hook deliveries failed open since %s\n", gap.Count, gap.Since); err != nil {
 			return courier.Unavailable
 		}
-		return writeHookGap(f, hookGap{})
+		return nil
 	}
 	// event is selected from hookEvents; class has a closed type and is checked.
 	if courier.Class(class) != class {
 		return courier.Unavailable
 	}
-	valid := false
+	valid := event == "SessionEnd" || event == "Hook"
 	for _, e := range hookEvents {
 		if event == e.name {
 			valid = true
@@ -170,9 +191,6 @@ func updateHookFailures(base, event string, class courier.Diagnostic, stderr io.
 		gap.Since = now
 	}
 	gap.Count++
-	if err = writeHookGap(f, gap); err != nil {
-		return err
-	}
 	data, err := io.ReadAll(io.LimitReader(f, courier.HookFailureLines*hookFailureLineBytes+1))
 	if err != nil || len(data) > courier.HookFailureLines*hookFailureLineBytes {
 		return courier.Unavailable
@@ -196,6 +214,9 @@ func updateHookFailures(base, event string, class courier.Diagnostic, stderr io.
 			return courier.Unavailable
 		}
 	}
+	if err = writeHookGap(f, gap); err != nil {
+		return err
+	}
 	return f.Sync()
 }
 func courierStationStatus(a *App) error {
@@ -212,12 +233,32 @@ func courierStationStatus(a *App) error {
 	}
 	var gap hookGap
 	if f != nil {
-		defer f.Close()
 		gap, err = readHookGap(f)
+		f.Close()
 		if err != nil {
 			return err
 		}
 	}
-	_, err = fmt.Fprintf(a.Stdout, "hook_failures: %d\noldest_unreported: %s\n", gap.Count, gap.Since)
-	return err
+	if _, err = fmt.Fprintf(a.Stdout, "hook_failures: %d\noldest_unreported: %s\n", gap.Count, gap.Since); err != nil {
+		return err
+	}
+	e, present, err := courierenroll.Read(filepath.Join(paths.Base, ".a2a"))
+	defer clear(e.Key)
+	if err != nil {
+		return courier.EnrollmentInvalid
+	}
+	if !present {
+		_, err = io.WriteString(a.Stdout, "log_dropped: 0\n")
+		return err
+	}
+	ctx, cancel := context.WithTimeout(a.context(), courier.HookBudget)
+	defer cancel()
+	code, err := courier.Client(ctx, e.Socket, e.Station, e.Identity, e.Key, courier.Request{Argv: []string{"courier", "status"}}, a.Stdout, a.Stderr)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return courier.Unavailable
+	}
+	return nil
 }

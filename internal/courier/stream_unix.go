@@ -3,10 +3,12 @@
 package courier
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"path/filepath"
@@ -45,6 +47,8 @@ type stream struct {
 	cancel              context.CancelFunc
 	ctx                 context.Context
 	idle                time.Duration
+	hook                bool
+	hookExit            bool
 }
 
 func (s *stream) send(p packet) error {
@@ -55,7 +59,7 @@ func (s *stream) send(p packet) error {
 	}
 	s.c.SetWriteDeadline(time.Now().Add(s.idle))
 	b, err := json.Marshal(p)
-	if p.Type == "exit" {
+	if p.Type == "exit" || p.Type == "complete" {
 		b, err = json.Marshal(struct {
 			Type string `json:"type"`
 			ID   string `json:"id"`
@@ -136,6 +140,19 @@ func (s *stream) delivered() error {
 	if err := s.send(packet{Type: "delivery", ID: s.id, Batch: batch, Identity: s.identity}); err != nil {
 		return err
 	}
+	// A hook's output is complete at its delivery barrier. Send the validated
+	// exit boundary before waiting for the receipt; the station buffers output
+	// until this boundary, writes/flushes real stdout, and only then ACKs.
+	if s.hook {
+		if s.hookExit {
+			return errRefused
+		}
+		s.hookExit = true
+		if err := s.send(packet{Type: "exit", ID: s.id, Code: 0}); err != nil {
+			return err
+		}
+	}
+
 	select {
 	case <-ack:
 		if s.ctx.Err() != nil {
@@ -197,7 +214,8 @@ func (s *server) execute(c *net.UnixConn, station, identity string) {
 		s.refuse(c)
 		return
 	}
-	if _, err := Authorize(r.Argv, identity); err != nil {
+	plan, authErr := Authorize(r.Argv, identity)
+	if err := authErr; err != nil {
 		class := NotAllowed
 		if err == IdentityMismatch {
 			class = IdentityMismatch
@@ -220,7 +238,7 @@ func (s *server) execute(c *net.UnixConn, station, identity string) {
 	if idle == 0 {
 		idle = executionIdle
 	}
-	st := &stream{c: c, id: r.ID, identity: identity, cancel: cancel, ctx: ctx, idle: idle}
+	st := &stream{c: c, id: r.ID, identity: identity, cancel: cancel, ctx: ctx, idle: idle, hook: plan.Command == "hook"}
 	_ = c.SetWriteDeadline(time.Now().Add(idle))
 	_ = c.SetReadDeadline(time.Time{})
 	done := make(chan struct{})
@@ -248,8 +266,22 @@ func (s *server) execute(c *net.UnixConn, station, identity string) {
 	closeOnCancel := context.AfterFunc(ctx, func() { c.Close() })
 	defer closeOnCancel()
 	defer func() { cancel(); c.Close(); <-done; <-keepDone }()
+	defer func() {
+		if recover() != nil {
+			s.diagnostic(c, Unavailable, r.ID)
+		}
+	}()
+	if plan.Command == "courier" {
+		_, _ = fmt.Fprintf(output{st, "stdout"}, "log_dropped: %d\n", s.sink.dropped.Load())
+		_ = st.send(packet{Type: "exit", ID: r.ID, Code: 0})
+		return
+	}
 	code := s.handler(ctx, Invocation{Identity: identity, Request: r, Stdout: output{st, "stdout"}, Stderr: output{st, "stderr"}, Delivered: st.delivered})
-	_ = st.send(packet{Type: "exit", ID: r.ID, Code: code})
+	kind := "exit"
+	if st.hookExit {
+		kind = "complete"
+	}
+	_ = st.send(packet{Type: kind, ID: r.ID, Code: code})
 }
 
 // ServeWithHandler adds one invocation to the C1 authenticated endpoint. A nil
@@ -318,6 +350,11 @@ func client(ctx context.Context, socket, station, identity string, key []byte, r
 	if err != nil || writeFrame(conn, b) != nil {
 		return 1, Unavailable
 	}
+	plan, _ := Authorize(r.Argv, identity)
+	hook := plan.Command == "hook"
+	var hookOut, hookErr bytes.Buffer
+	var delivery *packet
+	committed := false
 	for {
 		_ = conn.SetDeadline(time.Now().Add(readDeadline))
 		b, err = readFrame(conn)
@@ -348,6 +385,19 @@ func client(ctx context.Context, socket, station, identity string, key []byte, r
 			if p.Type == "stderr" {
 				w = stderr
 			}
+			if hook {
+				if committed {
+					return 1, Unavailable
+				}
+				buffer := &hookOut
+				if p.Type == "stderr" {
+					buffer = &hookErr
+				}
+				if buffer.Len()+len(p.Data) > HookOutputBytes {
+					return 1, Unavailable
+				}
+				w = buffer
+			}
 			if err = localOutput(w, p.Data); err != nil {
 				return 1, Unavailable
 			}
@@ -359,6 +409,13 @@ func client(ctx context.Context, socket, station, identity string, key []byte, r
 			if len(fields) != 4 || !validID(p.Batch) || p.Identity != identity {
 				return 1, Unavailable
 			}
+			if hook {
+				if delivery != nil || committed {
+					return 1, Unavailable
+				}
+				delivery = &p
+				continue
+			}
 			if err = flush(stdout); err != nil {
 				return 1, Unavailable
 			}
@@ -366,11 +423,55 @@ func client(ctx context.Context, socket, station, identity string, key []byte, r
 			if writeFrame(conn, ack) != nil {
 				return 1, Unavailable
 			}
-		case "exit":
+		case "exit", "complete":
 			if len(fields) != 3 || fields["code"] == nil || string(fields["code"]) == "null" || p.Code < 0 || p.Code > 255 {
 				return 1, Unavailable
 			}
-			return p.Code, nil
+			if !hook {
+				if p.Type != "exit" {
+					return 1, Unavailable
+				}
+				return p.Code, nil
+			}
+			if committed {
+				if p.Type != "complete" {
+					return 1, Unavailable
+				}
+				return p.Code, nil
+			}
+			if p.Type != "exit" {
+				return 1, Unavailable
+			}
+			if p.Code != 0 {
+				return p.Code, nil
+			}
+			if ctx.Err() != nil {
+				return 1, IdleTimeout
+			}
+			if hookOut.Len() > 0 {
+				if err := localOutput(stdout, hookOut.Bytes()); err != nil {
+					return 1, Unavailable
+				}
+			} else if delivery != nil {
+				if err := flush(stdout); err != nil {
+					return 1, Unavailable
+				}
+			}
+			if delivery != nil {
+				ack, _ := json.Marshal(packet{Type: "ack", ID: r.ID, Batch: delivery.Batch, Identity: identity})
+				if ctx.Err() != nil || writeFrame(conn, ack) != nil {
+					return 1, Unavailable
+				}
+				committed = true
+			}
+			if hookErr.Len() > 0 {
+				if err := localOutput(stderr, hookErr.Bytes()); err != nil {
+					return 1, Unavailable
+				}
+			}
+			if delivery == nil {
+				return p.Code, nil
+			}
 		default:
 			return 1, Unavailable
 		}

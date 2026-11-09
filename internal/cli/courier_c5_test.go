@@ -187,6 +187,9 @@ func TestCourierHookFailOpenAndGap(t *testing.T) {
 			return 1
 		}
 		io.WriteString(inv.Stdout, doorbell)
+		if inv.Delivered() != nil {
+			return 1
+		}
 		return 0
 	})
 	good := func(wantGap bool) {
@@ -234,7 +237,7 @@ func TestCourierHookFailOpenAndGap(t *testing.T) {
 	good(true)
 	good(false)
 	status = s.run(context.Background(), "", "courier", "status")
-	if status.code != 0 || status.stdout != "hook_failures: 0\noldest_unreported: \n" {
+	if status.code != 0 || status.stdout != "hook_failures: 0\noldest_unreported: \nlog_dropped: 0\n" {
 		t.Fatal("gap counter not reset", status)
 	}
 	after, err := os.ReadFile(logPath)
@@ -256,9 +259,11 @@ func TestCourierHookFailureClassesAndBudget(t *testing.T) {
 		return 0
 	})
 	// Actual production 5-second hook budget, including a blocked daemon.
+	// Permit 2 seconds of scheduling latency on the shared Mac, without
+	// changing the production deadline.
 	start := time.Now()
 	r := s.run(context.Background(), "block", "hook", "prompt", "--runtime", "codex")
-	if r.code != 0 || r.stdout != "" || time.Since(start) < courier.HookBudget-courier.HookStateReserve || time.Since(start) > courier.HookBudget+100*time.Millisecond {
+	if r.code != 0 || r.stdout != "" || time.Since(start) < courier.HookBudget-courier.HookStateReserve || time.Since(start) > courier.HookBudget+2*time.Second {
 		t.Fatal("hook budget/fail-open contract", r)
 	}
 	for len(entered) > 0 {

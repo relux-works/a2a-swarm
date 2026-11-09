@@ -4062,8 +4062,8 @@ child contains exactly `courier.sock`, `identity`, `station.key`, and `station`.
 Commands execute in the authenticated identity's Courier home. The station
 never writes a mailbox, State, credentials, a journal or a saved inbox. The only
 additional station file is `state/courier-hook-failures.log` (0600), created on
-its first failed-open hook. `courier status` reads local counts without contacting
-the daemon or loading identity credentials.
+its first failed-open hook. `courier status` reads local hook counts and queries
+the authenticated endpoint for `log_dropped`; it loads no identity credentials.
 
 Silent `wait` and `watch` invocations have no Courier execution idle cutoff.
 The command's own timeout decides when it ends. The daemon sends invisible
@@ -4080,7 +4080,15 @@ ACK arrives. A stalled reader gets a framed `courier_idle_timeout`; there is no
 unbounded output queue. Flow ACKs are bound to invocation, chunk batch and
 identity, and cannot complete receipts. Receipts still require the separate
 `delivery`/`ack` barrier after stdout write and flush. Watch, wait and hook
-doorbells make no receipts.
+doorbells make no mailbox receipts. Hook output chunks are flow-ACKed into
+bounded station memory. At a hook's delivery barrier the daemon sends `delivery`
+and a successful `exit` boundary before waiting for the receipt ACK. The station
+validates that boundary, writes and flushes real stdout, then sends `ack`.
+A lost/malformed boundary or failed stdout write sends no receipt ACK, leaving
+the doorbell eligible to ring again. The handler then completes its state update
+and sends `complete` with the actual exit code. Output after this boundary is
+refused. Both endpoints must support this hook handshake; mixed versions fail
+closed through the hook's exit-0 path.
 
 The station errors form a closed set and contain no request operands:
 
@@ -4094,7 +4102,7 @@ The station errors form a closed set and contain no request operands:
 | `courier_busy` | Per-station, global invocation, or execution connection capacity reached |
 
 Missing environment discovery or failed config-base resolution refuses explicitly;
-it cannot fall through into local execution. `--envelope=@file`, `--body=@file`,
+hooks retain exit 0. It cannot fall through into local execution. `--envelope=@file`, `--body=@file`,
 `--from=@file` and `topic new --json` are admitted alongside their spaced forms.
 Conflicting duplicate profile assertions and `--id-file` remain refused.
 
@@ -4114,9 +4122,10 @@ filesystem must support file extended attributes. Accounting errors are visible
 as a closed `courier_unavailable` line on stderr; hooks still exit 0.
 
 The next successful hook emits one counts-only line on stderr:
-`courier: N hook deliveries failed open since UTC_TIME`. It then resets the gap
-counter and keeps the failure history. With no failures there is no log file or
-gap line. `a2a courier status` prints `hook_failures` and `oldest_unreported`.
+`courier: N hook deliveries failed open since UTC_TIME`. The gap counter is reset under the log lock before emitting the line,
+so a failed reset cannot duplicate it. Failure history is retained. With no failures there is no log file or
+gap line. `a2a courier status` prints `hook_failures`, `oldest_unreported` and the
+daemon sink's `log_dropped` counter.
 No native idle-wake reliability is established by a doorbell or these tests;
 external watchdog, sweep and soak qualification are separate work.
 
@@ -4143,8 +4152,12 @@ external watchdog, sweep and soak qualification are separate work.
 
 Daemon logs pass through a bounded, non-blocking sink outside the connection
 mutex. A full queue or undrained file stderr drops and counts lines; it cannot
-hold up a connection or shutdown. File stderr uses nonblocking kernel writes and
-restores its original flags on shutdown. In-process embeddings can supply
+hold up a connection or shutdown. File stderr is forwarded through a private nonblocking pipe to a worker
+that owns a duplicate of the destination descriptor. The sink does not set
+`O_NONBLOCK` on the shared stderr description. A destination suspended during
+a blocking write may retain one worker and its descriptors until its reader
+resumes; shutdown does not wait for that worker. The queue and pipe remain
+bounded. In-process embeddings can supply
 `NonblockingLogWriter` with a promptly returning `TryCourierLog`; unclassified
 writer adapters are dropped and counted rather than called without a cancellation
 contract. In-memory byte buffers and discarded output are also supported.
