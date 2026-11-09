@@ -4087,8 +4087,9 @@ validates that boundary, writes and flushes real stdout, then sends `ack`.
 A lost/malformed boundary or failed stdout write sends no receipt ACK, leaving
 the doorbell eligible to ring again. The handler then completes its state update
 and sends `complete` with the actual exit code. Output after this boundary is
-refused. Both endpoints must support this hook handshake; mixed versions fail
-closed through the hook's exit-0 path.
+refused. Both endpoints must support this hook handshake for the receipt barrier
+to hold. Older stations retain their older ACK ordering; update both endpoints
+before relying on this guarantee. Mixed-version operation is not qualified.
 
 The station errors form a closed set and contain no request operands:
 
