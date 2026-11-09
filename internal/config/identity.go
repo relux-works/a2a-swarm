@@ -145,6 +145,14 @@ func (e *LeaseHeldError) Error() string {
 // different known sessions, or holders on different hosts, still conflict,
 // which is the case the lease exists for (one identity used twice at once).
 func (s *State) Acquire(name, holder, host string, pid int, now time.Time, ttl time.Duration, dead func(holder string) bool) error {
+	if s.RefuseMonitorConsumer() != nil {
+		// Hooks/ordinary commands may borrow the same unexpired owner lease;
+		// they cannot acquire, replace or renew it on the monitor's behalf.
+		if l := s.Lease; l != nil && l.Holder == holder && l.Host == host && now.Before(l.Expires) {
+			return nil
+		}
+		return ErrMonitorConflict
+	}
 	// Under Host custody ordinary member commands only borrow the admitted
 	// unexpired lease. They never replace its process identity or renew it.
 	if e := s.HostEnrollment; e != nil {
@@ -175,6 +183,9 @@ func (s *State) Acquire(name, holder, host string, pid int, now time.Time, ttl t
 // whether a lease was cleared. Persisted Host enrollment always refuses;
 // ordinary release is not a Host retirement or handover operation.
 func (s *State) Release(name, holder string, force bool, now time.Time, dead func(holder string) bool) (bool, error) {
+	if err := s.RefuseMonitorConsumer(); err != nil {
+		return false, err
+	}
 	if s.HostEnrollment != nil {
 		return false, ErrHostEnrollment
 	}

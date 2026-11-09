@@ -23,6 +23,9 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 	if err != nil {
 		return err
 	}
+	if err := st.RefuseMonitorConsumer(); err != nil {
+		return err
+	}
 	if st.HostEnrollment != nil || st.HooksPaused {
 		return nil
 	}
@@ -66,6 +69,9 @@ func (a *App) healHookBinding(ctx context.Context, runtime string, in hookInput)
 	}
 	st, err := config.LoadState(s.paths, s.name)
 	if err != nil {
+		return err
+	}
+	if err := st.RefuseMonitorConsumer(); err != nil {
 		return err
 	}
 	if st.HostEnrollment != nil || st.HooksPaused || manualWakeGate(st) != "" || st.Runtime != nil && !st.Runtime.Retired {
@@ -176,6 +182,9 @@ func refuseBoundWait(ctx context.Context, s *session) error {
 		if err != nil {
 			return err
 		}
+		if err := st.RefuseMonitorConsumer(); err != nil {
+			return err
+		}
 		if st.HostEnrollment != nil {
 			return config.ErrHostEnrollment
 		}
@@ -200,6 +209,9 @@ func refuseHostConsumer(s *session) error {
 	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
+			return err
+		}
+		if err := st.RefuseMonitorConsumer(); err != nil {
 			return err
 		}
 		if st.HostEnrollment != nil {

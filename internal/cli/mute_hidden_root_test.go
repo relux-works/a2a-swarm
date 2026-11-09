@@ -57,6 +57,7 @@ func TestMuteHiddenRootEvidence(t *testing.T) {
 			}
 			got, err := config.LoadState(f.paths, "alice")
 			st.Mute(prejoinRoot)
+			got.Writer, st.Writer = nil, nil // successful mutation reseals covered State
 			gotJSON, gotErr := json.Marshal(got)
 			wantJSON, wantErr := json.Marshal(st)
 			if err != nil || gotErr != nil || wantErr != nil || string(gotJSON) != string(wantJSON) {

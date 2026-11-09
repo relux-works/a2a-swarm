@@ -207,7 +207,17 @@ func TestAdapterLegacyMigrationSpacing(t *testing.T) {
 							t.Fatal("suppression failed to persist the one-time migration")
 						}
 						got.Notification = before.Notification
-						if !reflect.DeepEqual(got, before) {
+						// A successful covered-field migration recomputes the writer
+						// seal/disk snapshot; its sticky first detection must survive.
+						payload := func(s config.State) []byte {
+							s.Writer = nil
+							b, err := json.Marshal(s)
+							if err != nil {
+								t.Fatal(err)
+							}
+							return b
+						}
+						if got.Writer == nil || before.Writer == nil || !got.Writer.ForeignSeen.Equal(before.Writer.ForeignSeen) || !bytes.Equal(payload(got), payload(before)) {
 							t.Fatal("suppression changed custody, attempts or unrelated state")
 						}
 					}

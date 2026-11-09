@@ -72,6 +72,9 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 				if err != nil {
 					return err
 				}
+				if err := st.RefuseMonitorConsumer(); err != nil {
+					return err
+				}
 				b := st.Terminal
 				if st.HostEnrollment != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != birth || b.Host != machineLabel() {
 					return errBindingStaleConsumer

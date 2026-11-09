@@ -227,6 +227,13 @@ func TestStateJSONCurrentSchemaCaseVariants(t *testing.T) {
 				}
 				body = `{"` + strings.ToUpper(name) + `":` + string(raw) + `}`
 			}
+			if name == "monitor" {
+				raw, err := json.Marshal(monitorRecord())
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = `{"MONITOR":` + string(raw) + `}`
+			}
 			var reference State
 			if err := json.Unmarshal([]byte(body), &reference); err != nil {
 				t.Fatal(err)
@@ -248,6 +255,16 @@ func TestStateJSONCurrentSchemaCaseVariants(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Every compatible save now adds fresh writer consistency metadata.
+			// Compare the typed payload separately from that dynamic seal/time.
+			var gm, em map[string]json.RawMessage
+			if json.Unmarshal(got, &gm) != nil || json.Unmarshal(expected, &em) != nil {
+				t.Fatal("decode comparison")
+			}
+			delete(gm, "writer")
+			delete(em, "writer")
+			got, _ = json.Marshal(gm)
+			expected, _ = json.Marshal(em)
 			if !sameStateJSON(got, expected) {
 				t.Fatal("known-field alias survived beyond typed schema")
 			}

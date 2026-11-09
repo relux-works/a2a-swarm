@@ -16,7 +16,7 @@ func withoutRefreshDiagnostic(st config.State) config.State {
 		b.RefreshStatus = ""
 		st.Terminal = &b
 	}
-	return st
+	return typedStateWithoutWriter(st)
 }
 
 func refreshStatusFixture(now time.Time) config.State {

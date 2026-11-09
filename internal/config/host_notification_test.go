@@ -43,7 +43,7 @@ func hostNotificationReload(t *testing.T, p Paths, s State) State {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(s, got) {
+	if !sameStatePayload(s, got) || !validWriterSeal(got) {
 		t.Fatal("state did not round-trip")
 	}
 	return got

@@ -42,8 +42,23 @@ func unmarshalState(data []byte, s *State) error {
 	// Keep the existing typed decoder's validation and case-fold behavior. Raw
 	// messages retain number precision and complete values without interpreting
 	// unknown data or preserving unknown members inside known typed objects.
-	if err := json.Unmarshal(data, s); err != nil {
+	// Writer is compatibility metadata: decode it separately so malformed
+	// metadata cannot brick otherwise valid State. All other typed members
+	// retain encoding/json's strict type validation and original order.
+	envelope := struct {
+		*State
+		Writer json.RawMessage `json:"writer"`
+	}{State: s}
+	if err := json.Unmarshal(data, &envelope); err != nil {
 		return err
+	}
+	if err := rejectAuthorityAliases(data); err != nil {
+		return err
+	}
+	s.Writer = nil
+	var writer StateWriter
+	if len(envelope.Writer) != 0 && json.Unmarshal(envelope.Writer, &writer) == nil {
+		s.Writer = &writer
 	}
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(data, &members); err != nil {
@@ -58,6 +73,7 @@ func unmarshalState(data []byte, s *State) error {
 		members = nil
 	}
 	s.opaque = members
+	s.rawState = append([]byte(nil), data...)
 	return nil
 }
 

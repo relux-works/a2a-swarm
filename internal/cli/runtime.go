@@ -92,6 +92,9 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 		a.printf("%s generation=%s gate=%s wake=%s notification=%s\n", s.name, st.Runtime.Generation, st.Runtime.Gate, sanitizeLine(st.Wake.Outcome), notificationDiagnostic(st.Notification, a.Now()).State)
 		return nil
 	}
+	if err := refuseHostConsumer(s); err != nil {
+		return err
+	}
 	if *generation == "" {
 		return usagef("runtime operation requires --generation")
 	}
@@ -250,6 +253,9 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 			if err != nil {
 				return err
 			}
+			if err := state.RefuseMonitorConsumer(); err != nil {
+				return err
+			}
 			if state.HostEnrollment != nil {
 				return config.ErrHostEnrollment
 			}
@@ -397,9 +403,13 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		if err != nil {
 			return err
 		}
+		if err := st.RefuseMonitorConsumer(); err != nil {
+			return err
+		}
 		if st.Runtime == nil || st.Runtime.Generation != generation || st.Runtime.Identity != s.name {
 			return errors.New("runtime stale generation")
 		}
+
 		b := *st.Runtime
 		if b.Retired {
 			return a.runtimeOutcome(s, generation, "unavailable: retired generation")

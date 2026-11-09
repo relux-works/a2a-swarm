@@ -123,7 +123,7 @@ func (s *State) hostAdmission(a HostAttachment, actual HostScope, now time.Time)
 	}
 	// Existing native/terminal consumers must be retired by their own lifecycle
 	// before Host enrollment. Enrollment never force-releases or heals one.
-	if s.Runtime != nil && !s.Runtime.Retired || s.Terminal != nil && !s.Terminal.Stopped {
+	if s.RefuseMonitorConsumer() != nil || s.Runtime != nil && !s.Runtime.Retired || s.Terminal != nil && !s.Terminal.Stopped {
 		return ErrHostEnrollment
 	}
 	return nil

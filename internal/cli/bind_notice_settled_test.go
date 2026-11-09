@@ -59,7 +59,7 @@ func TestNoticeSettledAttemptDraft(t *testing.T) {
 			after := e.state("alice")
 			requireNotice(t, after.Terminal.OwnNotice, "clear")
 			after.Terminal.OwnNotice = settled.OwnNotice
-			if !reflect.DeepEqual(state, after) || e.hs.CallCount(sendRoute) != 0 {
+			if !reflect.DeepEqual(typedStateWithoutWriter(state), typedStateWithoutWriter(after)) || e.hs.CallCount(sendRoute) != 0 {
 				t.Fatal("classification changed settlement journal or sent a report")
 			}
 		})
