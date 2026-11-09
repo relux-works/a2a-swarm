@@ -3327,7 +3327,11 @@ unpinned principal, and whenever the audience check fails; it never repairs the
 room. Status prints, per principal, `pinned`, the state (active, pending with
 expiry, expired, inactive, never-configured), generation, room and the audience
 result, and writes nothing. Incoming messages arrive through the room's
-all-events subscription and `a2a inbox` like any other room.
+all-events subscription and `a2a inbox` like any other room. When the same
+principal is configured with `host principals set`, its mandatory exact-sender
+coverage is independent of this room-wide row and survives `principal-dm unset`.
+The DM pin authorizes terminal room creation; it does not configure mandatory
+host-principal delivery or expand the principal's authority.
 
 ## Named Matrix connections
 

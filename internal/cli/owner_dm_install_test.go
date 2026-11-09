@@ -17,7 +17,7 @@ func TestOwnerDMInstallDenials(t *testing.T) {
 		t.Run(runtime, func(t *testing.T) {
 			e := newEnv(t)
 			e.exePath("/usr/local/bin/a2a")
-			root := t.TempDir()
+			root := principalDMTestRoot(t)
 			file := filepath.Join(root, "settings.json")
 			if runtime == "codex" {
 				file = filepath.Join(root, ".codex", "hooks.json")

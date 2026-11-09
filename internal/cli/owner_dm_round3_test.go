@@ -395,7 +395,7 @@ func TestOwnerDMDenySubcommandBoundary(t *testing.T) {
 func TestOwnerDMDenyMigration(t *testing.T) {
 	e := newEnv(t)
 	e.exePath("/usr/local/bin/a2a")
-	path := t.TempDir() + "/settings.json"
+	path := principalDMTestRoot(t) + "/settings.json"
 	old := `{"permissions":{"deny":["Bash(rm *)","Bash(*owner-dm*ensure*)","Bash(*owner-dm*set*)","Bash(*owner-dm*unset*)"]}}`
 	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
 		t.Fatal(err)
@@ -409,7 +409,7 @@ func TestOwnerDMDenyMigration(t *testing.T) {
 	if err := json.Unmarshal([]byte(readFile(t, path)), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Permissions.Deny) != 7 || !contains(got.Permissions.Deny, "Bash(rm *)") {
+	if len(got.Permissions.Deny) != 11 || !contains(got.Permissions.Deny, "Bash(rm *)") {
 		t.Fatal("lost user/managed rules", got)
 	}
 	for _, legacy := range []string{"Bash(*owner-dm*ensure*)", "Bash(*owner-dm*set*)", "Bash(*owner-dm*unset*)"} {

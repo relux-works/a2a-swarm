@@ -104,19 +104,19 @@ func (a *App) principalExpired(d principalDM) bool {
 	return d.Pending && !a.Now().Before(time.UnixMilli(d.CreatedAt).Add(principalDMPendingTTL))
 }
 
-func (s *session) principalSubscription(ctx context.Context, room, old string, add bool) (string, error) {
+func (s *session) principalSubscription(ctx context.Context, principal, room, old string, add bool) (string, error) {
+	configured, err := ownerFiles(s.paths, s.name).principals()
+	if err != nil {
+		return "", err
+	}
 	deadline, _ := ctx.Deadline()
 	id := ""
-	_, _, err := s.updateSubsBy(ctx, deadline, func(_ *config.State, list *SubList) (bool, error) {
-		changed := false
-		if old != "" {
-			changed = list.remove(old)
-		}
-		if add {
-			id = newSubID(*list)
-			list.Subs = append(list.Subs, Sub{ID: id, SubSelector: SubSelector{Room: room, AllEvents: true}, CreatedAt: s.app.Now().UTC().Format(createdAtLayout)})
-			return true, nil
-		}
+	_, _, err = s.updateSubsBy(ctx, deadline, func(_ *config.State, list *SubList) (bool, error) {
+		// Keep mandatory sender coverage independent of the DM lifecycle,
+		// including a stale config that names a protected principal row.
+		c := ownerDMConfig{Owner: principal, Room: room, SubID: old}
+		changed := changeOwnerSubscription(list, &c, add, configured, s.app.Now())
+		id = c.SubID
 		return changed, nil
 	})
 	return id, err
@@ -207,7 +207,7 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 			a.printf("never-configured\n")
 			return nil
 		}
-		if _, err = s.principalSubscription(ctx, d.Room, d.SubID, false); err != nil {
+		if _, err = s.principalSubscription(ctx, principal, d.Room, d.SubID, false); err != nil {
 			return err
 		}
 		next, err := ownerNext(&ownerDMConfig{Generation: d.Generation})
@@ -310,7 +310,7 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return fmt.Errorf("%w; room %s was created but not recorded", err, sanitizeLine(room))
 	}
-	sub, err := s.principalSubscription(ctx, room, d.SubID, true)
+	sub, err := s.principalSubscription(ctx, principal, room, d.SubID, true)
 	if err != nil {
 		return err
 	}
@@ -321,7 +321,7 @@ func cmdPrincipalDM(ctx context.Context, a *App, args []string) error {
 		// just added (best effort, on a fresh deadline).
 		cleanup, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancelCleanup()
-		if _, e := s.principalSubscription(cleanup, room, sub, false); e != nil {
+		if _, e := s.principalSubscription(cleanup, principal, room, sub, false); e != nil {
 			return fmt.Errorf("%w; also failed to remove subscription %s: %v", err, sub, e)
 		}
 		return fmt.Errorf("%w; room %s was created but not recorded", err, sanitizeLine(room))

@@ -282,8 +282,8 @@ func assertHookFixtureRules(t *testing.T, f hookExecutableFixture, aliases ...st
 	t.Helper()
 	text := readFile(t, filepath.Join(filepath.Dir(f.settings), "rules", "a2a-owner-dm.rules"))
 	for _, alias := range aliases {
-		if strings.Count(text, string(marshalNoEscape(alias))) != 6 {
-			t.Fatalf("known executable spelling missing from owner-DM denials: %q", alias)
+		if strings.Count(text, string(marshalNoEscape(alias))) != 10 {
+			t.Fatalf("known executable spelling missing from DM terminal denials: %q", alias)
 		}
 	}
 	if strings.Contains(text, `"status"`) || strings.Contains(text, `"bind"`) || strings.Contains(text, `"unbind"`) {

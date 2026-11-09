@@ -4,14 +4,29 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
+func principalDMTestRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func principalFixture(t *testing.T) (*env, ownerDMFiles, string) {
 	t.Helper()
 	e, _ := world(t)
+	var err error
+	e.dir, err = filepath.EvalSymlinks(e.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f := principalFiles(e.paths(), "bob")
 	carol := "@carol:" + testServer
 	ownerPut(t, f.path("pin"), principalDMPin{Principals: []string{carol}})
