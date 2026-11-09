@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strings"
 	"unicode"
@@ -100,8 +99,8 @@ func (a *App) readBodyBytes(arg string) ([]byte, error) {
 	case arg == "-":
 		data, err = io.ReadAll(io.LimitReader(a.Stdin, MaxBodyBytes+1))
 	case strings.HasPrefix(arg, "@") && len(arg) > 1:
-		var f *os.File
-		f, err = os.Open(arg[1:])
+		var f inputFile
+		f, err = a.openInputFile(arg[1:])
 		if err == nil {
 			data, err = io.ReadAll(io.LimitReader(f, MaxBodyBytes+1))
 			f.Close()

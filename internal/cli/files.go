@@ -121,11 +121,11 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	}
 
 	path := pos[1]
-	name := filepath.Base(path)
+	name := a.inputName(path)
 	if err := safeFileName(name); err != nil {
 		return usageError{err.Error()}
 	}
-	f, err := os.Open(path)
+	f, err := a.openInputFile(path)
 	if err != nil {
 		return fmt.Errorf("attach: %w", err)
 	}
@@ -252,7 +252,7 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 
 // jsonObjectFile only buffers candidate objects; other media keep the existing
 // streaming upload. Seek back for every raw path, including invalid JSON.
-func jsonObjectFile(f *os.File, size int64) ([]byte, error) {
+func jsonObjectFile(f io.ReadSeeker, size int64) ([]byte, error) {
 	r := bufio.NewReader(f)
 	object := false
 	for {
@@ -299,22 +299,37 @@ type countWriter struct{ n int64 }
 
 func (c *countWriter) Write(p []byte) (int, error) { c.n += int64(len(p)); return len(p), nil }
 
-// cmdFetch: a2a fetch <room> <$event_id> [-o path] | a2a fetch <mxc://...> --sha256 <hex> [-o path]
-func cmdFetch(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a fetch <room> <$event_id> [-o path] | a2a fetch <mxc://...> --sha256 <hex> [-o path]"
+const fetchUsage = "usage: a2a fetch <room> <$event_id> [-o path] | a2a fetch <mxc://...> --sha256 <hex> [-o path]"
+
+type fetchFlags struct {
+	pos       []string
+	out, want string
+}
+
+// parseFetchFlags preserves help/flag errors before any environment or
+// enrollment lookup. Both entry paths use the same parser and usage output.
+func parseFetchFlags(a *App, args []string) (fetchFlags, error) {
 	fset := newFlagSet("fetch")
 	out := fset.String("o", "", "output path (never overwritten)")
 	want := fset.String("sha256", "", "expected sha256 (bare mxc only)")
 	fset.Usage = func() {
-		fmt.Fprintln(a.Stderr, use)
+		fmt.Fprintln(a.Stderr, fetchUsage)
 		fset.SetOutput(a.Stderr)
 		fset.PrintDefaults()
 		fset.SetOutput(io.Discard)
 	}
 	pos, err := parseInterspersed(fset, args)
+	return fetchFlags{pos: pos, out: *out, want: *want}, err
+}
+
+// cmdFetch: a2a fetch <room> <$event_id> [-o path] | a2a fetch <mxc://...> --sha256 <hex> [-o path]
+func cmdFetch(ctx context.Context, a *App, args []string) error {
+	const use = fetchUsage
+	parsed, err := parseFetchFlags(a, args)
 	if err != nil {
 		return err
 	}
+	pos, out, want := parsed.pos, &parsed.out, &parsed.want
 	var bare *matrix.MXC
 	batch := len(pos) >= 3
 	switch {

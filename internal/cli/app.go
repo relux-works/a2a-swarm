@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/courier"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/redact"
 	"github.com/relux-works/a2a-swarm/internal/voice"
@@ -29,6 +30,8 @@ const (
 
 // App carries the process environment so tests can run commands in-process.
 type App struct {
+	courierEngine            bool
+	courierFiles             map[string]courier.InputFile
 	Stdout                   io.Writer
 	Stderr                   io.Writer
 	Stdin                    io.Reader
@@ -231,6 +234,19 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	rest, err := a.extractGlobal(args)
 	if err != nil {
 		return globalFailure(err)
+	}
+	if len(rest) > 0 && rest[0] == "fetch" {
+		// Fetch help and flag errors have always been environment-free. Parse
+		// them before discovery; an executable fetch still reaches Courier's
+		// closed command allowlist before credentials or filesystem effects.
+		if _, err := parseFetchFlags(a, rest[1:]); err != nil {
+			return a.fail(err)
+		}
+	}
+	if len(rest) > 0 && rest[0] != "courier" && !a.courierEngine {
+		if handled, code := a.stationInvocation(ctx, args); handled {
+			return code
+		}
 	}
 	if a.human && !a.interactive() {
 		// Agents' tool calls have no terminal on stdin, so an agent cannot use a

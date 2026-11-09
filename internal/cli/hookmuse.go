@@ -38,10 +38,14 @@ type museHookJournal struct {
 }
 
 func openMuseHookJournal(name string) (*museHookJournal, error) {
+	return openMuseHookJournalAt(".", name)
+}
+
+func openMuseHookJournalAt(base, name string) (*museHookJournal, error) {
 	if config.ValidateName(name) != nil {
 		name = "unselected"
 	}
-	dir := "."
+	dir := base
 	for _, part := range []string{".temp", "a2a-muse-hooks"} {
 		dir = filepath.Join(dir, part)
 		if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
@@ -135,7 +139,7 @@ func museFailureClass(err error) string {
 // and shell propagation still require acceptance; absent stdin session identity
 // must never silently acquire a PID/ambient lease.
 func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
-	j, journalErr := openMuseHookJournal(a.as)
+	j, journalErr := a.museHookJournal()
 	if j != nil {
 		defer j.root.Close()
 	}
@@ -218,4 +222,19 @@ func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
 	if err != nil {
 		fail(museFailureClass(err))
 	}
+}
+
+// Courier hook journals share the resolved identity's store, never daemon cwd.
+func (a *App) museHookJournal() (*museHookJournal, error) {
+	if !a.courierEngine {
+		return openMuseHookJournal(a.as)
+	}
+	p, err := a.paths()
+	if err != nil {
+		return nil, err
+	}
+	if err = os.MkdirAll(p.Base, 0700); err != nil {
+		return nil, err
+	}
+	return openMuseHookJournalAt(p.Base, a.as)
 }
