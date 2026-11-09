@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+// Proves rollback retains a briefly published generation for pinned readers;
+// the durability failure is injected in process.
 func TestRollbackPreservesPublishedReader(t *testing.T) {
 	dir := target(t)
 	if Install(dir, strings.NewReader(fixture("old", 41)), false) != nil {
@@ -33,11 +35,13 @@ func TestRollbackPreservesPublishedReader(t *testing.T) {
 	}
 	defer pinned.Close()
 	checkGeneration(t, dir, "old", 41)
-	if verify(pinned, [][]byte{[]byte("/run/a2a/courier.sock\n"), []byte("new\n"), bytes.Repeat([]byte{42}, 32)}) != nil {
+	if verify(pinned, [][]byte{[]byte("/run/a2a/courier.sock\n"), []byte("new\n"), bytes.Repeat([]byte{42}, 32), []byte("station-1\n")}) != nil {
 		t.Fatal("rollback broke an already-pinned reader")
 	}
 }
 
+// Proves a lost rollback namespace reports uncertainty and retains both
+// generations instead of claiming recovery.
 func TestRollbackFailureIsExplicitlyUncertain(t *testing.T) {
 	dir := target(t)
 	home := filepath.Dir(dir)
@@ -62,6 +66,8 @@ func TestRollbackFailureIsExplicitlyUncertain(t *testing.T) {
 	checkGeneration(t, filepath.Join(home, "retained-old"), "old", 43)
 }
 
+// Proves post-publication mode corruption refuses success and restores the
+// previous complete generation under an ordinary rollback.
 func TestWrongModeAfterPublicationRollsBack(t *testing.T) {
 	dir := target(t)
 	if Install(dir, strings.NewReader(fixture("old", 45)), false) != nil {
