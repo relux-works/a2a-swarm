@@ -588,18 +588,25 @@ func TestCourierOutputACKBinding(t *testing.T) {
 func TestCourierRefusedStartupUnlinksSocket(t *testing.T) {
 	home, _ := registered(t)
 	socket := filepath.Join(privateTemp(t), "s", "c.sock")
-	s := &server{home: home, log: io.Discard, conns: map[*net.UnixConn]bool{}, permissions: func(*os.File, string, os.FileInfo) error { return errRefused }}
-	if err := s.serve(context.Background(), socket, nil); err == nil {
-		t.Fatal("startup refusal not exercised")
-	}
-	if _, err := os.Lstat(socket); !os.IsNotExist(err) {
-		t.Fatal("refused startup left socket")
+	for _, mode := range []string{"permissions", "path-lookup"} {
+		s := &server{home: home, log: io.Discard, conns: map[*net.UnixConn]bool{}}
+		if mode == "permissions" {
+			s.permissions = func(*os.File, string, os.FileInfo) error { return errRefused }
+		} else {
+			s.socketInfo = func(string) (os.FileInfo, error) { return nil, os.ErrPermission }
+		}
+		if err := s.serve(context.Background(), socket, nil); err == nil {
+			t.Fatal("startup refusal not exercised", mode)
+		}
+		if _, err := os.Lstat(socket); !os.IsNotExist(err) {
+			t.Fatal("refused startup left socket", mode)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	ready := make(chan struct{})
-	s = &server{home: home, log: io.Discard, conns: map[*net.UnixConn]bool{}, peer: peerUID, handshake: time.Second, idle: time.Second}
+	s := &server{home: home, log: io.Discard, conns: map[*net.UnixConn]bool{}, peer: peerUID, handshake: time.Second, idle: time.Second}
 	go func() { done <- s.serve(ctx, socket, func() { close(ready) }) }()
 	select {
 	case <-ready:
