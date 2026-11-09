@@ -19,9 +19,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Two bounded namespace-local producers repeatedly exit without immediate
-// reaping while the real scanner runs. Live foreign selectors are a neighbor;
-// actual exited candidates must not turn ordinary churn into a refusal.
+// Two bounded namespace-local producers report waitable exit before each scan
+// cohort. Confirmed zombies and their concurrent reaping must not block binding;
+// asynchronous Kill alone does not establish this precondition.
 func TestBindingProcessChurn(t *testing.T) {
 	dir := t.TempDir()
 	self, err := os.Executable()
@@ -38,41 +38,60 @@ func TestBindingProcessChurn(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	var workers sync.WaitGroup
-	workerErrors := make(chan error, 2)
-	for range 2 {
-		workers.Go(func() {
-			for range 32 {
-				if ctx.Err() != nil {
-					return
-				}
-				cmd := exec.CommandContext(ctx, exe, "-test.run=^$")
-				cmd.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0", "A2A_AGENT=churn-neighbor", "A2A_CONFIG_DIR="+dir)
-				if err := cmd.Start(); err != nil {
-					workerErrors <- err
-					return
-				}
-				_ = cmd.Process.Kill()
-				time.Sleep(3 * time.Millisecond)
-				_ = cmd.Wait()
-			}
-		})
-	}
 	refused, admitted := 0, 0
-	for range 80 {
+	scan := func() {
 		err := NewApp().guardBindingProcesses(ctx, "synthetic-guard", dir)
 		if errors.Is(err, ErrBindingProcessUnknown) {
 			refused++
+			var detail *bindingInspectionError
+			if errors.As(err, &detail) {
+				t.Logf("inspection refusal: phase=%s operation=%s class=%s errno=%d exit=%d", detail.phase, detail.operation, detail.class, detail.errno, detail.exitCode)
+			}
 		} else if err == nil {
 			admitted++
 		} else {
 			t.Errorf("unexpected churn error: %v", err)
 		}
 	}
-	workers.Wait()
-	close(workerErrors)
-	for err := range workerErrors {
-		t.Errorf("churn producer failed: %v", err)
+	for round := range 32 {
+		func() {
+			var workers sync.WaitGroup
+			ready := make(chan error, 2)
+			reap := make(chan struct{})
+			var release sync.Once
+			defer workers.Wait()
+			defer release.Do(func() { close(reap) })
+			for range 2 {
+				workers.Go(func() {
+					cmd := exec.CommandContext(ctx, exe, "-test.run=^$")
+					cmd.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0", "A2A_AGENT=churn-neighbor", "A2A_CONFIG_DIR="+dir)
+					if err := cmd.Start(); err != nil {
+						ready <- err
+						return
+					}
+					defer cmd.Wait()
+					if err := cmd.Process.Kill(); err != nil {
+						ready <- err
+						return
+					}
+					ready <- bindingWaitChildExited(cmd.Process.Pid)
+					<-reap
+				})
+			}
+			for range 2 {
+				if err := <-ready; err != nil {
+					t.Fatalf("churn producer failed: %v", err)
+				}
+			}
+			// One scan must see unreaped, confirmed exits. The next scans may
+			// race reaping, but cannot race creation/exit of the next cohort.
+			scan()
+			release.Do(func() { close(reap) })
+			scan()
+			if round < 16 {
+				scan()
+			}
+		}()
 	}
 	t.Logf("two producers, at most 64 own children; scanner admitted=%d inspection-refused=%d", admitted, refused)
 	if ctx.Err() != nil {
@@ -81,6 +100,147 @@ func TestBindingProcessChurn(t *testing.T) {
 	if refused != 0 {
 		t.Fatalf("exited process churn blocked binding %d times", refused)
 	}
+}
+
+// WNOWAIT is the fixture readiness signal: wait for the entire child thread
+// group to exit while retaining the zombie for scanner coverage. EINTR does
+// not change that state; no elapsed delay or signal-0 result proves exit.
+func bindingWaitChildExited(pid int) error {
+	var info unix.Siginfo
+	for {
+		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Signo != int32(unix.SIGCHLD) {
+			return errors.New("child exit readiness missing")
+		}
+		return nil
+	}
+}
+
+// Readiness must reject a non-child PID, then retain an actually exited child
+// as a waitable zombie. The independent WNOHANG check catches false readiness;
+// the live image is the nearby refusal control for the same PID and selectors.
+func TestBindingProcessChurnExitReadiness(t *testing.T) {
+	dir, child := bindingLinuxChild(t, false)
+	if err := bindingWaitChildExited(os.Getpid()); !errors.Is(err, syscall.ECHILD) {
+		t.Fatalf("non-child supplied exit readiness: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if err := NewApp().guardBindingProcesses(ctx, "synthetic-guard", dir); !errors.Is(err, ErrBindingOldImage) {
+		t.Fatalf("live image not refused: %v", err)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := bindingWaitChildExited(child.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	var info unix.Siginfo
+	if err := unix.Waitid(unix.P_PID, child.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil); err != nil || info.Signo != int32(unix.SIGCHLD) {
+		t.Fatalf("false exit readiness: signo=%d err=%v", info.Signo, err)
+	}
+	if processGone(child.Process.Pid) || !bindingCandidateExited(child.Process.Pid) {
+		t.Fatal("readiness must retain the confirmed zombie")
+	}
+	if err := NewApp().guardBindingProcesses(ctx, "synthetic-guard", dir); err != nil {
+		t.Fatalf("confirmed exit blocked binding: %v", err)
+	}
+}
+
+// A same-image live candidate is allowed, but exec of a different image at
+// that same PID and with unchanged selectors must still refuse binding. Both
+// stages signal readiness through stdout; stdin releases the exec transition.
+func TestBindingProcessChangedImage(t *testing.T) {
+	dir := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(dir, "a2a-current-fixture")
+	if err := os.Symlink(self, current); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := filepath.Join(dir, "a2a-changed-fixture")
+	if err := os.WriteFile(next, raw, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, current, "-test.run=^TestBindingProcessChangedImageChild$")
+	child.Env = append(os.Environ(), "A2A_BIND_CHANGED=1", "A2A_BIND_CHANGED_NEXT="+next, "A2A_AGENT=synthetic-guard", "A2A_CONFIG_DIR="+dir)
+	out, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = in.Close(); _ = child.Process.Kill(); _ = child.Wait() })
+	ready := func() {
+		t.Helper()
+		var signal [1]byte
+		if _, err := io.ReadFull(out, signal[:]); err != nil || signal[0] != 'R' {
+			t.Fatalf("child readiness: signal=%q err=%v", signal, err)
+		}
+	}
+	ready()
+	pid := child.Process.Pid
+	before, err := bindingImage(ctx, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewApp().guardBindingProcesses(ctx, "synthetic-guard", dir); err != nil {
+		t.Fatalf("same image refused: %v", err)
+	}
+	if _, err := in.Write([]byte{'E'}); err != nil {
+		t.Fatal(err)
+	}
+	ready()
+	after, err := bindingImage(ctx, pid)
+	if err != nil || after == before {
+		t.Fatalf("fixture image did not change: %v", err)
+	}
+	if err := NewApp().guardBindingProcesses(ctx, "synthetic-guard", dir); !errors.Is(err, ErrBindingOldImage) {
+		t.Fatalf("changed live image not refused: %v", err)
+	}
+}
+
+// The isolated neighbor fixture keeps one PID and the same argv/selectors
+// across exec, and acknowledges only after the replacement image is running.
+func TestBindingProcessChangedImageChild(t *testing.T) {
+	if os.Getenv("A2A_BIND_CHANGED") != "1" {
+		return
+	}
+	if _, err := os.Stdout.Write([]byte{'R'}); err != nil {
+		os.Exit(2)
+	}
+	var signal [1]byte
+	if _, err := io.ReadFull(os.Stdin, signal[:]); err != nil {
+		os.Exit(2)
+	}
+	if next := os.Getenv("A2A_BIND_CHANGED_NEXT"); next != "" {
+		if err := os.Unsetenv("A2A_BIND_CHANGED_NEXT"); err != nil {
+			os.Exit(2)
+		}
+		if err := unix.Exec(next, os.Args, os.Environ()); err != nil {
+			os.Exit(2)
+		}
+	}
+	os.Exit(0)
 }
 
 // Keep the exited child unreaped: signal 0 still succeeds, but Linux denies
