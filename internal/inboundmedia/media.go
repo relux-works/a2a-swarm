@@ -69,16 +69,45 @@ func (h Handle) MarshalJSON() ([]byte, error) {
 }
 
 type Refusal struct {
-	Code   Code
-	Handle Handle
+	Code         Code
+	Handle       Handle
+	outputReason outputReason
 }
+
+// Output diagnostics are closed labels, never filesystem error strings or paths.
+type outputReason string
+
+const (
+	outputOutside outputReason = "output_outside_tmpdir"
+	tmpdirInvalid outputReason = "tmpdir_unset_or_relative"
+	outputExists  outputReason = "output_exists"
+	parentMissing outputReason = "parent_missing"
+	symlinkInPath outputReason = "symlink_in_path"
+)
 
 func (r *Refusal) Error() string {
 	// Escaping preserves the full selection without frame/terminal injection.
 	b, _ := json.Marshal(r.Handle)
-	return "media: " + string(r.Code) + " handle=" + string(b)
+	message := "media: " + string(r.Code) + " handle=" + string(b)
+	if r.Code == UnsafeOutput {
+		reason := r.outputReason
+		switch reason {
+		case outputOutside, tmpdirInvalid, outputExists, parentMissing, symlinkInPath:
+		default:
+			reason = parentMissing
+		}
+		message += " subreason=" + string(reason) + "\nhint: use -o \"$TMPDIR/<name>\" beneath an existing absolute TMPDIR with nonsymlink parents and a fresh leaf"
+	}
+	return message
 }
 func refuse(code Code, handle Handle) error { return &Refusal{Code: code, Handle: handle} }
+
+func refuseOutput(code Code, reason outputReason, handle Handle) error {
+	if code == OutputExists {
+		code, reason = UnsafeOutput, outputExists
+	}
+	return &Refusal{Code: code, Handle: handle, outputReason: reason}
+}
 
 type Metadata struct {
 	Integrity    string `json:"integrity"`
@@ -421,9 +450,9 @@ func Fetch(ctx context.Context, c *matrix.Client, ev matrix.Event, handle Handle
 	if ctx.Err() != nil {
 		return failure(transferCode(ctx, ctx.Err()))
 	}
-	target, code := openTarget(output)
+	target, code, reason := openTarget(output)
 	if code != "" {
-		return failure(code)
+		return result, refuseOutput(code, reason, handle)
 	}
 	defer target.cleanup()
 	configCtx, cancel := context.WithTimeout(ctx, matrix.DefaultRequestTimeout)
@@ -482,7 +511,7 @@ func Fetch(ctx context.Context, c *matrix.Client, ev matrix.Event, handle Handle
 		return failure(transferCode(ctx, ctx.Err()))
 	}
 	if code := target.publish(); code != "" {
-		return failure(code)
+		return result, refuseOutput(code, parentMissing, handle)
 	}
 	result.DeclaredSize = m.DeclaredSize
 	result.ActualSize = n

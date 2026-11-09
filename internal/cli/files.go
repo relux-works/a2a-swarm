@@ -726,7 +726,10 @@ func cmdFiles(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	keep := func(ev matrix.Event) bool { _, ok := attachmentOf(ev); return ok }
+	keep := func(ev matrix.Event) bool {
+		_, attachment := attachmentOf(ev)
+		return attachment || nativeFileMetadata(ev, roomID) != nil
+	}
 	var events []matrix.Event
 	if *topic != "" {
 		root, _, err := s.resolveTopic(ctx, roomID, label, *topic)
@@ -755,8 +758,22 @@ func cmdFiles(ctx context.Context, a *App, args []string) error {
 		if ev.IsRedacted() {
 			continue
 		}
+		media := nativeFileMetadata(ev, roomID)
 		if *asJSON {
-			if err := a.printJSON(eventRecord("message", label, roomID, ev, s.server, false)); err != nil {
+			record := eventRecord("message", label, roomID, ev, s.server, false)
+			record.Media = media
+			if media != nil {
+				record.Body, _ = truncateRunes(record.Body, inboxBodyMax)
+			}
+			if err := a.printJSON(record); err != nil {
+				return err
+			}
+			continue
+		}
+		if media != nil {
+			// The inbox's bounded projection keeps untrusted names separate from
+			// paths and omits the MXC locator. JSON also escapes terminal controls.
+			if err := a.printJSON(media); err != nil {
 				return err
 			}
 			continue
@@ -770,6 +787,15 @@ func cmdFiles(ctx context.Context, a *App, args []string) error {
 			sanitizeLine(at.Name), at.Size, sanitizeLine(short), sanitizeLine(at.MXC), attachmentEncodingText(at, "\t"))
 	}
 	return nil
+}
+
+// Native discovery does not reinterpret legacy attachments or opaque encrypted
+// events as native files. Inspect retains the inbox's bounded metadata policy.
+func nativeFileMetadata(ev matrix.Event, roomID string) *inboundmedia.Metadata {
+	if ev.Type != "m.room.message" || inboundmedia.HasLegacyAttachment(ev) {
+		return nil
+	}
+	return inboundmedia.Inspect(ev, roomID)
 }
 
 // readPinned returns the room's pinned event ids and the rest of the state

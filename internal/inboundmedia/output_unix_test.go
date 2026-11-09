@@ -21,7 +21,7 @@ import (
 func TestNativeExplicitOutputAndUnsafePaths(t *testing.T) {
 	for _, kind := range []string{"missing", "outside", "traversal", "parent-symlink", "leaf-symlink", "dangling", "exists", "directory", "fifo", "missing-parent", "newline", "no-tmp", "write-error"} {
 		t.Run(kind, func(t *testing.T) {
-			outside := t.TempDir()
+			outside := mediaTempDir(t)
 			f := newFixture(t, []byte("valid"), 64)
 			output := filepath.Join(f.root, "out")
 			code := UnsafeOutput
@@ -42,27 +42,27 @@ func TestNativeExplicitOutputAndUnsafePaths(t *testing.T) {
 				if err := os.Symlink(filepath.Join(outside, "victim"), output); err != nil {
 					t.Fatal(err)
 				}
-				code = OutputExists
+				code = UnsafeOutput
 			case "dangling":
 				if err := os.Symlink("absent", output); err != nil {
 					t.Fatal(err)
 				}
-				code = OutputExists
+				code = UnsafeOutput
 			case "exists":
 				if err := os.WriteFile(output, []byte("competitor"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				code = OutputExists
+				code = UnsafeOutput
 			case "directory":
 				if err := os.Mkdir(output, 0700); err != nil {
 					t.Fatal(err)
 				}
-				code = OutputExists
+				code = UnsafeOutput
 			case "fifo":
 				if err := unix.Mkfifo(output, 0600); err != nil {
 					t.Fatal(err)
 				}
-				code = OutputExists
+				code = UnsafeOutput
 			case "missing-parent":
 				output = filepath.Join(f.root, "absent", "out")
 			case "newline":
@@ -115,8 +115,8 @@ func TestNativeExplicitOutputAndUnsafePaths(t *testing.T) {
 func TestNativePublicationRacesAndPrivateModes(t *testing.T) {
 	for _, kind := range []string{"fresh", "competitor", "symlink", "parent-replacement", "cancel"} {
 		t.Run(kind, func(t *testing.T) {
-			outside := t.TempDir()
-			root := t.TempDir()
+			outside := mediaTempDir(t)
+			root := mediaTempDir(t)
 			t.Setenv("TMPDIR", root)
 			parent := filepath.Join(root, "parent")
 			if err := os.Mkdir(parent, 0700); err != nil {
@@ -133,7 +133,11 @@ func TestNativePublicationRacesAndPrivateModes(t *testing.T) {
 				}
 				w.(http.Flusher).Flush()
 				close(started)
-				<-release
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
 				fmt.Fprint(w, "valid")
 			}))
 			defer srv.Close()
@@ -206,13 +210,13 @@ func TestNativePublicationRacesAndPrivateModes(t *testing.T) {
 					t.Fatal("valid neighbour bytes")
 				}
 			case "competitor":
-				wantRefusal(t, err, OutputExists)
+				wantRefusal(t, err, UnsafeOutput)
 				data, _ := os.ReadFile(path)
 				if string(data) != "competitor" {
 					t.Fatal("competitor replaced/deleted")
 				}
 			case "symlink":
-				wantRefusal(t, err, OutputExists)
+				wantRefusal(t, err, UnsafeOutput)
 				if _, err := os.Readlink(path); err != nil {
 					t.Fatal("competing symlink deleted")
 				}
@@ -235,9 +239,9 @@ func TestNativePublicationRacesAndPrivateModes(t *testing.T) {
 }
 
 func TestNativeNoRenameFallbackOnLinkFailure(t *testing.T) {
-	root := t.TempDir()
+	root := mediaTempDir(t)
 	t.Setenv("TMPDIR", root)
-	target, code := openTarget(filepath.Join(root, "out"))
+	target, code, _ := openTarget(filepath.Join(root, "out"))
 	if code != "" {
 		t.Fatal(code)
 	}

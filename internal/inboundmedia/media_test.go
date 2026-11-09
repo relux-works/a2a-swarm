@@ -63,9 +63,18 @@ type fixture struct {
 	root      string
 }
 
+func mediaTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func newFixture(t *testing.T, body []byte, limit int64) *fixture {
 	t.Helper()
-	f := &fixture{root: t.TempDir()}
+	f := &fixture{root: mediaTempDir(t)}
 	t.Setenv("TMPDIR", f.root)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer synthetic-token" {
