@@ -23,11 +23,15 @@ func TestAdmissionCourierIdentity(t *testing.T) {
 	checker := policy.Get(dir)
 	checker.In = admission.Decision{Verdict: admission.Refused, Retryable: true, Reason: "dependency_unavailable"}
 	e := f.envs["alice"]
-	// Fixture cursor is s0: inject through its ordinary server event stream.
-	e.as("bob", "post", f.rooms["alice"], "--to", "alice", policy.Leak).ok(t)
+	// Fixture cursor is s0: create a topic, then deliver an addressed reply through ordinary sync.
+	e.as("bob", "topic", "new", f.rooms["alice"], "admission", "Admission").ok(t)
+	id := strings.TrimSpace(e.as("bob", "post", f.rooms["alice"], "--topic", "admission", "--to", "alice", policy.Leak).ok(t).stdout)
 	r := f.run("alice", "", "inbox", "--json").ok(t)
 	if strings.Contains(r.stdout+r.stderr, policy.Leak) {
 		t.Fatal("Courier exposed held payload")
+	}
+	if id == "" || !strings.Contains(string(admissionRead(t, filepath.Join(dir, "held.json"))), id) {
+		t.Fatal("posted event did not reach the Courier held queue through sync")
 	}
 	r = f.run("alice", "", "status", "admission", "--json").ok(t)
 	var projection struct {
