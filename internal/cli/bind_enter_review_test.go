@@ -64,6 +64,8 @@ func exhaustRecovery(t *testing.T, f *orphanDispatchFixture) {
 
 // A single capture failure after recovery qualification spends no retry. Once
 // the frame stabilizes, the same journal gets exactly one Enter, without typing.
+// The private fixture must acknowledge the exact submitted notice within its
+// step-derived wait budget; this does not prove behavior in a live provider pane.
 func TestTerminalRecoveryPreKeyFlicker(t *testing.T) {
 	for _, mode := range []string{"capture", "busy", "width"} {
 		t.Run(mode, func(t *testing.T) {
