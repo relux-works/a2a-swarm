@@ -172,6 +172,9 @@ func Authorize(argv []string, identity string) (Plan, error) {
 	case "wait", "watch":
 		values = "room match-text from kind"
 		bools = "all to-me-only json"
+		if p.Command == "watch" {
+			bools += " notices"
+		}
 		if p.Command == "wait" {
 			values += " timeout status heartbeat runtime hooks product"
 		}
