@@ -53,6 +53,14 @@ func walkDirectory(start int, parts []string) (int, error) {
 			continue
 		}
 		next, err := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			// Linux reports ENOTDIR for O_DIRECTORY|O_NOFOLLOW on a link.
+			// Inspect only that entry, without following it, for the diagnostic.
+			var st unix.Stat_t
+			if unix.Fstatat(fd, part, &st, unix.AT_SYMLINK_NOFOLLOW) == nil && st.Mode&unix.S_IFMT == unix.S_IFLNK {
+				err = unix.ELOOP
+			}
+		}
 		unix.Close(fd)
 		if err != nil {
 			return -1, err
@@ -61,12 +69,22 @@ func walkDirectory(start int, parts []string) (int, error) {
 	}
 	return fd, nil
 }
-func openTarget(output string) (*outputTarget, Code) {
+func directoryReason(err error) outputReason {
+	if errors.Is(err, unix.ELOOP) {
+		return symlinkInPath
+	}
+	return parentMissing
+}
+
+func openTarget(output string) (*outputTarget, Code, outputReason) {
 	tmp := os.Getenv("TMPDIR")
 	// Abs/Clean erase directory-only spellings, but the returned path must
 	// still name the regular file we publish.
-	if !filepath.IsAbs(tmp) || !cleanPath(tmp) || !cleanPath(output) || strings.HasSuffix(output, "/") || filepath.Base(output) == "." {
-		return nil, UnsafeOutput
+	if !filepath.IsAbs(tmp) || !cleanPath(tmp) {
+		return nil, UnsafeOutput, tmpdirInvalid
+	}
+	if !cleanPath(output) || strings.HasSuffix(output, "/") || filepath.Base(output) == "." {
+		return nil, UnsafeOutput, outputOutside
 	}
 	// TMPDIR is caller-selected trusted configuration. Resolve its system
 	// aliases once (notably /var and /tmp on macOS); never resolve an
@@ -74,11 +92,11 @@ func openTarget(output string) (*outputTarget, Code) {
 	configuredRoot := filepath.Clean(tmp)
 	rootPath, err := filepath.EvalSymlinks(configuredRoot)
 	if err != nil {
-		return nil, UnsafeOutput
+		return nil, UnsafeOutput, directoryReason(err)
 	}
 	abs, err := filepath.Abs(output)
 	if err != nil {
-		return nil, UnsafeOutput
+		return nil, UnsafeOutput, outputOutside
 	}
 	relative, err := filepath.Rel(configuredRoot, abs)
 	outputRoot := configuredRoot
@@ -108,57 +126,63 @@ func openTarget(output string) (*outputTarget, Code) {
 		}
 	}
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return nil, UnsafeOutput
+		return nil, UnsafeOutput, outputOutside
 	}
 	slash, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, UnsafeOutput
+		return nil, UnsafeOutput, directoryReason(err)
 	}
 	root, err := walkDirectory(slash, strings.Split(rootPath, "/"))
 	unix.Close(slash)
 	if err != nil {
-		return nil, UnsafeOutput
+		return nil, UnsafeOutput, directoryReason(err)
 	}
 	t := &outputTarget{root: root, parent: -1, scratch: -1, leaf: filepath.Base(relative), rootParts: strings.Split(rootPath, "/"), configuredRoot: configuredRoot, outputRoot: outputRoot}
-	fail := func(code Code) (*outputTarget, Code) { t.cleanup(); return nil, code }
+	fail := func(code Code, reason outputReason) (*outputTarget, Code, outputReason) {
+		t.cleanup()
+		return nil, code, reason
+	}
 	t.parentParts = strings.Split(filepath.Dir(relative), "/")
 	t.parent, err = walkDirectory(root, t.parentParts)
 	if err != nil {
-		return fail(UnsafeOutput)
+		return fail(UnsafeOutput, directoryReason(err))
 	}
 	var st unix.Stat_t
 	err = unix.Fstatat(t.parent, t.leaf, &st, unix.AT_SYMLINK_NOFOLLOW)
 	if err == nil {
-		return fail(OutputExists)
+		if st.Mode&unix.S_IFMT == unix.S_IFLNK {
+			return fail(UnsafeOutput, symlinkInPath)
+		}
+		return fail(OutputExists, outputExists)
 	}
 	if !errors.Is(err, unix.ENOENT) {
-		return fail(UnsafeOutput)
+		return fail(UnsafeOutput, directoryReason(err))
 	}
 	var random [16]byte
 	if _, err = rand.Read(random[:]); err != nil {
-		return fail(TransferFailed)
+		return fail(TransferFailed, "")
 	}
 	t.scratchName = ".a2a-native-media-" + hex.EncodeToString(random[:])
 	if err = unix.Mkdirat(t.root, t.scratchName, 0700); err != nil {
 		t.scratchName = ""
-		return fail(TransferFailed)
+		return fail(TransferFailed, "")
 	}
 	if err = unix.Fstatat(t.root, t.scratchName, &t.scratchStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return fail(UnsafeOutput)
+		return fail(UnsafeOutput, parentMissing)
 	}
 	t.scratch, err = unix.Openat(t.root, t.scratchName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return fail(UnsafeOutput)
+		return fail(UnsafeOutput, directoryReason(err))
 	}
 	if err = unix.Fstat(t.scratch, &t.scratchStat); err != nil || t.scratchStat.Mode&0777 != 0700 {
-		return fail(UnsafeOutput)
+		return fail(UnsafeOutput, parentMissing)
 	}
 	fd, err := unix.Openat(t.scratch, "bytes", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 	if err != nil {
-		return fail(TransferFailed)
+		return fail(TransferFailed, "")
 	}
 	t.file = os.NewFile(uintptr(fd), "native-media-scratch")
-	return t, ""
+	return t, "", ""
 }
 func sameDirectory(first, second int) bool {
 	var a, b unix.Stat_t

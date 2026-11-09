@@ -890,10 +890,11 @@ meet the existing delivery gates gain a bounded `media` projection in inbox JSON
 and an indented JSON metadata line inside the text inbox's untrusted frame.
 It includes canonical kind, declared name/MIME/size, their untrusted status,
 full sender MXID, an exact `{room_id,event_id}` handle, and
-`integrity: "homeserver_only_no_trusted_hash"`. Native metadata is inbox-only;
+`integrity: "homeserver_only_no_trusted_hash"`. Native metadata is also available
+through `a2a files ROOM --json` (or `files` for a bounded JSON metadata line);
 `wait --json`, `watch --json` and `read --json` retain their prior fields. Names are display
 data, never paths. Existing body/excerpt text can itself contain a filename
-(Element commonly uses the filename as the body); inbox-only applies to the
+(Element commonly uses the filename as the body); this projection policy applies to the
 new metadata fields, not to those pre-existing text channels. JSON format controls
 are escaped without changing decoded identifiers. Missing size is unknown; present malformed/nonpositive size
 refuses that item. A bad media item retains its handle and does not suppress
@@ -911,6 +912,17 @@ spellings, including an alternate alias of the root's ancestors, are accepted:
 ```bash
 a2a fetch '!room:example.org' '$event' -o "$TMPDIR/chosen-image.bin"
 ```
+
+An unsafe native output uses `MEDIA_OUTPUT_UNSAFE` with a closed `subreason`
+and a one-line hint naming `-o "$TMPDIR/<name>"`. The diagnostic never echoes
+the supplied output path. Subreasons are `output_outside_tmpdir` (also unsafe
+output syntax or directory-only spellings), `tmpdir_unset_or_relative` (invalid
+TMPDIR configuration), `output_exists` (an existing nonsymlink target),
+`parent_missing` (a missing, unavailable or changed directory), and
+`symlink_in_path` (a refused link in the output walk). Existing targets,
+including targets appearing during publication, refuse without replacement;
+native target collisions now use `MEDIA_OUTPUT_UNSAFE subreason=output_exists`
+instead of `MEDIA_OUTPUT_EXISTS`.
 
 The new branch re-observes the original room/event endpoint, validates exact
 event and sender context and any supplied room ID (an absent room ID is filled
@@ -1023,7 +1035,18 @@ interpolates peer encoding metadata or paths. Single-file fallback keeps its
 existing version/coding/path warning.
 
 ### `a2a files <room> [--topic X] [--last N] [--json]`
-Attachment messages, oldest first (default the last 20, max 1000, scanning at most 2000 events):
+Attachment and native media messages, oldest first (default the last 20, max
+1000, scanning at most 2000 events). Native `m.file`, `m.image`, `m.audio` and
+`m.video` messages print the inbox's bounded JSON media projection: exact
+`{room_id,event_id}` handle, kind, declared name marked untrusted, declared
+size (null when unknown), and `integrity: "homeserver_only_no_trusted_hash"`.
+The MXC locator is omitted; a declared name never selects a local path. Invalid
+native metadata retains its closed refusal and handle. With `--json`, these
+fields appear under `media` in the event record; its body has the inbox body
+bound. Use `files --json` to discover native media omitted by `read --json`.
+Listing downloads no bytes and receipts no mail.
+
+Legacy attachment messages retain their text format:
 `event id<TAB>sender<TAB>name<TAB>size<TAB>sha256 (first 12 hex)<TAB>mxc`. `--json` prints the `read --json` record of each, which then
 carries `attachment: {name, size, sha256, mxc, mimetype}` plus the complete `encoding` object when present. Text output appends
 `encoding=<version>/<coding>`, `original_name=…`, `original_size=…`, `original_sha256=…` as tab-separated fields. `read --json` includes the
@@ -1152,6 +1175,9 @@ a separately authorised observation before reporting actual media retention.
 Readable output, oldest first (default 20, max 1000). Each message is a meta line (`[time] sender event_id kind=… to=… re=… subtype=… subject=… thread=…`)
 followed by the indented text; header lines are folded into the meta line. With `--topic`, the root comes first, then the last N replies.
 `--event` prints only that message event (it cannot be combined with `--topic` or `--last`). Body control characters and bidi overrides are stripped.
+
+For native Matrix media declarations and fetch handles, use `a2a files ROOM
+--json`. `read --json` retains its existing fields and omits that projection.
 
 Message-event and invite senders retain the full decoded event MXID, including
 case and server, in JSON and in read, wait/watch, inbox (including new saves,
