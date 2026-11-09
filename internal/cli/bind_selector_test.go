@@ -10,9 +10,9 @@ import (
 // Bind selects only this invocation's own tmux pane. Without TMUX/TMUX_PANE
 // (a Codex tool shell), with only one of them, or with explicit selectors that
 // differ from them, bind refuses before tmux admission without writing a binding
-// or binding log, even for plausible selectors. The positive control shows that selectors
-// equal to both variables pass this check and reach the socket pin. A real own
-// pane binding end to end is TestBindDetachedLifecycle.
+// or binding log, even for plausible selectors. The positive controls show that
+// selectors defaulted from or equal to both variables pass this check and reach
+// the socket pin. A real own pane binding end to end is TestBindDetachedLifecycle.
 func TestBindSelectorsRequireOwnPaneVariables(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -34,6 +34,14 @@ func TestBindSelectorsRequireOwnPaneVariables(t *testing.T) {
 		{"only TMUX_PANE, explicit socket", map[string]string{"TMUX_PANE": pane}, []string{"--socket", socket}, "own tmux pane/socket"},
 		{"different pane", map[string]string{"TMUX": socket + ",1,0", "TMUX_PANE": pane}, []string{"--pane", "%8"}, "own tmux pane/socket"},
 		{"different socket", map[string]string{"TMUX": socket + ",1,0", "TMUX_PANE": pane}, []string{"--socket", socket + "-other"}, "own tmux pane/socket"},
+		// Both selectors default from the two nonempty own-pane variables and reach the socket pin.
+		{"both variables, no selectors", map[string]string{"TMUX": socket + ",1,0", "TMUX_PANE": pane}, nil, "tmux socket unavailable"},
+		// A matching socket flag with the pane defaulted from TMUX_PANE reaches the socket pin.
+		{"matching socket, default pane", map[string]string{"TMUX": socket + ",1,0", "TMUX_PANE": pane}, []string{"--socket", socket}, "tmux socket unavailable"},
+		// A matching pane flag with the socket defaulted from TMUX reaches the socket pin.
+		{"matching pane, default socket", map[string]string{"TMUX": socket + ",1,0", "TMUX_PANE": pane}, []string{"--pane", pane}, "tmux socket unavailable"},
+		// A bare TMUX socket without comma fields and a nonempty TMUX_PANE reach the socket pin.
+		{"bare TMUX socket, no selectors", map[string]string{"TMUX": socket, "TMUX_PANE": pane}, nil, "tmux socket unavailable"},
 		{"positive control: matching selectors reach the pin", map[string]string{"TMUX": socket + ",1,0", "TMUX_PANE": pane}, []string{"--socket", socket, "--pane", pane}, "tmux socket unavailable"},
 	}
 	for _, c := range cases {
