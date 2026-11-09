@@ -157,3 +157,35 @@ qualify same-UID serving, explicit UID mismatch checks, delivery barriers,
 request isolation and offline command execution. They do not qualify a second
 real OS user, live Matrix credentials, ACL isolation, service installation,
 whole-machine crash durability or every long-running streaming failure mode.
+
+
+## Station notice listener
+
+An enrolled station can run `a2a watch --notices --listen` with an explicit
+`A2A_SESSION_ID` for its existing Muse owner lease. Courier retains the mailbox,
+State, owner and lease; the station publishes only
+`state/courier-notice-listener.endpoint` alongside the existing hook failure log.
+The endpoint is atomically created, mode 0600 under a 0700 directory, and removed
+on normal stop. It contains an ephemeral loopback WebSocket address and a secret
+capability; neither is logged or sent to Courier. A verified stopped listener's
+stale endpoint after SIGKILL requires explicit operator cleanup, never takeover.
+
+Exactly one client may upgrade `/` with `Authorization: Bearer CAPABILITY`.
+Wrong credentials or request forms refuse `not_allowed`; a second client refuses
+`courier_busy`. The stream accepts no commands. Each text frame is one closed
+L01 JSON projection, never a raw event. See the [CLI notice monitor contract](cli.md#courier-notice-monitor)
+for the file format, HTTP refusals and controller responsibilities.
+
+The engine coalesces each burst for a fixed 30 seconds. Only the exact Matrix
+sender matching the identity's pinned owner closes it early; sender-declared
+urgency and owner-looking display names do not. Watch never receipts mail;
+`inbox` retains the print/ACK receipt barrier. Successful notice transport to the
+authenticated listener updates the fenced generation's `last_notice_at`.
+
+C5 liveness and cancellation are reused unchanged: 20-second keepalives,
+60-second read deadline, closed `courier_unavailable` / `courier_idle_timeout`
+reasons, and consumer-lock release within five seconds after disconnect.
+Fake Matrix, owned test processes and synthetic WebSocket clients exercise this
+path. C6 sweep auditing is independent. **TODO:** pin real installed Muse
+version/events/stdin/stdout/handshake/close fixtures before native qualification;
+Muse is unavailable here and no native Muse E2E claim is made.

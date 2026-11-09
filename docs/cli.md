@@ -4153,9 +4153,9 @@ no dispatch; a valid migration fence terminates admission with
 In station mode, `A2A_CONFIG_DIR` is a2a's managed config base. Its `.a2a/`
 child contains exactly `courier.sock`, `identity`, `station.key`, and `station`.
 Commands execute in the authenticated identity's Courier home. The station
-never writes a mailbox, State, credentials, a journal or a saved inbox. The only
-additional station file is `state/courier-hook-failures.log` (0600), created on
-its first failed-open hook. `courier status` reads local hook counts and queries
+never writes a mailbox, State, credentials, a journal or a saved inbox. The station also writes `state/courier-hook-failures.log` (0600) on its first
+failed-open hook and `state/courier-notice-listener.endpoint` (0600) while
+the notice listener runs. `courier status` reads local hook counts and queries
 the authenticated endpoint for `log_dropped`; it loads no identity credentials.
 
 Silent `wait` and `watch` invocations have no Courier execution idle cutoff.
@@ -4285,3 +4285,58 @@ contract. In-memory byte buffers and discarded output are also supported.
 Registry lookup uses shared locks so valid station hellos can run concurrently.
 New registry and lock files use explicit modes regardless of umask. A startup
 refusal after binding removes only the socket inode it created.
+
+
+## Courier notice monitor
+
+`a2a watch --notices [--json]` runs a counts-only, owner-bound engine watch.
+An enrolled station may add `--listen` to serve one output-only WebSocket
+client on an ephemeral IPv4 loopback port. It requires an explicit
+`A2A_SESSION_ID` matching the identity's existing, unexpired Muse owner lease;
+it renews that lease and never takes a different owner's lease. Raw watch
+keeps its existing behavior. `--listen` requires `--notices` and station mode.
+
+The engine emits the closed L01 projection (counts, kinds and verified
+same-server names), with no event ID, body, topic or display name. Empty mail
+emits nothing. A fixed 30-second window coalesces a burst; subsequent messages
+do not extend it. Only a message whose **exact Matrix sender ID equals the
+identity's pinned owner** closes the window early. Urgency alone, display names,
+matching localparts and normalized IDs confer no priority. A second burst opens
+a new window. Watch marks notices shown but never receipts mail. The first
+owner `inbox` still prints the untrusted body and receipts the exact event; the
+second inbox does not repeat it.
+
+The listener atomically publishes a single line, `ws://127.0.0.1:PORT/ CAPABILITY`
+plus LF, in `<A2A_CONFIG_DIR>/state/courier-notice-listener.endpoint`. The state
+directory is 0700; the file is 0600, owned by the station user. Treat the entire
+file as a secret: never print, log or forward it to Courier. A local controller
+reads it privately and uses `Authorization: Bearer CAPABILITY` for the WebSocket
+upgrade. The sole path is `/`, with no query. Invalid credentials get HTTP 403
+`not_allowed`; a second authenticated client gets HTTP 409 `courier_busy`.
+Malformed upgrades return a closed `not_allowed` body. Client data frames close
+with policy reason `not_allowed`; ping/pong control frames remain allowed.
+Each server text frame contains one canonical L01 JSON object. No remote
+command interface is exposed.
+
+The engine invocation starts only after authentication. A successfully forwarded
+notice records `monitor.last_notice_at`; refused, stale, empty and failed
+outputs do not. This is transport delivery evidence, not an application receipt
+or proof that the controller woke the agent. Disconnect cancels the invocation
+and releases its consumer locks within five seconds. Courier death closes the
+WebSocket with `courier_unavailable`; absent keepalives close it with
+`courier_idle_timeout` at the 60-second C5 read deadline. Listener death drops
+the socket; reconnect/alert policy belongs to the external controller.
+
+Normal stop removes only this generation's endpoint inode. SIGKILL cannot run
+cleanup and can leave a stale file; an operator must verify the listener is
+stopped before explicitly removing it. Startup never adopts or overwrites a
+stale endpoint. Installed Claude/Codex hook command lines work unchanged through
+the station; hook installation/uninstallation remains a local project operation.
+The next successful hook retains C5's counts-only failure-gap line. The C6 sweep
+is a separate read-only audit layer, not the notifier.
+
+**TODO — native Muse qualification:** pin the installed Muse version and its
+SessionStart/prompt/stop events, stdin/stdout JSON, and real monitor WebSocket
+handshake/close handling before qualification. No Muse installation or pinned
+native fixture is available here. Synthetic hook and WebSocket tests do not
+claim native Muse E2E or idle-wake reliability. No shim is provided.

@@ -173,7 +173,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		values = "room match-text from kind"
 		bools = "all to-me-only json"
 		if p.Command == "watch" {
-			bools += " notices"
+			bools += " notices listen"
 		}
 		if p.Command == "wait" {
 			values += " timeout status heartbeat runtime hooks product"
