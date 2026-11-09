@@ -348,6 +348,9 @@ func cmdTopic(ctx context.Context, a *App, args []string) error {
 	}
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
+		if isAdmissionRefusal(err) {
+			return err
+		}
 		return fmt.Errorf("topic new in %s: %w", label, err)
 	}
 	id := receipt.EventID()
@@ -607,6 +610,9 @@ func (s *session) sendThreadMessage(ctx context.Context, roomID, label string, h
 func (s *session) sendThreadContent(ctx context.Context, roomID, label string, h Header, content map[string]any) (string, error) {
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
+		if isAdmissionRefusal(err) {
+			return "", err
+		}
 		return "", fmt.Errorf("post to %s: %w", label, err)
 	}
 	id := receipt.EventID()

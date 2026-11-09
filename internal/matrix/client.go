@@ -27,6 +27,8 @@ const maxErrorBody = 64 << 10
 
 // Client talks to one homeserver as one user (or anonymously for registration).
 type Client struct {
+	// BeforeSend checks each prepared message attempt, including a repeated transaction.
+	BeforeSend        func(context.Context, string, string, string, []byte) error
 	BaseURL           string
 	Token             string
 	HTTP              *http.Client

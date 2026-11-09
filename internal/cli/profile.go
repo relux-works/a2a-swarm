@@ -128,6 +128,9 @@ var statePresence = map[string]string{"active": "online", "idle": "unavailable",
 
 // cmdStatus: a2a status set <active|idle|away> ["text"] | a2a status get [name]
 func cmdStatus(ctx context.Context, a *App, args []string) error {
+	if len(args) > 0 && args[0] == "admission" {
+		return cmdAdmissionStatus(ctx, a, args[1:])
+	}
 	if len(args) > 0 && args[0] == "init" {
 		return cmdStatusInit(ctx, a, args[1:])
 	}

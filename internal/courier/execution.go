@@ -191,6 +191,12 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		values = "stale-after product history-pages-per-poll poll unanswered-since unanswered-after alert-room keeper reply-alias"
 		bools = "json watch alert"
 	case "whoami":
+	case "status":
+		if len(rest) != 3 || rest[1] != "admission" || rest[2] != "--json" {
+			return p, errRefused
+		}
+		start = 2
+		bools = "json"
 	case "post-operation":
 		if len(rest) < 2 || rest[1] != "status" {
 			return p, errRefused

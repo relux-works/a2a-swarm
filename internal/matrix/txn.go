@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,6 +19,16 @@ func (c *Client) SendMessageTxn(ctx context.Context, roomID, txnID string, conte
 // the exact interpreted ACK and raw entity. Redirect policy is unchanged;
 // WithoutRedirects can additionally require the original endpoint's response.
 func (c *Client) SendMessageTxnReceipt(ctx context.Context, roomID, txnID string, content any) (ACKReceipt, error) {
+	if c.BeforeSend != nil {
+		request, err := json.Marshal(content)
+		if err != nil {
+			return ACKReceipt{}, err
+		}
+		if err := c.BeforeSend(ctx, roomID, txnID, "m.room.message", request); err != nil {
+			return ACKReceipt{}, err
+		}
+		content = json.RawMessage(request)
+	}
 	return c.ack(ctx, v3+"/rooms/"+seg(roomID)+"/send/m.room.message/"+seg(txnID), content)
 }
 func (c *Client) ack(ctx context.Context, path string, content any) (ACKReceipt, error) {

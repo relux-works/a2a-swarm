@@ -4285,3 +4285,5 @@ contract. In-memory byte buffers and discarded output are also supported.
 Registry lookup uses shared locks so valid station hellos can run concurrently.
 New registry and lock files use explicit modes regardless of umask. A startup
 refusal after binding removes only the socket inode it created.
+
+Per-identity credential metadata may set `admission_policy` (default `none`); `a2a status admission --json` shows refusal counts only. See [admission](admission.md).

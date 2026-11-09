@@ -235,6 +235,9 @@ func cmdAttach(ctx context.Context, a *App, args []string) error {
 	content["info"] = map[string]any{"size": att.Size, "mimetype": att.MimeType}
 	receipt, err := s.client.SendMessageReceipt(ctx, roomID, content)
 	if err != nil {
+		if isAdmissionRefusal(err) {
+			return err
+		}
 		return fmt.Errorf("attach to %s: %w", label, err)
 	}
 	id := receipt.EventID()

@@ -30,6 +30,7 @@ const (
 
 // App carries the process environment so tests can run commands in-process.
 type App struct {
+	admissionSessions        []*identityAdmission
 	courierEngine            bool
 	courierLeaseConflict     bool
 	courierFiles             map[string]courier.InputFile
@@ -90,6 +91,8 @@ type App struct {
 	// right after a sync batch is appended to the mailbox (before the cursor
 	// moves): an error simulates a crash there.
 	beforeAppend, afterAppend func() error
+	// afterAdmissionAppend injects a crash before held-state removal; tests only.
+	afterAdmissionAppend func() error
 	// backfillPages, when set (tests only), replaces maxBackfillPages.
 	backfillPages int
 	// leaseTTL, when set (tests only), replaces config.LeaseTTL.
@@ -210,6 +213,7 @@ func (a *App) usage(w io.Writer) {
 
 // Run executes one a2a invocation and returns the exit code.
 func (a *App) Run(ctx context.Context, args []string) int {
+	defer a.closeAdmission()
 	// This exact hidden probe must bypass connection preflight and owner-DM
 	// diagnostics: neither state nor credentials may be consulted by negotiation.
 	if len(args) == 2 && args[0] == "bind" && args[1] == "--consumer-protocol" {
@@ -454,6 +458,10 @@ func (a *App) fail(err error) int {
 	if err == nil {
 		return ExitOK
 	}
+	var refusal *admissionRefusal
+	if errors.As(err, &refusal) {
+		err = refusal
+	}
 	msg := err.Error()
 	if errors.Is(err, matrix.ErrAuth) {
 		msg = "authentication failed: " + msg + "; ask the keeper to rotate credentials"
@@ -523,6 +531,7 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // session is an authenticated identity bound to one homeserver.
 type session struct {
+	admission        *identityAdmission
 	app              *App
 	paths            config.Paths
 	mx               config.Matrix
@@ -681,6 +690,9 @@ func (a *App) sessionAsMode(name string, metadataOnly bool) (*session, error) {
 	c.BeforeRequest = s.checkConnection
 	if metadataOnly {
 		c.BeforeRequest = func() error { return errors.New("credentials unavailable; metadata session only") }
+	}
+	if err := s.openAdmission(); err != nil {
+		return nil, err
 	}
 	s.installRedactionCache()
 	return s, nil

@@ -376,7 +376,7 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 		if err := mb.Redact(b.redactions); err != nil {
 			return nil, err
 		}
-		if _, err := mb.Append(b.entries); err != nil {
+		if err := s.appendAdmitted(ctx, mb, b.entries); err != nil {
 			return nil, err
 		}
 		if a.afterAppend != nil {

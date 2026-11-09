@@ -167,6 +167,7 @@ func loadMatrix(p Paths, getenv Getenv, routingOnly bool) (Matrix, error) {
 
 // Credentials is the per-agent credential file.
 type Credentials struct {
+	AdmissionPolicy string `json:"admission_policy,omitempty"`
 	// waitKeywordsRaw is immutable optional configuration, including invalid data.
 	waitKeywordsRaw waitKeywordValues
 	WaitKeywords    WaitKeywords `json:"wait_keywords,omitempty"`

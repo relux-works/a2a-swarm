@@ -66,6 +66,8 @@ literals still compile, but adapters exposing Raw must set this field explicitly
 The `transport/conformancetest` receive hook checks the declared boundary;
 without `ReceivedRawAtSize`, `raw_bounds/received` reports a named skip.
 
+The optional per-identity [admission interface](docs/admission.md) gates mailbox delivery and prepared message sends.
+
 ## Tools
 
 | Tool | Purpose | How to run | Output |

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/relux-works/a2a-swarm/internal/admission"
 )
 
 const (
@@ -62,6 +64,7 @@ type PostOperation struct {
 	RequestLength  int             `json:"request_length"`
 	Request        json.RawMessage `json:"request,omitempty"`
 	Outcome        string          `json:"outcome"`
+	RefusalReason  string          `json:"refusal_reason,omitempty"`
 	EventID        string          `json:"event_id,omitempty"`
 	HTTPStatus     int             `json:"http_status,omitempty"`
 	ResponseLength int64           `json:"response_length,omitempty"`
@@ -101,6 +104,9 @@ func (r PostOperation) valid() bool {
 		r.RequestLength < 2 || r.RequestLength > PostRequestLimit {
 		return false
 	}
+	if r.Outcome != "refused" && r.RefusalReason != "" {
+		return false
+	}
 	switch r.Outcome {
 	case "not_submitted", "unknown":
 		if r.EventID != "" || r.HTTPStatus != 0 || r.ResponseLength != 0 || len(r.Request) != r.RequestLength || PostOperationDigest(r.Request) != r.ContentDigest {
@@ -110,6 +116,10 @@ func (r PostOperation) valid() bool {
 		// inside its request. A generic tree intentionally permits content fields.
 		var request map[string]any
 		if !utf8.Valid(r.Request) || DecodeConnectionJSON(r.Request, &request) != nil || request == nil {
+			return false
+		}
+	case "refused":
+		if !admission.ValidReason(r.RefusalReason) || len(r.Request) != 0 || r.EventID != "" || r.HTTPStatus != 0 || r.ResponseLength != 0 {
 			return false
 		}
 	case "acknowledged":
@@ -359,7 +369,7 @@ func samePostRecord(a, b PostOperation) bool {
 		a.ContentDigest == b.ContentDigest && a.RequestLength == b.RequestLength &&
 		PostOperationDigest(a.Request) == PostOperationDigest(b.Request) && bytes.Equal(a.Request, b.Request) &&
 		a.EventType == b.EventType && a.TransactionID == b.TransactionID && a.RecordDigest == b.RecordDigest &&
-		a.Outcome == b.Outcome && a.EventID == b.EventID && a.HTTPStatus == b.HTTPStatus && a.ResponseLength == b.ResponseLength
+		a.Outcome == b.Outcome && a.RefusalReason == b.RefusalReason && a.EventID == b.EventID && a.HTTPStatus == b.HTTPStatus && a.ResponseLength == b.ResponseLength
 }
 
 type postJournalEntry struct {
@@ -662,4 +672,24 @@ func (j *PostJournal) RecordACK(expected PostOperation, event string, status int
 // header, request, transaction or default deadline after wall-clock advance.
 func MatchesPostOperation(r PostOperation, binding PostBinding, room, root, intent string) bool {
 	return r.Binding == binding && r.RoomID == room && r.RootID == root && r.IntentDigest == intent
+}
+
+// RecordRefusal closes a freshly reserved, unsent operation with a closed code.
+// A caller must never use this after transport I/O or for a retained UNKNOWN.
+func (j *PostJournal) RecordRefusal(expected PostOperation, reason string) (r PostOperation, err error) {
+	if !admission.ValidReason(reason) {
+		return r, ErrPostOperation
+	}
+	err = j.locked(func() error {
+		var ok bool
+		var e error
+		r, ok, e = j.read(expected.ID)
+		if e != nil || !ok || !samePostRecord(r, expected) || r.Outcome != "unknown" {
+			return ErrPostOperation
+		}
+		r.Outcome, r.RefusalReason, r.Request = "refused", reason, nil
+		r.RecordDigest = r.digest()
+		return j.save(r, true)
+	})
+	return
 }

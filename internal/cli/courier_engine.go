@@ -43,6 +43,7 @@ func (a *App) courierHandler(home string) courier.Handler {
 			return refuse("courier: courier_unavailable\n")
 		}
 		request := &App{Stdout: inv.Stdout, Stderr: inv.Stderr, Stdin: bytes.NewReader(inv.Request.Stdin), HTTP: a.HTTP, Now: a.Now, as: inv.Identity, ctx: ctx, courierEngine: true, courierFiles: map[string]courier.InputFile{}}
+		defer request.closeAdmission()
 		request.Getenv = func(k string) string {
 			if k == config.EnvConfigDir {
 				return root

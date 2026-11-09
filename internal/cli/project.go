@@ -329,6 +329,9 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 				receipt, err := s.client.SendMessageTxnReceipt(ctx, systemRoom, projectionTxn(systemRoom, roomID, ev.EventID), content)
 				if err != nil {
 					// Keep the position: the next run retries with the same txn id.
+					if isAdmissionRefusal(err) {
+						return err
+					}
 					return fmt.Errorf("project %s from %s: %w", sanitizeLine(ev.EventID), label, err)
 				}
 				a.printf("projected %s %s %s -> %s\n", label, ev.EventID, h.Kind, receipt.EventID())

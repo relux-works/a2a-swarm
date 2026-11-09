@@ -105,6 +105,9 @@ type postOperationResult struct {
 }
 
 func (a *App) emitPostOperation(r config.PostOperation, reason string) error {
+	if r.Outcome == "refused" {
+		reason = r.RefusalReason
+	}
 	result := postOperationResult{OperationID: r.ID, Outcome: r.Outcome, RoomID: r.RoomID, RootID: r.RootID, Reason: reason}
 	if r.Outcome == "acknowledged" {
 		result.EventID = r.EventID
@@ -298,6 +301,17 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 		}
 	}
 	if sendErr != nil {
+		var refusal *admissionRefusal
+		if errors.As(sendErr, &refusal) {
+			closed, err := journal.RecordRefusal(record, refusal.reason)
+			if err != nil {
+				return errors.New("admission: refusal_persist_failed")
+			}
+			if err := a.emitPostOperation(closed, refusal.reason); err != nil {
+				return err
+			}
+			return refusal
+		}
 		return a.emitPostInvocation(record, "mutation_or_ack_unconfirmed")
 	}
 	if err := a.operationStep("after_ack_observed"); err != nil {
