@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,6 +83,24 @@ func (w *World) New(id tr.PrincipalID, c tr.Config) (*Transport, error) {
 	}
 	if err := os.Chmod(c.StateDir, 0700); err != nil {
 		return nil, tr.NewError(tr.Unavailable)
+	}
+	// Exercise the private-file invariant as well as directory modes. Restart
+	// reuses the existing regular private file without rewriting its contents.
+	path := filepath.Join(c.StateDir, "identity")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if os.IsExist(err) {
+		info, e := os.Lstat(path)
+		if e != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+			return nil, tr.NewError(tr.InvalidReference)
+		}
+	} else if err != nil {
+		return nil, tr.NewError(tr.Unavailable)
+	} else {
+		_, writeErr := file.WriteString(string(id))
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			return nil, tr.NewError(tr.Unavailable)
+		}
 	}
 	w.mu.Lock()
 	w.identities[id] = true
@@ -256,6 +275,21 @@ func (w *World) WireCalls() int { w.mu.Lock(); defer w.mu.Unlock(); return w.cal
 func (w *World) Inject(sender tr.PrincipalID, text string, at time.Time) tr.EventID {
 	return w.inject(sender, text, at, false)
 }
+
+// InjectRaw publishes otherwise valid content with n Raw bytes at the receive
+// boundary. n must fit the encoded message; trailing JSON whitespace supplies
+// the remaining bytes. Read paths still perform their normal validation.
+func (w *World) InjectRaw(sender tr.PrincipalID, n int) tr.EventID {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.sequence++
+	id := tr.EventID(fmt.Sprintf("event-%d", w.sequence))
+	message := tr.Message{Text: "raw boundary"}
+	encoded, _ := Content(message)
+	raw := append(encoded, bytes.Repeat([]byte{' '}, n-len(encoded))...)
+	w.events = append(w.events, tr.Event{ID: id, Conversation: "room", Sender: sender, Time: time.Now(), Message: message, Raw: raw})
+	return id
+}
 func (w *World) inject(sender tr.PrincipalID, text string, at time.Time, unverified bool) tr.EventID {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -285,11 +319,9 @@ func (f *Transport) Sync(ctx context.Context, c tr.Cursor, opt tr.SyncOptions) (
 		n = w.lossBefore
 	}
 	for i, e := range w.events[n:] {
-		for _, p := range w.publications {
-			if p.event.ID == e.ID && p.targets(f.id) && !p.ack[f.id] && w.defect != "advance-pending" {
-				b.Next = w.cursor(n + i)
-				return b, nil
-			}
+		if f.pending(e) && w.defect != "advance-pending" {
+			b.Next = w.cursor(n + i)
+			return b, nil
 		}
 		v, ok, dropped := f.read(e)
 		if w.defect == "backdated" && e.Time.Before(time.Now().Add(-time.Hour)) {
@@ -304,6 +336,16 @@ func (f *Transport) Sync(ctx context.Context, c tr.Cursor, opt tr.SyncOptions) (
 	}
 
 	return b, nil
+}
+
+// pending holds a reader before an unacknowledged deliverable copy. Caller holds mu.
+func (f *Transport) pending(e tr.Event) bool {
+	for _, p := range f.world.publications {
+		if p.event.ID == e.ID && p.targets(f.id) && !p.ack[f.id] {
+			return true
+		}
+	}
+	return false
 }
 func (w *World) cursor(n int) tr.Cursor { return tr.Cursor(fmt.Sprintf("fake:%d:%d", w.id, n)) }
 func (w *World) offset(c tr.Cursor, initial bool) (int, error) {
@@ -339,7 +381,8 @@ func (w *World) PartCalls(id tr.PrincipalID) int {
 func (f *Transport) read(e tr.Event) (tr.Event, bool, bool) {
 	w := f.world
 	b, _ := Content(e.Message)
-	if len(e.Raw) > tr.MaxRawBytes || len(b) > f.Caps().MaxContentBytes || (!w.identities[e.Sender] || w.unverified[e.ID]) && w.defect != "sender" {
+	oversizeRaw := len(e.Raw) > tr.MaxRawBytes && w.defect != "accept-raw" && w.defect != "clamp-raw"
+	if oversizeRaw || len(e.Raw) >= tr.MaxRawBytes && w.defect == "reject-raw-bound" || len(b) > f.Caps().MaxContentBytes || (!w.identities[e.Sender] || w.unverified[e.ID]) && w.defect != "sender" && w.defect != "sender-rewrite" {
 		return tr.Event{}, false, true
 	}
 	for _, p := range w.publications {
@@ -348,6 +391,12 @@ func (f *Transport) read(e tr.Event) (tr.Event, bool, bool) {
 		}
 	}
 	e = clone(e)
+	if w.defect == "clamp-raw" && len(e.Raw) > tr.MaxRawBytes {
+		e.Raw = e.Raw[:tr.MaxRawBytes]
+	}
+	if w.defect == "sender-rewrite" && w.unverified[e.ID] {
+		e.ID = "rewritten-" + e.ID
+	}
 	if w.defect == "message" {
 		e.Message.Kind = "changed"
 	}
@@ -390,8 +439,15 @@ func (f *Transport) History(ctx context.Context, c tr.ConversationID, page tr.Cu
 		return tr.Page{}, err
 	}
 	p := tr.Page{}
+	// History exposes the same retained window as Sync and cannot skip a pending
+	// recipient copy: return its cursor for retry after that copy is acknowledged.
+	n = max(n, w.lossBefore)
 	for n < len(w.events) {
 		e := w.events[n]
+		if f.pending(e) {
+			p.Next = w.cursor(n)
+			return p, nil
+		}
 		n++
 		v, ok, dropped := f.read(e)
 		if dropped {

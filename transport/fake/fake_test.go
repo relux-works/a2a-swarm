@@ -3,6 +3,7 @@ package fake_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,9 @@ func harness(defect string) conformancetest.Harness {
 			t.Fatal(e)
 		}
 		result := &conformancetest.Fixture{A: a, B: b, C: c, Extensions: map[string]json.RawMessage{"opaque.test": json.RawMessage(`"valid extension"`)}, Conversation: "room", StateDir: state, SentinelDir: sentinel,
+			PrincipalReferences:    func() (string, string) { return "bob", "not-a-principal" },
+			ConversationReferences: func() (string, string) { return "room", "not-a-conversation" },
+			ReceivedRawAtSize:      func(n int) tr.EventID { return w.InjectRaw("alice", n) },
 			RestartB: func() tr.Transport {
 				next, e := w.New("bob", tr.Config{StateDir: filepath.Join(state, "b")})
 				if e != nil {
@@ -66,6 +70,32 @@ func harness(defect string) conformancetest.Harness {
 				return e
 			},
 			WireCalls: w.WireCalls, MessageAtSize: fake.MessageAtSize, Logs: func() []string { return nil },
+		}
+		if defect == "empty-Extensions" {
+			result.Extensions = map[string]json.RawMessage{}
+		}
+		if defect == "state-file-mode" {
+			if e := os.Chmod(filepath.Join(state, "a", "identity"), 0644); e != nil {
+				t.Fatal(e)
+			}
+		}
+		if defect == "reference-grammar" || defect == "conversation-addressing" {
+			result.A = referenceTransport{Transport: a, acceptInvalid: defect == "conversation-addressing"}
+			result.PrincipalReferences = func() (string, string) { return "principal:bob", "bad principal" }
+			result.ConversationReferences = func() (string, string) { return "conversation:room", "bad conversation" }
+		}
+		if strings.HasPrefix(defect, "cancel-") {
+			wrapped := &cancelledTransport{Transport: a, defect: defect}
+			result.PreSubmitFailure = func() context.Context {
+				if defect == "cancel-live" {
+					wrapped.failLive = true
+					return context.Background()
+				}
+				c, cancel := context.WithCancel(context.Background())
+				cancel()
+				return c
+			}
+			result.A = wrapped
 		}
 		if strings.HasPrefix(defect, "missing-") {
 			name := strings.TrimPrefix(defect, "missing-")
@@ -117,18 +147,34 @@ func controls() []control {
 		{"drop-key", "send_idempotency", "idempotency key retry created a second logical event"},
 		{"unknown-new-id", "unknown_retry", "retry created multiple distinct logical EventIDs"},
 		{"sender", "unverifiable_sender", "unverifiable sender delivered"},
+		// Catches ID-rewriting impersonators which evaded the old wire-ID-only check.
+		{"sender-rewrite", "unverifiable_sender", "unauthenticated claim of B delivered"},
 		{"resend-all", "partial_ack", "retry resent an acknowledged part"},
 		{"early-ack", "partial_ack", "partial acknowledgement must give UNKNOWN"},
 		{"advance-pending", "partial_window", "cursor advanced past pending event without Gap"},
-		{"addressing", "addressing", "invalid principal reference accepted"},
+		{"addressing", "addressing/principal_references", "invalid principal reference accepted"},
+		// Catches a resolver that accepts every conversation reference.
+		{"conversation-addressing", "addressing/conversation_references", "invalid conversation reference accepted"},
 		{"caps", "conversation_caps", "known conversation refused"},
 		{"members", "members", "shared identity missing from Members"},
 		{"event", "event_message", "Event differs from Sync"},
 		{"message", "event_message", "message payload changed"},
 		{"transient-refused", "outcome_discipline", "pre-submit failure must give error with zero wire calls"},
+		// Catch unrelated errors, cancellation without a cancelled context, and a
+		// cancelled Send which submits anyway; wrapped cancellation is the neighbour.
+		{"cancel-unrelated", "outcome_discipline", "pre-submit failure must give error with zero wire calls"},
+		{"cancel-live", "outcome_discipline", "pre-submit failure must give error with zero wire calls"},
+		{"cancel-wire", "outcome_discipline", "pre-submit failure must give error with zero wire calls"},
 		{"error-after-submit", "unknown_retry", "transport: unavailable"},
 		{"silent-loss", "induced_loss", "window loss not reported with Gap"},
 		{"raw", "raw_bounds", "Event.Raw exceeds MaxRawBytes"},
+		// Catches missing receive validation even when ordinary sent events are small.
+		{"accept-raw", "raw_bounds/received", "oversized received event delivered"},
+		// Catch clamping instead of dropping, and rejection of the valid boundary.
+		{"clamp-raw", "raw_bounds/received", "oversized received event delivered"},
+		{"reject-raw-bound", "raw_bounds/received", "logical event"},
+		// Catches a transport writing a non-private file inside its otherwise private tree.
+		{"state-file-mode", "self", "StateDir mode: identity"},
 		{"history-cursor", "cursors", "invalid History cursor accepted"},
 		{"backdated", "resume_backdated_history", "logical event"},
 		// A bad Gap fails every Sync-using group. Assert the resume group AND the dedicated validity check.
@@ -147,25 +193,40 @@ func controls() []control {
 	for _, hook := range hooks {
 		out = append(out, control{"missing-" + hook.name, hook.group, "harness missing fault hook " + hook.name})
 	}
+	// Catch incomplete fixtures which could previously omit meaningful coverage;
+	// each control is paired with a complete-fixture run of the same group.
+	for _, name := range []string{"C", "Extensions", "StateDir", "SentinelDir"} {
+		out = append(out, control{"missing-" + name, "self", "harness missing fixture field " + name})
+	}
+	out = append(out, control{"empty-Extensions", "self", "harness missing fixture field Extensions"})
 	return out
 }
 func runControl(t *testing.T, defect, group, reason string, wantFail bool) {
+	t.Helper()
+	action := "PASS"
+	if wantFail {
+		action = "FAIL"
+	}
+	runVerdict(t, defect, group, reason, action)
+}
+
+func runVerdict(t *testing.T, defect, group, reason, action string) {
 	t.Helper()
 	exe, e := os.Executable()
 	if e != nil {
 		t.Fatal(e)
 	}
-	c := exec.Command(exe, "-test.run=^TestFakeConformance$/^"+group+"$", "-test.v")
+	parts := strings.Split(group, "/")
+	for i, part := range parts {
+		parts[i] = "^" + part + "$"
+	}
+	c := exec.Command(exe, "-test.run=^TestFakeConformance$/"+strings.Join(parts, "/"), "-test.v")
 	c.Env = append(os.Environ(), "TRANSPORT_DEFECT="+defect)
 	out, e := c.CombinedOutput()
 	// Scope diagnostics to the named subtest: a failure elsewhere cannot satisfy a control.
 	name := "TestFakeConformance/" + group
 	lines := strings.Split(string(out), "\n")
 	inGroup, diagnostic, verdict := false, false, false
-	action := "PASS"
-	if wantFail {
-		action = "FAIL"
-	}
 	for _, line := range lines {
 		if strings.HasPrefix(line, "=== RUN   ") {
 			inGroup = strings.TrimPrefix(line, "=== RUN   ") == name
@@ -177,10 +238,213 @@ func runControl(t *testing.T, defect, group, reason string, wantFail bool) {
 			verdict = true
 		}
 	}
-	if (e != nil) != wantFail || !verdict || wantFail && !diagnostic {
+	if (e != nil) != (action == "FAIL") || !verdict || !diagnostic {
 		t.Fatalf("control %s expected %s %s with %q: %s", defect, action, name, reason, out)
 	}
 	t.Logf("plant=%s expected=%s observed=%s %s reason=%s", defect, name, action, name, reason)
+}
+
+// Proves new hooks are optional with named SKIP verdicts, beside complete-hook
+// passes. Catches a harness that silently passes an unexercised new check.
+func TestOptionalHookSkips(t *testing.T) {
+	for _, tc := range []struct{ hook, group string }{
+		{"PrincipalReferences", "addressing/principal_references"},
+		{"ConversationReferences", "addressing/conversation_references"},
+		{"ReceivedRawAtSize", "raw_bounds/received"},
+	} {
+		t.Run(tc.hook, func(t *testing.T) {
+			runControl(t, "", tc.group, "", false)
+			runVerdict(t, "missing-"+tc.hook, tc.group, "harness missing optional hook "+tc.hook, "SKIP")
+		})
+	}
+}
+
+// Proves the addressing group handles a grammar where IDs are not references
+// and the old invalid-hex probes are valid. It proves no external adapter grammar.
+func TestReferenceGrammar(t *testing.T) {
+	runControl(t, "reference-grammar", "addressing", "", false)
+}
+
+type referenceTransport struct {
+	tr.Transport
+	acceptInvalid bool
+}
+
+func (r referenceTransport) Addressing() tr.Addressing {
+	return referenceAddressing{Addressing: r.Transport.Addressing(), acceptInvalid: r.acceptInvalid}
+}
+
+type referenceAddressing struct {
+	tr.Addressing
+	acceptInvalid bool
+}
+
+func (r referenceAddressing) Format(p tr.PrincipalID) string { return "principal:" + string(p) }
+func (r referenceAddressing) Principal(s string) (tr.PrincipalID, error) {
+	if strings.HasPrefix(s, "invalid-") {
+		return "bob", nil
+	}
+	if !strings.HasPrefix(s, "principal:") {
+		return "", tr.NewError(tr.InvalidReference)
+	}
+	return r.Addressing.Principal(strings.TrimPrefix(s, "principal:"))
+}
+func (r referenceAddressing) Conversation(c context.Context, s string) (tr.ConversationID, error) {
+	if r.acceptInvalid || strings.HasPrefix(s, "invalid-") {
+		return "room", nil
+	}
+	if !strings.HasPrefix(s, "conversation:") {
+		return "", tr.NewError(tr.InvalidReference)
+	}
+	return r.Addressing.Conversation(c, strings.TrimPrefix(s, "conversation:"))
+}
+
+// Proves a wrapped cancellation from a cancelled hook context is accepted beside
+// successful live-context sends. Internal unavailable has the main fake neighbour.
+func TestWrappedPreSubmitCancellation(t *testing.T) {
+	runControl(t, "cancel-wrapped", "outcome_discipline", "", false)
+}
+
+// Proves History holds at an unacknowledged recipient and later resumes through
+// that same event, beside delivered neighbours. Catches the old History which
+// advanced past pending copies, and a replacement which rejects everything.
+func TestHistoryPendingAndLoss(t *testing.T) {
+	f := harness("").New(t)
+	t.Cleanup(func() { _ = f.A.Close(); _ = f.B.Close(); _ = f.C.Close() })
+	c := context.Background()
+	bp, e := f.B.Self(c)
+	if e != nil {
+		t.Fatal(e)
+	}
+	cp, e := f.C.Self(c)
+	if e != nil {
+		t.Fatal(e)
+	}
+	send := func(key string, to ...tr.PrincipalID) tr.SendResult {
+		t.Helper()
+		r, e := f.A.Send(c, tr.SendRequest{Conversation: f.Conversation, IdempotencyKey: key, Message: tr.Message{Text: key, To: to}})
+		if e != nil {
+			t.Fatal(e)
+		}
+		return r
+	}
+	before := send("before", bp.ID)
+	f.PartialAck()
+	if r := send("pending", cp.ID, bp.ID); r.Outcome != tr.UNKNOWN {
+		t.Fatal("pending control was not partially published")
+	}
+	later := send("later", bp.ID)
+	page, e := f.B.History(c, f.Conversation, nil, 10)
+	if e != nil || len(page.Events) != 1 || page.Events[0].ID != before.Event || len(page.Next) == 0 || page.Dropped != 0 {
+		t.Fatal("History skipped pending copy or counted it as dropped")
+	}
+	held, e := f.B.History(c, f.Conversation, page.Next, 10)
+	if e != nil || len(held.Events) != 0 || string(held.Next) != string(page.Next) || held.Dropped != 0 {
+		t.Fatal("History did not hold its pending cursor")
+	}
+	resumed := send("pending", cp.ID, bp.ID)
+	if resumed.Outcome != tr.ACK {
+		t.Fatal("pending retry did not ACK")
+	}
+	after, e := f.B.History(c, f.Conversation, held.Next, 1)
+	if e != nil || len(after.Events) != 1 || after.Events[0].ID != resumed.Event || len(after.Next) == 0 {
+		t.Fatal("History lost pending event after acknowledgement")
+	}
+	tail, e := f.B.History(c, f.Conversation, after.Next, 1)
+	if e != nil || len(tail.Events) != 1 || tail.Events[0].ID != later.Event || len(tail.Next) != 0 {
+		t.Fatal("History pagination lost the delivered neighbour")
+	}
+	// Proves induced loss also bounds History from both a fresh and retained
+	// cursor. Catches the old History which resurrected events that Sync had lost.
+	f.InduceLoss()
+	fresh := send("after-loss", bp.ID)
+	for _, cursor := range []tr.Cursor{nil, page.Next, after.Next} {
+		p, e := f.B.History(c, f.Conversation, cursor, 10)
+		if e != nil || len(p.Events) != 1 || p.Events[0].ID != fresh.Event || len(p.Next) != 0 || p.Dropped != 0 {
+			t.Fatal("History resurrected lost events or lost the retained neighbour")
+		}
+	}
+}
+
+// Proves fake creation writes a regular 0600 file and restart preserves it;
+// catches a vacuous private-file check when StateDir contains only directories.
+func TestPrivateStateFile(t *testing.T) {
+	root, e := filepath.EvalSymlinks(t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	w := fake.NewWorld()
+	a, e := w.New("alice", tr.Config{StateDir: root})
+	if e != nil {
+		t.Fatal(e)
+	}
+	_ = a.Close()
+	path := filepath.Join(root, "identity")
+	info, e := os.Lstat(path)
+	if e != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		t.Fatal("fake did not write a regular private state file")
+	}
+	if e := os.WriteFile(path, []byte("retained private state"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	b, e := w.New("alice", tr.Config{StateDir: root})
+	if e != nil {
+		t.Fatal(e)
+	}
+	_ = b.Close()
+	if data, e := os.ReadFile(path); e != nil || string(data) != "retained private state" {
+		t.Fatal("restart rewrote the private state file")
+	}
+	// Catch reuse of an existing public or symlink state file; neither refusal
+	// may alter the file or its outside target. The regular private neighbour passed above.
+	if e := os.Chmod(path, 0644); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := w.New("alice", tr.Config{StateDir: root}); tr.Code(e) != tr.InvalidReference {
+		t.Fatal("public existing state file accepted")
+	}
+	if data, e := os.ReadFile(path); e != nil || string(data) != "retained private state" {
+		t.Fatal("refusal changed existing state")
+	}
+	if e := os.Remove(path); e != nil {
+		t.Fatal(e)
+	}
+	target := filepath.Join(t.TempDir(), "outside")
+	if e := os.WriteFile(target, []byte("untouched"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.Symlink(target, path); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := w.New("alice", tr.Config{StateDir: root}); tr.Code(e) != tr.InvalidReference {
+		t.Fatal("symlink existing state file accepted")
+	}
+	if data, e := os.ReadFile(target); e != nil || string(data) != "untouched" {
+		t.Fatal("refusal changed the symlink target")
+	}
+}
+
+type cancelledTransport struct {
+	tr.Transport
+	defect   string
+	failLive bool
+}
+
+func (c *cancelledTransport) Send(ctx context.Context, req tr.SendRequest) (tr.SendResult, error) {
+	if c.failLive {
+		c.failLive = false
+		return tr.SendResult{}, fmt.Errorf("spurious cancellation: %w", context.Canceled)
+	}
+	if ctx.Err() == nil {
+		return c.Transport.Send(ctx, req)
+	}
+	if c.defect == "cancel-wire" {
+		_, _ = c.Transport.Send(context.Background(), req)
+	}
+	if c.defect == "cancel-unrelated" {
+		return tr.SendResult{}, fmt.Errorf("unrelated pre-submit error")
+	}
+	return tr.SendResult{}, fmt.Errorf("cancelled: %w", context.Canceled)
 }
 
 // Proves implemented Registration and all implemented extensions pass discovery.
