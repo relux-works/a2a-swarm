@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,7 +15,7 @@ import (
 // CardEventType is the state event type of an agent card.
 const CardEventType = "ai.relux.a2a.card"
 
-// LobbyRoom is where cards live.
+// LobbyRoom is the default card room on each connection's home server.
 const LobbyRoom = "#lobby"
 
 // Card is the content of an ai.relux.a2a.card state event.
@@ -31,9 +32,12 @@ func cmdCard(ctx context.Context, a *App, args []string) error {
 	if len(args) == 0 {
 		return usagef(use)
 	}
+	if args[0] == "room" {
+		return cmdCardRoomInit(ctx, a, args[1:])
+	}
 	fs := newFlagSet("card " + args[0])
 	file := fs.String("file", "", "markdown card file (or - for stdin)")
-	room := fs.String("room", LobbyRoom, "room that holds the cards")
+	room := fs.String("room", "", "must match the configured card_room")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
@@ -55,7 +59,7 @@ func cmdCard(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		roomID, label, err := s.resolveRoom(ctx, *room)
+		roomID, label, err := s.readableCardRoom(ctx, s.server, *room)
 		if err != nil {
 			return err
 		}
@@ -63,9 +67,9 @@ func cmdCard(ctx context.Context, a *App, args []string) error {
 		id, err := s.client.PutState(ctx, roomID, CardEventType, s.creds.UserID, card)
 		if err != nil {
 			if matrix.IsCode(err, "M_FORBIDDEN") {
-				return fmt.Errorf("card set: %s does not let you send %s state events; a room admin must set power_levels.events[%q] = 0 (or give you the state_default level)", label, CardEventType, CardEventType)
+				return cardRoomUnavailable(s.server, fmt.Errorf("card set: %s does not let you send %s state events; a room admin can run a2a card room init --room %s to set power_levels.events[%q] = 0", label, CardEventType, shellQuote(label), CardEventType))
 			}
-			return fmt.Errorf("card set: %w", err)
+			return cardRoomUnavailable(s.server, fmt.Errorf("card set: %w", err))
 		}
 		a.printf("%s\n", id)
 		return nil
@@ -81,16 +85,35 @@ func cmdCard(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		roomID, label, err := s.resolveRoom(ctx, *room)
+		_, targetServer, _ := strings.Cut(strings.TrimPrefix(user, "@"), ":")
+		roomID, label, err := s.readableCardRoom(ctx, targetServer, *room)
 		if err != nil {
 			return err
 		}
-		var card Card
-		if err := s.client.GetState(ctx, roomID, CardEventType, user, &card); err != nil {
-			if isNotFound(err) {
-				return fmt.Errorf("no card for %s in %s", user, label)
+		events, err := s.client.GetRoomPolicyState(ctx, roomID)
+		if err != nil {
+			return cardRoomUnavailable(targetServer, err)
+		}
+		var content map[string]any
+		for _, event := range events {
+			if event.Type != CardEventType || event.StateKey != user {
+				continue
 			}
-			return err
+			if event.Sender != user || content != nil {
+				return fmt.Errorf("card_owner_mismatch for %s", user)
+			}
+			content = event.Content
+		}
+		if content == nil {
+			return fmt.Errorf("no card for %s in %s", user, label)
+		}
+		raw, err := json.Marshal(content)
+		if err != nil {
+			return cardRoomUnavailable(targetServer, err)
+		}
+		var card Card
+		if err := json.Unmarshal(raw, &card); err != nil {
+			return cardRoomUnavailable(targetServer, err)
 		}
 		a.printf("%s\n", strings.TrimRight(sanitizeText(card.Body), "\n"))
 		return nil

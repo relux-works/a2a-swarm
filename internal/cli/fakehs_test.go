@@ -701,7 +701,29 @@ func mayPost(room *fakeRoom, u string, state bool) bool {
 	if u == roomCreator(room) {
 		have = 100
 	}
+	if fakeV12Creator(room, u) {
+		have = int(^uint(0) >> 1)
+	}
 	return have >= need
+}
+
+func fakeV12Creator(room *fakeRoom, user string) bool {
+	var create struct {
+		Version    string   `json:"room_version"`
+		Additional []string `json:"additional_creators"`
+	}
+	if json.Unmarshal(room.state["m.room.create|"], &create) != nil || create.Version != "12" {
+		return false
+	}
+	if room.stateSenders["m.room.create|"] == user {
+		return true
+	}
+	for _, extra := range create.Additional {
+		if extra == user {
+			return true
+		}
+	}
+	return false
 }
 
 func (hs *fakeHS) send(w http.ResponseWriter, r *http.Request, u string) {
@@ -810,6 +832,9 @@ func (hs *fakeHS) putState(w http.ResponseWriter, r *http.Request, u string) {
 		have := levels.Users[u]
 		if u == roomCreator(room) {
 			have = 100
+		}
+		if fakeV12Creator(room, u) {
+			have = int(^uint(0) >> 1)
 		}
 		allowed = have >= need
 	}

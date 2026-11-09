@@ -153,7 +153,7 @@ func commands() []command {
 		{"product", "product new X [--keeper NAME] [--projector NAME] | adopt X <room> | list | show X   manage product spaces and rooms", cmdProduct},
 		{"broadcast-room", "broadcast-room init   create the global #broadcast room", cmdBroadcastRoom},
 		{"join", "join <room>                          join a room", cmdJoin},
-		{"leave", "leave <room> [--force]               leave a room (#lobby only with --force)", cmdLeave},
+		{"leave", "leave <room> [--force]               leave a room (card room only with --force)", cmdLeave},
 		{"invite", "invite <room> <@user|name>           invite someone to a room", cmdInvite},
 		{"topic", "topic new <room> <slug> \"<title>\" [--body -|@file|text] [--to a,b] [--kind K]   start a topic thread", cmdTopic},
 		{"topics", "topics <room>                        list topic threads (slug, event id, replies)", cmdTopics},
@@ -183,7 +183,7 @@ func commands() []command {
 		{"project", "project --system R --source R [--source R...] [--kind k1,k2] [--once]   project allowed sources to one explicit target", cmdProject},
 		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
 		{"creds", "creds migrate | move-human <name>   migrate selected credentials to Keychain, or move HUMAN metadata into humans/", cmdCreds},
-		{"card", "card set --file card.md | card get <name>   agent card in #lobby", cmdCard},
+		{"card", "card set --file card.md | card get <name> | card room init [--room R]   configured card store", cmdCard},
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},
 		{"runtime", "runtime bind --codex-thread ID --endpoint unix:///SOCK --owner-pid PID --heartbeat DUR --max-wakes-per-hour N --gate G --hooks H [--product X] [--watch] | dispatch|gate|abandon|status   launcher-owned native Codex wake", cmdRuntime},
@@ -594,7 +594,7 @@ func (a *App) sessionAsMode(name string, metadataOnly bool) (*session, error) {
 			if e != nil {
 				return e
 			}
-			if fresh.Fingerprint() != binding.Fingerprint() || !sameAdminPolicy(selected.AdminRegistration, binding.Connection.AdminRegistration) {
+			if fresh.Fingerprint() != binding.Fingerprint() || !sameAdminPolicy(selected.AdminRegistration, binding.Connection.AdminRegistration) || selected.CardRoom != binding.Connection.CardRoom {
 				return errors.New("selected connection changed; explicit migration required")
 			}
 			_, e = a.namedMetadata(p, name)

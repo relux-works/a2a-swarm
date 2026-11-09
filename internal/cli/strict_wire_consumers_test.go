@@ -449,13 +449,19 @@ func TestStrictOptionalAliasConsumers(t *testing.T) {
 						t.Fatal("invalid alias classified as an ordinary room instead of refusing")
 					}
 				case "leave-by-id":
-					// Compatibility bound: optional lobby lookup failure has historically
-					// continued leaving the explicitly supplied non-lobby ID. It still must
-					// never replace that ID with a differently-cased response value.
+					// Card-room protection must be established before an unforced
+					// leave, including an explicit ID. Malformed protection metadata
+					// cannot identify a safe room; --force remains the explicit escape.
 					e.configure = func(a *App) { a.HTTP = &http.Client{Transport: transport} }
 					r := e.as("alice", "leave", room)
-					if r.code != 0 {
-						t.Fatalf("explicit leave compatibility: %+v", r)
+					if kind == "valid" {
+						r.ok(t)
+					} else {
+						r.failsWith(t, ExitError, "card_room_unavailable")
+						if n := len(e.hs.CallsFor("POST /_matrix/client/v3/rooms/{room}/leave")); n != 0 {
+							t.Fatal("unproven protection reached the leave route")
+						}
+						e.as("alice", "leave", room, "--force").ok(t)
 					}
 				}
 				if calls == 0 {

@@ -12,6 +12,7 @@ import (
 // Content is the tree interpreted by the shared strict control JSON reader.
 type RoomPolicyEvent struct {
 	Type, StateKey string
+	Sender         string
 	Content        map[string]any
 }
 
@@ -54,7 +55,7 @@ func (c *Client) GetRoomPolicyState(ctx context.Context, roomID string) ([]RoomP
 			return nil, errors.New("matrix: invalid policy state event")
 		}
 		for key := range object {
-			for _, name := range []string{"type", "state_key", "content", "room_id", "unsigned"} {
+			for _, name := range []string{"type", "state_key", "sender", "content", "room_id", "unsigned"} {
 				if key != name && strings.EqualFold(key, name) {
 					return nil, errors.New("matrix: ambiguous policy state field")
 				}
@@ -65,6 +66,14 @@ func (c *Client) GetRoomPolicyState(ctx context.Context, roomID string) ([]RoomP
 		content, contentOK := object["content"].(map[string]any)
 		if !typeOK || typ == "" || !keyOK || !contentOK {
 			return nil, errors.New("matrix: invalid policy state event")
+		}
+		sender := ""
+		if value, present := object["sender"]; present {
+			var ok bool
+			sender, ok = value.(string)
+			if !ok {
+				return nil, errors.New("matrix: invalid policy sender")
+			}
 		}
 		if room, present := object["room_id"]; present && room != roomID {
 			return nil, errors.New("matrix: policy room mismatch")
@@ -80,7 +89,7 @@ func (c *Client) GetRoomPolicyState(ctx context.Context, roomID string) ([]RoomP
 				}
 			}
 		}
-		result = append(result, RoomPolicyEvent{Type: typ, StateKey: key, Content: content})
+		result = append(result, RoomPolicyEvent{Type: typ, StateKey: key, Sender: sender, Content: content})
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

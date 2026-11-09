@@ -16,6 +16,10 @@ func TestRoomPolicyStateHTTP(t *testing.T) {
 	for name, body := range map[string]string{
 		"valid":             policyStateFixture,
 		"room-omitted":      strings.Replace(policyStateFixture, `"room_id":"!selected:fixture",`, "", 1),
+		"sender":            strings.Replace(policyStateFixture, `"content":`, `"sender":"@owner:fixture","content":`, 1),
+		"null-sender":       strings.Replace(policyStateFixture, `"content":`, `"sender":null,"content":`, 1),
+		"case-sender":       strings.Replace(policyStateFixture, `"content":`, `"Sender":"@owner:fixture","content":`, 1),
+		"shadow-sender":     strings.Replace(policyStateFixture, `"content":`, `"sender":"@owner:fixture","Sender":"@forged:fixture","content":`, 1),
 		"trailing":          policyStateFixture + `{}`,
 		"duplicate":         strings.Replace(policyStateFixture, `"join_rule":"invite"`, `"join_rule":"public","join_rule":"invite"`, 1),
 		"escaped-duplicate": strings.Replace(policyStateFixture, `"join_rule":"invite"`, `"join_rule":"public","join_\u0072ule":"invite"`, 1),
@@ -49,12 +53,15 @@ func TestRoomPolicyStateHTTP(t *testing.T) {
 			c := New(server.URL, "synthetic-token")
 			c.BeforeRequest = func() error { guards++; return nil }
 			state, err := c.GetRoomPolicyState(context.Background(), "!selected:fixture")
-			valid := name == "valid" || name == "room-omitted"
+			valid := name == "valid" || name == "room-omitted" || name == "sender"
 			if (err == nil) != valid || calls != 1 || guards != 1 {
 				t.Fatalf("readback valid=%t err=%v calls=%d guards=%d", valid, err, calls, guards)
 			}
 			if valid && (len(state) != 1 || state[0].Type != "m.room.join_rules" || state[0].StateKey != "" || state[0].Content["join_rule"] != "invite") {
 				t.Fatalf("incorrect state: %+v", state)
+			}
+			if name == "sender" && state[0].Sender != "@owner:fixture" {
+				t.Fatal("lost event sender")
 			}
 			if !valid && state != nil {
 				t.Fatal("usable partial state escaped refusal")

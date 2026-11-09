@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // ConnectionRegistry contains public routing metadata, never credentials.
@@ -36,6 +37,7 @@ type Connection struct {
 	ID                   string             `json:"connection_id"`
 	URL                  string             `json:"homeserver_url"`
 	ServerName           string             `json:"server_name"`
+	CardRoom             string             `json:"card_room,omitempty"`
 	Store                CredentialStore    `json:"credential_store"`
 	RegistrationTokenRef *SecretReference   `json:"registration_token_ref,omitempty"`
 	AdminRegistration    *AdminRegistration `json:"admin_registration,omitempty"`
@@ -88,6 +90,7 @@ type ConnectionBinding struct {
 
 var connectionSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`)
+var cardAliasLocal = regexp.MustCompile(`^[A-Za-z0-9._=\-]+$`)
 
 // DecodeConnectionJSON refuses duplicate keys at every depth, unknown fields,
 // trailing values and excessive nesting. Diagnostics never reproduce input.
@@ -112,6 +115,13 @@ func DecodeConnectionJSON(data []byte, dst any) error {
 						return e
 					}
 					s, ok := k.(string)
+					// encoding/json accepts case aliases of struct fields. A
+					// shadow card_room must not silently select another store.
+					_, registry := dst.(*ConnectionRegistry)
+					_, connection := dst.(*Connection)
+					if (registry && depth == 2 || connection && depth == 0) && strings.EqualFold(s, "card_room") {
+						s = "card_room"
+					}
 					// Credentials folds this optional field's spelling. Refuse
 					// aliases up front so a rewrite cannot create duplicate keys
 					// that brick the next strict named-metadata load. Opaque
@@ -169,6 +179,9 @@ func (c Connection) Validate() error {
 	if err := ValidateMatrixRouting(c.URL, c.ServerName); err != nil {
 		return err
 	}
+	if _, err := c.CardRoomRef(); err != nil {
+		return err
+	}
 	switch c.Store.Backend {
 	case "keychain":
 		if !serviceName.MatchString(c.Store.AccessTokenService) || !serviceName.MatchString(c.Store.PasswordService) || c.Store.AccessTokenService == c.Store.PasswordService {
@@ -195,6 +208,32 @@ func (c Connection) Validate() error {
 		}
 	}
 	return nil
+}
+
+// CardRoomRef qualifies a configured alias against its connection's identity
+// server, never the caller's server or the endpoint hostname. Room IDs are
+// opaque: their suffix (if any) does not identify the card's home server.
+func (c Connection) CardRoomRef() (string, error) {
+	r := c.CardRoom
+	if r == "" {
+		r = "#lobby"
+	}
+	if len(r) > 255 || strings.IndexFunc(r, func(c rune) bool { return unicode.IsSpace(c) || unicode.IsControl(c) }) >= 0 {
+		return "", errors.New("invalid card_room: use a Matrix alias or room ID")
+	}
+	if strings.HasPrefix(r, "!") && len(r) > 1 {
+		return r, nil
+	}
+	if strings.HasPrefix(r, "#") {
+		local, server, qualified := strings.Cut(r[1:], ":")
+		if !qualified {
+			server = c.ServerName
+		}
+		if cardAliasLocal.MatchString(local) && validServerName(server) {
+			return "#" + local + ":" + server, nil
+		}
+	}
+	return "", errors.New("invalid card_room: use a Matrix alias or room ID")
 }
 
 // ValidateMatrixRouting validates a configured endpoint and its separately
@@ -357,6 +396,9 @@ func (b ConnectionBinding) Fingerprint() string {
 	// Bootstrap admission is not a consumer routing input.
 	b.Connection.RegistrationTokenRef = nil
 	b.Connection.AdminRegistration = nil
+	// Card-store policy does not change the authenticated identity or its secret
+	// namespace. Keep existing credential bindings valid when configuring it.
+	b.Connection.CardRoom = ""
 	data, _ := json.Marshal(b)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

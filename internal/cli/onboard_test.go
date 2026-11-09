@@ -133,7 +133,7 @@ func TestEnsureNeedsLobby(t *testing.T) {
 	e.run("host", "init", "mini").ok(t)
 	e.exePath("/usr/local/bin/a2a")
 	e.agent("mini_proj_orch")
-	e.ensure("--role", "orch", "--project", "proj").failsWith(t, ExitError, "#lobby does not exist on test.local")
+	e.ensure("--role", "orch", "--project", "proj").failsWith(t, ExitError, "card_room_unavailable for test.local")
 	if n := len(e.hs.CallsFor(joinRoute)) + len(e.hs.CallsFor(createRoute)) + len(e.hs.CallsFor(putADRoute)); n != 0 {
 		t.Fatalf("%d changing requests without a lobby", n)
 	}
