@@ -30,13 +30,18 @@ const (
 	NotAllowed        Diagnostic = "not_allowed"
 	IdleTimeout       Diagnostic = "courier_idle_timeout"
 	Busy              Diagnostic = "courier_busy"
+	LeaseConflict     Diagnostic = "courier_lease_conflict"
 )
 
 func (d Diagnostic) Error() string { return string(d) }
+
+var diagnosticClasses = [...]Diagnostic{EnrollmentInvalid, Unavailable, IdentityMismatch, NotAllowed, IdleTimeout, Busy, LeaseConflict}
+
 func validDiagnostic(d Diagnostic) bool {
-	switch d {
-	case EnrollmentInvalid, Unavailable, IdentityMismatch, NotAllowed, IdleTimeout, Busy:
-		return true
+	for _, admitted := range diagnosticClasses {
+		if d == admitted {
+			return true
+		}
 	}
 	return false
 }

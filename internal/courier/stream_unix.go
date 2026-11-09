@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -199,7 +200,7 @@ func (s *stream) receive() {
 		}
 	}
 }
-func (s *server) execute(c *net.UnixConn, station, identity string) {
+func (s *server) execute(c *net.UnixConn, station, identity string, sessionAdvertised bool) {
 	_ = c.SetDeadline(time.Now().Add(s.idle))
 	data, err := readFrame(c)
 	if err == io.EOF {
@@ -211,7 +212,15 @@ func (s *server) execute(c *net.UnixConn, station, identity string) {
 	}
 	r, err := parseRequest(data)
 	if err != nil {
+		if err == NotAllowed && validID(r.ID) {
+			s.diagnostic(c, NotAllowed, r.ID)
+			return
+		}
 		s.refuse(c)
+		return
+	}
+	if r.Session != "" && !sessionAdvertised {
+		s.diagnostic(c, NotAllowed, r.ID)
 		return
 	}
 	plan, authErr := Authorize(r.Argv, identity)
@@ -276,7 +285,21 @@ func (s *server) execute(c *net.UnixConn, station, identity string) {
 		_ = st.send(packet{Type: "exit", ID: r.ID, Code: 0})
 		return
 	}
-	code := s.handler(ctx, Invocation{Identity: identity, Request: r, Stdout: output{st, "stdout"}, Stderr: output{st, "stderr"}, Delivered: st.delivered})
+	var failure Diagnostic
+	var failureMu sync.Mutex
+	code := s.handler(ctx, Invocation{Identity: identity, Request: r, Stdout: output{st, "stdout"}, Stderr: output{st, "stderr"}, Delivered: st.delivered, Refuse: func(d Diagnostic) int {
+		failureMu.Lock()
+		failure = Class(d)
+		failureMu.Unlock()
+		return 1
+	}})
+	failureMu.Lock()
+	closedFailure := failure
+	failureMu.Unlock()
+	if closedFailure != "" {
+		s.diagnostic(c, closedFailure, r.ID)
+		return
+	}
 	kind := "exit"
 	if st.hookExit {
 		kind = "complete"
@@ -300,6 +323,21 @@ func Client(ctx context.Context, socket, station, identity string, key []byte, r
 	return client(ctx, socket, station, identity, key, r, stdout, stderr, StationReadDeadline)
 }
 func client(ctx context.Context, socket, station, identity string, key []byte, r Request, stdout, stderr io.Writer, readDeadline time.Duration) (int, error) {
+	if r.Session != "" && !ValidSession(r.Session) {
+		return 1, NotAllowed
+	}
+	code, err := clientAttempt(ctx, socket, station, identity, key, r, stdout, stderr, readDeadline, r.Session != "")
+	if err == errLegacyHello && ctx.Err() == nil {
+		// Old daemons strictly reject an extended station hello before executing
+		// anything. Retry once with the original hello and omit session evidence.
+		return clientAttempt(ctx, socket, station, identity, key, r, stdout, stderr, readDeadline, false)
+	}
+	return code, err
+}
+
+var errLegacyHello = errors.New("courier: legacy hello")
+
+func clientAttempt(ctx context.Context, socket, station, identity string, key []byte, r Request, stdout, stderr io.Writer, readDeadline time.Duration, offerSession bool) (int, error) {
 	if len(key) != StationKeyLen || !localName.MatchString(station) || ValidateIdentity(identity) != nil || ValidateSocketPath(socket) != nil {
 		return 1, EnrollmentInvalid
 	}
@@ -327,7 +365,11 @@ func client(ctx context.Context, socket, station, identity string, key []byte, r
 	if err != nil || len(raw) != 32 || hex.EncodeToString(raw) != nonce {
 		return 1, Unavailable
 	}
-	hello, _ := json.Marshal(map[string]string{"type": "hello", "station": station, "identity": identity, "mac": hex.EncodeToString(response(key, raw, station, identity))})
+	helloFields := map[string]any{"type": "hello", "station": station, "identity": identity, "mac": hex.EncodeToString(response(key, raw, station, identity))}
+	if offerSession {
+		helloFields["capabilities"] = []string{SessionEvidenceCapability}
+	}
+	hello, _ := json.Marshal(helloFields)
 	if writeFrame(conn, hello) != nil {
 		return 1, Unavailable
 	}
@@ -335,8 +377,20 @@ func client(ctx context.Context, socket, station, identity string, key []byte, r
 	if err != nil {
 		return 1, Unavailable
 	}
-	if string(b) != string(successFrame) {
+	if offerSession && bytes.Equal(b, refusalFrame) {
+		return 1, errLegacyHello
+	}
+	auth, authErr := object(b, map[string]bool{"type": true, "capabilities": true})
+	var authenticated string
+	if authErr != nil || json.Unmarshal(auth["type"], &authenticated) != nil || authenticated != "authenticated" || (len(auth) != 1 && len(auth) != 2) {
 		return 1, EnrollmentInvalid
+	}
+	advertised := auth["capabilities"] != nil
+	if advertised && (!offerSession || !sessionCapabilities(auth["capabilities"])) {
+		return 1, EnrollmentInvalid
+	}
+	if !advertised {
+		r.Session = ""
 	}
 	r.Type = "request"
 	r.ID = randomID()

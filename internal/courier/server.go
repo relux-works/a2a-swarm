@@ -51,6 +51,7 @@ type server struct {
 	permissions     func(*os.File, string, os.FileInfo) error
 	socketInfo      func(string) (os.FileInfo, error)
 	accept          func(*net.UnixListener) (*net.UnixConn, error)
+	legacyHello     bool // fixture seam for an endpoint predating session evidence
 }
 
 func (s *server) refuse(c *net.UnixConn) {
@@ -60,8 +61,11 @@ func (s *server) refuse(c *net.UnixConn) {
 }
 
 func parseHello(data []byte) (station, identity string, mac []byte, err error) {
-	fields, err := object(data, map[string]bool{"type": true, "station": true, "identity": true, "mac": true})
-	if err != nil || len(fields) != 4 {
+	fields, err := object(data, map[string]bool{"type": true, "station": true, "identity": true, "mac": true, "capabilities": true})
+	if err != nil || (len(fields) != 4 && len(fields) != 5) {
+		return "", "", nil, errRefused
+	}
+	if fields["capabilities"] != nil && !sessionCapabilities(fields["capabilities"]) {
 		return "", "", nil, errRefused
 	}
 	var kind, encoded string
@@ -119,6 +123,12 @@ func (s *server) handle(c *net.UnixConn) {
 		s.refuse(c)
 		return
 	}
+	fields, _ := object(data, nil)
+	offered := fields["capabilities"] != nil
+	if offered && s.legacyHello {
+		s.refuse(c)
+		return
+	}
 	e, found := lookup(s.home, station)
 	// Unknown stations still perform the same MAC operation with a dummy key.
 	key := e.Secret
@@ -131,12 +141,17 @@ func (s *server) handle(c *net.UnixConn) {
 		return
 	}
 	// The registry identity is the sole execution binding.
-	if writeFrame(c, successFrame) != nil {
+	advertised := offered && s.handler != nil
+	serverHello := successFrame
+	if advertised {
+		serverHello = []byte(`{"type":"authenticated","capabilities":["session-evidence/1"]}`)
+	}
+	if writeFrame(c, serverHello) != nil {
 		s.refuse(c)
 		return
 	}
 	if s.handler != nil {
-		s.execute(c, station, e.Identity)
+		s.execute(c, station, e.Identity, advertised)
 		return
 	}
 	_ = c.SetDeadline(time.Now().Add(s.idle))
