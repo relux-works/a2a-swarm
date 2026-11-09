@@ -185,12 +185,12 @@ func cmdMailAlarm(ctx context.Context, a *App, args []string) error {
 		if !validAlarmConfig(c) {
 			return usagef("invalid mail-alarm config: minutes 1..1440; owner auto|off|room; operator/room/topic and lead/lead-room/lead-topic required together")
 		}
-		_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.MailAlarmConfig = &c; return nil })
+		_, err = a.updateState(s.paths, s.name, func(st *config.State) error { st.MailAlarmConfig = &c; return nil })
 	case "unset":
 		if len(args) != 1 {
 			return usagef("mail-alarm unset takes no flags")
 		}
-		_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error { st.MailAlarmConfig = nil; return nil })
+		_, err = a.updateState(s.paths, s.name, func(st *config.State) error { st.MailAlarmConfig = nil; return nil })
 	case "status", "show":
 		fs := newFlagSet("mail-alarm status")
 		js := fs.Bool("json", false, "JSON")
@@ -331,7 +331,7 @@ func (a *App) observeMailAlarm(s *session, generation string, sample alarmSample
 	if advanceAlarm(&next, sample, c, targets, s.name, machineLabel()) != nil || reflect.DeepEqual(next, st.MailAlarm) {
 		return
 	}
-	_, _ = config.UpdateStateBy(s.paths, s.name, time.Now(), func(current *config.State) error {
+	_, _ = a.updateStateBy(s.paths, s.name, time.Now(), func(current *config.State) error {
 		if current.Terminal == nil || current.Terminal.Stopped || current.Terminal.Generation != generation || !reflect.DeepEqual(current.MailAlarmConfig, st.MailAlarmConfig) {
 			return errors.New("alarm observation changed")
 		}
@@ -462,7 +462,7 @@ func (a *App) sendMailAlarm(ctx context.Context, s *session, generation string) 
 		job.ResolvedRoom = room
 		job.Root = root
 		reserved := false
-		_, err = config.UpdateStateBy(s.paths, s.name, time.Now(), func(current *config.State) error {
+		_, err = a.updateStateBy(s.paths, s.name, time.Now(), func(current *config.State) error {
 			if current.Terminal == nil || current.Terminal.Stopped || current.Terminal.Generation != generation {
 				return errors.New("retired alarm worker")
 			}
@@ -512,7 +512,7 @@ func alarmSafeReason(reason string) bool {
 	return tmuxwake.ValidRuntimeReason(tmuxwake.RuntimeReason(reason))
 }
 func (a *App) finishMailAlarm(s *session, generation string, job config.MailAlarmJob, success, definite bool) {
-	_, _ = config.UpdateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
+	_, _ = a.updateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
 		if st.Terminal == nil || st.Terminal.Stopped || st.Terminal.Generation != generation {
 			return errors.New("retired alarm worker")
 		}

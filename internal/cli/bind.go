@@ -172,7 +172,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	var ready *os.File
 	var child *exec.Cmd
 	existing := false
-	err = config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	err = a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
@@ -386,7 +386,7 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 		refresh := newTerminalRefresh(ctx)
 		// Retain the original control transaction around final authority, lease
 		// acquisition and readiness. Credentials may have taken minutes to recover.
-		err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 			if err := s.checkConnection(); err != nil {
 				return err
 			}
@@ -443,8 +443,8 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 	}
 	var pid int
 	var birth string
-	err = config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
-		_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	err = a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 			b := st.Terminal
 			if b == nil || b.Stopped {
 				return nil
@@ -497,7 +497,7 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -517,7 +517,7 @@ func (a *App) resetTerminalObservations(s *session, generation string) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -662,7 +662,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		return err
 	}
 	observed := false
-	err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -865,7 +865,7 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}

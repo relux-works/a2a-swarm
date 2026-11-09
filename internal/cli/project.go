@@ -283,7 +283,7 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 		if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
 			return err
 		}
-		if st, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+		if st, err = a.updateState(s.paths, s.name, func(cur *config.State) error {
 			cur.NextBatch = resp.NextBatch
 			return nil
 		}); err != nil {
@@ -335,7 +335,7 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 			}
 		}
 		// Save the position only after every projection of the batch was sent.
-		if st, err = config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+		if st, err = a.updateState(s.paths, s.name, func(cur *config.State) error {
 			cur.NextBatch = resp.NextBatch
 			return nil
 		}); err != nil {

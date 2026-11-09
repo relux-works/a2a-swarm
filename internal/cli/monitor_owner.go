@@ -61,7 +61,11 @@ func (a *App) recordHookOwner(ctx context.Context, rt hookRuntime, ev hookEvent,
 		return err
 	}
 	deadline, _ := ctx.Deadline()
-	err = config.RecordMonitorOwnerHook(p, name, deadline, rt.name, in.SessionID, ev.name, ev.arg == "stop" && in.StopReason == "exit", a.Now())
+	if a.courierEngine {
+		err = config.RecordMonitorOwnerHookContext(ctx, p, name, deadline, rt.name, in.SessionID, ev.name, ev.arg == "stop" && in.StopReason == "exit", a.Now())
+	} else {
+		err = config.RecordMonitorOwnerHook(p, name, deadline, rt.name, in.SessionID, ev.name, ev.arg == "stop" && in.StopReason == "exit", a.Now())
+	}
 	// A non-owner hook must not invent an owner. Existing hook delivery retains
 	// its own lease guard and legacy behavior independently of this association.
 	// Wrapped malformed owner State also falls through this shim for non-Start

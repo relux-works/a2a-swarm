@@ -3,6 +3,7 @@
 package config
 
 import (
+	"context"
 	"os"
 	"strings"
 	"syscall"
@@ -50,6 +51,13 @@ func postOperationOwner(st os.FileInfo, strict bool) bool {
 }
 func lockPostOperation(f *os.File) (func(), error) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return nil, err
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }, nil
+}
+
+func lockPostOperationContext(ctx context.Context, f *os.File) (func(), error) {
+	if err := flockContext(ctx, f); err != nil {
 		return nil, err
 	}
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }, nil

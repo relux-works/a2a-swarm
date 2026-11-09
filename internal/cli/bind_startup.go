@@ -64,7 +64,7 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 				return errStartupCredentialsUnavailable
 			}
 			var initial config.TerminalBinding
-			err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+			err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 				if err := s.checkConnection(); err != nil {
 					return err
 				}

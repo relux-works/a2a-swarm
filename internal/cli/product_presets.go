@@ -308,7 +308,7 @@ func uniquePresetRooms(in []presetRoom) []presetRoom {
 // reconcilePresetSubs makes the subscriptions tagged tag exactly sels. It never
 // touches hand-made subscriptions or those of another tag.
 func (s *session) reconcilePresetSubs(ctx context.Context, tag string, sels []presetSub, now time.Time) error {
-	return config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+	return s.app.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		return s.reconcilePresetSubsWithPolicy(ctx, tag, sels, now)
 	})
 }

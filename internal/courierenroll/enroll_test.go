@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +52,7 @@ func checkGeneration(t *testing.T, dir, identity string, fill byte) {
 	}
 }
 
-// Proves atomic four-file publication and rotation preserve a pinned old reader;
+// Proves atomic four-file publication removes the old namespace while a pinned key stays readable;
 // this does not simulate power loss.
 func TestFreshRotateAndPinnedReader(t *testing.T) {
 	dir := target(t)
@@ -59,7 +60,7 @@ func TestFreshRotateAndPinnedReader(t *testing.T) {
 		t.Fatal("fresh enrollment failed")
 	}
 	checkGeneration(t, dir, "first", 1)
-	old, err := os.Open(dir)
+	old, err := os.Open(filepath.Join(dir, "station.key"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +73,13 @@ func TestFreshRotateAndPinnedReader(t *testing.T) {
 		t.Fatal("rotation failed")
 	}
 	checkGeneration(t, dir, "second", 2)
-	if verify(old, [][]byte{[]byte("/run/a2a/courier.sock\n"), []byte("first\n"), bytes.Repeat([]byte{1}, 32), []byte("station-1\n")}) != nil {
-		t.Fatal("pinned old reader lost its complete generation")
+	data, err := io.ReadAll(old)
+	if err != nil || !bytes.Equal(data, bytes.Repeat([]byte{1}, 32)) {
+		t.Fatal("pinned key descriptor changed")
+	}
+	parentEntries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil || len(parentEntries) != 1 {
+		t.Fatal("old key generation retained")
 	}
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 4 {
@@ -166,38 +172,72 @@ func TestUnsafePathsAndEntries(t *testing.T) {
 			}
 			switch name {
 			case "dir-symlink":
-				os.Rename(dir, filepath.Join(home, "old"))
-				os.Symlink("old", dir)
+				if err := os.Rename(dir, filepath.Join(home, "old")); err != nil {
+					t.Fatal("mutation failed", err)
+				}
+				if err := os.Symlink("old", dir); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "unsafe-parent":
-				os.Chmod(home, 0777)
+				if err := os.Chmod(home, 0777); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 				defer os.Chmod(home, 0700)
 			case "unsafe-ancestor":
 				child := filepath.Join(home, "child")
-				os.Mkdir(child, 0700)
+				if err := os.Mkdir(child, 0700); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 				dir = filepath.Join(child, ".a2a")
-				os.Chmod(home, 0777)
+				if err := os.Chmod(home, 0777); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 				defer os.Chmod(home, 0700)
 			case "dir-mode":
-				os.Chmod(dir, 0755)
+				if err := os.Chmod(dir, 0755); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "extra":
-				os.WriteFile(filepath.Join(dir, "extra"), nil, 0600)
+				if err := os.WriteFile(filepath.Join(dir, "extra"), nil, 0600); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "partial":
-				os.Remove(filepath.Join(dir, "identity"))
+				if err := os.Remove(filepath.Join(dir, "identity")); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "file-symlink":
-				os.Remove(filepath.Join(dir, "identity"))
-				os.Symlink("courier.sock", filepath.Join(dir, "identity"))
+				if err := os.Remove(filepath.Join(dir, "identity")); err != nil {
+					t.Fatal("mutation failed", err)
+				}
+				if err := os.Symlink("courier.sock", filepath.Join(dir, "identity")); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "fifo":
-				os.Remove(filepath.Join(dir, "identity"))
-				unix.Mkfifo(filepath.Join(dir, "identity"), 0600)
+				if err := os.Remove(filepath.Join(dir, "identity")); err != nil {
+					t.Fatal("mutation failed", err)
+				}
+				if err := unix.Mkfifo(filepath.Join(dir, "identity"), 0600); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "directory-file":
-				os.Remove(filepath.Join(dir, "identity"))
-				os.Mkdir(filepath.Join(dir, "identity"), 0600)
+				if err := os.Remove(filepath.Join(dir, "identity")); err != nil {
+					t.Fatal("mutation failed", err)
+				}
+				if err := os.Mkdir(filepath.Join(dir, "identity"), 0600); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "hardlink":
-				os.Link(filepath.Join(dir, "station.key"), filepath.Join(home, "link"))
+				if err := os.Link(filepath.Join(dir, "station.key"), filepath.Join(home, "link")); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "file-mode":
-				os.Chmod(filepath.Join(dir, "station.key"), 0644)
+				if err := os.Chmod(filepath.Join(dir, "station.key"), 0644); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "special-mode":
-				unix.Chmod(filepath.Join(dir, "station.key"), 04600)
+				if err := unix.Chmod(filepath.Join(dir, "station.key"), 04600); err != nil {
+					t.Fatal("mutation failed", err)
+				}
 			case "traversal":
 				dir = home + "/x/../.a2a"
 			case "relative":
@@ -362,7 +402,7 @@ func TestConcurrentWriters(t *testing.T) {
 	checkGeneration(t, dir, "one", 10)
 }
 
-// Proves descriptor-pinned readers see complete generations during rotations;
+// Proves namespace readers either return a complete generation or explicitly refuse during rotation;
 // whole-machine power-loss durability is outside the test.
 func TestReaderDuringRotations(t *testing.T) {
 	dir := target(t)
@@ -381,21 +421,32 @@ func TestReaderDuringRotations(t *testing.T) {
 				return
 			default:
 			}
-			f, err := os.Open(dir)
-			if err != nil {
+			generation, present, err := Read(dir)
+			// A rotation can invalidate a reader's namespace pin. It refuses
+			// explicitly; it never returns a partial key as a success.
+			if !present {
 				select {
 				case failures <- true:
 				default:
 				}
 				return
 			}
-			if verify(f, nil) != nil {
+			if err != nil {
+				continue
+			}
+			valid := generation.Identity == "same" && generation.Station == "station-1" && generation.Socket == "/run/a2a/courier.sock" && len(generation.Key) == 32
+			if valid {
+				fill := generation.Key[0]
+				valid = fill >= 12 && fill <= 24 && bytes.Equal(generation.Key, bytes.Repeat([]byte{fill}, 32))
+			}
+			clear(generation.Key)
+			if !valid {
 				select {
 				case failures <- true:
 				default:
 				}
+				return
 			}
-			f.Close()
 		}
 	}()
 	for i := 0; i < 12; i++ {
@@ -406,6 +457,7 @@ func TestReaderDuringRotations(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+	checkGeneration(t, dir, "same", 24)
 	select {
 	case <-failures:
 		t.Fatal("pinned reader saw incomplete generation")

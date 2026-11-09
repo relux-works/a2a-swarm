@@ -36,7 +36,7 @@ func withoutTrim(kinds []string, trim config.SubscriptionTrim) []string {
 }
 
 func (s *session) ensureOnboardSub(ctx context.Context, sel SubSelector, now time.Time) (sub Sub, created bool, err error) {
-	err = config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+	err = s.app.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		policy, err := s.subscriptionPolicy()
 		if err != nil {
 			return err
@@ -98,7 +98,7 @@ func cmdSubsTrim(ctx context.Context, a *App, args []string) error {
 	if !slices.Contains(joined, id) {
 		return fmt.Errorf("subscription trim requires a joined room")
 	}
-	err = config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+	err = a.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}

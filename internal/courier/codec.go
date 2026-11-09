@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"unicode/utf8"
 )
 
@@ -56,6 +57,9 @@ func object(data []byte, allowed map[string]bool) (map[string]json.RawMessage, e
 func readFrame(r io.Reader) ([]byte, error) {
 	var header [4]byte
 	if n, err := io.ReadFull(r, header[:]); err != nil {
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			return nil, err
+		}
 		if n != 0 {
 			return nil, errRefused
 		}
@@ -67,6 +71,9 @@ func readFrame(r io.Reader) ([]byte, error) {
 	}
 	b := make([]byte, int(n))
 	if _, err := io.ReadFull(r, b); err != nil {
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			return nil, err
+		}
 		return nil, errRefused
 	}
 	return b, nil

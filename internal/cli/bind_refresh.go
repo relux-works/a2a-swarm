@@ -352,7 +352,7 @@ func terminalRefreshAuthorityReason(ctx context.Context, a *App, s *session, gen
 	safe := false
 	reason := "changed_safety_unavailable"
 	var sessionID string
-	err := config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
@@ -383,7 +383,7 @@ func (r *terminalRefresh) recordStatus(s *session, generation, token string) {
 		return
 	}
 	unchanged := false
-	_, err := config.UpdateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
+	_, err := s.app.updateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
 		if b := st.Terminal; b != nil && !b.Stopped && b.Generation == generation && b.Host == machineLabel() && b.DaemonPID == os.Getpid() && b.RefreshStatus == token && s.checkConnection() == nil {
 			unchanged = true
 			return errors.New("refresh diagnostic unchanged")

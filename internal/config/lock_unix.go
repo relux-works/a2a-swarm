@@ -3,6 +3,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"os"
 	"syscall"
@@ -20,6 +21,43 @@ func lockFile(path string) (func(), error) {
 		return nil, err
 	}
 	return unlocker(f), nil
+}
+
+// lockFileContext never waits in a blocking flock. Cancellation applies even
+// when the caller has no execution deadline.
+func lockFileContext(ctx context.Context, path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|openNoFollow, SecretFileMode)
+	if err != nil {
+		return nil, err
+	}
+	if err := flockContext(ctx, f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return unlocker(f), nil
+}
+
+// The caller owns the descriptor, which may be pinned through os.Root.
+func flockContext(ctx context.Context, f *os.File) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			return err
+		}
+		timer := time.NewTimer(lockRetry)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // lockRetry is the pause between two non-blocking lock attempts.

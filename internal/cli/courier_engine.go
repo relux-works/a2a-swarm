@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -19,29 +20,35 @@ import (
 func (a *App) courierHandler(home string) courier.Handler {
 	return func(ctx context.Context, inv courier.Invocation) int {
 		refuse := func(message string) int { _, _ = io.WriteString(inv.Stderr, message); return ExitError }
+		if inv.Request.Session != "" && !courier.ValidSession(inv.Request.Session) {
+			return refuse("courier: not_allowed\n")
+		}
 		plan, err := courier.Authorize(inv.Request.Argv, inv.Identity)
 		if err != nil {
-			return refuse("courier: refused\n")
+			return refuse("courier: not_allowed\n")
 		}
 		if config.ValidateName(inv.Identity) != nil {
-			return refuse("courier: identity unavailable\n")
+			return refuse("courier: courier_unavailable\n")
 		}
 		root, err := courier.IdentityHome(home, inv.Identity)
 		if err != nil {
-			return refuse("courier: identity unavailable\n")
+			return refuse("courier: courier_unavailable\n")
 		}
 		canonical, err := filepath.EvalSymlinks(root)
 		if err != nil || canonical != root {
-			return refuse("courier: identity unavailable\n")
+			return refuse("courier: courier_unavailable\n")
 		}
 		info, err := os.Stat(root)
 		if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
-			return refuse("courier: identity unavailable\n")
+			return refuse("courier: courier_unavailable\n")
 		}
 		request := &App{Stdout: inv.Stdout, Stderr: inv.Stderr, Stdin: bytes.NewReader(inv.Request.Stdin), HTTP: a.HTTP, Now: a.Now, as: inv.Identity, ctx: ctx, courierEngine: true, courierFiles: map[string]courier.InputFile{}}
 		request.Getenv = func(k string) string {
 			if k == config.EnvConfigDir {
 				return root
+			}
+			if k == EnvSessionID {
+				return inv.Request.Session
 			}
 			return ""
 		}
@@ -55,65 +62,76 @@ func (a *App) courierHandler(home string) courier.Handler {
 		}
 		c, err := request.selectedConnection()
 		if err != nil {
-			return refuse("courier: identity unavailable\n")
+			return refuse("courier: courier_unavailable\n")
 		}
 		fingerprint := ""
 		if c != nil {
 			b, e := c.Binding(inv.Identity, false)
 			if e != nil {
-				return refuse("courier: identity unavailable\n")
+				return refuse("courier: courier_unavailable\n")
 			}
 			fingerprint = b.Fingerprint()
 		}
 		if plan.Selection.Profile != "" && plan.Selection.Profile != request.profile || plan.Selection.Fingerprint != "" && plan.Selection.Fingerprint != fingerprint {
-			return refuse("courier: refused\n")
+			return refuse("courier: not_allowed\n")
 		}
 		paths, err := request.paths()
 		if err != nil {
-			return refuse("courier: identity unavailable\n")
+			return refuse("courier: courier_unavailable\n")
 		}
 		if _, err = request.credentialMetadata(paths, inv.Identity); err != nil {
-			return refuse("courier: identity unavailable\n")
+			return refuse("courier: courier_unavailable\n")
 		}
 		if len(plan.Inputs) != len(inv.Request.Files) {
-			return refuse("courier: refused\n")
+			return refuse("courier: not_allowed\n")
 		}
 		argv := append([]string(nil), inv.Request.Argv...)
 		for index, attachment := range plan.Inputs {
 			file, ok := inv.Request.Files[index]
 			if !ok || safeFileName(file.Name) != nil {
-				return refuse("courier: refused\n")
+				return refuse("courier: not_allowed\n")
 			}
 			ref := "courier-input-" + strconv.Itoa(index)
 			request.courierFiles[ref] = file
 			if attachment {
 				argv[index] = ref
 			} else {
-				argv[index] = "@" + ref
+				prefix := ""
+				if name, _, eq := strings.Cut(argv[index], "="); eq && strings.HasPrefix(name, "-") {
+					prefix = name + "="
+				}
+				argv[index] = prefix + "@" + ref
 			}
 		}
 		plan, err = courier.Authorize(argv, inv.Identity)
 		if err != nil {
-			return refuse("courier: refused\n")
+			return refuse("courier: not_allowed\n")
 		}
 		// inbox show without a streamed --from could reopen a saved station path
 		// retained in state by an older local run. It is explicitly refused.
 		if plan.Command == "inbox" && len(plan.Args) > 0 && plan.Args[0] == "show" && len(request.courierFiles) == 0 {
-			return refuse("courier: refused\n")
+			return refuse("courier: not_allowed\n")
 		}
 		request.afterPrint = inv.Delivered
 		for _, cmd := range commands() {
 			if cmd.name != plan.Command {
 				continue
 			}
-			if err := cmd.run(ctx, request, plan.Args); err != nil {
+			err := cmd.run(ctx, request, plan.Args)
+			if errors.Is(err, config.ErrMonitorConflict) || request.courierLeaseConflict {
+				if inv.Refuse != nil {
+					return inv.Refuse(courier.LeaseConflict)
+				}
+				return refuse("courier: courier_lease_conflict\n")
+			}
+			if err != nil {
 				// Error values may include peer message bodies, private paths or backend
 				// diagnostics. Do not send them to the daemon log or expose their bytes.
-				return refuse("courier: command failed\n")
+				return refuse("courier: courier_unavailable\n")
 			}
 			return ExitOK
 		}
-		return refuse("courier: refused\n")
+		return refuse("courier: not_allowed\n")
 	}
 }
 

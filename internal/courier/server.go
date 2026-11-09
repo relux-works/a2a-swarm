@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -34,27 +35,40 @@ func validSocket(path string) bool {
 }
 
 type server struct {
-	home            string
-	log             io.Writer
-	mu              sync.Mutex
-	conns           map[*net.UnixConn]bool
-	peer            func(*net.UnixConn) (uint32, error)
-	handshake, idle time.Duration
-	handler         Handler
-	executionIdle   time.Duration
+	home             string
+	log              io.Writer
+	mu               sync.Mutex
+	conns            map[*net.UnixConn]bool
+	peer             func(*net.UnixConn) (uint32, error)
+	handshake, idle  time.Duration
+	handler          Handler
+	executionIdle    time.Duration
+	keepalive        time.Duration
+	ctx              context.Context
+	active           map[string]int
+	invocations      int
+	sink             *logSink
+	permissions      func(*os.File, string, os.FileInfo) error
+	socketInfo       func(string) (os.FileInfo, error)
+	accept           func(*net.UnixListener) (*net.UnixConn, error)
+	legacyHello      bool                          // fixture seam for an endpoint predating session evidence
+	frameWrite       func(io.Writer, []byte) error // private transport-boundary fixture
+	keepaliveTicks   <-chan time.Time
+	keepaliveAttempt func()
 }
 
 func (s *server) refuse(c *net.UnixConn) {
 	c.SetWriteDeadline(time.Now().Add(writeTimeout))
 	_ = writeFrame(c, refusalFrame)
-	s.mu.Lock()
-	_, _ = io.WriteString(s.log, refusalLine)
-	s.mu.Unlock()
+	s.sink.write(refusalLine)
 }
 
 func parseHello(data []byte) (station, identity string, mac []byte, err error) {
-	fields, err := object(data, map[string]bool{"type": true, "station": true, "identity": true, "mac": true})
-	if err != nil || len(fields) != 4 {
+	fields, err := object(data, map[string]bool{"type": true, "station": true, "identity": true, "mac": true, "capabilities": true})
+	if err != nil || (len(fields) != 4 && len(fields) != 5) {
+		return "", "", nil, errRefused
+	}
+	if fields["capabilities"] != nil && !sessionCapabilities(fields["capabilities"]) {
 		return "", "", nil, errRefused
 	}
 	var kind, encoded string
@@ -112,6 +126,12 @@ func (s *server) handle(c *net.UnixConn) {
 		s.refuse(c)
 		return
 	}
+	fields, _ := object(data, nil)
+	offered := fields["capabilities"] != nil
+	if offered && s.legacyHello {
+		s.refuse(c)
+		return
+	}
 	e, found := lookup(s.home, station)
 	// Unknown stations still perform the same MAC operation with a dummy key.
 	key := e.Secret
@@ -124,12 +144,17 @@ func (s *server) handle(c *net.UnixConn) {
 		return
 	}
 	// The registry identity is the sole execution binding.
-	if writeFrame(c, successFrame) != nil {
+	advertised := offered && s.handler != nil
+	serverHello := successFrame
+	if advertised {
+		serverHello = []byte(`{"type":"authenticated","capabilities":["session-evidence/1"]}`)
+	}
+	if writeFrame(c, serverHello) != nil {
 		s.refuse(c)
 		return
 	}
 	if s.handler != nil {
-		s.execute(c, e.Identity)
+		s.execute(c, station, e.Identity, advertised)
 		return
 	}
 	_ = c.SetDeadline(time.Now().Add(s.idle))
@@ -156,6 +181,9 @@ func Serve(ctx context.Context, home, socket string, log io.Writer) error {
 }
 
 func (s *server) serve(ctx context.Context, socket string, ready func()) error {
+	s.ctx = ctx
+	s.sink = newLogSink(s.log)
+	defer s.sink.close()
 	if !validSocket(socket) {
 		return errRefused
 	}
@@ -188,16 +216,36 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 	}
 	listener.SetUnlinkOnClose(false)
 	defer listener.Close()
-	info, err := os.Lstat(socket)
-	if err != nil {
+	// Pin cleanup through the held directory before any pathname lookup can
+	// refuse. A failed Lstat (for example after an ancestor rename) must not
+	// leave our just-bound socket behind.
+	var created unix.Stat_t
+	name := filepath.Base(socket)
+	if unix.Fstatat(int(dir.Fd()), name, &created, unix.AT_SYMLINK_NOFOLLOW) != nil || created.Mode&unix.S_IFMT != unix.S_IFSOCK || created.Uid != uint32(os.Geteuid()) {
 		return errRefused
 	}
 	defer func() {
-		if sameSocketAt(dir, filepath.Base(socket), info) {
-			_ = unix.Unlinkat(int(dir.Fd()), filepath.Base(socket), 0)
+		if sameSocketInodeAt(dir, name, uint64(created.Dev), created.Ino) {
+			_ = unix.Unlinkat(int(dir.Fd()), name, 0)
 		}
 	}()
-	if setSocketPermissions(dir, socket, info) != nil {
+	socketInfo := s.socketInfo
+	if socketInfo == nil {
+		socketInfo = os.Lstat
+	}
+	info, err := socketInfo(socket)
+	if err != nil {
+		return errRefused
+	}
+	stamp, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || uint64(stamp.Dev) != uint64(created.Dev) || stamp.Ino != created.Ino {
+		return errRefused
+	}
+	permissions := s.permissions
+	if permissions == nil {
+		permissions = setSocketPermissions
+	}
+	if permissions(dir, socket, info) != nil {
 		return errRefused
 	}
 
@@ -216,10 +264,24 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 	}
 	defer wg.Wait()
 	for {
-		c, err := listener.AcceptUnix()
+		accept := s.accept
+		if accept == nil {
+			accept = func(l *net.UnixListener) (*net.UnixConn, error) { return l.AcceptUnix() }
+		}
+		c, err := accept(listener)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if transientAccept(err) {
+				timer := time.NewTimer(AcceptBackoff)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil
+				case <-timer.C:
+				}
+				continue
 			}
 			return errRefused
 		}
@@ -235,7 +297,11 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 		}
 		s.mu.Unlock()
 		if full {
-			s.refuse(c)
+			if s.handler != nil {
+				s.diagnostic(c, Busy, "")
+			} else {
+				s.refuse(c)
+			}
 			c.Close()
 			continue
 		}
@@ -256,13 +322,14 @@ func sameSocketAt(dir *os.File, name string, info os.FileInfo) bool {
 	if !ok || info.Mode()&os.ModeSocket == 0 {
 		return false
 	}
+	return sameSocketInodeAt(dir, name, uint64(original.Dev), original.Ino)
+}
+func sameSocketInodeAt(dir *os.File, name string, device, inode uint64) bool {
 	var current unix.Stat_t
 	if unix.Fstatat(int(dir.Fd()), name, &current, unix.AT_SYMLINK_NOFOLLOW) != nil {
 		return false
 	}
-	return current.Mode&unix.S_IFMT == unix.S_IFSOCK &&
-		current.Uid == uint32(os.Geteuid()) &&
-		uint64(current.Dev) == uint64(original.Dev) && current.Ino == original.Ino
+	return current.Mode&unix.S_IFMT == unix.S_IFSOCK && current.Uid == uint32(os.Geteuid()) && uint64(current.Dev) == device && current.Ino == inode
 }
 
 func setSocketPermissions(dir *os.File, path string, info os.FileInfo) error {
@@ -279,4 +346,8 @@ func setSocketPermissions(dir *os.File, path string, info os.FileInfo) error {
 		return errRefused
 	}
 	return nil
+}
+
+func transientAccept(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EINTR)
 }

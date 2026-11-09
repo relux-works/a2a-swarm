@@ -65,6 +65,10 @@ func shortCourierBase(t *testing.T) string {
 	return p
 }
 func newCourierFixture(t *testing.T) *courierFixture {
+	return newCourierFixtureHandler(t, nil)
+}
+
+func newCourierFixtureHandler(t *testing.T, wrap func(courier.Handler) courier.Handler) *courierFixture {
 	t.Helper()
 	f := &courierFixture{store: &namedTestStore{items: map[config.SecretReference]string{}}, t: t, home: filepath.Join(canonicalRoot(t), "courier"), socket: filepath.Join(shortCourierBase(t), "s", "c.sock"), stations: map[string]string{}, paths: map[string]config.Paths{}, bindings: map[string]config.ConnectionBinding{}, envs: map[string]*env{}, rooms: map[string]string{}, done: make(chan error, 1), log: &flushBuffer{}}
 	for _, name := range []string{"alice", "bob"} {
@@ -125,8 +129,12 @@ func newCourierFixture(t *testing.T) *courierFixture {
 	}
 	f.daemon = &App{connectionSecretStore: f.store, HTTP: f.envs["alice"].hs.srv.Client(), Now: time.Now, Getenv: func(string) string { panic("daemon read ambient selection") }, as: "ambient-identity", profile: "ambient-profile", connectionResolved: true, connection: &config.Connection{ID: "poison"}}
 	ctx, cancel := context.WithCancel(context.Background())
+	handler := f.daemon.courierHandler(f.home)
+	if wrap != nil {
+		handler = wrap(handler)
+	}
 	go func() {
-		f.done <- courier.ServeWithHandler(ctx, f.home, f.socket, f.log, f.daemon.courierHandler(f.home))
+		f.done <- courier.ServeWithHandler(ctx, f.home, f.socket, f.log, handler)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -175,7 +183,7 @@ func (f *courierFixture) app(name, input string, out, diag io.Writer) *App {
 		case envSecretStore:
 			return "poison"
 		case EnvSessionID:
-			return "ambient-session"
+			return "" // Session is now admitted explicitly by session-evidence/1.
 		}
 		return ""
 	}, connectionSecretStore: courierSecretTrap{}}
@@ -188,7 +196,7 @@ func (f *courierFixture) run(name, input string, args ...string) result {
 	f.envs[name].assertNoLeak(r)
 	return r
 }
-func (f *courierFixture) rawRun(name string, args ...string) result {
+func (f *courierFixture) rawRun(name string, args ...string) (result, error) {
 	f.t.Helper()
 	e, _, err := courierenroll.Read(filepath.Join(f.stations[name], ".a2a"))
 	if err != nil {
@@ -197,10 +205,7 @@ func (f *courierFixture) rawRun(name string, args ...string) result {
 	defer clear(e.Key)
 	var out, diag bytes.Buffer
 	code, err := courier.Client(context.Background(), e.Socket, e.Station, e.Identity, e.Key, courier.Request{Argv: args}, &out, &diag)
-	if err != nil {
-		f.t.Fatal("protocol invocation failed")
-	}
-	return result{code: code, stdout: out.String(), stderr: diag.String()}
+	return result{code: code, stdout: out.String(), stderr: diag.String()}, err
 }
 
 func (f *courierFixture) received(name, id string) bool {
@@ -225,7 +230,7 @@ func TestCourierExecutionFetchHelpBoundary(t *testing.T) {
 		{"fetch", "--", "proj", "$file", "--help"},
 	} {
 		r := f.run("alice", "", args...)
-		if r.code != ExitError || r.stdout != "" || !strings.Contains(r.stderr, "courier: refused") {
+		if r.code != ExitError || r.stdout != "" || (!strings.Contains(r.stderr, "not_allowed") && !strings.Contains(r.stderr, "identity_mismatch")) {
 			t.Fatal("fetch execution bypassed Courier refusal")
 		}
 	}
@@ -285,11 +290,24 @@ func TestCourierExecutionRefusals(t *testing.T) {
 	} {
 		before := len(f.envs["alice"].hs.Calls())
 		r := f.run("alice", "", args...)
-		if r.code != ExitError || !strings.Contains(r.stderr, "courier: refused") {
+		if r.code != ExitError || (!strings.Contains(r.stderr, "not_allowed") && !strings.Contains(r.stderr, "identity_mismatch")) {
 			t.Fatal("request not refused with bounded diagnostic")
 		}
-		if raw := f.rawRun("alice", args...); raw.code != ExitError || raw.stderr != "courier: refused\n" {
-			t.Fatal("daemon did not independently refuse request")
+		raw, wireErr := f.rawRun("alice", args...)
+		expected := courier.NotAllowed
+		if len(args) > 2 && args[0] == "whoami" && args[1] == "--as" {
+			expected = courier.IdentityMismatch
+		}
+		engineRefusal := len(args) > 2 && args[0] == "whoami" && (args[1] == "--profile" || args[1] == "--connection-fingerprint")
+		if raw.code != ExitError || raw.stdout != "" {
+			t.Fatal("daemon refusal exit/output", raw)
+		}
+		if engineRefusal {
+			if wireErr != nil || raw.stderr != "courier: not_allowed\n" {
+				t.Fatal("real daemon stderr differs", raw, wireErr)
+			}
+		} else if wireErr != expected || raw.stderr != "" {
+			t.Fatal("wire diagnostic differs", raw, wireErr)
 		}
 		if len(f.envs["alice"].hs.Calls()) != before {
 			t.Fatal("refusal called Matrix")
@@ -301,7 +319,7 @@ func TestCourierExecutionRefusals(t *testing.T) {
 	}
 	before := len(f.envs["alice"].hs.Calls())
 	r := f.run("alice", "", "whoami")
-	if r.code != ExitError || r.stderr != "courier: identity unavailable\n" || len(f.envs["alice"].hs.Calls()) != before {
+	if r.code != ExitError || r.stderr != "courier: courier_unavailable\n" || len(f.envs["alice"].hs.Calls()) != before {
 		t.Fatal("missing identity did not refuse without Matrix")
 	}
 	if err := os.Rename(root+"-held", root); err != nil {
@@ -461,6 +479,8 @@ func TestCourierExecutionStreamedInputs(t *testing.T) {
 		t.Fatal("file body changed")
 	}
 	f.run("alice", "", "post", f.rooms["alice"], "--topic", "alpha", "--envelope", "@"+body, "envelope text").ok(t)
+	f.run("alice", "", "post", f.rooms["alice"], "--topic", "alpha", "--envelope=@"+body, "inline envelope").ok(t)
+	f.run("alice", "", "topic", "new", f.rooms["alice"], "inline", "Inline", "--body=@"+body, "--json").ok(t)
 	f.run("alice", "", "attach", f.rooms["alice"], "--topic", "alpha", body).ok(t)
 	record, _ := json.Marshal(EventRecord{EventID: "$saved", Body: "saved input body", Sender: "@bob:" + testServer})
 	saved := filepath.Join(root, "saved.txt")
@@ -470,10 +490,13 @@ func TestCourierExecutionStreamedInputs(t *testing.T) {
 	if r := f.run("alice", "", "inbox", "show", "$saved", "--from", "@"+saved).ok(t); !strings.Contains(r.stdout, "saved input body") {
 		t.Fatal("streamed saved frame lost body")
 	}
+	if r := f.run("alice", "", "inbox", "show", "$saved", "--from=@"+saved).ok(t); !strings.Contains(r.stdout, "saved input body") {
+		t.Fatal("equals input lost body")
+	}
 	// A forged file-free engine request must not open even a valid daemon path.
 	var out, diag bytes.Buffer
 	code := f.daemon.courierHandler(f.home)(context.Background(), courier.Invocation{Identity: "alice", Request: courier.Request{Argv: []string{"post", f.rooms["alice"], "@" + body}}, Stdout: &out, Stderr: &diag, Delivered: func() error { return nil }})
-	if code != ExitError || out.Len() != 0 || diag.String() != "courier: refused\n" {
+	if code != ExitError || out.Len() != 0 || diag.String() != "courier: not_allowed\n" {
 		t.Fatal("unstreamed path reached execution")
 	}
 }

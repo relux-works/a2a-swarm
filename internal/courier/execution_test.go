@@ -21,7 +21,7 @@ import (
 // rejecting management, identity selection and station paths. No execution.
 func TestExecutionAllowlist(t *testing.T) {
 	valid := [][]string{
-		{"post", "room", "hello"}, {"inbox"}, {"inbox", "show", "$id", "--from", "@frame"},
+		{"post", "room", "hello"}, {"post", "room", "text", "--envelope=@f"}, {"topic", "new", "room", "slug", "title", "--body=@f", "--json"}, {"inbox", "show", "id", "--from=@f"}, {"inbox"}, {"inbox", "show", "$id", "--from", "@frame"},
 		{"read", "room", "--json"}, {"topics", "room"}, {"topic", "new", "room", "slug", "title", "--body", "@file"},
 		{"attach", "room", "file.txt", "--topic", "$root"}, {"files", "room"}, {"wait", "--timeout", "20ms"}, {"watch", "--room", "room"},
 		{"--as", "identity", "hook", "prompt", "--runtime", "claude"}, {"hook", "stop", "--runtime", "codex"}, {"hook", "session-start", "--runtime", "claude"},
@@ -35,8 +35,8 @@ func TestExecutionAllowlist(t *testing.T) {
 	}
 	invalid := [][]string{
 		{"creds", "migrate"}, {"identity", "ensure"}, {"courier", "serve"}, {"connection", "use", "alpha"}, {"config"}, {"keychain"}, {"register", "other"}, {"rooms"}, {"ack", "all-shown"},
-		{"whoami", "--as", "other"}, {"whoami", "--as", "other", "--as", "identity"}, {"--human", "whoami"},
-		{"inbox", "--out", "/station/output"}, {"inbox", "--brief"}, {"inbox", "show", "$id", "--from", "/station/input"},
+		{"whoami", "--as", "other"}, {"whoami", "--as", "other", "--as", "identity"}, {"--human=true", "whoami"},
+		{"post", "room", "text", "--id-file", "/station/output"}, {"inbox", "--out", "/station/output"}, {"inbox", "--brief"}, {"inbox", "show", "$id", "--from", "/station/input"},
 		{"post", "room", "text", "--result-file", "/station/output"}, {"post", "room", "text", "--voice"}, {"post", "room", "text", "--config", "private"},
 		{"hook", "install", "--settings", "/station/settings"}, {"bind", "association"}, {"topic", "retire", "room", "topic"},
 		{"A2A_CONFIG_DIR=/private", "whoami"}, {"whoami", "--profile", ""}, {"whoami", "--as"},
@@ -49,6 +49,9 @@ func TestExecutionAllowlist(t *testing.T) {
 }
 
 func executionServer(t *testing.T, handler Handler, idle time.Duration) *running {
+	return executionServerOptions(t, handler, idle, nil)
+}
+func executionServerOptions(t *testing.T, handler Handler, idle time.Duration, configure func(*server)) *running {
 	t.Helper()
 	root, e := filepath.EvalSymlinks(t.TempDir())
 	if e != nil {
@@ -74,6 +77,9 @@ func executionServer(t *testing.T, handler Handler, idle time.Duration) *running
 	t.Cleanup(func() { os.RemoveAll(socketBase) })
 	r := &running{home: home, path: filepath.Join(socketBase, "s", "c.sock"), secret: key, log: &lockedLog{}, done: make(chan error, 1)}
 	r.s = &server{home: home, log: r.log, conns: map[*net.UnixConn]bool{}, peer: peerUID, handshake: time.Second, idle: time.Second, handler: handler, executionIdle: idle}
+	if configure != nil {
+		configure(r.s)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	ready := make(chan struct{})
@@ -162,6 +168,7 @@ func TestExecutionReceiptACK(t *testing.T) {
 				if mode == "disconnect-after-output" {
 					c.Close()
 				} else {
+					acknowledgeOutput(t, c, out)
 					b, err = readFrame(c)
 					var delivery packet
 					if err != nil || json.Unmarshal(b, &delivery) != nil || delivery.Type != "delivery" {
@@ -261,10 +268,10 @@ type closedOutput struct{}
 
 func (closedOutput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
-// Proves idle read expiration and client context cancellation stop a running
+// Proves daemon shutdown and client disconnection stop a running
 // handler; no live Matrix or long-duration streaming qualification is claimed.
 func TestExecutionCancellation(t *testing.T) {
-	for _, mode := range []string{"disconnect", "idle"} {
+	for _, mode := range []string{"disconnect", "shutdown"} {
 		t.Run(mode, func(t *testing.T) {
 			entered := make(chan struct{})
 			finished := make(chan struct{})
@@ -279,12 +286,16 @@ func TestExecutionCancellation(t *testing.T) {
 			}
 			if mode == "disconnect" {
 				c.Close()
+			} else {
+				r.cancel()
 			}
 			select {
 			case <-finished:
 			case <-r.done:
-				t.Fatal("server stopped")
-			case <-time.After(5 * time.Second):
+				if mode == "disconnect" {
+					t.Fatal("disconnect stopped server")
+				}
+			case <-time.After(LockReleaseBound):
 				t.Fatal("handler not canceled")
 			}
 		})
@@ -353,5 +364,13 @@ func TestExecutionStdinOperands(t *testing.T) {
 		if err != nil || p.Stdin != tc.want {
 			t.Fatal("stdin operand classification differs from command contract")
 		}
+	}
+}
+
+func acknowledgeOutput(t *testing.T, c *net.UnixConn, p packet) {
+	t.Helper()
+	b, err := json.Marshal(packet{Type: "output_ack", ID: p.ID, Batch: p.Batch, Identity: p.Identity})
+	if err != nil || writeFrame(c, b) != nil {
+		t.Fatal("output acknowledgement failed")
 	}
 }

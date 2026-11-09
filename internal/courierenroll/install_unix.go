@@ -18,8 +18,8 @@ import (
 var fileNames = []string{"courier.sock", "identity", "station.key", "station"}
 
 // Install consumes a pipe enrollment. Publication replaces a whole directory,
-// never individual files. A rotation retains the old generation as a private
-// sibling so readers holding its directory fd can finish consistently.
+// never individual files. A successful rotation removes the old key copy.
+// Readers with an open key descriptor may finish; namespace readers may retry.
 func Install(dir string, r io.Reader, rotate bool) error {
 	return install(dir, r, rotate, nil)
 }
@@ -160,6 +160,17 @@ func install(dir string, r io.Reader, rotate bool, hook fault) error {
 		postErr = unix.Fsync(p)
 	}
 	if postErr == nil {
+		if exists {
+			if !sameEntry(p, stageName, old) {
+				return errRecovery
+			}
+			if err := removeStage(p, stageName, old); err != nil {
+				return errRecovery
+			}
+			if unix.Fsync(p) != nil {
+				return errRecovery
+			}
+		}
 		return nil
 	}
 	// On an ordinary post-publication failure, restore the previous namespace.
@@ -278,16 +289,20 @@ func snapshot(dir *os.File, want [][]byte) ([][]byte, error) {
 	return data, nil
 }
 
-// Cleanup is confined to our newly allocated, still-linked staging inode. Old
-// published generations are retained, never unlinked beneath active readers.
-func removeStage(parent int, name string, stage *os.File) {
+// Cleanup is confined to the verified, still-linked generation inode.
+func removeStage(parent int, name string, stage *os.File) error {
 	if !sameEntry(parent, name, stage) {
-		return
+		return errRecovery
 	}
 	for _, file := range fileNames {
-		_ = unix.Unlinkat(int(stage.Fd()), file, 0)
+		if err := unix.Unlinkat(int(stage.Fd()), file, 0); err != nil && err != unix.ENOENT {
+			return errRecovery
+		}
 	}
-	_ = unix.Unlinkat(parent, name, unix.AT_REMOVEDIR)
+	if unix.Unlinkat(parent, name, unix.AT_REMOVEDIR) != nil {
+		return errRecovery
+	}
+	return nil
 }
 
 type parentChain struct {

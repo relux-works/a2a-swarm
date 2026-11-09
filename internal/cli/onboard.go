@@ -104,7 +104,7 @@ func (s *session) ensureOnboardingPrincipals(ctx context.Context, rooms []onboar
 	if len(principalOnboardingPlan(rooms)) == 0 {
 		return nil
 	}
-	return config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+	return s.app.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		for _, room := range principalOnboardingPlan(rooms) {
 			if err := s.ensureRoomPrincipals(ctx, room.id, now); err != nil {
 				return err

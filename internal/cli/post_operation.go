@@ -151,7 +151,7 @@ func cmdPostOperation(_ context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	journal, err := config.OpenPostJournal(own.paths, own.name, a.human, false)
+	journal, err := a.openPostJournal(own.paths, own.name, a.human, false)
 	if err != nil {
 		if prune {
 			return errors.New("post operation prune refused: local_evidence_unavailable")
@@ -198,7 +198,7 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 		return err
 	}
 	defer releaseAttempt()
-	journal, err := config.OpenPostJournal(own.paths, own.name, a.human, true)
+	journal, err := a.openPostJournal(own.paths, own.name, a.human, true)
 	if err != nil {
 		return errors.New("post operation refused: journal_unavailable; no send")
 	}

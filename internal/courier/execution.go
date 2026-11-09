@@ -6,16 +6,20 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/deliverypolicy"
 )
 
-// Request is the single bounded invocation following the unchanged C1 hello.
+// Request is the single bounded invocation following the C1-compatible hello.
 // Files are keyed by argv index; paths are never execution inputs on the daemon.
 type Request struct {
-	Type  string            `json:"type"`
-	ID    string            `json:"id"`
-	Argv  []string          `json:"argv"`
-	Stdin []byte            `json:"stdin"`
-	Files map[int]InputFile `json:"files"`
+	Type    string            `json:"type"`
+	ID      string            `json:"id"`
+	Argv    []string          `json:"argv"`
+	Stdin   []byte            `json:"stdin"`
+	Files   map[int]InputFile `json:"files"`
+	Session string            `json:"session,omitempty"`
 }
 type InputFile struct {
 	Name string `json:"name"`
@@ -29,6 +33,8 @@ type Invocation struct {
 	Request        Request
 	Stdout, Stderr io.Writer
 	Delivered      func() error
+	// Refuse reports a closed invocation failure without transmitting backend text.
+	Refuse func(Diagnostic) int
 }
 type Handler func(context.Context, Invocation) int
 
@@ -38,11 +44,12 @@ type Selection struct{ As, Profile, Fingerprint string }
 // Plan describes the closed command schema and the argv positions that carry
 // input file contents. The same parser is used before client I/O and execution.
 type Plan struct {
-	Command   string
-	Args      []string
-	Selection Selection
-	Inputs    map[int]bool // true: attachment (bare path); false: @body input
-	Stdin     bool         // only an actual stdin operand or hook input, never a flag value
+	Command      string
+	Args         []string
+	Selection    Selection
+	Inputs       map[int]bool // true: attachment (bare path); false: @body input
+	Stdin        bool         // only an actual stdin operand or hook input, never a flag value
+	LongConsumer bool
 }
 
 // Authorize uses a positive command/option schema. New CLI flags fail closed
@@ -64,6 +71,10 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		}
 		name, value, eq := strings.Cut(arg, "=")
 		switch name {
+		case "--human":
+			if eq || len(rest) != 0 {
+				return p, errRefused
+			}
 		case "--as", "-as", "--profile", "--connection-fingerprint":
 			if !eq {
 				i++
@@ -78,7 +89,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 			switch name {
 			case "--as", "-as":
 				if value != identity {
-					return p, errRefused
+					return p, IdentityMismatch
 				}
 				p.Selection.As = value
 			case "--profile":
@@ -102,11 +113,17 @@ func Authorize(argv []string, identity string) (Plan, error) {
 	}
 	p.Command = rest[0]
 	p.Stdin = p.Command == "hook"
+	waitTimeout := deliverypolicy.DefaultWaitTimeout
 	start := 1
 	values, bools := "", ""
 	minPos, maxPos := 0, 0
 	bodyPos, attachPos := -1, -1
 	switch p.Command {
+	case "courier":
+		if len(rest) != 2 || rest[1] != "status" {
+			return p, errRefused
+		}
+		start = 2
 	case "post":
 		values = "topic kind re to reply-by trunk subtype subject operation-id envelope"
 		bools = "reply-main json"
@@ -137,6 +154,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		}
 		start = 2
 		values = "body to kind"
+		bools = "json"
 		minPos = 3
 		maxPos = 256
 	case "attach":
@@ -158,7 +176,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 			values += " timeout status heartbeat runtime hooks product"
 		}
 	case "hook":
-		if len(rest) < 2 || (rest[1] != "stop" && rest[1] != "session-start" && rest[1] != "prompt") {
+		if len(rest) < 2 || (rest[1] != "stop" && rest[1] != "session-start" && rest[1] != "prompt" && rest[1] != "session-end") {
 			return p, errRefused
 		}
 		start = 2
@@ -223,10 +241,14 @@ func Authorize(argv []string, identity string) (Plan, error) {
 			if p.Command == "topic" && name == "body" && value == "-" {
 				p.Stdin = true
 			}
-			if (p.Command == "topic" && name == "body" || p.Command == "post" && name == "envelope" || p.Command == "inbox" && name == "from") && strings.HasPrefix(value, "@") {
-				if eq {
+			if p.Command == "wait" && name == "timeout" {
+				d, err := time.ParseDuration(value)
+				if err != nil || d < 0 {
 					return p, errRefused
 				}
+				waitTimeout = d
+			}
+			if (p.Command == "topic" && name == "body" || p.Command == "post" && name == "envelope" || p.Command == "inbox" && name == "from") && strings.HasPrefix(value, "@") {
 				p.Inputs[indices[vi]] = false
 			}
 			// inbox show --from is a path, so only explicit streamed @input is admitted.
@@ -252,14 +274,30 @@ func Authorize(argv []string, identity string) (Plan, error) {
 	if attachPos >= 0 {
 		p.Inputs[indices[pos[attachPos]]] = true
 	}
+	p.LongConsumer = deliverypolicy.LongConsumer(p.Command, waitTimeout)
 	p.Args = rest[1:]
 	return p, nil
 }
 
 func parseRequest(data []byte) (Request, error) {
 	var r Request
-	fields, err := object(data, map[string]bool{"type": true, "id": true, "argv": true, "stdin": true, "files": true})
-	if err != nil || len(fields) != 5 || json.Unmarshal(data, &r) != nil || r.Type != "request" || !validID(r.ID) || len(r.Argv) == 0 || len(r.Argv) > 256 {
+	fields, err := object(data, map[string]bool{"type": true, "id": true, "argv": true, "stdin": true, "files": true, "session": true})
+	if err != nil || (len(fields) != 5 && len(fields) != 6) {
+		return r, errRefused
+	}
+	for _, key := range []string{"type", "id", "argv", "stdin", "files"} {
+		if fields[key] == nil {
+			return r, errRefused
+		}
+	}
+	if raw := fields["session"]; raw != nil {
+		var session string
+		if json.Unmarshal(raw, &session) != nil || !ValidSession(session) {
+			_ = json.Unmarshal(fields["id"], &r.ID)
+			return r, NotAllowed
+		}
+	}
+	if json.Unmarshal(data, &r) != nil || r.Type != "request" || !validID(r.ID) || len(r.Argv) == 0 || len(r.Argv) > 256 {
 		return r, errRefused
 	}
 	for _, v := range r.Argv {

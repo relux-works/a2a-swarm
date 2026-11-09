@@ -100,7 +100,7 @@ func followCommand(ctx context.Context, a *App, args []string, follow bool) erro
 		return err
 	}
 	changed := false
-	if _, err := config.UpdateState(s.paths, s.name, func(cur *config.State) error {
+	if _, err := a.updateState(s.paths, s.name, func(cur *config.State) error {
 		if follow {
 			changed = cur.Follow(root)
 		} else {

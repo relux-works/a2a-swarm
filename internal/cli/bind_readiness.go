@@ -49,7 +49,7 @@ func (a *App) associateTerminalRoot(s *session, expected config.TerminalBinding,
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -103,7 +103,7 @@ func (a *App) observeTerminalReadiness(s *session, expected config.TerminalBindi
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -133,7 +133,7 @@ func (a *App) qualifyTerminalIdle(s *session, generation string, b config.Termin
 		if err := s.checkConnection(); err != nil {
 			return false, err
 		}
-		_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 			if err := s.checkConnection(); err != nil {
 				return err
 			}
@@ -158,7 +158,7 @@ func (a *App) qualifyTerminalIdle(s *session, generation string, b config.Termin
 	if err := s.checkConnection(); err != nil {
 		return false, err
 	}
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}

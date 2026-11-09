@@ -326,8 +326,12 @@ The state file holds `lease: {holder, pid, expires}`. `wait`, `watch`, `inbox` a
 session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` when set, otherwise a valid native `CODEX_THREAD_ID`, otherwise a valid
 `CLAUDE_CODE_SESSION_ID` when neither higher-priority environment selector is set, otherwise `pid:<pid>@<host>` (the OS hostname, independent of the identity naming slug).
 `watch` and unbounded `wait --timeout 0` ignore both ambient native runtime IDs: unless explicitly owned through `A2A_SESSION_ID` (or a supplied hook id),
-their holder is their own PID with the process birth where supported below. All renewals, including retries, use that same process scope. Finite waits,
-`inbox` and hooks retain session sharing. Native bound consumers already use the binding's explicit session id; this does not change their ownership or exclusive consumer locks.
+their holder is their own PID with the process birth where supported below. All renewals, including retries, use that same process scope. Default `wait` (25 minutes), other finite waits,
+`inbox` and hooks retain session sharing. Every raw `wait` and `watch`, including default and finite waits from the monitor owner,
+refuses a retained non-stopped monitor before acquiring a lease or consumer lock. An enrolled station reports `courier_lease_conflict`.
+With a cleanly stopped monitor or no monitor record, default and finite station waits retain ambient runtime session evidence.
+A newly acquired lease records that runtime session as its holder.
+Native bound consumers already use the binding's explicit session id; this does not change their ownership or exclusive consumer locks.
 - Another holder while the lease is unexpired is refused: `wait`, `watch` and `inbox` exit 1 with
   `identity <name> is held by <holder> until <time>` before any sync; a hook prints nothing, writes that line to stderr and exits 0.
 - An expired lease is taken over. A `pid:` holder on this host whose process has exited counts as expired.
@@ -4143,3 +4147,141 @@ unreadable State refuses authentication/effects rather than assuming no fence.
 A running bind may retry such a read with its existing bounded diagnostics and
 no dispatch; a valid migration fence terminates admission with
 `identity_migrated`. Muse retains its runtime-specific closed diagnostic format.
+
+## Courier streaming, cancellation and station hooks
+
+In station mode, `A2A_CONFIG_DIR` is a2a's managed config base. Its `.a2a/`
+child contains exactly `courier.sock`, `identity`, `station.key`, and `station`.
+Commands execute in the authenticated identity's Courier home. The station
+never writes a mailbox, State, credentials, a journal or a saved inbox. The only
+additional station file is `state/courier-hook-failures.log` (0600), created on
+its first failed-open hook. `courier status` reads local hook counts and queries
+the authenticated endpoint for `log_dropped`; it loads no identity credentials.
+
+Silent `wait` and `watch` invocations have no Courier execution idle cutoff.
+The command's own timeout decides when it ends. The daemon sends invisible
+`keepalive` frames every 20 seconds; the station read deadline is three intervals
+(60 seconds). Missing liveness yields `courier_idle_timeout`. Disconnect cancels
+the invocation context. Its consumer and state/lease locks must release within
+five seconds. SIGINT closes the station connection and returns 130. SIGTERM
+cancels the daemon's in-flight invocations, which report `courier_unavailable`.
+An unacknowledged receipt is never completed by shutdown.
+
+Output is sent in bounded chunks, with one chunk awaiting a flow ACK after the
+station writes and flushes it. The daemon blocks the command writer until that
+ACK arrives. A stalled reader gets a framed `courier_idle_timeout`; there is no
+unbounded output queue. Flow ACKs are bound to invocation, chunk batch and
+identity, and cannot complete receipts. Receipts still require the separate
+`delivery`/`ack` barrier after stdout write and flush. Watch, wait and hook
+doorbells make no mailbox receipts. Hook output chunks are flow-ACKed into
+bounded station memory. At a hook's delivery barrier the daemon sends `delivery`
+and a successful `exit` boundary before waiting for the receipt ACK. The station
+validates that boundary, writes and flushes real stdout, then sends `ack`.
+A lost/malformed boundary or failed stdout write sends no receipt ACK, leaving
+the doorbell eligible to ring again. The handler then completes its state update
+and sends `complete` with the actual exit code. Output after this boundary is
+refused. Both endpoints must support this hook handshake for the receipt barrier
+to hold. Older stations retain their older ACK ordering; update both endpoints
+before relying on this guarantee. Mixed-version operation is not qualified.
+
+The station errors form a closed set and contain no request operands:
+
+| Class | Meaning |
+| --- | --- |
+| `enrollment_invalid` | Invalid/incomplete enrollment or authentication; the only class that suggests re-running enroll |
+| `courier_unavailable` | Endpoint unavailable, shutdown, or a closed execution failure |
+| `identity_mismatch` | Requested `--as` differs from the authenticated binding |
+| `not_allowed` | Command, option, input or connection assertion is outside the closed schema |
+| `courier_idle_timeout` | Missing liveness, stalled output/ACK, or exhausted hook work budget |
+| `courier_busy` | Per-station, global invocation, or execution connection capacity reached |
+| `courier_lease_conflict` | Another owner holds this identity's lease; the active monitor refused the claimed session |
+
+The seven classes above are the complete station diagnostic set. Invocation
+session evidence is optional and negotiated per connection. A station that has
+a session offers `session-evidence/1` in its hello; the daemon advertises that
+capability in its authenticated hello response only for an opted-in station.
+Legacy four-field hellos and their original response remain valid. A strict old
+daemon may refuse the extended hello before execution; the station retries once
+with the legacy hello. No command is retried after a request has been sent.
+
+Only an advertised connection may carry the optional request `session` string.
+The string is 1–128 bytes of ASCII letters, digits, dot, underscore or hyphen,
+excluding the hook key's `-` sentinel. An empty typed value is omitted; an empty
+but present wire value, invalid grammar or unadvertised field refuses with
+`not_allowed`, without execution. Values are never truncated or repaired.
+Without the capability the station omits evidence and keeps legacy behavior.
+
+The station resolves ordinary session evidence from `A2A_SESSION_ID`, then
+`CODEX_THREAD_ID`, then `CLAUDE_CODE_SESSION_ID`, using the local validators and
+precedence. Watch and unbounded wait ignore ambient runtime IDs; only an
+explicit `A2A_SESSION_ID` may name their session. Hooks use their own stdin
+`session_id`, never an ambient ID. The daemon's invocation environment admits
+only the identity config directory and this request session. It never borrows
+daemon environment IDs or infers an owner from State. Session evidence is a
+claim from an authenticated station for its bound identity, not independent
+owner authentication. L02/L03 still require the exact unexpired same-host owner
+lease; another identity's session or a PID fallback cannot bypass a monitor.
+
+Missing environment discovery or failed config-base resolution refuses explicitly;
+hooks retain exit 0. It cannot fall through into local execution. `--envelope=@file`, `--body=@file`,
+`--from=@file` and `topic new --json` are admitted alongside their spaced forms.
+Conflicting duplicate profile assertions and `--id-file` remain refused.
+
+A station hook has a five-second total budget, reserving its final 250 milliseconds
+for local failure accounting. Unreachable, refused, busy, timed-out or failed
+invocations fail open: exit 0 and empty stdout. Partial hook stdout/stderr is held
+in bounded memory until a successful exit. A successful hook preserves its
+existing `--as` and doorbell output contract.
+
+Each failed-open delivery appends a UTC timestamp, one fixed hook event name and
+one closed error class to `state/courier-hook-failures.log`. No bodies, tokens,
+argv or paths are recorded. The newest 256 failure lines are retained, dropping
+oldest lines at the cap. Pending count and oldest unreported UTC time are stored
+in the same file's `user.a2a.courier-hook-gap` extended attribute, under the file's
+lock, so no counter sidecar or fifth enrolled entry is created. The local
+filesystem must support file extended attributes. Accounting errors are visible
+as a closed `courier_unavailable` line on stderr; hooks still exit 0.
+
+The next successful hook emits one counts-only line on stderr:
+`courier: N hook deliveries failed open since UTC_TIME`. The gap counter is reset under the log lock before emitting the line,
+so a failed reset cannot duplicate it. Failure history is retained. With no failures there is no log file or
+gap line. `a2a courier status` prints `hook_failures`, `oldest_unreported` and the
+daemon sink's `log_dropped` counter.
+No native idle-wake reliability is established by a doorbell or these tests;
+external watchdog, sweep and soak qualification are separate work.
+
+| Named bound | Value |
+| --- | --- |
+| `KeepaliveInterval` | 20 s |
+| `StationReadDeadline` | 3 intervals = 60 s |
+| `LockReleaseBound` | 5 s |
+| `HookBudget` | 5 s |
+| `HookStateReserve` | 250 ms; hook transport/input work gets 4.75 s |
+| `MaxStationInvocations` | 4 |
+| `MaxInvocations` | 32 |
+| `MaxConnections` | 64; no unbounded accept/invocation queue |
+| `OutputChunkBytes` | 1024 bytes, one unacknowledged chunk per invocation |
+| `MaxFrameBytes` | 65536 bytes, including the request and its inputs |
+| `HookOutputBytes` | 1 MiB per buffered stdout/stderr stream |
+| `HookFailureLines` | 256; `hookFailureLineBytes` bounds accounting input at 128 bytes per line |
+| `LogQueueLines` | 64 fixed daemon diagnostic lines |
+| `AcceptBackoff` | 50 ms for EMFILE, ENFILE, ECONNABORTED or EINTR |
+| `stationInputPoll` | 20 ms; cancellation checks during hook input and local log-lock waits |
+| `handshakeTimeout`, `idleTimeout` | 5 s handshake/request or authentication-only idle bound |
+| `writeTimeout` | 1 s for closed refusals |
+| `executionIdle` | 60 s output/ACK write bound; no silent-command cutoff |
+
+Daemon logs pass through a bounded, non-blocking sink outside the connection
+mutex. A full queue or undrained file stderr drops and counts lines; it cannot
+hold up a connection or shutdown. File stderr is forwarded through a private nonblocking pipe to a worker
+that owns a duplicate of the destination descriptor. The sink does not set
+`O_NONBLOCK` on the shared stderr description. A destination suspended during
+a blocking write may retain one worker and its descriptors until its reader
+resumes; shutdown does not wait for that worker. The queue and pipe remain
+bounded. In-process embeddings can supply
+`NonblockingLogWriter` with a promptly returning `TryCourierLog`; unclassified
+writer adapters are dropped and counted rather than called without a cancellation
+contract. In-memory byte buffers and discarded output are also supported.
+Registry lookup uses shared locks so valid station hellos can run concurrently.
+New registry and lock files use explicit modes regardless of umask. A startup
+refusal after binding removes only the socket inode it created.

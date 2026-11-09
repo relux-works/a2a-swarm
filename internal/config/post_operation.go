@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -130,6 +131,20 @@ type PostJournal struct {
 }
 
 func (j *PostJournal) Close() error { return j.root.Close() }
+
+// OpenPostJournalContext retains the pinned-directory and evidence contract,
+// while cancellation bounds every later read/write lock acquisition.
+func OpenPostJournalContext(ctx context.Context, p Paths, name string, human, create bool) (*PostJournal, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	j, err := OpenPostJournal(p, name, human, create)
+	if err != nil {
+		return nil, err
+	}
+	j.lock = func(f *os.File) (func(), error) { return lockPostOperationContext(ctx, f) }
+	return j, nil
+}
 func (j *PostJournal) step(stage string) error {
 	if j.fault != nil {
 		if err := j.fault(stage); err != nil {

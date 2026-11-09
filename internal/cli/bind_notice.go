@@ -399,8 +399,8 @@ func (a *App) clearTerminalNoticeOnTurn(ctx context.Context, s *session, session
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
-	return config.WithRuntimeLock(s.paths, s.name, "control", deadline, func() error {
-		_, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	return a.withRuntimeLock(s.paths, s.name, "control", deadline, func() error {
+		_, err := a.updateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
 			b := st.Terminal
 			if st.HooksPaused || b == nil || b.Stopped || b.SessionID != sessionID || b.Host != machineLabel() {
 				return nil

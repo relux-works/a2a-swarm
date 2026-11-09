@@ -262,7 +262,7 @@ func (s *session) resolveTopic(ctx context.Context, roomID, roomLabel, topic str
 
 // rememberThread records a thread this agent takes part in, so `a2a wait` rings on replies.
 func (s *session) rememberThread(root string) error {
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err := s.app.updateState(s.paths, s.name, func(st *config.State) error {
 		st.AddThread(root)
 		return nil
 	})

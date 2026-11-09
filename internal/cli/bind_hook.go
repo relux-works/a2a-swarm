@@ -106,7 +106,7 @@ func ownTerminalTarget(b *config.TerminalBinding, target tmuxwake.Target) bool {
 }
 
 func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBinding, target tmuxwake.Target, next string) (config.State, error) {
-	return config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	return a.updateState(s.paths, s.name, func(st *config.State) error {
 		b := st.Terminal
 		if b == nil || !ownTerminalTarget(b, target) || b.Generation != expected.Generation || b.SessionID != expected.SessionID || b.Host != expected.Host || b.OwnerPID != expected.OwnerPID || b.OwnerBirth != expected.OwnerBirth || b.Target != expected.Target {
 			return errors.New("binding changed before session handover")
@@ -183,7 +183,7 @@ func waitPriorBindingConsumer(ctx context.Context, b *config.TerminalBinding) er
 // The opposite admission direction closes new-version bind/wait races. An old
 // binary cannot enforce this, hence bind also inspects live executable images.
 func refuseBoundWait(ctx context.Context, s *session) error {
-	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	return s.app.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err
@@ -215,7 +215,7 @@ func refuseBoundWait(ctx context.Context, s *session) error {
 // Check before process/socket probes as well as under the final control lock.
 // Expiry never authorizes a second consumer or a legacy backend handback.
 func refuseHostConsumer(s *session) error {
-	return config.WithRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+	return s.app.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
 			return err

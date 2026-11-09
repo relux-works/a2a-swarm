@@ -289,7 +289,7 @@ func (a *App) alertLiveness(ctx context.Context, s *session, rows []whoRow, room
 func (a *App) publishLivenessTransition(ctx context.Context, s *session, key string, incident livenessIncident, room string, keepers []string) error {
 	for tries := 0; tries < 2; tries++ {
 		var pending *config.LivenessAlertMessage
-		_, err := config.UpdateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout), func(st *config.State) error {
+		_, err := a.updateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout), func(st *config.State) error {
 			if st.LivenessAlerts == nil {
 				st.LivenessAlerts = map[string]config.LivenessAlert{}
 			}
@@ -344,7 +344,7 @@ func (a *App) publishLivenessTransition(ctx context.Context, s *session, key str
 		if _, err := s.client.SendMessageTxnReceipt(ctx, pending.Room, pending.Txn, pending.Content); err != nil {
 			return err
 		}
-		_, err = config.UpdateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout), func(st *config.State) error {
+		_, err = a.updateStateBy(s.paths, s.name, time.Now().Add(nativeRPCTimeout), func(st *config.State) error {
 			record := st.LivenessAlerts[key]
 			if record.Pending != nil && record.Pending.Txn == pending.Txn {
 				record.Pending = nil

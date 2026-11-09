@@ -290,7 +290,7 @@ func cmdIdentityRelease(a *App, args []string) error {
 	}
 	cleared := false
 	a.leaseReuse = nil
-	if _, err := config.UpdateState(p, name, func(cur *config.State) error {
+	if _, err := a.updateState(p, name, func(cur *config.State) error {
 		var err error
 		cleared, err = cur.Release(name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
 		return err
@@ -499,7 +499,7 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 		ttl = a.leaseTTL
 	}
 	a.leaseReuse = nil
-	_, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
+	_, err := config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}

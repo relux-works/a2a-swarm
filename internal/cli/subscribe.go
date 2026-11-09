@@ -487,7 +487,7 @@ func (s *session) updateSubsWithPolicyBy(ctx context.Context, deadline time.Time
 		return config.State{}, SubList{}, err
 	}
 	var list SubList
-	st, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(st *config.State) error {
+	st, err := config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -693,7 +693,7 @@ func cmdUnsubscribe(ctx context.Context, a *App, args []string) error {
 	}
 	var removed []string
 	var kept []Sub
-	err = config.WithRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+	err = a.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		configured, err := ownerFiles(s.paths, s.name).principals()
 		if err != nil {
 			return err

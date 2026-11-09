@@ -13,6 +13,7 @@ package config
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -829,6 +830,29 @@ func UpdateStateUntil(p Paths, name string, deadline time.Time, fn func(*State) 
 		return UpdateState(p, name, fn)
 	}
 	return UpdateStateBy(p, name, deadline, fn)
+}
+
+// UpdateStateContext bounds lock acquisition by cancellation and an optional
+// earlier deadline. A deadline timeout retains UpdateStateBy's error contract.
+func UpdateStateContext(ctx context.Context, p Paths, name string, deadline time.Time, fn func(*State) error) (State, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	st, err := updateState(p, name, func(path string) (func(), error) { return lockFileContext(ctx, path) }, func(st *State) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fn(st)
+	})
+	if errors.Is(err, context.DeadlineExceeded) && !deadline.IsZero() && !time.Now().Before(deadline) {
+		err = ErrLockTimeout
+	}
+	return st, err
 }
 
 func updateState(p Paths, name string, lock func(string) (func(), error), fn func(*State) error) (State, error) {
