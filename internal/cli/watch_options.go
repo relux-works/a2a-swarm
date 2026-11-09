@@ -1,6 +1,9 @@
 package cli
 
-import "github.com/relux-works/a2a-swarm/internal/courier"
+import (
+	"github.com/relux-works/a2a-swarm/internal/courier"
+	"strings"
+)
 
 type watchOptions struct {
 	rooms                      stringList
@@ -34,4 +37,36 @@ func parseWatchOptions(args []string) (watchOptions, error) {
 	}
 	o.predicates, err = p.check()
 	return o, err
+}
+
+// Serialize parsed semantics, rather than inserting transport flags into raw
+// argv: a trailing -- and values that look like flags must retain their meaning.
+func (o watchOptions) noticeListenerArgs(selection courier.Selection) []string {
+	args := []string{"watch", "--notices=true", "--listen=true", "--json=true"}
+	for _, field := range []struct{ name, value string }{
+		{"as", selection.As}, {"profile", selection.Profile}, {"connection-fingerprint", selection.Fingerprint},
+	} {
+		if field.value != "" {
+			args = append(args, "--"+field.name+"="+field.value)
+		}
+	}
+	for _, room := range o.rooms {
+		args = append(args, "--room="+room)
+	}
+	if o.all {
+		args = append(args, "--all=true")
+	}
+	if o.predicates.toMe {
+		args = append(args, "--to-me-only=true")
+	}
+	if o.predicates.text != nil {
+		args = append(args, "--match-text="+o.predicates.text.String())
+	}
+	if len(o.predicates.from) != 0 {
+		args = append(args, "--from="+strings.Join(o.predicates.from, ","))
+	}
+	if len(o.predicates.kinds) != 0 {
+		args = append(args, "--kind="+strings.Join(o.predicates.kinds, ","))
+	}
+	return args
 }

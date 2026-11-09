@@ -162,3 +162,69 @@ func TestCMListenerOptionRefusals(t *testing.T) {
 	l := cmStartC5(t, s)
 	cmConnect(t, l)
 }
+
+func TestCMListenerArgvCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"plain", []string{"watch", "--notices", "--listen"}},
+		{"terminator", []string{"watch", "--notices", "--listen", "--"}},
+		{"json-false", []string{"watch", "--notices", "--listen", "--json=false"}},
+		{"value-looks-like-flag", []string{"watch", "--notices", "--listen", "--room", "--json"}},
+		{"selected-filtered", []string{"--as=identity", "watch", "--notices", "--listen", "--match-text", "a|b", "--from", "alice,@bob:test.local", "--kind", "notice", "--to-me-only", "--room", "room", "--all", "--"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newC5Station(t, func(ctx context.Context, inv courier.Invocation) int {
+				plan, err := courier.Authorize(inv.Request.Argv, "identity")
+				if err != nil {
+					return 1
+				}
+				// Decode at the handler independently of the new serializer.
+				var o struct {
+					rooms                      stringList
+					json, listen, notices, all bool
+					predicates                 deliveryPredicates
+				}
+				fs := newFlagSet("handler-control")
+				fs.Var(&o.rooms, "room", "")
+				fs.BoolVar(&o.json, "json", false, "")
+				fs.BoolVar(&o.listen, "listen", false, "")
+				fs.BoolVar(&o.notices, "notices", false, "")
+				fs.BoolVar(&o.all, "all", false, "")
+				predicateFlags := addDeliveryPredicateFlags(fs)
+				pos, err := parseInterspersed(fs, plan.Args)
+				if err != nil || len(pos) != 0 {
+					return 1
+				}
+				o.predicates, err = predicateFlags.check()
+				if err != nil || !o.json || !o.listen || !o.notices {
+					return 1
+				}
+				if tc.name == "value-looks-like-flag" && (len(o.rooms) != 1 || o.rooms[0] != "--json") {
+					return 1
+				}
+				if tc.name == "selected-filtered" && (plan.Selection.As != "identity" || !o.all || len(o.rooms) != 1 || o.rooms[0] != "room" || !o.predicates.toMe || o.predicates.text == nil || o.predicates.text.String() != "a|b" || strings.Join(o.predicates.from, ",") != "alice,@bob:test.local" || strings.Join(o.predicates.kinds, ",") != "notice") {
+					return 1
+				}
+				if _, err := io.WriteString(inv.Stdout, cmValidLine); err != nil {
+					return 1
+				}
+				<-ctx.Done()
+				return 0
+			})
+			l := cmStart(t, s.home, func(ctx context.Context, diag io.Writer) result {
+				a := &App{Stdout: io.Discard, Stderr: diag, Getenv: func(k string) string {
+					if k == "A2A_CONFIG_DIR" {
+						return s.home
+					}
+					return ""
+				}}
+				return result{code: a.Run(ctx, tc.args)}
+			})
+			if string(cmRead(t, cmConnect(t, l)))+"\n" != cmValidLine {
+				t.Fatal("valid grammar lost the closed projection neighbour")
+			}
+		})
+	}
+}

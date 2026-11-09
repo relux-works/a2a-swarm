@@ -43,7 +43,6 @@ type noticeListener struct {
 }
 
 func (a *App) stationNoticeListener(ctx context.Context, home string, e courierenroll.Enrolled, args []string) int {
-	args = append(args, "--json")
 	plan, err := courier.Authorize(args, e.Identity)
 	if err != nil {
 		_, _ = io.WriteString(a.Stderr, "a2a: courier: not_allowed\n")
@@ -59,6 +58,7 @@ func (a *App) stationNoticeListener(ctx context.Context, home string, e couriere
 		_, _ = io.WriteString(a.Stderr, "a2a: courier: not_allowed\n")
 		return ExitError
 	}
+	args = o.noticeListenerArgs(plan.Selection)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	l := &noticeListener{ctx: ctx, cancel: cancel, ready: make(chan struct{}), log: a.Stderr}
