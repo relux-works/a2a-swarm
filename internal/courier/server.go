@@ -49,6 +49,7 @@ type server struct {
 	invocations     int
 	sink            *logSink
 	permissions     func(*os.File, string, os.FileInfo) error
+	socketInfo      func(string) (os.FileInfo, error)
 	accept          func(*net.UnixListener) (*net.UnixConn, error)
 }
 
@@ -197,15 +198,31 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 	}
 	listener.SetUnlinkOnClose(false)
 	defer listener.Close()
-	info, err := os.Lstat(socket)
-	if err != nil {
+	// Pin cleanup through the held directory before any pathname lookup can
+	// refuse. A failed Lstat (for example after an ancestor rename) must not
+	// leave our just-bound socket behind.
+	var created unix.Stat_t
+	name := filepath.Base(socket)
+	if unix.Fstatat(int(dir.Fd()), name, &created, unix.AT_SYMLINK_NOFOLLOW) != nil || created.Mode&unix.S_IFMT != unix.S_IFSOCK || created.Uid != uint32(os.Geteuid()) {
 		return errRefused
 	}
 	defer func() {
-		if sameSocketAt(dir, filepath.Base(socket), info) {
-			_ = unix.Unlinkat(int(dir.Fd()), filepath.Base(socket), 0)
+		if sameSocketInodeAt(dir, name, uint64(created.Dev), created.Ino) {
+			_ = unix.Unlinkat(int(dir.Fd()), name, 0)
 		}
 	}()
+	socketInfo := s.socketInfo
+	if socketInfo == nil {
+		socketInfo = os.Lstat
+	}
+	info, err := socketInfo(socket)
+	if err != nil {
+		return errRefused
+	}
+	stamp, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || uint64(stamp.Dev) != uint64(created.Dev) || stamp.Ino != created.Ino {
+		return errRefused
+	}
 	permissions := s.permissions
 	if permissions == nil {
 		permissions = setSocketPermissions
@@ -287,13 +304,14 @@ func sameSocketAt(dir *os.File, name string, info os.FileInfo) bool {
 	if !ok || info.Mode()&os.ModeSocket == 0 {
 		return false
 	}
+	return sameSocketInodeAt(dir, name, uint64(original.Dev), original.Ino)
+}
+func sameSocketInodeAt(dir *os.File, name string, device, inode uint64) bool {
 	var current unix.Stat_t
 	if unix.Fstatat(int(dir.Fd()), name, &current, unix.AT_SYMLINK_NOFOLLOW) != nil {
 		return false
 	}
-	return current.Mode&unix.S_IFMT == unix.S_IFSOCK &&
-		current.Uid == uint32(os.Geteuid()) &&
-		uint64(current.Dev) == uint64(original.Dev) && current.Ino == original.Ino
+	return current.Mode&unix.S_IFMT == unix.S_IFSOCK && current.Uid == uint32(os.Geteuid()) && uint64(current.Dev) == device && current.Ino == inode
 }
 
 func setSocketPermissions(dir *os.File, path string, info os.FileInfo) error {
