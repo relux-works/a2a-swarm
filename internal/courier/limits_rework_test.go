@@ -155,8 +155,23 @@ func TestCourierLogFlagsAndStatus(t *testing.T) {
 	case <-time.After(LockReleaseBound):
 		t.Fatal("forwarder retained")
 	}
-	r := executionServerOptions(t, func(context.Context, Invocation) int { return 0 }, time.Second, func(s *server) { s.log = io.Discard })
-	r.s.sink.dropped.Store(17)
+	r := executionServerOptions(t, func(context.Context, Invocation) int { return 0 }, time.Second, func(s *server) { s.log = closedOutput{} })
+	for range 17 {
+		r.s.sink.write(refusalLine)
+	}
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	timer := time.NewTimer(LockReleaseBound)
+	defer timer.Stop()
+	for r.s.sink.dropped.Load() != 17 {
+		select {
+		case <-r.done:
+			t.Fatal("daemon stopped")
+		case <-timer.C:
+			t.Fatal("dropped lines not counted")
+		case <-tick.C:
+		}
+	}
 	var out bytes.Buffer
 	code, err := Client(context.Background(), r.path, "station", "identity", r.secret, Request{Argv: []string{"courier", "status"}}, &out, io.Discard)
 	if code != 0 || err != nil || out.String() != "log_dropped: 17\n" {

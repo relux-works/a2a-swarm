@@ -29,7 +29,7 @@ func TestCourierHookExitBeforeACK(t *testing.T) {
 			defer l.Close()
 			done := make(chan error, 1)
 			var receipts atomic.Int32
-			go func() {
+			serveAttempt := func(mode string) {
 				c, err := l.AcceptUnix()
 				if err != nil {
 					done <- err
@@ -107,6 +107,12 @@ func TestCourierHookExitBeforeACK(t *testing.T) {
 					return
 				}
 				done <- nil
+			}
+			go func() {
+				serveAttempt(mode)
+				if mode != "valid" {
+					serveAttempt("valid")
+				}
 			}()
 			var out, diag bytes.Buffer
 			code, err := Client(context.Background(), path, "station", "identity", make([]byte, 32), Request{Argv: []string{"hook", "prompt"}}, &out, &diag)
@@ -129,6 +135,20 @@ func TestCourierHookExitBeforeACK(t *testing.T) {
 				}
 				if err != wantErr || code != 1 || out.Len() != 0 || receipts.Load() != 0 {
 					t.Fatal("failed exit consumed output", code, err, receipts.Load())
+				}
+				// The same endpoint presents the still-unconsumed doorbell again.
+				out.Reset()
+				code, err = Client(context.Background(), path, "station", "identity", make([]byte, 32), Request{Argv: []string{"hook", "prompt"}}, &out, &diag)
+				select {
+				case e := <-done:
+					if e != nil {
+						t.Fatal(e)
+					}
+				case <-time.After(LockReleaseBound):
+					t.Fatal("re-ring endpoint stuck")
+				}
+				if err != nil || code != 0 || out.String() != "doorbell\n" || receipts.Load() != 1 {
+					t.Fatal("lost exit prevented re-ring", code, err, receipts.Load())
 				}
 			}
 		})
