@@ -98,6 +98,11 @@ func validateCredentialIdentity(c config.Credentials, name string) error {
 }
 
 func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) (config.Credentials, error) {
+	if !a.human {
+		if err := config.CheckIdentityMigration(p, name); err != nil {
+			return config.Credentials{}, err
+		}
+	}
 	if c, e := a.selectedConnection(); e != nil {
 		return config.Credentials{}, e
 	} else if c != nil {

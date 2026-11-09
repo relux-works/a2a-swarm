@@ -122,6 +122,9 @@ func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, s
 	}
 	return WithRuntimeLock(p, name, "control", deadline, func() error {
 		_, err := withStateLock(p, name, func(path string) (func(), error) { return lockFileBy(path, deadline) }, func(old State) (State, error) {
+			if old.Migration != nil {
+				return old, ErrIdentityMigrated
+			}
 			if old.HostEnrollment != nil {
 				return old, ErrMonitorConflict
 			}
@@ -151,7 +154,7 @@ func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, s
 					next.MonitorOwner = &copy
 				}
 			}
-			return saveStateLocked(p, name, old, next, ordinaryWriterFence(old, now), true)
+			return saveStateLocked(p, name, old, next, ordinaryWriterFence(old, now), true, false)
 		})
 		return err
 	})

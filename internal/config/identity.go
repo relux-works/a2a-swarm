@@ -145,6 +145,9 @@ func (e *LeaseHeldError) Error() string {
 // different known sessions, or holders on different hosts, still conflict,
 // which is the case the lease exists for (one identity used twice at once).
 func (s *State) Acquire(name, holder, host string, pid int, now time.Time, ttl time.Duration, dead func(holder string) bool) error {
+	if s.Migration != nil {
+		return ErrIdentityMigrated
+	}
 	if s.RefuseMonitorConsumer() != nil {
 		// Hooks/ordinary commands may borrow the same unexpired owner lease;
 		// they cannot acquire, replace or renew it on the monitor's behalf.

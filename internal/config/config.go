@@ -204,6 +204,9 @@ func checkSecretFile(path string) error {
 // LoadCredentials reads agents/<name>.json. The file must be a regular file
 // with mode 0600 and must contain a user id and an access token.
 func LoadCredentials(p Paths, name string) (Credentials, error) {
+	if err := CheckIdentityMigration(p, name); err != nil {
+		return Credentials{}, err
+	}
 	if err := ValidateName(name); err != nil {
 		return Credentials{}, err
 	}
@@ -339,10 +342,11 @@ type State struct {
 	// rawState is the immutable disk input, not a serialization of edited fields.
 	// The writer seal must be checked against this input before callbacks/effects.
 	rawState      []byte
-	Writer        *StateWriter   `json:"writer,omitempty"`
-	Monitor       *Monitor       `json:"monitor,omitempty"`
-	MonitorOwner  *MonitorOwner  `json:"monitor_owner,omitempty"`
-	MonitorConfig *MonitorConfig `json:"monitor_config,omitempty"`
+	Migration     *IdentityMigration `json:"migration,omitempty"`
+	Writer        *StateWriter       `json:"writer,omitempty"`
+	Monitor       *Monitor           `json:"monitor,omitempty"`
+	MonitorOwner  *MonitorOwner      `json:"monitor_owner,omitempty"`
+	MonitorConfig *MonitorConfig     `json:"monitor_config,omitempty"`
 
 	MailAlarmConfig *MailAlarmConfig `json:"mail_alarm_config,omitempty"`
 	MailAlarm       MailAlarm        `json:"mail_alarm,omitempty"`
@@ -631,15 +635,21 @@ func SaveState(p Paths, name string, s State) error {
 		}
 	}
 	_, err := withStateLock(p, name, lockFile, func(old State) (State, error) {
+		if old.Migration != nil {
+			return old, ErrIdentityMigrated
+		}
 		fence := ordinaryWriterFence(old, time.Now())
-		return saveStateLocked(p, name, old, s, fence, false)
+		return saveStateLocked(p, name, old, s, fence, false, false)
 	})
 	return err
 }
 
 // saveStateLocked never reacquires the state lock. Only monitor lifecycle code
 // may alter the monitor record or explicitly clear the sticky writer fence.
-func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monitor bool) (State, error) {
+func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monitor, migration bool) (State, error) {
+	if !migration && (old.Migration != nil || s.Migration != nil) {
+		return old, ErrIdentityMigrated
+	}
 	if s.HostEnrollment != nil && s.HostEnrollment.Validate() != nil {
 		return old, ErrHostEnrollment
 	}
@@ -796,6 +806,9 @@ func UpdateStateUntil(p Paths, name string, deadline time.Time, fn func(*State) 
 
 func updateState(p Paths, name string, lock func(string) (func(), error), fn func(*State) error) (State, error) {
 	return withStateLock(p, name, lock, func(old State) (State, error) {
+		if old.Migration != nil {
+			return old, ErrIdentityMigrated
+		}
 		fence := ordinaryWriterFence(old, time.Now())
 		// A callback must not mutate the comparison snapshot through shared
 		// lease/runtime/terminal pointers or slices. Decode the same disk input
@@ -810,7 +823,7 @@ func updateState(p Paths, name string, lock func(string) (func(), error), fn fun
 		if err := fn(&s); err != nil {
 			return old, err
 		}
-		return saveStateLocked(p, name, old, s, fence, false)
+		return saveStateLocked(p, name, old, s, fence, false, false)
 	})
 }
 

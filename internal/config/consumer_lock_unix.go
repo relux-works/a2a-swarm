@@ -38,6 +38,19 @@ func AcquireRawConsumerLock(p Paths, name string, deadline time.Time) (func(), e
 }
 
 func acquireConsumerLock(p Paths, name string, deadline time.Time, inherited int) (*os.File, func(), error) {
+	f, release, err := acquireMigrationConsumerLock(p, name, deadline, inherited)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err = CheckIdentityMigration(p, name); err != nil {
+		release()
+		return nil, nil, err
+	}
+	return f, release, nil
+}
+
+// Internal raw acquisition is used only while constructing/restoring the fence.
+func acquireMigrationConsumerLock(p Paths, name string, deadline time.Time, inherited int) (*os.File, func(), error) {
 	if err := ValidateName(name); err != nil {
 		return nil, nil, err
 	}

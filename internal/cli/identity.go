@@ -522,16 +522,26 @@ func (a *App) exportSessionID(sessionID string) error {
 	if path == "" || !claudeSessionRE.MatchString(sessionID) {
 		return nil
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	name, err := a.identity()
 	if err != nil {
-		return fmt.Errorf("export %s: %w", EnvSessionID, err)
+		return err
 	}
-	_, err = fmt.Fprintf(f, "export %s=%s\n", EnvSessionID, sessionID)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
+	p, err := a.pathsFor(name)
 	if err != nil {
-		return fmt.Errorf("export %s: %w", EnvSessionID, err)
+		return err
 	}
-	return nil
+	return config.WithIdentityEffect(p, name, time.Now().Add(hookBudget), func() error {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			return fmt.Errorf("export %s: %w", EnvSessionID, err)
+		}
+		_, err = fmt.Fprintf(f, "export %s=%s\n", EnvSessionID, sessionID)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return fmt.Errorf("export %s: %w", EnvSessionID, err)
+		}
+		return nil
+	})
 }

@@ -9,6 +9,11 @@ import (
 // LoadCredentialMetadata applies the same identity/file guards as the legacy
 // file store, but permits a scrubbed token. It never enumerates identities.
 func LoadCredentialMetadata(p Paths, name string, human bool) (Credentials, error) {
+	if !human {
+		if err := CheckIdentityMigration(p, name); err != nil {
+			return Credentials{}, err
+		}
+	}
 	if err := ValidateName(name); err != nil {
 		return Credentials{}, err
 	}

@@ -238,6 +238,21 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 		a.runMuseHook(ctx, rt, ev)
 		return
 	}
+	// Refuse before terminal startup, session exports or owner mirror work.
+	name, err := a.identity()
+	if err != nil {
+		fail(err)
+		return
+	}
+	paths, err := a.pathsFor(name)
+	if err != nil {
+		fail(err)
+		return
+	}
+	if err = config.CheckIdentityMigration(paths, name); err != nil {
+		fail(err)
+		return
+	}
 	if selected, err := a.hostBackendSelected(); err != nil {
 		fail(err)
 		return
