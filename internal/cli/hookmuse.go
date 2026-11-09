@@ -177,7 +177,7 @@ func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
 		if err != nil {
 			return err
 		}
-		if st.HostEnrollment != nil || st.HooksPaused {
+		if st.HostEnrollment != nil {
 			return nil
 		}
 		in, err := readHookInput(a.Stdin)
@@ -187,6 +187,12 @@ func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
 		}
 		if in.SessionID == "" || !claudeSessionRE.MatchString(in.SessionID) || (in.HookEventName != "" && in.HookEventName != ev.name) {
 			fail("invalid_input")
+			return nil
+		}
+		if err := a.recordHookOwner(ctx, rt, ev, in); err != nil {
+			return err
+		}
+		if st.HooksPaused || ev.arg == "session-end" || ev.arg == "stop" && in.StopReason == "exit" {
 			return nil
 		}
 		if journalErr != nil {

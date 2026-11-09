@@ -24,7 +24,7 @@ func closedMonitorError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, closed := range []error{ErrIncompatibleWriter, ErrMonitorConflict, ErrMonitorGeneration, ErrLockTimeout, ErrMonitorOutput} {
+	for _, closed := range []error{ErrIncompatibleWriter, ErrMonitorConflict, ErrMonitorGeneration, ErrLockTimeout, ErrMonitorOutput, ErrMonitorOwner, ErrMonitorLease} {
 		if errors.Is(err, closed) {
 			return closed
 		}
@@ -169,8 +169,8 @@ const (
 
 // MonitorGeneration cannot be manufactured by a raw/terminal/native caller:
 // zero values are inert. The lifetime consumer lock and private active handle
-// are required at every guarded operation. There are no production callers
-// until owner association and the later notice pipeline are admitted.
+// are required at every guarded operation, as is a fresh hook-admitted owner.
+// There is no live monitor command until the later notice pipeline is admitted.
 type MonitorGeneration struct {
 	mu      sync.Mutex
 	paths   Paths
@@ -179,6 +179,7 @@ type MonitorGeneration struct {
 	release func()
 	active  bool
 	reason  string
+	owner   *MonitorOwner
 }
 
 // WithMonitorGeneration is the inert L02 admission seam, not owner-association
@@ -233,6 +234,10 @@ func WithMonitorGeneration(p Paths, name string, deadline time.Time, entry Monit
 			saved, err := saveStateLocked(p, name, old, next, time.Time{}, true)
 			if err == nil {
 				g.record = *cloneMonitor(saved.Monitor)
+				if saved.MonitorOwner != nil {
+					owner := *saved.MonitorOwner
+					g.owner = &owner
+				}
 			}
 			return old, err
 		})
@@ -257,7 +262,7 @@ func (g *MonitorGeneration) stopMemory(reason string) {
 // guarded rechecks actual disk input without ordinary-writer repair. Invalid
 // State is byte-identical on return; only in-memory status/authority is stopped.
 // Callers hold g.mu, but no state/control lock while executing sink I/O.
-func (g *MonitorGeneration) guarded(generation string, stop bool) error {
+func (g *MonitorGeneration) guarded(generation string, stop bool, renew bool) error {
 	if !g.active || g.release == nil || generation != g.record.Generation {
 		return ErrMonitorGeneration
 	}
@@ -274,7 +279,24 @@ func (g *MonitorGeneration) guarded(generation string, stop bool) error {
 				return old, ErrMonitorConflict
 			}
 			if !stop {
-				return old, nil
+				now := time.Now()
+				if !g.ownerMatches(old, now) {
+					return old, ErrMonitorOwner
+				}
+				if !renew {
+					return old, nil
+				}
+				l := old.Lease
+				if l == nil || l.Holder != g.record.SessionID || l.Host != g.record.Host || !now.Before(l.Expires) {
+					return old, ErrMonitorLease
+				}
+				next := old
+				lease := *l
+				if expiry := now.Add(LeaseTTL).UTC(); lease.Expires.Before(expiry) {
+					lease.Expires = expiry
+				}
+				next.Lease = &lease
+				return saveStateLocked(g.paths, g.name, old, next, time.Time{}, true)
 			}
 			next := old
 			next.Monitor = cloneMonitor(old.Monitor)
@@ -293,20 +315,23 @@ func (g *MonitorGeneration) guarded(generation string, stop bool) error {
 		if errors.Is(err, ErrMonitorGeneration) {
 			reason = "stale_generation"
 		}
+		if errors.Is(err, ErrMonitorOwner) {
+			reason = "owner_unknown"
+		}
 		g.stopMemory(reason)
 	}
 	return err
 }
 
 // CheckRenewal is a read-only prerequisite, not an owner/lease renewal. The
-// later conditional-renewal transaction must recheck at its own effect boundary.
+// conditional-renewal transaction rechecks at its own effect boundary.
 func (g *MonitorGeneration) CheckRenewal(generation string) error {
 	if g == nil {
 		return ErrMonitorGeneration
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.guarded(generation, false)
+	return g.guarded(generation, false, false)
 }
 
 // Announce admits only this handle's exact generation. The callback is a
@@ -320,7 +345,7 @@ func (g *MonitorGeneration) Announce(generation string, emit func() error) error
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if err := g.guarded(generation, false); err != nil {
+	if err := g.guarded(generation, false, false); err != nil {
 		return err
 	}
 	if g.record.Phase != "streaming" {
@@ -340,6 +365,9 @@ func (g *MonitorGeneration) Status() (active bool, reason string) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.active {
+		_ = g.guarded(g.record.Generation, false, false)
+	}
 	return g.active, g.reason
 }
 
@@ -358,7 +386,7 @@ func (g *MonitorGeneration) Close() error {
 		}
 		return nil
 	}
-	err := g.guarded(g.record.Generation, true)
+	err := g.guarded(g.record.Generation, true, false)
 	if g.active {
 		g.stopMemory("")
 	}

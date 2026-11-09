@@ -63,6 +63,9 @@ func cliMonitorFixture(t *testing.T) (*env, *App, *session) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := config.RecordMonitorOwnerHook(s.paths, s.name, time.Now().Add(time.Second), "muse", "monitor-session", "SessionStart", false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	return e, a, s
 }
 

@@ -55,6 +55,9 @@ func monitorSeed(t *testing.T) Paths {
 		t.Fatal(err)
 	}
 	seedStateJSON(t, p, string(b))
+	if err := RecordMonitorOwnerHook(p, "a", time.Now().Add(time.Second), "muse", "fixture-session", "SessionStart", false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	return p
 }
 func monitorRun(p Paths, entry MonitorEntry, fn func(*MonitorGeneration) error) error {

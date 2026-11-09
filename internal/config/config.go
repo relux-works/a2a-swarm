@@ -338,9 +338,11 @@ type State struct {
 	opaque map[string]json.RawMessage
 	// rawState is the immutable disk input, not a serialization of edited fields.
 	// The writer seal must be checked against this input before callbacks/effects.
-	rawState []byte
-	Writer   *StateWriter `json:"writer,omitempty"`
-	Monitor  *Monitor     `json:"monitor,omitempty"`
+	rawState      []byte
+	Writer        *StateWriter   `json:"writer,omitempty"`
+	Monitor       *Monitor       `json:"monitor,omitempty"`
+	MonitorOwner  *MonitorOwner  `json:"monitor_owner,omitempty"`
+	MonitorConfig *MonitorConfig `json:"monitor_config,omitempty"`
 
 	MailAlarmConfig *MailAlarmConfig `json:"mail_alarm_config,omitempty"`
 	MailAlarm       MailAlarm        `json:"mail_alarm,omitempty"`
@@ -645,8 +647,11 @@ func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monito
 	if !validHostNotificationWrite(old, s) {
 		return old, ErrHostEnrollment
 	}
-	if !monitor && !sameMonitor(old.Monitor, s.Monitor) {
+	if !monitor && (!sameMonitor(old.Monitor, s.Monitor) || !sameOwner(old.MonitorOwner, s.MonitorOwner)) {
 		return old, ErrMonitorConflict
+	}
+	if s.MonitorOwner != nil && !s.MonitorOwner.valid() || s.MonitorConfig != nil && s.MonitorConfig.OwnerTTL <= 0 {
+		return old, ErrMonitorOwner
 	}
 	if s.Monitor != nil && s.Monitor.Validate() != nil {
 		return old, ErrMonitorState
