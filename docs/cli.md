@@ -2242,8 +2242,10 @@ own environment. Use this order:
 1. The SessionStart hook auto-bind. Check `a2a bind status` first: a session started with the hook installed normally shows its binding.
 2. Otherwise bind once from the session with the pane's **real** selectors exported, for example `TMUX=SOCKET TMUX_PANE=%N a2a bind ...`:
    the absolute socket of the tmux server that owns the pane, and the exact pane whose `#{pane_pid}` is an ancestor of the runtime PID given
-   as `--owner-pid` (`tmux -S SOCKET list-panes -a -F '#{pane_pid} #{pane_id}'`). Never guess or copy another pane's selectors. The owner
-   ancestry, socket inode and birth checks below still apply, and a pane that is not this runtime's own refuses.
+   as `--owner-pid` (`tmux -S SOCKET list-panes -a -F '#{pane_pid} #{pane_id}'`). Find SOCKET and PANE in that pane's own interactive shell:
+   read `$TMUX` (the socket path before the first comma) and `$TMUX_PANE`, or run `tmux display-message -p '#{socket_path} #{pane_id}'` inside that pane.
+   Never guess or copy another pane's selectors. The owner ancestry, socket inode and birth checks below still apply,
+   and a pane that is not this runtime's own refuses.
 3. Otherwise the launcher may admit `TMUX` and `TMUX_PANE` to tool shells through Codex `shell_environment_policy`. That configuration belongs
    to the profile/launcher custodian; a2a does not edit it.
 The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
