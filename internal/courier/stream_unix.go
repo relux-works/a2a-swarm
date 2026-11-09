@@ -48,6 +48,7 @@ type stream struct {
 	cancel              context.CancelFunc
 	ctx                 context.Context
 	idle                time.Duration
+	frameWrite          func(io.Writer, []byte) error
 	hook                bool
 	hookExit            bool
 }
@@ -68,7 +69,11 @@ func (s *stream) send(p packet) error {
 		}{p.Type, p.ID, p.Code})
 	}
 	if err == nil {
-		err = writeFrame(s.c, b)
+		if s.frameWrite != nil {
+			err = s.frameWrite(s.c, b)
+		} else {
+			err = writeFrame(s.c, b)
+		}
 	}
 	if err != nil {
 		s.cancel()
@@ -248,6 +253,7 @@ func (s *server) execute(c *net.UnixConn, station, identity string, sessionAdver
 		idle = executionIdle
 	}
 	st := &stream{c: c, id: r.ID, identity: identity, cancel: cancel, ctx: ctx, idle: idle, hook: plan.Command == "hook"}
+	st.frameWrite = s.writePacketFrame
 	_ = c.SetWriteDeadline(time.Now().Add(idle))
 	_ = c.SetReadDeadline(time.Time{})
 	done := make(chan struct{})
@@ -259,13 +265,20 @@ func (s *server) execute(c *net.UnixConn, station, identity string, sessionAdver
 	}
 	go func() {
 		defer close(keepDone)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		ticks := s.keepaliveTicks
+		if ticks == nil {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-ticks:
+				if s.keepaliveAttempt != nil {
+					s.keepaliveAttempt()
+				}
 				if st.send(packet{Type: "keepalive", ID: r.ID}) != nil {
 					return
 				}
@@ -277,7 +290,7 @@ func (s *server) execute(c *net.UnixConn, station, identity string, sessionAdver
 	defer func() { cancel(); c.Close(); <-done; <-keepDone }()
 	defer func() {
 		if recover() != nil {
-			s.diagnostic(c, Unavailable, r.ID)
+			_ = st.send(packet{Type: "error", ID: r.ID, Class: Unavailable})
 		}
 	}()
 	if plan.Command == "courier" {
@@ -297,7 +310,7 @@ func (s *server) execute(c *net.UnixConn, station, identity string, sessionAdver
 	closedFailure := failure
 	failureMu.Unlock()
 	if closedFailure != "" {
-		s.diagnostic(c, closedFailure, r.ID)
+		_ = st.send(packet{Type: "error", ID: r.ID, Class: closedFailure})
 		return
 	}
 	kind := "exit"
@@ -588,7 +601,14 @@ func (s *server) diagnostic(c *net.UnixConn, class Diagnostic, id string) {
 	}
 	b, _ := json.Marshal(p)
 	_ = c.SetWriteDeadline(time.Now().Add(writeTimeout))
-	_ = writeFrame(c, b)
+	_ = s.writePacketFrame(c, b)
+}
+
+func (s *server) writePacketFrame(w io.Writer, b []byte) error {
+	if s.frameWrite != nil {
+		return s.frameWrite(w, b)
+	}
+	return writeFrame(w, b)
 }
 func (s *server) acquire(station string) bool {
 	s.mu.Lock()

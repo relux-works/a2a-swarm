@@ -35,23 +35,26 @@ func validSocket(path string) bool {
 }
 
 type server struct {
-	home            string
-	log             io.Writer
-	mu              sync.Mutex
-	conns           map[*net.UnixConn]bool
-	peer            func(*net.UnixConn) (uint32, error)
-	handshake, idle time.Duration
-	handler         Handler
-	executionIdle   time.Duration
-	keepalive       time.Duration
-	ctx             context.Context
-	active          map[string]int
-	invocations     int
-	sink            *logSink
-	permissions     func(*os.File, string, os.FileInfo) error
-	socketInfo      func(string) (os.FileInfo, error)
-	accept          func(*net.UnixListener) (*net.UnixConn, error)
-	legacyHello     bool // fixture seam for an endpoint predating session evidence
+	home             string
+	log              io.Writer
+	mu               sync.Mutex
+	conns            map[*net.UnixConn]bool
+	peer             func(*net.UnixConn) (uint32, error)
+	handshake, idle  time.Duration
+	handler          Handler
+	executionIdle    time.Duration
+	keepalive        time.Duration
+	ctx              context.Context
+	active           map[string]int
+	invocations      int
+	sink             *logSink
+	permissions      func(*os.File, string, os.FileInfo) error
+	socketInfo       func(string) (os.FileInfo, error)
+	accept           func(*net.UnixListener) (*net.UnixConn, error)
+	legacyHello      bool                          // fixture seam for an endpoint predating session evidence
+	frameWrite       func(io.Writer, []byte) error // private transport-boundary fixture
+	keepaliveTicks   <-chan time.Time
+	keepaliveAttempt func()
 }
 
 func (s *server) refuse(c *net.UnixConn) {
