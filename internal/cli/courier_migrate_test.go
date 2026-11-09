@@ -275,6 +275,66 @@ func TestCourierHookStartBeforeExport(t *testing.T) {
 	}
 }
 
+// Migration preflight preserves #389's malformed-owner/config delivery_error,
+// while other unreadable State still reports state_unavailable. Neither path
+// emits mail or repairs State; a restored valid owner hook must still refresh.
+// This exercises local Muse hooks with paused delivery, not a live runtime.
+func TestCourierMuseHookStateRefusals(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, state := range []struct{ name, raw, diagnostic string }{
+		{"owner", `{"monitor_owner":{}}`, "delivery_error"},
+		{"config", `{"monitor_config":{}}`, "delivery_error"},
+		{"json", `{`, "state_unavailable"},
+	} {
+		for _, ev := range []hookEvent{{"session-start", "SessionStart"}, {"prompt", "UserPromptSubmit"}} {
+			t.Run(state.name+"/"+ev.arg, func(t *testing.T) {
+				a, p, _ := courierCLIFixture(t)
+				a.as = "fixture"
+				var stdout, stderr bytes.Buffer
+				a.Stdout, a.Stderr = &stdout, &stderr
+				admittedAt := time.Now().Add(-time.Minute)
+				if err := config.RecordMonitorOwnerHook(p, "fixture", time.Now().Add(time.Second), "muse", "fixture-session", "SessionStart", false, admittedAt); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := config.UpdateState(p, "fixture", func(s *config.State) error { s.HooksPaused = true; return nil }); err != nil {
+					t.Fatal(err)
+				}
+				path := p.StateFile("fixture")
+				valid, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(state.raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				invoke := func() {
+					a.Stdin = strings.NewReader(`{"session_id":"fixture-session","hook_event_name":"` + ev.name + `"}`)
+					if err := cmdHook(t.Context(), a, []string{ev.arg, "--runtime", "muse"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				invoke()
+				if !strings.Contains(stderr.String(), ": "+state.diagnostic+";") || stdout.Len() != 0 {
+					t.Fatal("malformed State did not retain closed diagnostic", stderr.String())
+				}
+				after, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(after, []byte(state.raw)) {
+					t.Fatal("refused hook changed malformed State", err)
+				}
+				if err := os.WriteFile(path, valid, 0600); err != nil {
+					t.Fatal(err)
+				}
+				stderr.Reset()
+				invoke()
+				s, err := config.LoadState(p, "fixture")
+				if err != nil || s.MonitorOwner == nil || !s.MonitorOwner.LastHookAt.After(admittedAt) || stderr.Len() != 0 || stdout.Len() != 0 {
+					t.Fatal("valid paused owner-hook neighbour was not admitted", err, stderr.String())
+				}
+			})
+		}
+	}
+}
+
 type courierCLISecretFixture struct{ present bool }
 
 func (s *courierCLISecretFixture) Read(_ context.Context, c config.Credentials) (config.Credentials, error) {

@@ -509,6 +509,8 @@ func TestCourierMigrationKeychainFixture(t *testing.T) {
 // Proves a durable in-progress migration refuses every monitor entry and the
 // owner-hook writer without changing State or calling the monitor body. Each
 // refusal has an otherwise identical admitted-owner neighbour without migration.
+// Equal/older Starts retain #389's owner refusal outside migration; migration
+// takes precedence over that refusal. Valid hook neighbours use a newer Start.
 // This tests local admission, not live hooks or Courier station authentication.
 func TestCourierMigrationMonitorAdmission(t *testing.T) {
 	for _, entry := range []MonitorEntry{MonitorArm, MonitorAutomatic, MonitorRecovery} {
@@ -551,10 +553,27 @@ func TestCourierMigrationMonitorAdmission(t *testing.T) {
 				} else if err != nil || !called {
 					t.Fatal("valid monitor neighbour was not admitted", err, called)
 				}
+				for _, at := range []time.Time{s.MonitorOwner.LastHookAt, s.MonitorOwner.LastHookAt.Add(-time.Nanosecond)} {
+					beforeHook, err := os.ReadFile(p.StateFile(courierFixtureName))
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := ErrMonitorOwner
+					if migrating {
+						want = ErrIdentityMigrated
+					}
+					if err := RecordMonitorOwnerHook(p, courierFixtureName, time.Now().Add(time.Second), record.Runtime, record.SessionID, "SessionStart", false, at); !errors.Is(err, want) {
+						t.Fatal("non-increasing Start did not retain owner/migration refusal", err)
+					}
+					after, err := os.ReadFile(p.StateFile(courierFixtureName))
+					if err != nil || !bytes.Equal(beforeHook, after) {
+						t.Fatal("refused non-increasing Start changed State", err)
+					}
+				}
 				for _, event := range []string{"SessionStart", "UserPromptSubmit", "SessionEnd"} {
 					at := time.Now()
 					if event == "SessionStart" {
-						at = s.MonitorOwner.LastHookAt // delayed/replayed Start must also refuse
+						at = s.MonitorOwner.LastHookAt.Add(time.Nanosecond)
 					}
 					err = RecordMonitorOwnerHook(p, courierFixtureName, time.Now().Add(time.Second), record.Runtime, record.SessionID, event, false, at)
 					if migrating {
