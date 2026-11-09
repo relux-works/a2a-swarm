@@ -14,15 +14,16 @@ import (
 	"time"
 )
 
-const executionIdle = 60 * time.Second
+const executionIdle = StationReadDeadline
 
 type packet struct {
-	Type     string `json:"type"`
-	ID       string `json:"id"`
-	Batch    string `json:"batch,omitempty"`
-	Identity string `json:"identity,omitempty"`
-	Data     []byte `json:"data,omitempty"`
-	Code     int    `json:"code,omitempty"`
+	Type     string     `json:"type"`
+	ID       string     `json:"id"`
+	Batch    string     `json:"batch,omitempty"`
+	Identity string     `json:"identity,omitempty"`
+	Data     []byte     `json:"data,omitempty"`
+	Code     int        `json:"code,omitempty"`
+	Class    Diagnostic `json:"class,omitempty"`
 }
 
 func randomID() string {
@@ -36,6 +37,9 @@ func randomID() string {
 type stream struct {
 	c                   *net.UnixConn
 	mu                  sync.Mutex
+	outputMu            sync.Mutex
+	outputBatch         string
+	outputAck           chan struct{}
 	id, identity, batch string
 	ack                 chan struct{}
 	cancel              context.CancelFunc
@@ -50,7 +54,6 @@ func (s *stream) send(p packet) error {
 		return errRefused
 	}
 	s.c.SetWriteDeadline(time.Now().Add(s.idle))
-	s.c.SetReadDeadline(time.Now().Add(s.idle))
 	b, err := json.Marshal(p)
 	if p.Type == "exit" {
 		b, err = json.Marshal(struct {
@@ -64,6 +67,9 @@ func (s *stream) send(p packet) error {
 	}
 	if err != nil {
 		s.cancel()
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			return IdleTimeout
+		}
 	}
 	return err
 }
@@ -74,10 +80,12 @@ type output struct {
 }
 
 func (w output) Write(b []byte) (int, error) {
+	w.s.outputMu.Lock()
+	defer w.s.outputMu.Unlock()
 	n := 0
 	for len(b) > 0 {
-		k := min(len(b), 16384)
-		if err := w.s.send(packet{Type: w.kind, ID: w.s.id, Data: b[:k]}); err != nil {
+		k := min(len(b), OutputChunkBytes)
+		if err := w.s.chunk(w.kind, b[:k]); err != nil {
 			return n, err
 		}
 		b = b[k:]
@@ -85,6 +93,35 @@ func (w output) Write(b []byte) (int, error) {
 	}
 	return n, nil
 }
+
+// At most one bounded output chunk awaits local write/flush acknowledgement.
+// This is flow control only; the separate delivery ACK remains the receipt gate.
+func (s *stream) chunk(kind string, data []byte) error {
+	batch := randomID()
+	if batch == "" {
+		return errRefused
+	}
+	s.mu.Lock()
+	s.outputBatch = batch
+	s.outputAck = make(chan struct{})
+	ack := s.outputAck
+	_ = s.c.SetReadDeadline(time.Now().Add(s.idle))
+	s.mu.Unlock()
+	if err := s.send(packet{Type: kind, ID: s.id, Data: data, Batch: batch, Identity: s.identity}); err != nil {
+		return err
+	}
+	select {
+	case <-ack:
+		if s.ctx.Err() != nil {
+			return errRefused
+		}
+		return nil
+	case <-s.ctx.Done():
+		// receive sends the idle diagnostic before canceling on a missed output ACK.
+		return errRefused
+	}
+}
+
 func (s *stream) delivered() error {
 	batch := randomID()
 	if batch == "" {
@@ -93,6 +130,7 @@ func (s *stream) delivered() error {
 	s.mu.Lock()
 	s.batch = batch
 	s.ack = make(chan struct{})
+	_ = s.c.SetReadDeadline(time.Now().Add(s.idle))
 	ack := s.ack
 	s.mu.Unlock()
 	if err := s.send(packet{Type: "delivery", ID: s.id, Batch: batch, Identity: s.identity}); err != nil {
@@ -113,6 +151,9 @@ func (s *stream) receive() {
 	for {
 		b, err := readFrame(s.c)
 		if err != nil {
+			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+				_ = s.send(packet{Type: "error", ID: s.id, Class: IdleTimeout})
+			}
 			return
 		}
 		f, err := object(b, map[string]bool{"type": true, "id": true, "batch": true, "identity": true})
@@ -121,19 +162,27 @@ func (s *stream) receive() {
 			return
 		}
 		s.mu.Lock()
-		valid := p.Type == "ack" && p.ID == s.id && p.Identity == s.identity && s.batch != "" && p.Batch == s.batch
+		bound := s.ctx.Err() == nil && p.ID == s.id && p.Identity == s.identity
+		valid := bound && p.Type == "ack" && s.batch != "" && p.Batch == s.batch
+		outputValid := bound && p.Type == "output_ack" && s.outputBatch != "" && p.Batch == s.outputBatch
 		if valid {
 			s.batch = ""
+			s.c.SetReadDeadline(time.Time{})
 			close(s.ack)
 		}
+		if outputValid {
+			s.outputBatch = ""
+			s.c.SetReadDeadline(time.Time{})
+			close(s.outputAck)
+		}
+		valid = valid || outputValid
 		s.mu.Unlock()
 		if !valid {
 			return
 		}
-		s.c.SetReadDeadline(time.Now().Add(s.idle))
 	}
 }
-func (s *server) execute(c *net.UnixConn, identity string) {
+func (s *server) execute(c *net.UnixConn, station, identity string) {
 	_ = c.SetDeadline(time.Now().Add(s.idle))
 	data, err := readFrame(c)
 	if err == io.EOF {
@@ -148,17 +197,57 @@ func (s *server) execute(c *net.UnixConn, identity string) {
 		s.refuse(c)
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := Authorize(r.Argv, identity); err != nil {
+		class := NotAllowed
+		if err == IdentityMismatch {
+			class = IdentityMismatch
+		}
+		s.diagnostic(c, class, r.ID)
+		return
+	}
+	if !s.acquire(station) {
+		s.diagnostic(c, Busy, r.ID)
+		return
+	}
+	defer s.release(station)
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	idle := s.executionIdle
 	if idle == 0 {
 		idle = executionIdle
 	}
 	st := &stream{c: c, id: r.ID, identity: identity, cancel: cancel, ctx: ctx, idle: idle}
-	_ = c.SetDeadline(time.Now().Add(idle))
+	_ = c.SetWriteDeadline(time.Now().Add(idle))
+	_ = c.SetReadDeadline(time.Time{})
 	done := make(chan struct{})
 	go func() { defer close(done); st.receive() }()
-	defer func() { c.Close(); <-done }()
+	keepDone := make(chan struct{})
+	interval := s.keepalive
+	if interval == 0 {
+		interval = KeepaliveInterval
+	}
+	go func() {
+		defer close(keepDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if st.send(packet{Type: "keepalive", ID: r.ID}) != nil {
+					return
+				}
+			}
+		}
+	}()
+	closeOnCancel := context.AfterFunc(ctx, func() { c.Close() })
+	defer closeOnCancel()
+	defer func() { cancel(); c.Close(); <-done; <-keepDone }()
 	code := s.handler(ctx, Invocation{Identity: identity, Request: r, Stdout: output{st, "stdout"}, Stderr: output{st, "stderr"}, Delivered: st.delivered})
 	_ = st.send(packet{Type: "exit", ID: r.ID, Code: code})
 }
@@ -176,12 +265,15 @@ func ServeWithHandler(ctx context.Context, home, socket string, log io.Writer, h
 // Client authenticates using the unchanged nonce transcript, sends exactly one
 // request, and ACKs delivery only after each local output write and flush works.
 func Client(ctx context.Context, socket, station, identity string, key []byte, r Request, stdout, stderr io.Writer) (int, error) {
+	return client(ctx, socket, station, identity, key, r, stdout, stderr, StationReadDeadline)
+}
+func client(ctx context.Context, socket, station, identity string, key []byte, r Request, stdout, stderr io.Writer, readDeadline time.Duration) (int, error) {
 	if len(key) != StationKeyLen || !localName.MatchString(station) || ValidateIdentity(identity) != nil || ValidateSocketPath(socket) != nil {
-		return 1, errRefused
+		return 1, EnrollmentInvalid
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	if err != nil {
-		return 1, errRefused
+		return 1, Unavailable
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -189,78 +281,98 @@ func Client(ctx context.Context, socket, station, identity string, key []byte, r
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 	b, err := readFrame(conn)
 	if err != nil {
-		return 1, errRefused
+		return 1, Unavailable
+	}
+	if d := diagnosticFrame(b, ""); d != nil {
+		return 1, d
 	}
 	f, err := object(b, map[string]bool{"type": true, "nonce": true})
 	var kind, nonce string
 	if err != nil || len(f) != 2 || json.Unmarshal(f["type"], &kind) != nil || kind != "challenge" || json.Unmarshal(f["nonce"], &nonce) != nil {
-		return 1, errRefused
+		return 1, Unavailable
 	}
 	raw, err := hex.DecodeString(nonce)
 	if err != nil || len(raw) != 32 || hex.EncodeToString(raw) != nonce {
-		return 1, errRefused
+		return 1, Unavailable
 	}
 	hello, _ := json.Marshal(map[string]string{"type": "hello", "station": station, "identity": identity, "mac": hex.EncodeToString(response(key, raw, station, identity))})
 	if writeFrame(conn, hello) != nil {
-		return 1, errRefused
+		return 1, Unavailable
 	}
 	b, err = readFrame(conn)
-	if err != nil || string(b) != string(successFrame) {
-		return 1, errRefused
+	if err != nil {
+		return 1, Unavailable
+	}
+	if string(b) != string(successFrame) {
+		return 1, EnrollmentInvalid
 	}
 	r.Type = "request"
 	r.ID = randomID()
 	if r.ID == "" {
-		return 1, errRefused
+		return 1, Unavailable
 	}
 	if r.Files == nil {
 		r.Files = map[int]InputFile{}
 	}
 	b, err = json.Marshal(r)
 	if err != nil || writeFrame(conn, b) != nil {
-		return 1, errRefused
+		return 1, Unavailable
 	}
 	for {
-		_ = conn.SetDeadline(time.Now().Add(executionIdle))
+		_ = conn.SetDeadline(time.Now().Add(readDeadline))
 		b, err = readFrame(conn)
 		if err != nil {
-			return 1, errRefused
+			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+				return 1, IdleTimeout
+			}
+			return 1, Unavailable
+		}
+		if d := diagnosticFrame(b, r.ID); d != nil {
+			return 1, d
 		}
 		fields, e := object(b, map[string]bool{"type": true, "id": true, "data": true, "batch": true, "identity": true, "code": true})
 		var p packet
 		if e != nil || json.Unmarshal(b, &p) != nil || p.ID != r.ID {
-			return 1, errRefused
+			return 1, Unavailable
 		}
 		switch p.Type {
+		case "keepalive":
+			if len(fields) != 2 {
+				return 1, Unavailable
+			}
 		case "stdout", "stderr":
-			if len(fields) != 3 || len(p.Data) == 0 {
-				return 1, errRefused
+			if len(fields) != 5 || len(p.Data) == 0 || len(p.Data) > OutputChunkBytes || !validID(p.Batch) || p.Identity != identity {
+				return 1, Unavailable
 			}
 			w := stdout
 			if p.Type == "stderr" {
 				w = stderr
 			}
 			if err = localOutput(w, p.Data); err != nil {
-				return 1, errRefused
+				return 1, Unavailable
+			}
+			ack, _ := json.Marshal(packet{Type: "output_ack", ID: r.ID, Batch: p.Batch, Identity: identity})
+			if writeFrame(conn, ack) != nil {
+				return 1, Unavailable
 			}
 		case "delivery":
 			if len(fields) != 4 || !validID(p.Batch) || p.Identity != identity {
-				return 1, errRefused
+				return 1, Unavailable
 			}
 			if err = flush(stdout); err != nil {
-				return 1, errRefused
+				return 1, Unavailable
 			}
 			ack, _ := json.Marshal(packet{Type: "ack", ID: r.ID, Batch: p.Batch, Identity: identity})
 			if writeFrame(conn, ack) != nil {
-				return 1, errRefused
+				return 1, Unavailable
 			}
 		case "exit":
 			if len(fields) != 3 || fields["code"] == nil || string(fields["code"]) == "null" || p.Code < 0 || p.Code > 255 {
-				return 1, errRefused
+				return 1, Unavailable
 			}
 			return p.Code, nil
 		default:
-			return 1, errRefused
+			return 1, Unavailable
 		}
 	}
 }
@@ -296,4 +408,52 @@ func IdentityHome(home, identity string) (string, error) {
 	}
 	f.Close()
 	return root, nil
+}
+
+// diagnosticFrame admits only closed classes and the current invocation binding.
+func diagnosticFrame(b []byte, id string) error {
+	fields, err := object(b, map[string]bool{"type": true, "class": true, "id": true})
+	var p packet
+	if err != nil || json.Unmarshal(b, &p) != nil || p.Type != "error" || !validDiagnostic(p.Class) {
+		return nil
+	}
+	if id == "" {
+		if len(fields) != 2 {
+			return nil
+		}
+	} else if len(fields) != 3 || p.ID != id {
+		return nil
+	}
+	return p.Class
+}
+func (s *server) diagnostic(c *net.UnixConn, class Diagnostic, id string) {
+	p := map[string]string{"type": "error", "class": string(class)}
+	if id != "" {
+		p["id"] = id
+	}
+	b, _ := json.Marshal(p)
+	_ = c.SetWriteDeadline(time.Now().Add(writeTimeout))
+	_ = writeFrame(c, b)
+}
+func (s *server) acquire(station string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil {
+		s.active = map[string]int{}
+	}
+	if s.invocations >= MaxInvocations || s.active[station] >= MaxStationInvocations {
+		return false
+	}
+	s.invocations++
+	s.active[station]++
+	return true
+}
+func (s *server) release(station string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.invocations--
+	s.active[station]--
+	if s.active[station] == 0 {
+		delete(s.active, station)
+	}
 }

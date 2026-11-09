@@ -198,7 +198,7 @@ func (f *courierFixture) rawRun(name string, args ...string) result {
 	var out, diag bytes.Buffer
 	code, err := courier.Client(context.Background(), e.Socket, e.Station, e.Identity, e.Key, courier.Request{Argv: args}, &out, &diag)
 	if err != nil {
-		f.t.Fatal("protocol invocation failed")
+		return result{code: ExitError, stderr: "courier: " + string(courier.Class(err)) + "\n"}
 	}
 	return result{code: code, stdout: out.String(), stderr: diag.String()}
 }
@@ -225,7 +225,7 @@ func TestCourierExecutionFetchHelpBoundary(t *testing.T) {
 		{"fetch", "--", "proj", "$file", "--help"},
 	} {
 		r := f.run("alice", "", args...)
-		if r.code != ExitError || r.stdout != "" || !strings.Contains(r.stderr, "courier: refused") {
+		if r.code != ExitError || r.stdout != "" || (!strings.Contains(r.stderr, "not_allowed") && !strings.Contains(r.stderr, "identity_mismatch")) {
 			t.Fatal("fetch execution bypassed Courier refusal")
 		}
 	}
@@ -285,10 +285,10 @@ func TestCourierExecutionRefusals(t *testing.T) {
 	} {
 		before := len(f.envs["alice"].hs.Calls())
 		r := f.run("alice", "", args...)
-		if r.code != ExitError || !strings.Contains(r.stderr, "courier: refused") {
+		if r.code != ExitError || (!strings.Contains(r.stderr, "not_allowed") && !strings.Contains(r.stderr, "identity_mismatch")) {
 			t.Fatal("request not refused with bounded diagnostic")
 		}
-		if raw := f.rawRun("alice", args...); raw.code != ExitError || raw.stderr != "courier: refused\n" {
+		if raw := f.rawRun("alice", args...); raw.code != ExitError || (raw.stderr != "courier: not_allowed\n" && raw.stderr != "courier: identity_mismatch\n") {
 			t.Fatal("daemon did not independently refuse request")
 		}
 		if len(f.envs["alice"].hs.Calls()) != before {
@@ -301,7 +301,7 @@ func TestCourierExecutionRefusals(t *testing.T) {
 	}
 	before := len(f.envs["alice"].hs.Calls())
 	r := f.run("alice", "", "whoami")
-	if r.code != ExitError || r.stderr != "courier: identity unavailable\n" || len(f.envs["alice"].hs.Calls()) != before {
+	if r.code != ExitError || r.stderr != "courier: courier_unavailable\n" || len(f.envs["alice"].hs.Calls()) != before {
 		t.Fatal("missing identity did not refuse without Matrix")
 	}
 	if err := os.Rename(root+"-held", root); err != nil {
@@ -461,6 +461,8 @@ func TestCourierExecutionStreamedInputs(t *testing.T) {
 		t.Fatal("file body changed")
 	}
 	f.run("alice", "", "post", f.rooms["alice"], "--topic", "alpha", "--envelope", "@"+body, "envelope text").ok(t)
+	f.run("alice", "", "post", f.rooms["alice"], "--topic", "alpha", "--envelope=@"+body, "inline envelope").ok(t)
+	f.run("alice", "", "topic", "new", f.rooms["alice"], "inline", "Inline", "--body=@"+body, "--json").ok(t)
 	f.run("alice", "", "attach", f.rooms["alice"], "--topic", "alpha", body).ok(t)
 	record, _ := json.Marshal(EventRecord{EventID: "$saved", Body: "saved input body", Sender: "@bob:" + testServer})
 	saved := filepath.Join(root, "saved.txt")
@@ -470,10 +472,13 @@ func TestCourierExecutionStreamedInputs(t *testing.T) {
 	if r := f.run("alice", "", "inbox", "show", "$saved", "--from", "@"+saved).ok(t); !strings.Contains(r.stdout, "saved input body") {
 		t.Fatal("streamed saved frame lost body")
 	}
+	if r := f.run("alice", "", "inbox", "show", "$saved", "--from=@"+saved).ok(t); !strings.Contains(r.stdout, "saved input body") {
+		t.Fatal("equals input lost body")
+	}
 	// A forged file-free engine request must not open even a valid daemon path.
 	var out, diag bytes.Buffer
 	code := f.daemon.courierHandler(f.home)(context.Background(), courier.Invocation{Identity: "alice", Request: courier.Request{Argv: []string{"post", f.rooms["alice"], "@" + body}}, Stdout: &out, Stderr: &diag, Delivered: func() error { return nil }})
-	if code != ExitError || out.Len() != 0 || diag.String() != "courier: refused\n" {
+	if code != ExitError || out.Len() != 0 || diag.String() != "courier: not_allowed\n" {
 		t.Fatal("unstreamed path reached execution")
 	}
 }

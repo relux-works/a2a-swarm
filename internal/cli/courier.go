@@ -15,13 +15,16 @@ import (
 )
 
 func cmdCourier(ctx context.Context, a *App, args []string) error {
-	const help = "usage: a2a courier serve|register-station|unregister-station|enroll; enroll --dir HOME/.a2a --from - [--rotate]; serve|register-station|unregister-station --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]; register-station --station S --identity I --uid U --emit - [--rotate]; unregister-station --station S"
+	const help = "usage: a2a courier serve|register-station|unregister-station|enroll|status; enroll --dir HOME/.a2a --from - [--rotate]; serve|register-station|unregister-station --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]; register-station --station S --identity I --uid U --emit - [--rotate]; unregister-station --station S"
 	if len(args) == 0 {
 		return usagef("%s", help)
 	}
 	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
 		_, err := fmt.Fprintln(a.Stdout, help)
 		return err
+	}
+	if args[0] == "status" && len(args) == 1 {
+		return courierStationStatus(a)
 	}
 	if args[0] == "enroll" {
 		return cmdCourierEnroll(ctx, a, args[1:])

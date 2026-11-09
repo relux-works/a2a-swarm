@@ -47,7 +47,15 @@ func openDirectoryMode(path string, create bool, mode uint32) (*os.File, error) 
 	for i, p := range parts {
 		next, e := unix.Openat(fd, p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if e == unix.ENOENT && create && i == len(parts)-1 {
-			if e = unix.Mkdirat(fd, p, mode); e == nil || e == unix.EEXIST {
+			if e = unix.Mkdirat(fd, p, mode); e == nil {
+				next, e = unix.Openat(fd, p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+				if e == nil {
+					e = unix.Fchmod(next, mode)
+					if e != nil {
+						unix.Close(next)
+					}
+				}
+			} else if e == unix.EEXIST {
 				next, e = unix.Openat(fd, p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			}
 		}
@@ -89,8 +97,24 @@ func validMetadata(st *unix.Stat_t, dir bool, uid uint32) bool {
 }
 
 func privateFile(dir *os.File, name string, flags int) (*os.File, error) {
-	fd, err := unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0600)
+	// Only a newly created inode is chmodded. Existing unsafe files refuse.
+	created := false
+	var fd int
+	var err error
+	if flags&unix.O_CREAT != 0 {
+		fd, err = unix.Openat(int(dir.Fd()), name, flags|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0600)
+		created = err == nil
+		if err == unix.EEXIST && flags&unix.O_EXCL == 0 {
+			fd, err = unix.Openat(int(dir.Fd()), name, (flags&^unix.O_CREAT)|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		}
+	} else {
+		fd, err = unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	}
 	if err != nil {
+		return nil, errRefused
+	}
+	if created && unix.Fchmod(fd, 0600) != nil {
+		unix.Close(fd)
 		return nil, errRefused
 	}
 	if !secureStat(fd, false) {
@@ -103,6 +127,10 @@ func privateFile(dir *os.File, name string, flags int) (*os.File, error) {
 // withRegistry serializes both readers and writers with a nonblocking lock.
 // It never follows a registry/lock symlink or repairs unsafe ownership/modes.
 func withRegistry(home string, create bool, fn func(*os.File, registry) error) error {
+	return registryLocked(home, create, false, fn)
+}
+
+func registryLocked(home string, create, shared bool, fn func(*os.File, registry) error) error {
 	dir, err := openDirectory(home, create)
 	if err != nil {
 		return err
@@ -117,7 +145,11 @@ func withRegistry(home string, create bool, fn func(*os.File, registry) error) e
 		return err
 	}
 	defer lock.Close()
-	if unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
+	mode := unix.LOCK_EX
+	if shared {
+		mode = unix.LOCK_SH
+	}
+	if unix.Flock(int(lock.Fd()), mode|unix.LOCK_NB) != nil {
 		return errRefused
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
@@ -254,6 +286,6 @@ func Unregister(home, station string) error {
 func lookup(home, station string) (Entry, bool) {
 	var entry Entry
 	var found bool
-	err := withRegistry(home, false, func(_ *os.File, r registry) error { entry, found = r[station]; return nil })
+	err := registryLocked(home, false, true, func(_ *os.File, r registry) error { entry, found = r[station]; return nil })
 	return entry, found && err == nil
 }
