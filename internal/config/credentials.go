@@ -9,10 +9,8 @@ import (
 // LoadCredentialMetadata applies the same identity/file guards as the legacy
 // file store, but permits a scrubbed token. It never enumerates identities.
 func LoadCredentialMetadata(p Paths, name string, human bool) (Credentials, error) {
-	if !human {
-		if err := CheckIdentityMigration(p, name); err != nil {
-			return Credentials{}, err
-		}
+	if err := CheckIdentityMigration(p, name); err != nil {
+		return Credentials{}, err
 	}
 	if err := ValidateName(name); err != nil {
 		return Credentials{}, err
@@ -42,11 +40,11 @@ func RewriteCredentialMetadata(p Paths, name string, human bool, fn func(*Creden
 	if human {
 		path = p.HumanFile(name)
 	}
-	unlock, err := lockFile(filepath.Join(filepath.Dir(path), "."+name+".lock"))
+	guard, err := LockCredentialMutation(p, name, human)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer guard.Close()
 	c, err := LoadCredentialMetadata(p, name, human)
 	if err != nil {
 		return err

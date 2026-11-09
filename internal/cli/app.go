@@ -543,10 +543,8 @@ func (a *App) sessionAsMode(name string, metadataOnly bool) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !a.human {
-		if err := config.CheckIdentityMigration(p, name); err != nil {
-			return nil, err
-		}
+	if err := config.CheckIdentityMigration(p, name); err != nil {
+		return nil, err
 	}
 	var creds config.Credentials
 	if metadataOnly {
@@ -633,10 +631,8 @@ func (a *App) context() context.Context {
 // native dispatch, leases, receipts and terminal operations can run without a
 // Matrix request. Current and unrelated registry edits remain valid.
 func (s *session) checkConnection() error {
-	if s.app == nil || !s.app.human {
-		if err := config.CheckIdentityMigration(s.paths, s.name); err != nil {
-			return err
-		}
+	if err := config.CheckIdentityMigration(s.paths, s.name); err != nil {
+		return err
 	}
 	if s.checkBinding != nil {
 		return s.checkBinding()

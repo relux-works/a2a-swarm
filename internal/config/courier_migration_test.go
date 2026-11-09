@@ -238,8 +238,10 @@ func TestCourierMigrationInterruptions(t *testing.T) {
 	}
 }
 
+// Proves occupied/unsafe sources refuse without changing State, with a stopped
+// valid neighbour per row; directory fixtures do not prove service-user ACLs.
 func TestCourierMigrationRefusals(t *testing.T) {
-	for _, kind := range []string{"lease", "terminal", "runtime", "consumer", "target", "symlink-source", "symlink-parent", "symlink-target", "mode", "credential-mode", "source-hardlink", "historical-secret-copy", "overlap", "ambiguous"} {
+	for _, kind := range []string{"lease", "host-custody", "active-monitor", "terminal", "runtime", "consumer", "target", "symlink-source", "symlink-parent", "symlink-target", "mode", "credential-mode", "source-hardlink", "historical-secret-copy", "overlap", "ambiguous"} {
 		t.Run(kind, func(t *testing.T) {
 			p, o := courierFixture(t)
 			switch kind {
@@ -249,6 +251,26 @@ func TestCourierMigrationRefusals(t *testing.T) {
 					return nil
 				})
 				if e != nil {
+					t.Fatal(e)
+				}
+			case "host-custody":
+				_, attachment, _ := hostFixture()
+				_, e := UpdateState(p, courierFixtureName, func(s *State) error {
+					s.HostEnrollment = &HostEnrollment{Version: 1, Attachment: attachment}
+					return nil
+				})
+				if e != nil {
+					t.Fatal(e)
+				}
+			case "active-monitor":
+				monitor := monitorRecord()
+				state := courierState(t, p)
+				state.Monitor = &monitor
+				data, e := sealedState(state)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = os.WriteFile(p.StateFile(courierFixtureName), data, 0600); e != nil {
 					t.Fatal(e)
 				}
 			case "terminal":

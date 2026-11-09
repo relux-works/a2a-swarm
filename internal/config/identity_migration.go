@@ -33,6 +33,13 @@ func CheckIdentityMigration(p Paths, name string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
+	if p.AgentStateBase != "" && p.AgentStateBase != p.Base {
+		agent := p
+		agent.Base, agent.AgentStateBase = p.AgentStateBase, ""
+		if err := CheckIdentityMigration(agent, name); err != nil {
+			return err
+		}
+	}
 	s, err := LoadState(p, name)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrMigrationStateUnavailable, err)
@@ -44,6 +51,8 @@ func CheckIdentityMigration(p Paths, name string) error {
 }
 
 var ErrCourierMigration = errors.New("courier migration refused; source remains fenced if migration started")
+var ErrCourierSourceSecrets = fmt.Errorf("%w: source_credentials_contain_secrets; complete creds migrate or repair source credentials", ErrCourierMigration)
+var ErrCourierPostPending = fmt.Errorf("%w: post_operation_pending; finish the active post and inspect post-operation status before migration", ErrCourierMigration)
 
 // CourierSecretStore is injected by the CLI. Errors and values from a provider
 // never enter migration diagnostics or the nonsecret journal. Restore must be

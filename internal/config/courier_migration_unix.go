@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -204,6 +205,47 @@ func courierInventory(p Paths, name string) ([]courierFile, error) {
 			}
 		}
 	}
+	journalRoot := filepath.Join(p.Base, "post-operations", "agents", name)
+	if _, err := os.Lstat(journalRoot); !errors.Is(err, fs.ErrNotExist) {
+		if err != nil {
+			return nil, err
+		}
+		journal, err := OpenPostJournal(p, name, false, false)
+		if err != nil {
+			return nil, err
+		}
+		defer journal.Close()
+		entries, err := os.ReadDir(journalRoot)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > PostRecordCountLimit+1 {
+			return nil, ErrCourierPostPending
+		}
+		for _, entry := range entries {
+			if entry.Name() == ".lock" {
+				continue
+			}
+			if !strings.HasSuffix(entry.Name(), ".json") {
+				return nil, ErrCourierPostPending
+			}
+			id := strings.TrimSuffix(entry.Name(), ".json")
+			r, ok, err := journal.read(id) // caller holds the journal flock
+			if err != nil || !ok || r.Outcome == "not_submitted" {
+				return nil, ErrCourierPostPending
+			}
+			path := filepath.Join(journalRoot, entry.Name())
+			b, err := courierRead(path, PostRecordLimit)
+			if err != nil {
+				return nil, err
+			}
+			total += int64(len(b))
+			if total > courierMaxTotal || len(files) >= 4096 {
+				return nil, ErrCourierMigration
+			}
+			files = append(files, courierFile{Path: filepath.Join("post-operations", "agents", name, entry.Name()), Digest: courierDigest(b), Size: int64(len(b))})
+		}
+	}
 	return files, nil
 }
 
@@ -254,13 +296,14 @@ func courierStep(o CourierMigrationOptions, label string) error {
 	return nil
 }
 
-// MigrateCourier takes consumer -> credential -> state locks, retaining every
+// MigrateCourier takes consumer -> credential -> post attempt -> journal ->
+// state locks, retaining every
 // inode forever. It uses L02's locked writer/seal, never an alternate State
 // encoding. Explicit resume/rollback is required after any interruption.
 func MigrateCourier(ctx context.Context, p Paths, name string, o CourierMigrationOptions) (err error) {
 	// All errors are closed: provider errors and paths may contain private data.
 	defer func() {
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrCourierSourceSecrets) && !errors.Is(err, ErrCourierPostPending) {
 			err = ErrCourierMigration
 		}
 	}()
@@ -278,15 +321,8 @@ func MigrateCourier(ctx context.Context, p Paths, name string, o CourierMigratio
 			return ErrCourierMigration
 		}
 	}
-	for _, root := range []string{p.Base, p.metadataRoot()} {
-		rel, e := filepath.Rel(root, o.To)
-		if e != nil || rel == "." || rel != ".." && !strings.HasPrefix(rel, "../") {
-			return ErrCourierMigration
-		}
-		rel, e = filepath.Rel(o.To, root)
-		if e != nil || rel == "." || rel != ".." && !strings.HasPrefix(rel, "../") {
-			return ErrCourierMigration
-		}
+	if err = courierCheckOverlap(o.To, []string{p.Base, p.metadataRoot()}, os.Stat); err != nil {
+		return err
 	}
 	if _, e := courierRead(p.StateFile(name), 1<<20); e != nil && !errors.Is(e, fs.ErrNotExist) {
 		return e
@@ -321,6 +357,33 @@ func MigrateCourier(ctx context.Context, p Paths, name string, o CourierMigratio
 		return err
 	}
 	defer releaseCreds()
+	// Lock order: consumer -> credential -> post attempt -> journal -> State.
+	// A live reserved attempt refuses immediately; no lock is renamed or deleted.
+	attempt := postAttemptPath(p, name, false)
+	if e := courierPath(attempt, false); e != nil && !errors.Is(e, fs.ErrNotExist) {
+		return e
+	}
+	releaseAttempt, e := lockFileBy(attempt, time.Now())
+	if e != nil {
+		return ErrCourierPostPending
+	}
+	defer releaseAttempt()
+	journal, e := OpenPostJournal(p, name, false, false)
+	if e == nil {
+		defer journal.Close()
+		f, e := openPostOperationLock(journal.root, false, openPostOperationFile)
+		if e != nil {
+			return ErrCourierPostPending
+		}
+		defer f.Close()
+		// Nonblocking admission avoids waiting behind an unfinished journal writer.
+		if e = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+			return ErrCourierPostPending
+		}
+		defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	} else if _, statErr := os.Lstat(filepath.Join(p.Base, "post-operations", "agents", name)); !errors.Is(statErr, fs.ErrNotExist) {
+		return ErrCourierPostPending
+	}
 	_, err = withStateLock(p, name, func(path string) (func(), error) { return lockFileBy(path, time.Now()) }, func(st State) (State, error) {
 		if courierOccupied(st) {
 			return st, ErrCourierMigration
@@ -356,6 +419,9 @@ func migrateCourierLocked(ctx context.Context, p Paths, name string, st State, o
 		}
 		original, e := courierRead(p.AgentFile(name), 1<<20)
 		if e != nil {
+			return st, e
+		}
+		if e = courierSourceCredentialCheck(original, o.Keychain); e != nil {
 			return st, e
 		}
 		if _, e = courierCredentials(original, name, o.Binding); e != nil {
@@ -436,6 +502,13 @@ func migrateCourierLocked(ctx context.Context, p Paths, name string, st State, o
 		if e = courierMkdir(filepath.Dir(target)); e != nil {
 			return st, e
 		}
+		original, e := courierRead(p.AgentFile(name), 1<<20)
+		if e != nil {
+			return st, e
+		}
+		if e = courierSourceCredentialCheck(original, o.Keychain); e != nil {
+			return st, e
+		}
 		files, e := courierInventory(p, name)
 		if e != nil {
 			return st, e
@@ -484,6 +557,15 @@ func migrateCourierLocked(ctx context.Context, p Paths, name string, st State, o
 		if e = courierVerifyRollback(target, j, name); e != nil {
 			return st, e
 		}
+		if j.Keychain {
+			b, e := courierRead(p.AgentFile(name), 1<<20)
+			if e != nil {
+				return st, e
+			}
+			if e = courierSourceCredentialCheck(b, true); e != nil {
+				return st, e
+			}
+		}
 		if !j.Keychain {
 			b, e := courierRead(p.AgentFile(name), 1<<20)
 			if e != nil || !bytes.Equal(b, courierTombstone(name, at)) {
@@ -519,6 +601,14 @@ func migrateCourierLocked(ctx context.Context, p Paths, name string, st State, o
 		}
 		if e = courierStep(o, "copied"); e != nil {
 			return st, e
+		}
+	}
+	for _, f := range j.Files {
+		if strings.HasPrefix(f.Path, "post-operations/") {
+			if e = courierPrivateCopy(filepath.Join(target, "post-operations", "agents", name, ".lock"), nil); e != nil {
+				return st, e
+			}
+			break
 		}
 	}
 	if e = courierVerify(target, j); e != nil {
@@ -620,6 +710,13 @@ func migrateCourierLocked(ctx context.Context, p Paths, name string, st State, o
 		if e = o.Secrets.Delete(ctx, creds); e != nil {
 			return st, e
 		}
+		source, e := courierRead(p.AgentFile(name), 1<<20)
+		if e != nil {
+			return st, e
+		}
+		if e = courierSourceCredentialCheck(source, true); e != nil {
+			return st, e
+		}
 	} else {
 		source := p.AgentFile(name)
 		b, e := courierRead(source, 1<<20)
@@ -672,7 +769,9 @@ func courierValidateJournal(j courierJournal, name string) error {
 	for _, f := range j.Files {
 		clean := filepath.Clean(f.Path)
 		parts := strings.Split(clean, string(filepath.Separator))
-		if clean != f.Path || len(parts) < 2 || parts[0] != "agents" && parts[0] != "state" && parts[0] != "owner-dm" || parts[1] != name && !strings.HasPrefix(parts[1], name+".") || strings.HasSuffix(clean, ".lock") || strings.Contains(clean, ".migrated-") || seen[clean] || !lowerHex(f.Digest, 64) || f.Size < 0 || f.Size > courierMaxFile {
+		identityPath := len(parts) >= 2 && (parts[0] == "agents" || parts[0] == "state" || parts[0] == "owner-dm") && (parts[1] == name || strings.HasPrefix(parts[1], name+"."))
+		postPath := len(parts) == 4 && parts[0] == "post-operations" && parts[1] == "agents" && parts[2] == name && strings.HasSuffix(parts[3], ".json") && ValidPostOperationID(strings.TrimSuffix(parts[3], ".json"))
+		if clean != f.Path || !identityPath && !postPath || strings.HasSuffix(clean, ".lock") || strings.Contains(clean, ".migrated-") || seen[clean] || !lowerHex(f.Digest, 64) || f.Size < 0 || f.Size > courierMaxFile {
 			return ErrCourierMigration
 		}
 		seen[clean] = true
@@ -695,6 +794,15 @@ func courierCredentialDigest(j courierJournal, name string) string {
 	return ""
 }
 func courierVerify(target string, j courierJournal) error {
+	for _, f := range j.Files {
+		if strings.HasPrefix(f.Path, "post-operations/") {
+			b, e := courierRead(filepath.Join(target, "post-operations", "agents", j.Identity, ".lock"), 1)
+			if e != nil || len(b) != 0 {
+				return ErrCourierMigration
+			}
+			break
+		}
+	}
 	for _, f := range j.Files {
 		b, e := courierRead(filepath.Join(target, f.Path), courierMaxFile)
 		if e != nil || int64(len(b)) != f.Size || courierDigest(b) != f.Digest {
@@ -859,4 +967,116 @@ func courierMaterializedCredentials(data []byte, name string, binding *Connectio
 		}
 	}
 	return c, nil
+}
+
+// Admission uses the credential schema as a positive metadata allowlist. Unknown
+// fields (including refresh tokens) cannot hide secrets in legacy loose JSON.
+// File credentials legitimately carry access_token/password until tombstoning;
+// Keychain metadata must already be clean, including with no named binding.
+func courierSourceCredentialCheck(data []byte, keychain bool) error {
+	var metadata Credentials
+	if metadata.decodeJSON(data, true) != nil || metadata.ValidateWaitKeywords() != nil {
+		return ErrCourierSourceSecrets
+	}
+	// The legacy writer deliberately retains repeated optional values. Walk
+	// every occurrence, so an empty successor cannot conceal a secret-bearing
+	// predecessor, without refusing nonsecret wire forms the writer emits.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return ErrCourierSourceSecrets
+	}
+	for decoder.More() {
+		token, err = decoder.Token()
+		key, ok := token.(string)
+		if err != nil || !ok {
+			return ErrCourierSourceSecrets
+		}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return ErrCourierSourceSecrets
+		}
+		switch key {
+		case "user_id", "device_id", "homeserver", "wait_keywords", "own_room", "connection_binding":
+		case "access_token", "password":
+			if keychain {
+				var empty string
+				if json.Unmarshal(value, &empty) != nil || empty != "" {
+					return ErrCourierSourceSecrets
+				}
+			}
+		default:
+			return ErrCourierSourceSecrets
+		}
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return ErrCourierSourceSecrets
+	}
+	var extra any
+	if !errors.Is(decoder.Decode(&extra), io.EOF) {
+		return ErrCourierSourceSecrets
+	}
+
+	return nil
+}
+
+func courierLexicalOverlap(a, b string) bool {
+	rel, err := filepath.Rel(a, b)
+	return err != nil || rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// Walk both sets of existing ancestors: aliases can share a device/inode
+// without sharing any path spelling. Compare both device and inode, not inode alone.
+// The stat seam is solely for testing directory aliases forbidden to os.Link.
+func courierCheckOverlap(to string, roots []string, stat func(string) (os.FileInfo, error)) error {
+	for _, root := range roots {
+		a, b := root, to
+		if runtime.GOOS == "darwin" {
+			a, b = strings.ToLower(a), strings.ToLower(b)
+		}
+		if courierLexicalOverlap(a, b) || courierLexicalOverlap(b, a) {
+			return ErrCourierMigration
+		}
+		rootInfo, err := stat(root)
+		if err != nil {
+			return ErrCourierMigration
+		}
+		for ancestor := to; ; ancestor = filepath.Dir(ancestor) {
+			info, err := stat(ancestor)
+			if err == nil && courierSameIdentity(rootInfo, info) {
+				return ErrCourierMigration
+			}
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return ErrCourierMigration
+			}
+			if ancestor == filepath.Dir(ancestor) {
+				break
+			}
+		}
+		toInfo, err := stat(to)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return ErrCourierMigration
+		}
+		if err == nil {
+			for ancestor := root; ; ancestor = filepath.Dir(ancestor) {
+				info, err := stat(ancestor)
+				if err != nil {
+					return ErrCourierMigration
+				}
+				if courierSameIdentity(toInfo, info) {
+					return ErrCourierMigration
+				}
+				if ancestor == filepath.Dir(ancestor) {
+					break
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func courierSameIdentity(a, b os.FileInfo) bool {
+	sa, oka := a.Sys().(*syscall.Stat_t)
+	sb, okb := b.Sys().(*syscall.Stat_t)
+	return oka && okb && sa.Dev == sb.Dev && sa.Ino == sb.Ino
 }
