@@ -276,19 +276,12 @@ func TestHookExecutableFixedImage(t *testing.T) {
 	}
 }
 
-// Checks the generated deny alternatives for known spellings, not Codex's
+// Checks every canonical terminal denial for each known spelling, not Codex's
 // interpretation of rules or protection against arbitrary undiscovered aliases.
 func assertHookFixtureRules(t *testing.T, f hookExecutableFixture, aliases ...string) {
 	t.Helper()
 	text := readFile(t, filepath.Join(filepath.Dir(f.settings), "rules", "a2a-owner-dm.rules"))
-	for _, alias := range aliases {
-		if strings.Count(text, string(marshalNoEscape(alias))) != 10 {
-			t.Fatalf("known executable spelling missing from DM terminal denials: %q", alias)
-		}
-	}
-	if strings.Contains(text, `"status"`) || strings.Contains(text, `"bind"`) || strings.Contains(text, `"unbind"`) {
-		t.Fatal("rules deny permitted owner-DM actions")
-	}
+	assertDMCanonicalCodexSpellings(t, text, aliases...)
 }
 
 // Proves direct relative targets and symlinked directory spellings are accepted

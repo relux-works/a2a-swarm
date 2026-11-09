@@ -129,10 +129,11 @@ func TestPrincipalDMAdmissionRefusals(t *testing.T) {
 	rooms := len(e.hs.rooms)
 	e.as("bob", "principal-dm", "ensure", "@dave:"+testServer).failsWith(t, ExitError, "not in the host pin")
 	e.as("bob", "principal-dm", "say", "@dave:"+testServer, "x").failsWith(t, ExitError, "not in the host pin")
-	ownerPut(t, f.path("pin"), principalDMPin{Principals: []string{carol, "@alice:" + testServer, "@bob:" + testServer}})
-	e.as("bob", "principal-dm", "ensure", "@alice:"+testServer).failsWith(t, ExitError, "use owner-dm")
+	// Keep the pin valid: an invalid owner/self list has overlapping error text
+	// and must not stand in for the requested-target admission checks.
+	e.as("bob", "principal-dm", "ensure", "@alice:"+testServer).failsWith(t, ExitError, "principal-dm: this principal is the pinned owner; use owner-dm")
 	e.configure = func(a *App) { a.ownerConfirm = func(string) error { return nil } }
-	e.as("bob", "principal-dm", "ensure", "@bob:"+testServer).failsWith(t, ExitError, "is this identity")
+	e.as("bob", "principal-dm", "ensure", "@bob:"+testServer).failsWith(t, ExitError, "principal-dm: the principal is this identity")
 	ownerPut(t, f.path("pin"), map[string]any{"principals": []string{carol, carol}})
 	e.as("bob", "principal-dm", "ensure", carol).failsWith(t, ExitError, "invalid principal-dm pin")
 	ownerPut(t, f.path("pin"), map[string]any{"principals": []string{carol}, "extra": true})

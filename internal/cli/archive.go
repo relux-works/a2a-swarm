@@ -498,24 +498,25 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Pair exclusion snapshot and room inventory/export with DM creation.
-	unlock, err := ownerFiles(s.paths, s.name).lock(ctx)
+	// Snapshot candidates before checking for DM coordination files. A room
+	// created after this snapshot cannot enter this export. A created room in
+	// the snapshot already has a lock/exclusion file, written before CreateRoom.
+	var ids []string
+	var roomID, label string
+	if all {
+		ids, err = s.client.JoinedRooms(ctx)
+	} else {
+		roomID, label, err = s.resolveRoom(ctx, pos[0])
+	}
+	if err != nil {
+		return err
+	}
+	excluded, unlock, err := archiveDMExclusions(ctx, ownerFiles(s.paths, s.name))
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	excluded, err := ownerFiles(s.paths, s.name).exclusions()
-	if err == nil && excluded[principalArchiveReservation] {
-		return errors.New("archive: principal-dm creation reservation excludes all rooms; host reconciliation required")
-	}
-	if err != nil {
-		return err
-	}
 	if !all {
-		roomID, label, err := s.resolveRoom(ctx, pos[0])
-		if err != nil {
-			return err
-		}
 		if excluded[roomID] || s.adminRoomExcluded(roomID) {
 			return nil
 		}
@@ -529,10 +530,6 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 			return fmt.Errorf("archive: %w", err)
 		}
 		return s.archiveRoom(ctx, roomID, label, local, *dir, *withIndex)
-	}
-	ids, err := s.client.JoinedRooms(ctx)
-	if err != nil {
-		return err
 	}
 	for _, id := range ids {
 		if excluded[id] || s.adminRoomExcluded(id) {
@@ -553,6 +550,33 @@ func cmdArchive(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	return nil
+}
+
+// A fresh identity (including a pin alone) needs no new coordination files.
+// Inspect only existence here: reservation/exclusion contents are always read
+// under the creation lock, held by the caller through the entire export.
+func archiveDMExclusions(ctx context.Context, f ownerDMFiles) (map[string]bool, func(), error) {
+	for _, path := range []string{f.path("lock"), f.path("archive-exclude")} {
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, nil, err
+		}
+		unlock, err := f.lock(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		excluded, err := f.exclusions()
+		if err == nil && excluded[principalArchiveReservation] {
+			err = errors.New("archive: principal-dm creation reservation excludes all rooms; host reconciliation required")
+		}
+		if err != nil {
+			unlock()
+			return nil, nil, err
+		}
+		return excluded, unlock, nil
+	}
+	return map[string]bool{}, func() {}, nil
 }
 
 // A redacted topic no longer has its content-derived slug. Replace earlier

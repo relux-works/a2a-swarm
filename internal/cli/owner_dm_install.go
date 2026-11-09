@@ -72,17 +72,19 @@ func ownerCodexRules(path, exe, name string, install bool, aliases ...string) er
 	}
 	var b strings.Builder
 	b.WriteString(ownerRulesHeader)
-	binaries := []string{exe, "a2a", "bin/a2a", "./bin/a2a"}
-	for _, alias := range aliases {
+	binaries := []string{}
+	for _, alias := range append([]string{exe, "a2a", "bin/a2a", "./bin/a2a"}, aliases...) {
 		if alias != "" && !contains(binaries, alias) {
 			binaries = append(binaries, alias)
 		}
 	}
-	for _, action := range []string{"ensure", "set", "unset"} {
-		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"owner-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use owner-dm bind/unbind --event or status.\")\n", marshalNoEscape(binaries), action)
-	}
-	for _, action := range []string{"ensure", "unset"} {
-		fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"principal-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use principal-dm status or say.\")\n", marshalNoEscape(binaries), action)
+	for _, binary := range binaries {
+		for _, action := range []string{"ensure", "set", "unset"} {
+			fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"owner-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use owner-dm bind/unbind --event or status.\")\n", marshalNoEscape(binary), action)
+		}
+		for _, action := range []string{"ensure", "unset"} {
+			fmt.Fprintf(&b, "prefix_rule(pattern = [%s, \"principal-dm\", %q], decision = \"forbidden\", justification = \"Host terminal only; use principal-dm status or say.\")\n", marshalNoEscape(binary), action)
+		}
 	}
 	if bytes.Equal(old, []byte(b.String())) {
 		return nil

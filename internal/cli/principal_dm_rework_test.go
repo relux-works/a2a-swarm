@@ -606,7 +606,8 @@ func TestPrincipalDMFutureAndInboundExpiry(t *testing.T) {
 // policy must not leak into owner ensure.
 func TestDMGuardAndOwnerHistoryNeighbours(t *testing.T) {
 	e, _, _ := principalFixture(t)
-	e.as("bob", "post", "proj", "principal-dm", "ensure").ok(t)
+	e.as("bob", "topic", "new", "proj", "dm-guard-control", "Guard control").ok(t)
+	e.as("bob", "post", "proj", "--topic", "dm-guard-control", "principal-dm", "ensure").ok(t)
 	e2, _, f := ownerFixture(t)
 	e2.configure = func(a *App) { a.ownerConfirm = func(string) error { return nil } }
 	e2.as("bob", "owner-dm", "ensure").ok(t)

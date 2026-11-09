@@ -451,8 +451,11 @@ archive exclusion remain.
 
 Before CreateRoom, ensure takes the owner/archive lock and writes a durable
 `*principal-dm-creation*` reservation in the shared archive-exclude file. Archive
-holds the same lock through export and refuses all export while that reservation
-exists. After creation, the exact room is excluded before this invocation's
+snapshots candidate rooms first, then holds the same lock through export if a
+lock or exclusion file exists, and refuses all export while that reservation
+exists. With neither file, including a pin alone, archive skips coordination
+without provisioning files; a room created later cannot enter the candidate
+snapshot. After creation, the exact room is excluded before this invocation's
 reservation is removed. A CreateRoom error/uncertain response or exact-exclusion
 write failure retains the reservation across retries: the host must account for
 all orphan rooms and record their exact exclusions before removing it.

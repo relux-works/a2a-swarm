@@ -3317,8 +3317,11 @@ Storage under the config base, all regular 0600 files:
   `principal-dm/<name>.lock`.
 - Rooms are added to the identity's `owner-dm/<name>.archive-exclude`, which
   archive honours. Creation holds the owner/archive lock and first writes the
-  durable `*principal-dm-creation*` exclusion reservation. Archive holds that
-  same lock through export and refuses all rooms while a reservation remains.
+  durable `*principal-dm-creation*` exclusion reservation. Archive snapshots its
+  candidate rooms first, then holds that same lock through export if a lock or
+  exclusion file exists, and refuses all rooms while a reservation remains.
+  With neither file, including a pin alone, archive skips coordination without
+  provisioning files; a room created later cannot enter the candidate snapshot.
   After the exact new room exclusion is recorded, a reservation created by
   this invocation is removed. A CreateRoom error/uncertain response or exclusion
   write failure retains it, including across retries; the host must account for
