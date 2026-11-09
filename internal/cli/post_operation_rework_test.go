@@ -13,6 +13,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
+// Claim: Retained prepared/UNKNOWN posts exit 1 and ACK posts exit 0 without provider/HTTP work; local synthetic recovery only.
 func TestDurablePostRetainedExitCodes(t *testing.T) {
 	for _, state := range []string{"not_submitted", "unknown", "acknowledged"} {
 		t.Run(state, func(t *testing.T) {
@@ -96,6 +97,7 @@ func replaceOperationFixture(t *testing.T, w *operationWorld, r config.PostOpera
 	}
 }
 
+// Claim: Coherent or corrupt replacements refuse at reservation/ACK gates without replay or leaked IDs; before-gate synthetic swaps only.
 func TestDurablePostRequestSwapRefusesAtBothGates(t *testing.T) {
 	for _, stage := range []string{"after_prepare", "after_reservation", "before_ack_persist"} {
 		for _, field := range []string{"request_bytes", "request_length", "transaction", "binding", "event_type", "record_digest"} {
@@ -170,6 +172,7 @@ func TestDurablePostRequestSwapRefusesAtBothGates(t *testing.T) {
 	}
 }
 
+// Claim: ACK persistence failure emits only closed UNKNOWN and never replays; inert transport, not power-loss durability.
 func TestDurablePostACKFailureClosedProjection(t *testing.T) {
 	w := operationWorldNew(t)
 	a, out, diag := w.app()

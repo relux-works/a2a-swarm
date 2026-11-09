@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -172,6 +173,7 @@ func operationResult(t *testing.T, out *bytes.Buffer) postOperationResult {
 
 // Scenario 1: exact one request, reservation before I/O, ACK before output,
 // fresh App local recovery and no provider/HTTP on status or identical post.
+// Limit: Inert transport proves ordering and local recovery, not remote durability.
 func TestDurablePostHappyPathAndRecovery(t *testing.T) {
 	w := operationWorldNew(t)
 	a, out, diag := w.app()
@@ -218,6 +220,7 @@ type operationObservingWriter struct {
 func (w operationObservingWriter) Write(b []byte) (int, error) { w.observe(); return w.Writer.Write(b) }
 
 // Scenarios 2 and 9: server-applied/lost ACK stays UNKNOWN across restart.
+// Limit: Synthetic lost response and local restart, not a live homeserver.
 func TestDurablePostAppliedLostACKNeverReplays(t *testing.T) {
 	w := operationWorldNew(t)
 	w.drop = true
@@ -274,6 +277,7 @@ func (b *operationFaultBody) Close() error {
 }
 
 // Scenario 3: invalid strict original-endpoint ACKs cannot mint success IDs.
+// Limit: Listed inert ACK variants only, not every possible malformed response.
 func TestDurablePostRejectedACKs(t *testing.T) {
 	invalid := map[string]string{"missing": `{}`, "empty": `{"event_id":""}`, "type": `{"event_id":4}`, "duplicate": `{"event_id":"$a","event_id":"$b"}`, "escaped": `{"event_id":"$a","\u0065vent_id":"$b"}`, "trailing": `{"event_id":"$a"}{}`, "unicode": `{"event_id":"$\ud800"}`, "alias": `{"Event_ID":"$b"}`, "read": "", "close": "", "length": "", "cancel": ""}
 	for name, ack := range invalid {
@@ -318,6 +322,7 @@ func TestDurablePostRejectedACKs(t *testing.T) {
 }
 
 // Scenario 4: each instance stops at one boundary; a fresh App sees exact state.
+// Limit: Injected stops model boundaries within one process, not abrupt process death.
 func TestDurablePostCrashBoundaries(t *testing.T) {
 	cases := []struct {
 		stage, state string
@@ -361,6 +366,7 @@ func TestDurablePostCrashBoundaries(t *testing.T) {
 
 // Scenario 5: a known but unpersisted ACK is not a success projection; broken
 // output after persistence retains ACK and does not submit again.
+// Limit: Injected faults and output writers, not actual disk failure or power loss.
 func TestDurablePostPersistenceAndOutputFailures(t *testing.T) {
 	w := operationWorldNew(t)
 	a, out, diag := w.app()
@@ -399,6 +405,7 @@ type operationBrokenWriter struct{}
 func (operationBrokenWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 // Scenario 6: changed intent/destination/metadata never overwrites a prior ID.
+// Limit: Listed synthetic intent/binding changes only, not arbitrary same-UID mutation.
 func TestDurablePostImmutableIntent(t *testing.T) {
 	for _, change := range []string{"text", "kind", "to", "deadline", "room", "root", "device", "account", "endpoint", "binding"} {
 		t.Run(change, func(t *testing.T) {
@@ -466,6 +473,7 @@ func TestDurablePostImmutableIntent(t *testing.T) {
 
 // Scenarios 7 and 8: bounded requests and unsupported combinations have valid
 // adjacent controls; status has zero provider and zero transport effects.
+// Limit: Synthetic modes and known secret sentinel, not general secret discovery.
 func TestDurablePostIsolationAndSecrecy(t *testing.T) {
 	for _, mode := range []string{"alias", "slug", "reply", "reply-main", "voice", "envelope", "json", "id-file", "protected", "unsupported", "secret", "missing-device"} {
 		t.Run(mode, func(t *testing.T) {
@@ -568,6 +576,7 @@ func TestDurablePostIsolationAndSecrecy(t *testing.T) {
 
 // Scenario 9: the independent I/O oracle fails for the reservation-order
 // mutant, while the separate valid-ACK control continues to acknowledge.
+// Limit: One deliberately late-reservation mutant, not exhaustive mutation testing.
 func TestDurablePostMutationControl(t *testing.T) {
 	for _, mutant := range []bool{false, true} {
 		w := operationWorldNew(t)
@@ -586,21 +595,30 @@ func TestDurablePostMutationControl(t *testing.T) {
 	}
 }
 
+// Claim: Cooperating goroutines yield exactly one acknowledged mutation; concurrency across processes is out of scope.
 func TestDurablePostConcurrentInvocations(t *testing.T) {
 	w := operationWorldNew(t)
-	var wg sync.WaitGroup
+	done, failure := make(chan struct{}, 8), make(chan error, 8)
 	for range 8 {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			a, _, _ := w.app()
 			code := a.Run(context.Background(), operationArgs())
 			if code != 0 && code != 1 {
-				t.Errorf("unexpected exit %d", code)
+				failure <- fmt.Errorf("unexpected exit %d", code)
+				return
 			}
+			done <- struct{}{}
 		}()
 	}
-	wg.Wait()
+	for range 8 {
+		select {
+		case <-done:
+		case err := <-failure:
+			t.Fatal(err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent invocations timed out")
+		}
+	}
 	if w.sends.Load() != 1 || w.record().Outcome != "acknowledged" {
 		t.Fatal("concurrent first invocations did not yield exactly one acknowledged mutation")
 	}
@@ -608,6 +626,7 @@ func TestDurablePostConcurrentInvocations(t *testing.T) {
 
 // Scenario 4 also crosses real process boundaries. CI runs the already-built
 // test binary as a helper: no nested build, live service or inherited auth.
+// Limit: Sequential crash/recovery subprocesses only; concurrency across processes is out of scope.
 func TestDurablePostCrashProcesses(t *testing.T) {
 	cases := []struct {
 		stage, state string
@@ -668,6 +687,7 @@ func TestDurablePostCrashProcesses(t *testing.T) {
 	}
 }
 
+// Claim: CI subprocess exercises crash/recovery boundaries over inert transport; helper only, with assertions in the parent test.
 func TestDurablePostProcessHelper(t *testing.T) {
 	if os.Getenv("A2A_INERT_HELPER") != "1" {
 		t.Skip("CI subprocess helper only")
@@ -717,6 +737,7 @@ func TestDurablePostProcessHelper(t *testing.T) {
 	os.Exit(a.Run(context.Background(), args))
 }
 
+// Claim: Registry change after prepare prevents reservation/send and retains prepared evidence; one synthetic binding change only.
 func TestDurablePostBindingRecheckedBeforeReservation(t *testing.T) {
 	w := operationWorldNew(t)
 	a, _, _ := w.app()
@@ -791,6 +812,7 @@ func TestDurablePostACKBeforeBindingRecheck(t *testing.T) {
 	}
 }
 
+// Claim: Invalid kind or changed body preserves ACK/UNKNOWN without more HTTP; local later invocations only.
 func TestDurablePostMonotonicOnLaterValidationFailure(t *testing.T) {
 	for _, lost := range []bool{false, true} {
 		w := operationWorldNew(t)
@@ -845,6 +867,7 @@ func TestDurablePostFramedRequestLimit(t *testing.T) {
 	}
 }
 
+// Claim: Status exposes exactly six ACK fields and refuses wrong/missing own metadata without provider/HTTP; inert local metadata only.
 func TestDurablePostStatusClosedAndOwnOnly(t *testing.T) {
 	w := operationWorldNew(t)
 	a, _, diag := w.app()
@@ -905,6 +928,7 @@ func TestDurablePostStatusClosedAndOwnOnly(t *testing.T) {
 	}
 }
 
+// Claim: A provider-known secret cannot become a persisted or printed operation ID; one known sentinel, not arbitrary secret discovery.
 func TestDurablePostOperationIDCannotRetainKnownSecret(t *testing.T) {
 	w := operationWorldNew(t)
 	a, out, diag := w.app()

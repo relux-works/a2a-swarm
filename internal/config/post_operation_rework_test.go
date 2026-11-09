@@ -13,6 +13,7 @@ import (
 
 // The public happy path must cross both replacements and return phase digests
 // that equal the actual verified disk record. The old head could not do this.
+// Limit: Local callbacks and readback, not a power-loss durability proof.
 func TestPostJournalAtomicReplaceSequence(t *testing.T) {
 	_, j := operationFixture(t)
 	r := mustPrepareOperation(t, j, operationCandidate("sequence", 20))
@@ -61,6 +62,7 @@ func TestPostJournalAtomicReplaceSequence(t *testing.T) {
 // After rename a failure is not rollback: no second Remove(tmp) or removal of
 // the target is allowed. A fresh reader may seal the visible ACK, but the
 // failed writer must never return a successful reservation or ACK grant.
+// Limit: Injected failures only, not actual power loss.
 func TestPostJournalPostRenameFailure(t *testing.T) {
 	for _, phase := range []string{"reserve", "ack"} {
 		for _, stage := range []string{"renamed", "directory_sync", "directory_synced"} {
@@ -112,6 +114,7 @@ func TestPostJournalPostRenameFailure(t *testing.T) {
 
 // Crash the already-built CI test binary with a synced temporary, or just
 // after rename. No local/nested build, transport or provider is involved.
+// Limit: Sequential crash helpers only; concurrency across processes is out of scope.
 func TestPostJournalReplacementCrashRecovery(t *testing.T) {
 	for _, stage := range []string{"publish", "renamed"} {
 		t.Run(stage, func(t *testing.T) {
@@ -156,6 +159,7 @@ func TestPostJournalReplacementCrashRecovery(t *testing.T) {
 	}
 }
 
+// Claim: CI helper exits only at the configured replacement boundary; parent checks recovery, not a power-loss simulation.
 func TestPostJournalReplacementCrashHelper(t *testing.T) {
 	if os.Getenv("A2A_JOURNAL_HELPER") != "1" {
 		t.Skip("CI subprocess helper only")
@@ -178,6 +182,7 @@ func TestPostJournalReplacementCrashHelper(t *testing.T) {
 	os.Exit(88)
 }
 
+// Claim: Readers ignore recognized temporary names while writers refuse unsafe temps without changing records; cooperative lock fixture only.
 func TestPostJournalTemporarySafety(t *testing.T) {
 	for _, kind := range []string{"leftover", "symlink", "mode", "oversize", "directory"} {
 		t.Run(kind, func(t *testing.T) {

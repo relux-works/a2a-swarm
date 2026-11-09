@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +24,9 @@ const (
 )
 
 var ErrPostOperation = errors.New("post operation journal refused; retained evidence unchanged")
+
+// ErrPostOperationCapacity identifies a full journal without exposing local paths.
+var ErrPostOperationCapacity = fmt.Errorf("%w: capacity reached; run a2a post-operation prune --acknowledged", ErrPostOperation)
 var operationIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 var operationDigestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
@@ -242,7 +246,7 @@ func openPostOperationLock(root *os.Root, create bool, open func(*os.Root, strin
 	return f, nil
 }
 
-func (j *PostJournal) locked(fn func() error) error {
+func (j *PostJournal) withLock(fn func() error) error {
 	f, err := openPostOperationLock(j.root, false, openPostOperationFile)
 	if err != nil {
 		return ErrPostOperation
@@ -257,13 +261,22 @@ func (j *PostJournal) locked(fn func() error) error {
 		return ErrPostOperation
 	}
 	defer unlock()
-	if j.step("lock_sync") != nil || f.Sync() != nil || syncPostRoot(j.root) != nil {
+	if f.Sync() != nil {
 		return ErrPostOperation
 	}
-	if err := j.cleanTemps(); err != nil {
-		return err
-	}
 	return fn()
+}
+
+func (j *PostJournal) locked(fn func() error) error {
+	return j.withLock(func() error {
+		if j.step("lock_sync") != nil || syncPostRoot(j.root) != nil {
+			return ErrPostOperation
+		}
+		if err := j.cleanTemps(); err != nil {
+			return err
+		}
+		return fn()
+	})
 }
 
 func (j *PostJournal) read(id string) (PostOperation, bool, error) {
@@ -299,25 +312,23 @@ func (j *PostJournal) Read(id string) (PostOperation, bool, error) {
 	if !ValidPostOperationID(id) {
 		return empty, false, ErrPostOperation
 	}
-	f, err := openPostOperationLock(j.root, false, openPostOperationFile)
+	var r PostOperation
+	var exists bool
+	err := j.withLock(func() error {
+		if _, err := j.inventory(true); err != nil {
+			return err
+		}
+		var err error
+		r, exists, err = j.read(id)
+		if err == nil && exists && r.Outcome == "acknowledged" && syncPostRoot(j.root) != nil {
+			return ErrPostOperation
+		}
+		return err
+	})
 	if err != nil {
-		return empty, false, ErrPostOperation
+		return empty, false, err
 	}
-	defer f.Close()
-	lock := lockPostOperation
-	if j.lock != nil {
-		lock = j.lock
-	}
-	unlock, err := lock(f)
-	if err != nil {
-		return empty, false, ErrPostOperation
-	}
-	defer unlock()
-	r, exists, err := j.read(id)
-	if err == nil && exists && r.Outcome == "acknowledged" && syncPostRoot(j.root) != nil {
-		return empty, false, ErrPostOperation
-	}
-	return r, exists, err
+	return r, exists, nil
 }
 
 func samePostIntent(a, b PostOperation) bool {
@@ -336,31 +347,81 @@ func samePostRecord(a, b PostOperation) bool {
 		a.Outcome == b.Outcome && a.EventID == b.EventID && a.HTTPStatus == b.HTTPStatus && a.ResponseLength == b.ResponseLength
 }
 
-// cleanTemps runs only under the journal flock. Readers never select temporary
-// names. Refuse unsafe entries without following links or changing their targets.
-func (j *PostJournal) cleanTemps() error {
+type postJournalEntry struct {
+	name   string
+	info   os.FileInfo
+	record PostOperation
+}
+
+// inventory runs under flock and validates the entire directory before any
+// removal. Metadata exceptions are name- and type-specific; Lstat never follows
+// them. Readers continue to ignore recognized temporary names, as before.
+func (j *PostJournal) inventory(ignoreTemps bool) ([]postJournalEntry, error) {
 	dir, err := j.root.Open(".")
 	if err != nil {
-		return ErrPostOperation
+		return nil, ErrPostOperation
 	}
-	entries, err := dir.ReadDir(2*PostRecordCountLimit + 2)
-	dir.Close()
-	if err != nil && !errors.Is(err, io.EOF) || len(entries) > 2*PostRecordCountLimit+1 {
-		return ErrPostOperation
+	defer dir.Close()
+	var retained []postJournalEntry
+	for {
+		entries, err := dir.ReadDir(128)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, ErrPostOperation
+		}
+		for _, ent := range entries {
+			name := ent.Name()
+			if name == ".lock" {
+				continue // the open lock descriptor is verified by withLock
+			}
+			metadata := name == ".DS_Store" || strings.HasPrefix(name, "._")
+			temporary := !metadata && strings.HasSuffix(name, ".tmp") && ValidPostOperationID(strings.TrimSuffix(name, ".tmp"))
+			if temporary && ignoreTemps {
+				continue
+			}
+			st, e := j.root.Lstat(name)
+			if e != nil || !st.Mode().IsRegular() {
+				return nil, ErrPostOperation
+			}
+			if metadata {
+				continue
+			}
+			if !postOperationOwner(st, true) || st.Size() < 0 || st.Size() > PostRecordLimit {
+				return nil, ErrPostOperation
+			}
+			entry := postJournalEntry{name: name, info: st}
+			if strings.HasSuffix(name, ".json") {
+				r, ok, e := j.read(strings.TrimSuffix(name, ".json"))
+				if e != nil || !ok {
+					return nil, ErrPostOperation
+				}
+				entry.record = r
+			} else if !temporary {
+				return nil, ErrPostOperation
+			}
+			retained = append(retained, entry)
+			if len(retained) > 2*PostRecordCountLimit {
+				return nil, ErrPostOperation
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return retained, nil
+		}
+	}
+}
+
+// cleanTemps validates all entries first, then removes private stale temporary
+// files under flock. An unsafe neighbor leaves even safe temporaries unchanged.
+func (j *PostJournal) cleanTemps() error {
+	entries, err := j.inventory(false)
+	if err != nil {
+		return err
 	}
 	removed := false
 	for _, ent := range entries {
-		if !strings.HasSuffix(ent.Name(), ".tmp") {
+		if ent.record.ID != "" {
 			continue
 		}
-		if !ValidPostOperationID(strings.TrimSuffix(ent.Name(), ".tmp")) {
-			return ErrPostOperation
-		}
-		st, err := j.root.Lstat(ent.Name())
-		if err != nil || !st.Mode().IsRegular() || !postOperationOwner(st, true) || st.Size() > PostRecordLimit {
-			return ErrPostOperation
-		}
-		if j.root.Remove(ent.Name()) != nil {
+		if j.root.Remove(ent.name) != nil {
 			return ErrPostOperation
 		}
 		removed = true
@@ -374,44 +435,58 @@ func (j *PostJournal) cleanTemps() error {
 // capacity counts retained records and replacement peak bytes after stale
 // temporary cleanup. Unknowns are never evicted; unexpected entries refuse.
 func (j *PostJournal) capacity(replacing string, next int) error {
-	dir, err := j.root.Open(".")
+	entries, err := j.inventory(false)
 	if err != nil {
-		return ErrPostOperation
-	}
-	entries, err := dir.ReadDir(2*PostRecordCountLimit + 3)
-	dir.Close()
-	if err != nil && !errors.Is(err, io.EOF) || len(entries) > 2*PostRecordCountLimit+2 {
-		return ErrPostOperation
+		return err
 	}
 	count, total := 0, int64(next)
 	for _, ent := range entries {
-		if ent.Name() == ".lock" {
-			continue
+		if ent.record.ID == "" {
+			return ErrPostOperation // writers must clean temporaries first
 		}
-		st, err := j.root.Lstat(ent.Name())
-		if err != nil || !st.Mode().IsRegular() || !postOperationOwner(st, true) || st.Size() < 0 || st.Size() > PostJournalLimit {
-			return ErrPostOperation
-		}
-		if strings.HasSuffix(ent.Name(), ".json") {
-			id := strings.TrimSuffix(ent.Name(), ".json")
-			if _, ok, err := j.read(id); err != nil || !ok {
-				return ErrPostOperation
-			}
-			count++
-		} else {
-			return ErrPostOperation
-		}
-		if ent.Name() != replacing {
-			total += st.Size()
+		count++
+		if ent.name != replacing {
+			total += ent.info.Size()
 		}
 	}
 	if replacing == "" {
 		count++
 	}
 	if count > PostRecordCountLimit || total > PostJournalLimit {
-		return ErrPostOperation
+		return ErrPostOperationCapacity
 	}
 	return nil
+}
+
+// PruneAcknowledged explicitly retires ACK evidence only. It validates every
+// entry before unlinking anything, uses the writer's flock, and syncs the
+// directory after atomic per-record unlinks. Pending/UNKNOWN bytes and stale
+// temporaries are unchanged. A crash can retire a subset; retry is safe.
+func (j *PostJournal) PruneAcknowledged() (removed, retained int, err error) {
+	err = j.withLock(func() error {
+		entries, e := j.inventory(false)
+		if e != nil {
+			return e
+		}
+		for _, ent := range entries {
+			if ent.record.ID == "" {
+				continue
+			}
+			if ent.record.Outcome != "acknowledged" {
+				retained++
+				continue
+			}
+			if j.step("prune_remove") != nil || j.root.Remove(ent.name) != nil {
+				return ErrPostOperation
+			}
+			removed++
+		}
+		if j.step("prune_directory_sync") != nil || syncPostRoot(j.root) != nil {
+			return ErrPostOperation
+		}
+		return nil
+	})
+	return
 }
 
 func (j *PostJournal) save(r PostOperation, replace bool) error {

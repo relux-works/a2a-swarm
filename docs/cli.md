@@ -3702,7 +3702,10 @@ Only an exact room ID and exact existing topic root are eligible. Aliases,
 slugs, `--re`, `--reply-main`, voice, envelopes, attachments, new topics,
 protected/admin rooms and background modes are excluded. `--json` and
 `--id-file` are refused with this mode; its result is always a separate JSON
-operation projection. Durable mode supports macOS and Linux only. Other
+operation projection. `--operation-id` selects durable mode only in flag
+position; a token consumed as another flag's value or placed after `--` remains
+ordinary post input.
+Durable mode supports macOS and Linux only. Other
 platforms explicitly refuse without falling back to an ordinary post.
 
 Before mutation I/O, the journal syncs the immutable framed request and then
@@ -3729,8 +3732,26 @@ them under the journal lock. A failed post-rename sync can leave the old or
 new record after a crash; it never grants a successful posting result.
 The complete framed request is capped at 64 KiB; exceeding it refuses before
 sending with reason `framed_request_too_large` and exit 1. A record is capped at
-128 KiB, the journal at 128 records and 16 MiB. A limit or unsupported
-durability/locking refuses; no unresolved record is evicted or automatically expired.
+128 KiB, each selected connection/identity journal at **128 records** and 16 MiB.
+Acknowledged records count toward the cap and remain until explicitly pruned.
+A capacity refusal names `a2a post-operation prune --acknowledged`. A limit or
+unsupported durability/locking refuses; no unresolved record is evicted or
+expired automatically.
+
+`a2a post-operation prune --acknowledged` explicitly removes only acknowledged
+records from the selected own journal. It performs no HTTP or credential-provider
+calls and prints counts only, for example `removed=12 retained=2`. Pending
+(`not_submitted`) and UNKNOWN records survive byte-for-byte. The command uses
+the same journal lock, validates the entire inventory before deleting anything,
+and atomically unlinks each acknowledged record then syncs the directory.
+Deletion is atomic per record, not across the whole batch: a crash or I/O failure
+can leave a subset retired, and retry is safe. Pruning discards local ACK evidence;
+retired IDs must not be reused, since they would be treated as new operations.
+Symlinked, foreign, corrupt and unexpected entries refuse before any deletion.
+Only regular `.DS_Store` and `._*` (AppleDouble) files are ignored and left intact;
+symlinks and directories with those names still refuse. These metadata files do
+not consume the record or byte budget. Prune leaves stale temporary files intact;
+the next writer still cleans them under the lock.
 
 `a2a post-operation status op_1 --json` reads only existing local own metadata
 and journal evidence. It makes no HTTP request or credential-provider call. Local inspection uses

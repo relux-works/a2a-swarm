@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -49,6 +48,7 @@ func mustPrepareOperation(t *testing.T, j *PostJournal, r PostOperation) PostOpe
 
 // Scenarios 1, 4 and 9: exact disk state survives independently reopened roots;
 // no transition can downgrade a retained ACK or uncertainty.
+// Limit: Reopened local handles only, not power-loss recovery.
 func TestPostJournalDurableStateAndRetention(t *testing.T) {
 	p, j := operationFixture(t)
 	r := mustPrepareOperation(t, j, operationCandidate("stable", 20))
@@ -102,36 +102,38 @@ func TestPostJournalDurableStateAndRetention(t *testing.T) {
 }
 
 // Scenario 6: cooperative first writers produce one creator and one reservation.
+// Limit: Cooperating goroutines only; concurrency across processes is out of scope.
 func TestPostJournalConcurrentCreation(t *testing.T) {
 	p, j := operationFixture(t)
 	var creators, reservations atomic.Int32
-	var wg sync.WaitGroup
+	done, failure := make(chan struct{}, 12), make(chan error, 12)
 	for range 12 {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			other, err := OpenPostJournal(p, "alice", false, true)
 			if err != nil {
-				t.Error(err)
+				failure <- err
 				return
 			}
 			defer other.Close()
 			r, created, err := other.Prepare(operationCandidate("contended", 1))
 			if err != nil {
-				t.Error(err)
+				failure <- err
 				return
 			}
 			if created {
 				creators.Add(1)
 				if _, err = other.ReserveAttempt(r); err != nil {
-					t.Error(err)
-				} else {
-					reservations.Add(1)
+					failure <- err
+					return
 				}
+				reservations.Add(1)
 			}
+			done <- struct{}{}
 		}()
 	}
-	wg.Wait()
+	for range 12 {
+		awaitOperationSignal(t, done, failure)
+	}
 	if creators.Load() != 1 || reservations.Load() != 1 {
 		t.Fatalf("creators=%d reservations=%d", creators.Load(), reservations.Load())
 	}
@@ -142,6 +144,7 @@ func TestPostJournalConcurrentCreation(t *testing.T) {
 }
 
 // Scenario 5: each pre-mutation persistence failure prevents a send grant.
+// Limit: Injected stage faults only, not real storage failures.
 func TestPostJournalPersistenceFailures(t *testing.T) {
 	for _, phase := range []string{"prepare", "reserve", "ack"} {
 		for _, stage := range []string{"lock_sync", "create", "write", "file_sync", "publish", "directory_sync"} {
@@ -197,6 +200,7 @@ func TestPostJournalPersistenceFailures(t *testing.T) {
 }
 
 // Scenario 7: accepted exact request bound has a neighboring max+1 refusal.
+// Limit: Exact request/count fixture boundaries only, not physical disk exhaustion.
 func TestPostJournalBounds(t *testing.T) {
 	_, j := operationFixture(t)
 	exact := operationCandidate("exact", PostRequestLimit-len(`{"body":""}`))
@@ -235,6 +239,7 @@ func TestPostJournalBounds(t *testing.T) {
 	}
 }
 
+// Claim: Malformed/unsafe records and foreign binding reuse refuse without overwrite; local bytes and symlinks, not arbitrary same-UID protection.
 func TestPostJournalMalformedAndUnsafe(t *testing.T) {
 	for _, mode := range []string{"duplicate", "escaped_duplicate", "digest", "unknown_schema", "unknown_field", "oversize", "mode", "symlink", "foreign"} {
 		t.Run(mode, func(t *testing.T) {
@@ -295,6 +300,7 @@ func TestPostJournalMalformedAndUnsafe(t *testing.T) {
 	}
 }
 
+// Claim: Unsafe/missing locks and unsafe paths refuse, while a recreated valid lock works and absence stays absence; isolated path edits only.
 func TestPostJournalPathAndLockSafety(t *testing.T) {
 	p, j := operationFixture(t)
 	if err := j.root.Remove(".lock"); err != nil {
@@ -347,6 +353,7 @@ func TestPostJournalPathAndLockSafety(t *testing.T) {
 	}
 }
 
+// Claim: Exact record/total limits pass, +1 and replacement peak overflow refuse; padded local records, not disk-exhaustion behavior.
 func TestPostJournalExactRecordAndTotalBounds(t *testing.T) {
 	_, j := operationFixture(t)
 	r := mustPrepareOperation(t, j, operationCandidate("record", 1))
@@ -394,6 +401,7 @@ func TestPostJournalExactRecordAndTotalBounds(t *testing.T) {
 	}
 }
 
+// Claim: Unavailable locking prevents record creation and restored locking permits it; injected lock error only.
 func TestPostJournalUnsupportedLockRefuses(t *testing.T) {
 	_, j := operationFixture(t)
 	j.lock = func(*os.File) (func(), error) { return nil, errors.New("synthetic unsupported lock") }
@@ -408,6 +416,7 @@ func TestPostJournalUnsupportedLockRefuses(t *testing.T) {
 	mustPrepareOperation(t, j, operationCandidate("allowed", 1))
 }
 
+// Claim: Opaque ASCII IDs at the boundary pass and listed unsafe forms fail; representative grammar boundaries only.
 func TestPostOperationIDGrammar(t *testing.T) {
 	for _, id := range []string{"a", "A_9-z", strings.Repeat("Z", 64)} {
 		if !ValidPostOperationID(id) {

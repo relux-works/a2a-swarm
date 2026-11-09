@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+// Claim: 0755 state roots work unchanged while writable roots/public journal components refuse; local mode fixtures only.
 func TestPostJournalStateRootBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -81,6 +82,7 @@ func TestPostJournalStateRootBoundary(t *testing.T) {
 	}
 }
 
+// Claim: A writable state ancestor prevents journal open; isolated mode change, not hostile replacement.
 func TestPostJournalUnsafeStateAncestor(t *testing.T) {
 	ancestor, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -109,8 +111,12 @@ func (s operationModeInfo) IsDir() bool       { return s.mode.IsDir() }
 
 // Single-UID sandboxes cannot chown to another user. Inject precisely the
 // metadata used by the production predicate; this is not real-chown evidence.
+// Claim: own private journal entries and safe root ancestors pass; foreign or special-mode entries fail under the listed metadata cases.
 func TestPostJournalBoundaryOwnerAndSpecialModesSynthetic(t *testing.T) {
-	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	st, err := os.Stat(base)
 	if err != nil {
 		t.Fatal(err)

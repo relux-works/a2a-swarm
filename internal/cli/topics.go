@@ -403,9 +403,25 @@ func validKind(k string) bool {
 	return false
 }
 
-// cmdPost: a2a post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--reply-main] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
-func cmdPost(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--reply-main] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
+// postFlagSet is shared by dispatch classification and command parsing so
+// value-taking flags consume the same tokens on both paths.
+type postFlags struct {
+	result      resultFlags
+	to          *stringList
+	operationID *string
+	withVoice   *bool
+	topic       *string
+	kind        *string
+	re          *string
+	replyMain   *bool
+	replyBy     *string
+	trunk       *string
+	subtype     *string
+	subject     *string
+	envelopeArg *string
+}
+
+func postFlagSet() (*flag.FlagSet, postFlags) {
 	fs := newFlagSet("post")
 	result := addResultFlags(fs)
 	operationID := fs.String("operation-id", "", "durable plain-post identity; existing IDs never resend")
@@ -421,6 +437,25 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	subtype := fs.String("subtype", "", "system subtype (only with --kind system)")
 	subject := fs.String("subject", "", "structured subject (repo@branch, board id, PR#12)")
 	envelopeArg := fs.String("envelope", "", "carry the exact bytes of @file as a swarm envelope in the event; the text becomes the exact event body")
+	return fs, postFlags{result: result, to: &to, operationID: operationID, withVoice: withVoice, topic: topic, kind: kind, re: re, replyMain: replyMain, replyBy: replyBy, trunk: trunk, subtype: subtype, subject: subject, envelopeArg: envelopeArg}
+}
+
+// cmdPost: a2a post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--reply-main] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
+func cmdPost(ctx context.Context, a *App, args []string) error {
+	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--reply-main] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
+	fs, opts := postFlagSet()
+	result, to := opts.result, opts.to
+	operationID := opts.operationID
+	withVoice := opts.withVoice
+	topic := opts.topic
+	kind := opts.kind
+	re := opts.re
+	replyMain := opts.replyMain
+	replyBy := opts.replyBy
+	trunk := opts.trunk
+	subtype := opts.subtype
+	subject := opts.subject
+	envelopeArg := opts.envelopeArg
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Claim: Initial exclusive creation and one EEXIST fallback use exact flags; other errors refuse without creation; injected syscall outcomes only.
 func TestPostJournalExclusiveCreationFlags(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
@@ -96,6 +97,7 @@ func TestPostJournalDarwinENOENTSimulation(t *testing.T) {
 	}
 }
 
+// Claim: Journal opens retain NONBLOCK/CLOEXEC in the kernel descriptor; local Unix inspection, not exec-inheritance testing.
 func TestPostJournalOpenFileDescriptorFlags(t *testing.T) {
 	_, j := operationFixture(t)
 	f, err := openPostOperationFile(j.root, ".lock", os.O_RDWR, 0)
@@ -121,6 +123,7 @@ func TestPostJournalOpenFileDescriptorFlags(t *testing.T) {
 	}
 }
 
+// Claim: Status locks use O_RDWR and never recreate a missing lock; local descriptor/absence checks only.
 func TestPostJournalStatusLockReadWriteNoncreating(t *testing.T) {
 	_, j := operationFixture(t)
 	calls := 0
