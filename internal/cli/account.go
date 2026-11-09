@@ -72,8 +72,7 @@ func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matri
 	written := false
 	defer func() {
 		if !written {
-			f.Close()
-			os.Remove(reserved)
+			f.Abort()
 		}
 	}()
 
@@ -113,7 +112,7 @@ func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matri
 	}
 	fileCreds := creds
 	if store == "keychain" {
-		if err := a.keychainStore(p).write(ctx, creds.UserID, creds.AccessToken); err != nil {
+		if err := a.keychainStore(p).writeLocked(ctx, creds.UserID, creds.AccessToken); err != nil {
 			return config.Credentials{}, "", err
 		}
 		fileCreds.AccessToken = ""

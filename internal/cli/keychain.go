@@ -363,6 +363,22 @@ func securityQuote(s string) (string, error) {
 }
 
 func (k *keychainStore) write(ctx context.Context, uid, token string) error {
+	name, _, ok := strings.Cut(strings.TrimPrefix(uid, "@"), ":")
+	if !strings.HasPrefix(uid, "@") || !ok || config.ValidateName(name) != nil {
+		return fmt.Errorf("invalid keychain identity")
+	}
+	guard, err := config.LockCredentialMutation(k.paths, name, k.paths.AgentStateBase != "")
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	return k.writeLocked(ctx, uid, token)
+}
+
+// writeLocked is called only under a credential reservation/guard, or by the
+// explicit Courier rollback while migration owns its credential lock and fence.
+// It nests the provider lock inside the credential lock, never in reverse order.
+func (k *keychainStore) writeLocked(ctx context.Context, uid, token string) error {
 	if token == "" {
 		return fmt.Errorf("refusing empty token for %s", uid)
 	}

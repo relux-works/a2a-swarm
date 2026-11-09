@@ -121,7 +121,7 @@ func (s courierKeychainStore) Restore(ctx context.Context, c config.Credentials)
 	}
 	k := *s.k
 	k.createOnly = true
-	if e = k.write(ctx, c.UserID, c.AccessToken); e != nil {
+	if e = k.writeLocked(ctx, c.UserID, c.AccessToken); e != nil {
 		return config.ErrCourierMigration
 	}
 	got, e = k.read(ctx, c.UserID)

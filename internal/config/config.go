@@ -58,9 +58,10 @@ type Getenv func(string) string
 
 // Paths resolves files under the base directory.
 type Paths struct {
-	Base         string
-	Root         string // Original registry and host root in named mode.
-	MetadataBase string // Connection-scoped identity metadata root.
+	Base           string
+	Root           string // Original registry and host root in named mode.
+	MetadataBase   string // Connection-scoped identity metadata root.
+	AgentStateBase string // Resolver-selected agent State root for a named human.
 }
 
 // ResolvePaths returns the base directory from A2A_CONFIG_DIR or ~/.config/a2a-swarm.
@@ -225,6 +226,9 @@ func LoadCredentials(p Paths, name string) (Credentials, error) {
 
 // LoadHumanCredentials reads humans/<name>.json with the same checks.
 func LoadHumanCredentials(p Paths, name string) (Credentials, error) {
+	if err := CheckIdentityMigration(p, name); err != nil {
+		return Credentials{}, err
+	}
 	if err := ValidateName(name); err != nil {
 		return Credentials{}, err
 	}
@@ -244,6 +248,11 @@ func MoveToHumans(p Paths, name string) (string, error) {
 	if err := ValidateName(name); err != nil {
 		return "", err
 	}
+	guard, err := LockCredentialMutation(p, name, false)
+	if err != nil {
+		return "", err
+	}
+	defer guard.Close()
 	src, dst := p.AgentFile(name), p.HumanFile(name)
 	if err := checkSecretFile(src); err != nil {
 		return "", err
@@ -292,8 +301,18 @@ func readCredentialMetadata(path string) (Credentials, error) {
 
 // CreateCredentialFile reserves agents/<name>.json with O_EXCL and mode 0600,
 // before any network call, so an existing file is never overwritten.
-// The caller writes the content with WriteCredentials and removes the file on failure.
-func CreateCredentialFile(p Paths, name string) (*os.File, error) {
+// The returned reservation retains the credential lock. WriteCredentials closes
+// it on success; callers use Abort on failure while the lock is still held.
+func CreateCredentialFile(p Paths, name string) (_ *CredentialFile, err error) {
+	guard, err := LockCredentialMutation(p, name, false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			guard.Close()
+		}
+	}()
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
@@ -314,23 +333,31 @@ func CreateCredentialFile(p Paths, name string) (*os.File, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return f, nil
+	return &CredentialFile{File: f, guard: guard}, nil
 }
 
 // WriteCredentials writes c into a file created by CreateCredentialFile and closes it.
-func WriteCredentials(f *os.File, c Credentials) error {
+func WriteCredentials(f *CredentialFile, c Credentials) error {
+	if f.guard.release == nil {
+		return ErrMigrationStateUnavailable
+	}
 	c.Password = ""
 	data, err := marshalCredentials(c)
 	if err != nil {
-		f.Close()
+		f.Abort()
 		return err
 	}
 	data = append(data, '\n')
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		f.Abort()
 		return err
 	}
-	return f.Close()
+	if err := f.File.Close(); err != nil {
+		f.Abort()
+		return err
+	}
+	f.guard.Close()
+	return nil
 }
 
 // State is the per-agent delivery state. The events themselves live in the
@@ -745,11 +772,11 @@ func UpdateCredentials(p Paths, name string, fn func(*Credentials) error) (Crede
 		return Credentials{}, err
 	}
 	path := p.AgentFile(name)
-	unlock, err := lockFile(filepath.Join(filepath.Dir(path), "."+name+".lock"))
+	guard, err := LockCredentialMutation(p, name, false)
 	if err != nil {
 		return Credentials{}, err
 	}
-	defer unlock()
+	defer guard.Close()
 	c, err := LoadCredentials(p, name)
 	if err != nil {
 		return Credentials{}, err
