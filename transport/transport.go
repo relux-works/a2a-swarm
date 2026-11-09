@@ -1,5 +1,11 @@
 // Package transport defines the versioned messaging boundary for external transports.
 // Sender identity is authenticated by the transport; claimed time never orders delivery.
+// All methods, including Addressing and optional extensions, are safe for concurrent use.
+// Methods with a context honor cancellation/deadlines and return closed error codes.
+// Returned cursors, Raw, slices and maps belong to the caller and may be retained:
+// transports never mutate them after return. Inputs are borrowed only for the call.
+// After Close, operations that return an error return unavailable; Close is idempotent.
+// Pure metadata methods (Caps, Addressing and Format) remain usable after Close.
 package transport
 
 import (
@@ -12,6 +18,9 @@ import (
 
 const APIVersion = 1
 
+// MaxRawBytes bounds Event.Raw on every read path; larger events are dropped.
+const MaxRawBytes = 1 << 20
+
 type ConversationID string
 type EventID string
 type PrincipalID string
@@ -21,6 +30,10 @@ type Principal struct {
 	ID          PrincipalID
 	DisplayName string
 }
+
+// Message is the transport-independent payload. To names explicit recipients;
+// an empty To addresses the conversation audience. To never suppresses the self
+// copy required by the transport delivery rule. Duplicate recipients are one part.
 type Message struct {
 	Kind        string
 	Text        string
@@ -47,7 +60,7 @@ const (
 type SendResult struct {
 	Outcome Outcome
 	Event   EventID
-	Refusal string
+	Refusal Refusal
 }
 type Event struct {
 	ID           EventID
@@ -58,6 +71,10 @@ type Event struct {
 	Redacted     bool
 	Raw          []byte
 }
+
+// Batch is a delivery window. Dropped counts rejected events (for example an
+// unverifiable sender or an oversized payload), never pending recipient copies.
+// A cursor must not pass a pending deliverable event unless a Gap reports loss.
 type Batch struct {
 	Events  []Event
 	Invites []Invite
@@ -90,6 +107,8 @@ type Invite struct {
 	Conversation ConversationID
 	Sender       PrincipalID
 }
+
+// Page owns its events and cursor. Dropped has the same meaning as Batch.Dropped.
 type Page struct {
 	Events  []Event
 	Next    Cursor
@@ -142,28 +161,67 @@ type Capabilities struct {
 	IdempotentRetry bool
 }
 type ConversationCaps struct{ E2EE bool }
+
+// SyncOptions controls long polling. Timeout is a maximum server wait (zero
+// means return available events immediately); the context deadline also applies.
+// Initial permits an empty cursor to establish a fresh window. That window may
+// contain recent history and must report known loss via Gap. It is never an
+// implicit fallback for an invalid resume cursor.
 type SyncOptions struct {
 	Timeout time.Duration
 	Initial bool
 }
 
+// Transport is a concurrently usable connection for one authenticated identity.
+// Context, ownership and Close rules in the package documentation apply to every method.
 type Transport interface {
+	// Self returns the stable authenticated principal; unavailable after Close.
 	Self(context.Context) (Principal, error)
+	// Caps returns immutable transport-wide limits and delivery capabilities, even after Close.
 	Caps() Capabilities
+	// ConversationCaps returns known-conversation capabilities; unknown IDs give invalid_reference.
 	ConversationCaps(context.Context, ConversationID) (ConversationCaps, error)
+	// Addressing returns a concurrent parser/formatter; its pure metadata remains available after Close.
 	Addressing() Addressing
+	// Send scopes IdempotencyKey to this transport identity. A retry of the same
+	// request preserves its logical EventID and sends only unanswered parts.
+	// ACK requires every part, including any required self copy. Partial or
+	// uncertain submission (including a timeout after submit) is UNKNOWN, without
+	// Event or Refusal. REFUSED carries a closed Refusal only for a definite
+	// rejection. Errors are exclusively pre-I/O failures. The key must not be
+	// reused with a different request. To follows Message's recipient semantics.
 	Send(context.Context, SendRequest) (SendResult, error)
+	// Sync resumes from a caller-owned cursor. Initial alone permits an empty
+	// cursor; invalid/foreign cursors give invalid_cursor, never a reset to now.
+	// Timeout bounds polling, cancellation bounds the whole call. Dropped counts
+	// rejected events; gaps use closed reasons. Time has no ordering significance.
+	// Returned slices/Raw/Next may be retained and are never mutated by the transport.
 	Sync(context.Context, Cursor, SyncOptions) (Batch, error)
-	History(context.Context, ConversationID, []byte, int) (Page, error)
+	// History returns at most limit events; nonpositive limits give invalid_reference.
+	// Large limits may be clamped. Empty page starts history; empty Next ends it.
+	// Invalid/foreign page cursors give invalid_cursor and leave valid cursors usable.
+	// Events/Raw/Next are caller-owned; Dropped counts rejected events as in Sync.
+	History(context.Context, ConversationID, Cursor, int) (Page, error)
+	// Event returns the authenticated event projection used by Sync, or invalid_reference.
+	// Its Raw and payload slices/maps are caller-owned and never mutated after return.
 	Event(context.Context, ConversationID, EventID) (Event, error)
+	// Members returns a caller-owned membership snapshot for a known conversation.
 	Members(context.Context, ConversationID) ([]Member, error)
+	// Upload consumes r during the call and returns an opaque media reference.
 	Upload(context.Context, io.Reader, MediaMeta) (MediaRef, error)
+	// Download writes at most limit bytes during the call; overflow gives content_too_large.
 	Download(context.Context, MediaRef, io.Writer, int64) (MediaMeta, error)
+	// Close releases resources, is idempotent, and makes error-returning operations unavailable.
 	Close() error
 }
+
+// Addressing methods are safe concurrently, including during Close.
 type Addressing interface {
+	// Principal parses a supported reference or gives invalid_reference; unavailable after Close.
 	Principal(string) (PrincipalID, error)
+	// Conversation resolves a supported reference or gives invalid_reference; honors ctx and Close.
 	Conversation(context.Context, string) (ConversationID, error)
+	// Format returns a principal reference accepted by Principal; pure metadata survives Close.
 	Format(PrincipalID) string
 }
 
@@ -172,26 +230,38 @@ type Addressing interface {
 func Unsupported() error { return NewError(UnsupportedByTransport) }
 
 type Rooms interface {
+	// Create creates a conversation with the supplied name. Context, ownership, concurrency and Close rules apply.
 	Create(context.Context, string) (ConversationID, error)
+	// Join resolves and joins a supported conversation reference. Context, ownership, concurrency and Close rules apply.
 	Join(context.Context, string) (ConversationID, error)
+	// Leave leaves the named conversation. Context, ownership, concurrency and Close rules apply.
 	Leave(context.Context, ConversationID) error
+	// Invite invites the principal to the conversation. Context, ownership, concurrency and Close rules apply.
 	Invite(context.Context, ConversationID, PrincipalID) error
+	// Alias assigns the supplied alias. Context, ownership, concurrency and Close rules apply.
 	Alias(context.Context, ConversationID, string) error
 }
 type RoomState interface {
+	// GetState returns caller-owned state JSON. Context, ownership, concurrency and Close rules apply.
 	GetState(context.Context, ConversationID, string, string) (json.RawMessage, error)
+	// PutState writes state JSON borrowed for the call. Context, ownership, concurrency and Close rules apply.
 	PutState(context.Context, ConversationID, string, string, json.RawMessage) (EventID, error)
 }
 type AccountData interface {
+	// GetAccountData returns caller-owned account JSON. Context, ownership, concurrency and Close rules apply.
 	GetAccountData(context.Context, string) (json.RawMessage, error)
+	// PutAccountData writes account JSON borrowed for the call. Context, ownership, concurrency and Close rules apply.
 	PutAccountData(context.Context, string, json.RawMessage) error
 }
 type Presence interface {
+	// SetPresence updates the authenticated identity presence. Context, ownership, concurrency and Close rules apply.
 	SetPresence(context.Context, string) error
 }
 type Registration interface {
+	// Register creates an identity from explicit parameters borrowed for the call. Context, ownership, concurrency and Close rules apply.
 	Register(context.Context, map[string]string) (Principal, error)
 }
 type Redactor interface {
+	// Redact applies the transport redaction rule and returns Send outcome semantics. Context, ownership, concurrency and Close rules apply.
 	Redact(context.Context, ConversationID, EventID, string) (SendResult, error)
 }
