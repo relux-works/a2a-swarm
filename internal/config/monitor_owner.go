@@ -157,9 +157,13 @@ func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, s
 	})
 }
 
+func (s State) monitorOwnerMatches(record Monitor, now time.Time) bool {
+	return s.currentMonitorOwner(now) && s.MonitorOwner.Runtime == record.Runtime && s.MonitorOwner.SessionIDHash == ownerHash(record.SessionID)
+}
+
 func (g *MonitorGeneration) ownerMatches(s State, now time.Time) bool {
 	o := s.MonitorOwner
-	return s.currentMonitorOwner(now) && g.owner != nil && o.Runtime == g.record.Runtime && o.SessionIDHash == ownerHash(g.record.SessionID) && o.Runtime == g.owner.Runtime && o.SessionIDHash == g.owner.SessionIDHash && o.FirstSeen.Equal(g.owner.FirstSeen)
+	return s.monitorOwnerMatches(g.record, now) && g.owner != nil && o.Runtime == g.owner.Runtime && o.SessionIDHash == g.owner.SessionIDHash && o.FirstSeen.Equal(g.owner.FirstSeen)
 }
 
 // RenewOwnerLease renews only an unexpired exact owner's existing lease. The

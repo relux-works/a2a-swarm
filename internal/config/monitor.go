@@ -182,8 +182,8 @@ type MonitorGeneration struct {
 	owner   *MonitorOwner
 }
 
-// WithMonitorGeneration is the inert L02 admission seam, not owner-association
-// proof, a lease acquisition, a listener, service, or live activation command.
+// WithMonitorGeneration requires intact writer history before hook-admitted
+// ownership. It is not a lease acquisition, listener, or activation command.
 // The consumer lock precedes control/state. Failed admission changes no State.
 func WithMonitorGeneration(p Paths, name string, deadline time.Time, entry MonitorEntry, record Monitor, run func(*MonitorGeneration) error) (result error) {
 	if deadline.IsZero() || run == nil || record.Validate() != nil || record.ConsumerPID != os.Getpid() || record.Phase == "stopped" || entry < MonitorArm || entry > MonitorRecovery {
@@ -203,15 +203,16 @@ func WithMonitorGeneration(p Paths, name string, deadline time.Time, entry Monit
 		}
 	}()
 	err = WithRuntimeLock(p, name, "control", deadline, func() error {
-		_, err := withStateLock(p, name, func(path string) (func(), error) { return lockFileBy(path, deadline) }, func(old State) (State, error) {
+		_, err := withMonitorStateLock(p, name, deadline, func(old State) (State, error) {
+			// An admitted Start already establishes a seal, including for a new
+			// identity. Unsealed bootstrap is no longer owner admission.
 			valid := validWriterSeal(old)
-			// Missing writer bootstraps only a truly first explicit arm. A
-			// retained stopped/error row is history, not a fresh installation.
-			first := old.Writer == nil && old.Monitor == nil
-			if !valid && !(entry == MonitorArm && first) {
+			if !valid {
 				return old, ErrIncompatibleWriter
 			}
-			if entry != MonitorArm && old.Writer != nil && !old.Writer.ForeignSeen.IsZero() {
+			// Only explicit arm with an admitted owner may clear a valid sticky
+			// fence. Missing ownership must never mask that retained evidence.
+			if !old.Writer.ForeignSeen.IsZero() && (entry != MonitorArm || !old.currentMonitorOwner(time.Now())) {
 				return old, ErrIncompatibleWriter
 			}
 			// Invalidation intentionally retains the old row. Once a compatible
@@ -228,6 +229,9 @@ func WithMonitorGeneration(p Paths, name string, deadline time.Time, entry Monit
 			}
 			if old.Monitor != nil && old.Monitor.Generation == record.Generation {
 				return old, ErrMonitorGeneration
+			}
+			if !old.monitorOwnerMatches(record, time.Now()) {
+				return old, ErrMonitorOwner
 			}
 			next := old
 			next.Monitor = cloneMonitor(&record)
@@ -250,6 +254,21 @@ func WithMonitorGeneration(p Paths, name string, deadline time.Time, entry Monit
 	return closedMonitorError(run(g))
 }
 
+// withMonitorStateLock distinguishes malformed owner authority during decoding
+// from a decoded State that simply has no current owner. Failed decoding cannot
+// establish writer integrity, so it must not report an owner-admission refusal.
+func withMonitorStateLock(p Paths, name string, deadline time.Time, fn func(State) (State, error)) (State, error) {
+	decoded := false
+	s, err := withStateLock(p, name, func(path string) (func(), error) { return lockFileBy(path, deadline) }, func(old State) (State, error) {
+		decoded = true
+		return fn(old)
+	})
+	if !decoded && errors.Is(err, ErrMonitorOwner) {
+		return s, ErrIncompatibleWriter
+	}
+	return s, err
+}
+
 func (g *MonitorGeneration) stopMemory(reason string) {
 	g.active = false
 	g.reason = reason
@@ -268,7 +287,7 @@ func (g *MonitorGeneration) guarded(generation string, stop bool, renew bool) er
 	}
 	deadline := time.Now().Add(time.Second)
 	err := WithRuntimeLock(g.paths, g.name, "control", deadline, func() error {
-		_, err := withStateLock(g.paths, g.name, func(path string) (func(), error) { return lockFileBy(path, deadline) }, func(old State) (State, error) {
+		_, err := withMonitorStateLock(g.paths, g.name, deadline, func(old State) (State, error) {
 			if !validWriterSeal(old) || !old.Writer.ForeignSeen.IsZero() {
 				return old, ErrIncompatibleWriter
 			}

@@ -73,6 +73,8 @@ func TestMonitorSealOracle(t *testing.T) {
 // new typed fields from silently escaping this test. No old executable is run.
 func TestMonitorSealEveryStateField(t *testing.T) {
 	edits := map[string]string{
+		"monitor_owner":     `{"runtime":"muse","session_id_hash":"` + ownerHash("replacement-session") + `","first_seen":"2026-11-09T00:00:00Z","last_hook_at":"2026-11-09T00:01:00Z"}`,
+		"monitor_config":    `{"owner_ttl":3600000000000}`,
 		"mail_alarm_config": `{"minutes":20,"owner":"auto"}`,
 		"mail_alarm":        `{"active":true}`, "notification": `{"version":1}`,
 		"next_batch": `"old-cursor"`, "last_inbox": `"old-frame"`,
@@ -326,6 +328,7 @@ func TestMonitorTypedBounds(t *testing.T) {
 
 // Proves: new files receive clean seals through each ordinary API; existing
 // unsealed files receive foreign_seen and require explicit arm after reseal.
+// Clean admission also requires a hook-admitted owner; no native hook is run.
 func TestMonitorFirstSealIdentityHistory(t *testing.T) {
 	for _, existing := range []bool{false, true} {
 		for _, route := range []string{"save", "update", "by", "until"} {
@@ -355,6 +358,16 @@ func TestMonitorFirstSealIdentityHistory(t *testing.T) {
 				if s.Writer.Protocol != 2 || !validWriterSeal(s) || s.Writer.ForeignSeen.IsZero() == existing {
 					t.Fatal("wrong first seal/history")
 				}
+				if !existing {
+					before := monitorDisk(t, p)
+					if err := monitorRun(p, MonitorAutomatic, func(*MonitorGeneration) error {
+						t.Fatal("ownerless identity admitted")
+						return nil
+					}); !errors.Is(err, ErrMonitorOwner) || !bytes.Equal(before, monitorDisk(t, p)) {
+						t.Fatal("clean no-owner neighbour", err)
+					}
+					ownerHook(t, p, "muse", monitorRecord().SessionID, "SessionStart", false, time.Now())
+				}
 				before := monitorDisk(t, p)
 				err = monitorRun(p, MonitorAutomatic, func(g *MonitorGeneration) error { return g.CheckRenewal(monitorRecord().Generation) })
 				if existing {
@@ -363,6 +376,9 @@ func TestMonitorFirstSealIdentityHistory(t *testing.T) {
 					}
 				} else if err != nil {
 					t.Fatal("new clean identity refused", err)
+				}
+				if existing {
+					ownerHook(t, p, "muse", monitorRecord().SessionID, "SessionStart", false, time.Now())
 				}
 				// Explicit arm is usable in both cases, with a fresh generation after
 				// the new identity's successful automatic generation has cleanly stopped.

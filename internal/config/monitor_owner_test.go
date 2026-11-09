@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -189,22 +190,18 @@ func TestMonitorOwnerDisarms(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if mode == "missing-policy" {
-				if _, err := UpdateState(p, "a", func(s *State) error { s.MonitorConfig = nil; return nil }); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if mode == "missing" {
-				ownerHook(t, p, "muse", "fixture-session", "SessionEnd", false, time.Now())
-			}
 			err := monitorRun(p, MonitorArm, func(g *MonitorGeneration) error {
-				if mode != "missing" && mode != "missing-policy" {
-					if err := g.CheckRenewal(monitorRecord().Generation); err != nil {
-						t.Fatal(err)
-					}
+				if err := g.CheckRenewal(monitorRecord().Generation); err != nil {
+					t.Fatal(err)
 				}
 				before := monitorLoad(t, p).Lease
 				switch mode {
+				case "missing-policy":
+					if _, err := UpdateState(p, "a", func(s *State) error { s.MonitorConfig = nil; return nil }); err != nil {
+						t.Fatal(err)
+					}
+				case "missing":
+					ownerHook(t, p, "muse", "fixture-session", "SessionEnd", false, time.Now())
 				case "ttl":
 					if _, err := UpdateState(p, "a", func(s *State) error { s.MonitorConfig = &MonitorConfig{OwnerTTL: time.Nanosecond}; return nil }); err != nil {
 						t.Fatal(err)
@@ -362,5 +359,100 @@ func TestMonitorOwnerFenceAndDeadline(t *testing.T) {
 	ownerHook(t, p, "muse", "replacement", "SessionStart", false, time.Now())
 	if monitorLoad(t, p).MonitorOwner.SessionIDHash != ownerHash("replacement") {
 		t.Fatal("unlocked valid neighbour failed")
+	}
+}
+
+// Proves integrity refusal precedes owner admission at every entry/effect
+// boundary, with clean ownerless and admitted-owner neighbours. Refusals keep
+// State and mailbox bytes and suppress callbacks; no live sink is qualified.
+func TestMonitorOwnerIntegrityPrecedence(t *testing.T) {
+	for _, action := range []string{"admission-arm", "admission-automatic", "admission-recovery", "renewal", "announcement"} {
+		for _, history := range []string{"clean-owner", "clean-no-owner", "invalid-no-owner", "legacy-no-owner", "malformed-owner", "malformed-config"} {
+			t.Run(action+"/"+history, func(t *testing.T) {
+				p := monitorSeed(t)
+				want := error(nil)
+				if history == "clean-no-owner" {
+					want = ErrMonitorOwner
+				} else if history != "clean-owner" {
+					want = ErrIncompatibleWriter
+				}
+				prepare := func() {
+					if history == "clean-owner" {
+						return
+					}
+					ownerHook(t, p, "muse", monitorRecord().SessionID, "SessionEnd", false, time.Now())
+					if history == "invalid-no-owner" || history == "legacy-no-owner" {
+						monitorOldWrite(t, p, func(fields map[string]json.RawMessage) { fields["next_batch"] = json.RawMessage(`"foreign"`) })
+						if history == "legacy-no-owner" {
+							if _, err := UpdateState(p, "a", func(*State) error { return nil }); err != nil {
+								t.Fatal(err)
+							}
+							if s := monitorLoad(t, p); !validWriterSeal(s) || s.Writer.ForeignSeen.IsZero() {
+								t.Fatal("legacy fixture lacks sealed sticky history")
+							}
+						}
+					}
+					if history == "malformed-owner" || history == "malformed-config" {
+						field := map[string]string{"malformed-owner": "monitor_owner", "malformed-config": "monitor_config"}[history]
+						monitorOldWrite(t, p, func(fields map[string]json.RawMessage) { fields[field] = json.RawMessage(`{}`) })
+					}
+				}
+				mb, err := OpenMailbox(p, "a")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := mb.Append([]MailEntry{{ID: "$pending", Kind: MailEvent, Room: "!room", Event: json.RawMessage(`{"body":"pending"}`)}}); err != nil {
+					t.Fatal(err)
+				}
+				mailBefore, err := os.ReadFile(p.MailboxFile("a"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.HasPrefix(action, "admission-") {
+					prepare()
+					before := monitorDisk(t, p)
+					entry := map[string]MonitorEntry{"admission-arm": MonitorArm, "admission-automatic": MonitorAutomatic, "admission-recovery": MonitorRecovery}[action]
+					called := false
+					err := monitorRun(p, entry, func(g *MonitorGeneration) error {
+						called = true
+						return g.CheckRenewal(monitorRecord().Generation)
+					})
+					if !errors.Is(err, want) || called != (want == nil) {
+						t.Fatalf("admission = %v, callback=%v; want %v", err, called, want)
+					}
+					if want != nil && !bytes.Equal(before, monitorDisk(t, p)) {
+						t.Fatal("refused admission changed State")
+					}
+				} else if err := monitorRun(p, MonitorAutomatic, func(g *MonitorGeneration) error {
+					prepare()
+					before := monitorDisk(t, p)
+					called := false
+					var err error
+					if action == "renewal" {
+						err = g.CheckRenewal(monitorRecord().Generation)
+					} else {
+						err = g.Announce(monitorRecord().Generation, func() error { called = true; return nil })
+					}
+					if !errors.Is(err, want) || called != (action == "announcement" && want == nil) {
+						t.Fatalf("boundary = %v, emitted=%v; want %v", err, called, want)
+					}
+					if !bytes.Equal(before, monitorDisk(t, p)) {
+						t.Fatal("read-only boundary changed State")
+					}
+					if want != nil {
+						if active, reason := g.Status(); active || reason != map[error]string{ErrIncompatibleWriter: "incompatible_writer", ErrMonitorOwner: "owner_unknown"}[want] {
+							t.Fatal("wrong disarmed status", active, reason)
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				mailAfter, err := os.ReadFile(p.MailboxFile("a"))
+				if err != nil || !bytes.Equal(mailBefore, mailAfter) {
+					t.Fatal("boundary changed mailbox", err)
+				}
+			})
+		}
 	}
 }
