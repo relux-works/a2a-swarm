@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/deliverypolicy"
 )
 
 // Request is the single bounded invocation following the C1-compatible hello.
@@ -69,6 +71,10 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		}
 		name, value, eq := strings.Cut(arg, "=")
 		switch name {
+		case "--human":
+			if eq || len(rest) != 0 {
+				return p, errRefused
+			}
 		case "--as", "-as", "--profile", "--connection-fingerprint":
 			if !eq {
 				i++
@@ -107,7 +113,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 	}
 	p.Command = rest[0]
 	p.Stdin = p.Command == "hook"
-	p.LongConsumer = p.Command == "watch" || p.Command == "wait"
+	waitTimeout := deliverypolicy.DefaultWaitTimeout
 	start := 1
 	values, bools := "", ""
 	minPos, maxPos := 0, 0
@@ -170,7 +176,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 			values += " timeout status heartbeat runtime hooks product"
 		}
 	case "hook":
-		if len(rest) < 2 || (rest[1] != "stop" && rest[1] != "session-start" && rest[1] != "prompt") {
+		if len(rest) < 2 || (rest[1] != "stop" && rest[1] != "session-start" && rest[1] != "prompt" && rest[1] != "session-end") {
 			return p, errRefused
 		}
 		start = 2
@@ -240,7 +246,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 				if err != nil || d < 0 {
 					return p, errRefused
 				}
-				p.LongConsumer = d == 0
+				waitTimeout = d
 			}
 			if (p.Command == "topic" && name == "body" || p.Command == "post" && name == "envelope" || p.Command == "inbox" && name == "from") && strings.HasPrefix(value, "@") {
 				p.Inputs[indices[vi]] = false
@@ -268,6 +274,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 	if attachPos >= 0 {
 		p.Inputs[indices[pos[attachPos]]] = true
 	}
+	p.LongConsumer = deliverypolicy.LongConsumer(p.Command, waitTimeout)
 	p.Args = rest[1:]
 	return p, nil
 }

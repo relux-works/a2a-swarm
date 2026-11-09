@@ -35,7 +35,7 @@ func TestExecutionAllowlist(t *testing.T) {
 	}
 	invalid := [][]string{
 		{"creds", "migrate"}, {"identity", "ensure"}, {"courier", "serve"}, {"connection", "use", "alpha"}, {"config"}, {"keychain"}, {"register", "other"}, {"rooms"}, {"ack", "all-shown"},
-		{"whoami", "--as", "other"}, {"whoami", "--as", "other", "--as", "identity"}, {"--human", "whoami"},
+		{"whoami", "--as", "other"}, {"whoami", "--as", "other", "--as", "identity"}, {"--human=true", "whoami"},
 		{"post", "room", "text", "--id-file", "/station/output"}, {"inbox", "--out", "/station/output"}, {"inbox", "--brief"}, {"inbox", "show", "$id", "--from", "/station/input"},
 		{"post", "room", "text", "--result-file", "/station/output"}, {"post", "room", "text", "--voice"}, {"post", "room", "text", "--config", "private"},
 		{"hook", "install", "--settings", "/station/settings"}, {"bind", "association"}, {"topic", "retire", "room", "topic"},

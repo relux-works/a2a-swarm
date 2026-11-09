@@ -5,11 +5,12 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/deliverypolicy"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
 // DefaultWaitTimeout is how long `a2a wait` blocks without news.
-const DefaultWaitTimeout = 25 * time.Minute
+const DefaultWaitTimeout = deliverypolicy.DefaultWaitTimeout
 
 // maxPoll bounds one /sync long-poll so a dead connection is noticed.
 const maxPoll = 60 * time.Second

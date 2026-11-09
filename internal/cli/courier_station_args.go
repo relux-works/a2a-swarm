@@ -37,6 +37,10 @@ func stationHookEvent(args []string) string {
 		}
 		name, _, eq := strings.Cut(args[i], "=")
 		switch name {
+		case "--human":
+			if eq || len(rest) != 0 {
+				rest = append(rest, args[i])
+			}
 		case "--as", "-as", "--profile", "--connection-fingerprint":
 			if !eq {
 				i++

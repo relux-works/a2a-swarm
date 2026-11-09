@@ -12,6 +12,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/courier"
+	"github.com/relux-works/a2a-swarm/internal/deliverypolicy"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -636,7 +637,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}
-	s.longConsumer = *timeout == 0
+	s.longConsumer = deliverypolicy.LongConsumer("wait", *timeout)
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
@@ -848,7 +849,7 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
 	}
-	s.longConsumer = true
+	s.longConsumer = deliverypolicy.LongConsumer("watch", 0)
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}

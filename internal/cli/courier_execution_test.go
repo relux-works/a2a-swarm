@@ -65,6 +65,10 @@ func shortCourierBase(t *testing.T) string {
 	return p
 }
 func newCourierFixture(t *testing.T) *courierFixture {
+	return newCourierFixtureHandler(t, nil)
+}
+
+func newCourierFixtureHandler(t *testing.T, wrap func(courier.Handler) courier.Handler) *courierFixture {
 	t.Helper()
 	f := &courierFixture{store: &namedTestStore{items: map[config.SecretReference]string{}}, t: t, home: filepath.Join(canonicalRoot(t), "courier"), socket: filepath.Join(shortCourierBase(t), "s", "c.sock"), stations: map[string]string{}, paths: map[string]config.Paths{}, bindings: map[string]config.ConnectionBinding{}, envs: map[string]*env{}, rooms: map[string]string{}, done: make(chan error, 1), log: &flushBuffer{}}
 	for _, name := range []string{"alice", "bob"} {
@@ -125,8 +129,12 @@ func newCourierFixture(t *testing.T) *courierFixture {
 	}
 	f.daemon = &App{connectionSecretStore: f.store, HTTP: f.envs["alice"].hs.srv.Client(), Now: time.Now, Getenv: func(string) string { panic("daemon read ambient selection") }, as: "ambient-identity", profile: "ambient-profile", connectionResolved: true, connection: &config.Connection{ID: "poison"}}
 	ctx, cancel := context.WithCancel(context.Background())
+	handler := f.daemon.courierHandler(f.home)
+	if wrap != nil {
+		handler = wrap(handler)
+	}
 	go func() {
-		f.done <- courier.ServeWithHandler(ctx, f.home, f.socket, f.log, f.daemon.courierHandler(f.home))
+		f.done <- courier.ServeWithHandler(ctx, f.home, f.socket, f.log, handler)
 	}()
 	t.Cleanup(func() {
 		cancel()
