@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/relux-works/a2a-swarm/internal/courier"
@@ -18,7 +17,7 @@ const maxInput = 4096
 
 var (
 	errInput    = errors.New("courier enroll: invalid enrollment input")
-	errFiles    = errors.New("courier enroll: unsafe or incomplete enrollment path")
+	errFiles    = errors.New("courier enroll: unsafe or incomplete enrollment path; re-run enroll")
 	errWrite    = errors.New("courier enroll: enrollment not installed")
 	errRecovery = errors.New("courier enroll: transaction outcome uncertain; inspect enrollment and sibling staging directories before retrying")
 )
@@ -95,17 +94,5 @@ func validSocket(s string) bool {
 	return courier.ValidateSocketPath(s) == nil
 }
 
-// Stationlink carries a station name as an opaque string, including reference
-// names such as "id/swarma-station-1". It is not a local path or an identity.
-// Bound it to 255 printable ASCII bytes; never substitute it for identity.
-func validStation(s string) bool {
-	if len(s) == 0 || len(s) > 255 || strings.TrimSpace(s) != s {
-		return false
-	}
-	for _, c := range s {
-		if c < 0x21 || c > 0x7e {
-			return false
-		}
-	}
-	return true
-}
+// Station names share the registry's local selector grammar.
+func validStation(s string) bool { return courier.ValidateIdentity(s) == nil }

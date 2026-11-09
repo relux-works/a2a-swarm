@@ -1,4 +1,4 @@
-// Package courier implements the local, authentication-only Courier endpoint.
+// Package courier implements the local authenticated Courier transport.
 package courier
 
 import (

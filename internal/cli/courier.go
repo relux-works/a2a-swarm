@@ -63,7 +63,7 @@ func cmdCourier(ctx context.Context, a *App, args []string) error {
 	}
 	switch sub {
 	case "serve":
-		return courier.Serve(ctx, *home, socket, a.Stderr)
+		return courier.ServeWithHandler(ctx, *home, socket, a.Stderr, a.courierHandler(*home))
 	case "unregister-station":
 		return courier.Unregister(*home, station)
 	default:

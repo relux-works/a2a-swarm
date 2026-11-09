@@ -491,7 +491,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	var text, encodedEnvelope string
 	if envelopeMode {
 		// Both refusals happen before any network request.
-		if encodedEnvelope, err = readEnvelopeFile(*envelopeArg); err != nil {
+		if encodedEnvelope, err = a.readEnvelopeFile(*envelopeArg); err != nil {
 			return err
 		}
 		text, err = a.readEnvelopeText(pos[1])

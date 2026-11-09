@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var fileNames = []string{"courier.sock", "identity", "station.key"}
+var fileNames = []string{"courier.sock", "identity", "station.key", "station"}
 
 // Install consumes a pipe enrollment. Publication replaces a whole directory,
 // never individual files. A rotation retains the old generation as a private
@@ -101,7 +101,8 @@ func install(dir string, r io.Reader, rotate bool, hook fault) error {
 	if err != nil {
 		return errInput
 	}
-	contents := [][]byte{pointer, identity, e.key}
+	station, _ := courier.IdentityFile(e.station)
+	contents := [][]byte{pointer, identity, e.key, station}
 	for i, name := range fileNames {
 		fd, err := unix.Openat(int(stage.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 		if err != nil {
@@ -218,33 +219,41 @@ func sameEntry(parent int, name string, f *os.File) bool {
 	return unix.Fstatat(parent, name, &a, unix.AT_SYMLINK_NOFOLLOW) == nil && unix.Fstat(int(f.Fd()), &b) == nil && a.Dev == b.Dev && a.Ino == b.Ino && uint32(a.Mode)&unix.S_IFMT == uint32(b.Mode)&unix.S_IFMT
 }
 
-// verify checks exactly three single-link regular files without following any
+// verify checks exactly four single-link regular files without following any
 // symlink. Existing data must itself be a complete valid enrollment.
 func verify(dir *os.File, want [][]byte) error {
+	data, err := snapshot(dir, want)
+	if data != nil {
+		clear(data[2])
+	}
+	return err
+}
+
+func snapshot(dir *os.File, want [][]byte) ([][]byte, error) {
 	if !ownedMode(int(dir.Fd()), unix.S_IFDIR, 0700) {
-		return errFiles
+		return nil, errFiles
 	}
 	fd, err := unix.Openat(int(dir.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return errFiles
+		return nil, errFiles
 	}
 	listing := os.NewFile(uintptr(fd), "enrollment")
-	names, err := listing.Readdirnames(4)
+	names, err := listing.Readdirnames(5)
 	listing.Close()
-	if err != nil && err != io.EOF || len(names) != 3 {
-		return errFiles
+	if err != nil && err != io.EOF || len(names) != 4 {
+		return nil, errFiles
 	}
-	allowed := map[string]bool{"courier.sock": true, "identity": true, "station.key": true}
+	allowed := map[string]bool{"courier.sock": true, "identity": true, "station.key": true, "station": true}
 	for _, name := range names {
 		if !allowed[name] {
-			return errFiles
+			return nil, errFiles
 		}
 	}
-	data := make([][]byte, 3)
+	data := make([][]byte, 4)
 	for i, name := range fileNames {
 		fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
-			return errFiles
+			return nil, errFiles
 		}
 		f := os.NewFile(uintptr(fd), name)
 		ok := ownedMode(fd, unix.S_IFREG, 0600)
@@ -254,19 +263,19 @@ func verify(dir *os.File, want [][]byte) error {
 		ok = ok && ownedMode(fd, unix.S_IFREG, 0600) && sameEntry(int(dir.Fd()), name, f)
 		f.Close()
 		if !ok || err != nil {
-			return errFiles
+			return nil, errFiles
 		}
 		if want != nil && !bytes.Equal(data[i], want[i]) {
-			return errFiles
+			return nil, errFiles
 		}
 	}
-	defer clear(data[2])
 	_, pointerErr := courier.ParsePointerFile(data[0])
 	_, identityErr := courier.ParseIdentityFile(data[1])
-	if pointerErr != nil || identityErr != nil || len(data[2]) != courier.StationKeyLen {
-		return errFiles
+	_, stationErr := courier.ParseIdentityFile(data[3])
+	if stationErr != nil || pointerErr != nil || identityErr != nil || len(data[2]) != courier.StationKeyLen {
+		return nil, errFiles
 	}
-	return nil
+	return data, nil
 }
 
 // Cleanup is confined to our newly allocated, still-linked staging inode. Old

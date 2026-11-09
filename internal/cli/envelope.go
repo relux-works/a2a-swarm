@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -49,7 +48,11 @@ func envelopePostSelection(args []string, operand string, voice bool, positional
 // @file operand. An empty or oversized file is refused, never truncated; the
 // read itself is bounded so a huge file is not loaded.
 func readEnvelopeFile(operand string) (string, error) {
-	f, err := os.Open(operand[1:])
+	return (&App{}).readEnvelopeFile(operand)
+}
+
+func (a *App) readEnvelopeFile(operand string) (string, error) {
+	f, err := a.openInputFile(operand[1:])
 	if err != nil {
 		return "", matrix.Refuse(matrix.RefuseEnvelopeUnreadable, "")
 	}

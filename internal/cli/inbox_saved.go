@@ -253,7 +253,7 @@ func cmdInboxShow(a *App, args []string) error {
 			return fmt.Errorf("no saved inbox frame; use inbox --out FILE or inbox --brief first")
 		}
 	}
-	records, err := readSavedInbox(*from)
+	records, err := a.savedInboxInput(*from)
 	if err != nil {
 		return err
 	}
@@ -365,6 +365,10 @@ func readSavedInbox(path string) ([]EventRecord, error) {
 	if err != nil || !os.SameFile(st, opened) || opened.Mode().Perm() != 0o600 {
 		return nil, fmt.Errorf("saved inbox changed while opening")
 	}
+	return parseSavedInbox(f)
+}
+
+func parseSavedInbox(f io.Reader) ([]EventRecord, error) {
 	data, err := io.ReadAll(io.LimitReader(f, inboxSavedMax+1))
 	if err != nil || len(data) > inboxSavedMax {
 		return nil, fmt.Errorf("cannot read complete bounded saved inbox")

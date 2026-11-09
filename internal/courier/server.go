@@ -40,6 +40,8 @@ type server struct {
 	conns           map[*net.UnixConn]bool
 	peer            func(*net.UnixConn) (uint32, error)
 	handshake, idle time.Duration
+	handler         Handler
+	executionIdle   time.Duration
 }
 
 func (s *server) refuse(c *net.UnixConn) {
@@ -121,9 +123,13 @@ func (s *server) handle(c *net.UnixConn) {
 		s.refuse(c)
 		return
 	}
-	// The registry identity is the sole binding. There is no execution engine in C1.
+	// The registry identity is the sole execution binding.
 	if writeFrame(c, successFrame) != nil {
 		s.refuse(c)
+		return
+	}
+	if s.handler != nil {
+		s.execute(c, e.Identity)
 		return
 	}
 	_ = c.SetDeadline(time.Now().Add(s.idle))

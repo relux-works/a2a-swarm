@@ -12,6 +12,8 @@ import (
 	"testing"
 )
 
+// Proves local enrollment uses only its explicit input, preserves identity
+// bytes and closes malformed input; no Courier socket is contacted.
 func TestCourierEnrollLocalCLI(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("atomic directory publication unavailable")
@@ -21,7 +23,7 @@ func TestCourierEnrollLocalCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(home, ".a2a")
-	payload, _ := json.Marshal(map[string]string{"socket": "/run/a2a/courier.sock", "identity": "enrolled", "station": "id/swarma-station-1", "secret_b64": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{31}, 32))})
+	payload, _ := json.Marshal(map[string]string{"socket": "/run/a2a/courier.sock", "identity": "enrolled", "station": "station-1", "secret_b64": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{31}, 32))})
 	var stdout, stderr bytes.Buffer
 	a := &App{Stdout: &stdout, Stderr: &stderr, Stdin: strings.NewReader(string(payload) + "\n"), Getenv: func(string) string { t.Fatal("enrollment consulted ambient configuration"); return "" }}
 	if a.Run(context.Background(), []string{"--as", "different", "courier", "enroll", "--dir", dir, "--from", "-"}) != ExitOK {
@@ -45,6 +47,8 @@ func TestCourierEnrollLocalCLI(t *testing.T) {
 	}
 }
 
+// Proves enrollment usage refusals are fixed and do not echo arguments;
+// successful dispatch is covered by TestCourierEnrollLocalCLI.
 func TestCourierEnrollUsageClosed(t *testing.T) {
 	for _, args := range [][]string{nil, {"--dir", "/fixture/.a2a"}, {"--dir", "/fixture/.a2a", "--from", "file"}, {"--dir", "/fixture/.a2a", "--from", "-", "extra"}, {"--secret", "do-not-echo"}} {
 		var stdout, stderr bytes.Buffer

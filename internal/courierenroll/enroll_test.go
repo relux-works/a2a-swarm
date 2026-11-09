@@ -4,6 +4,7 @@ package courierenroll
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,7 +23,7 @@ import (
 // Fixtures are generated only in memory. Assertions never print the payload,
 // raw key, encoded key or a diff containing those values.
 func fixture(identity string, fill byte) string {
-	b, _ := json.Marshal(map[string]string{"socket": "/run/a2a/courier.sock", "identity": identity, "station": "id/swarma-station-1", "secret_b64": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{fill}, 32))})
+	b, _ := json.Marshal(map[string]string{"socket": "/run/a2a/courier.sock", "identity": identity, "station": "station-1", "secret_b64": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{fill}, 32))})
 	return string(b) + "\n"
 }
 
@@ -43,12 +45,14 @@ func checkGeneration(t *testing.T, dir, identity string, fill byte) {
 		t.Fatal("generation directory unavailable")
 	}
 	defer f.Close()
-	want := [][]byte{[]byte("/run/a2a/courier.sock\n"), []byte(identity + "\n"), bytes.Repeat([]byte{fill}, 32)}
+	want := [][]byte{[]byte("/run/a2a/courier.sock\n"), []byte(identity + "\n"), bytes.Repeat([]byte{fill}, 32), []byte("station-1\n")}
 	if verify(f, want) != nil {
 		t.Fatal("generation bytes, entries, ownership or modes differ")
 	}
 }
 
+// Proves atomic four-file publication and rotation preserve a pinned old reader;
+// this does not simulate power loss.
 func TestFreshRotateAndPinnedReader(t *testing.T) {
 	dir := target(t)
 	if err := Install(dir, strings.NewReader(fixture("first", 1)), false); err != nil {
@@ -68,15 +72,17 @@ func TestFreshRotateAndPinnedReader(t *testing.T) {
 		t.Fatal("rotation failed")
 	}
 	checkGeneration(t, dir, "second", 2)
-	if verify(old, [][]byte{[]byte("/run/a2a/courier.sock\n"), []byte("first\n"), bytes.Repeat([]byte{1}, 32)}) != nil {
+	if verify(old, [][]byte{[]byte("/run/a2a/courier.sock\n"), []byte("first\n"), bytes.Repeat([]byte{1}, 32), []byte("station-1\n")}) != nil {
 		t.Fatal("pinned old reader lost its complete generation")
 	}
 	entries, _ := os.ReadDir(dir)
-	if len(entries) != 3 {
+	if len(entries) != 4 {
 		t.Fatal("temporary file admitted to enrollment namespace")
 	}
 }
 
+// Proves malformed enrollment payloads refuse beside a valid payload without
+// publishing a generation; no live registration is involved.
 func TestInputRefusals(t *testing.T) {
 	valid := fixture("valid", 3)
 	var fields map[string]any
@@ -116,7 +122,7 @@ func TestInputRefusals(t *testing.T) {
 	badValues := map[string][]string{
 		"identity":   {"UPPER", "x\n", "x\ny", "a b", "a/b", "é", strings.Repeat("a", 65)},
 		"socket":     {"relative", "/run/x\n", "/run/\x00", "/run/x\r", "/run/\uFEFF", "/" + strings.Repeat("x", 103), "/" + strings.Repeat("é", 52)},
-		"station":    {" ", "a\nb", "a\x00b", "é", strings.Repeat("s", 256)},
+		"station":    {" ", "a\nb", "a\x00b", "é", strings.Repeat("s", 65), "a/b", "UPPER"},
 		"secret_b64": {"%", base64.StdEncoding.EncodeToString(make([]byte, 31)), base64.StdEncoding.EncodeToString(make([]byte, 33)), strings.TrimRight(fields["secret_b64"].(string), "="), fields["secret_b64"].(string) + "\n"},
 	}
 	for field, values := range badValues {
@@ -147,6 +153,8 @@ func TestInputRefusals(t *testing.T) {
 	}
 }
 
+// Proves unsafe filesystem forms refuse rotation; valid installations are
+// established before each mutation. ACL isolation is not qualified.
 func TestUnsafePathsAndEntries(t *testing.T) {
 	cases := []string{"dir-symlink", "unsafe-parent", "unsafe-ancestor", "dir-mode", "extra", "partial", "file-symlink", "fifo", "directory-file", "hardlink", "file-mode", "special-mode", "traversal", "relative", "wrong-name"}
 	for _, name := range cases {
@@ -204,6 +212,8 @@ func TestUnsafePathsAndEntries(t *testing.T) {
 	}
 }
 
+// Proves owner metadata predicates admit owned controls and refuse foreign
+// owners without privileged chown; no second kernel UID is exercised.
 func TestOwnershipPredicate(t *testing.T) {
 	st := unix.Stat_t{Uid: uint32(os.Geteuid()), Mode: unix.S_IFREG | 0600, Nlink: 1}
 	if !safeStat(&st, unix.S_IFREG, 0600) {
@@ -227,8 +237,10 @@ func TestOwnershipPredicate(t *testing.T) {
 	// No chown, privilege changes or foreign-owner chmod repair is needed.
 }
 
+// Proves injected failures at every four-file write/publication phase retain
+// the old generation or absence; this is an ordinary-error rollback witness.
 func TestWriteFailureAndRollback(t *testing.T) {
-	for _, phase := range []string{"wrote-courier.sock", "wrote-identity", "wrote-station.key", "staged", "published"} {
+	for _, phase := range []string{"wrote-courier.sock", "wrote-identity", "wrote-station.key", "wrote-station", "staged", "published"} {
 		for _, rotate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/%t", phase, rotate), func(t *testing.T) {
 				dir := target(t)
@@ -254,6 +266,8 @@ func TestWriteFailureAndRollback(t *testing.T) {
 	}
 }
 
+// Proves staged mode and namespace changes cannot redirect publication,
+// using deterministic mutation points rather than an adversarial scheduler.
 func TestWrongModeAfterWriteAndPathRaces(t *testing.T) {
 	for _, attack := range []string{"mode", "extra", "parent-renamed", "target-replaced", "staging-replaced"} {
 		t.Run(attack, func(t *testing.T) {
@@ -305,8 +319,12 @@ func TestWrongModeAfterWriteAndPathRaces(t *testing.T) {
 	}
 }
 
+// Proves a second writer refuses the held parent lock while the admitted
+// writer completes a valid generation; this does not model multiple UIDs.
 func TestConcurrentWriters(t *testing.T) {
 	dir := target(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	done := make(chan error, 1)
@@ -314,7 +332,11 @@ func TestConcurrentWriters(t *testing.T) {
 		done <- install(dir, strings.NewReader(fixture("one", 10)), false, func(p string, _ *os.File) error {
 			if p == "staged" {
 				close(entered)
-				<-release
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
 			return nil
 		})
@@ -329,12 +351,19 @@ func TestConcurrentWriters(t *testing.T) {
 	if err == nil {
 		t.Fatal("concurrent writer ignored parent lock")
 	}
-	if <-done != nil {
-		t.Fatal("first writer failed")
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("first writer failed")
+		}
+	case <-ctx.Done():
+		t.Fatal("first writer did not finish")
 	}
 	checkGeneration(t, dir, "one", 10)
 }
 
+// Proves descriptor-pinned readers see complete generations during rotations;
+// whole-machine power-loss durability is outside the test.
 func TestReaderDuringRotations(t *testing.T) {
 	dir := target(t)
 	if Install(dir, strings.NewReader(fixture("same", 12)), false) != nil {
@@ -384,6 +413,8 @@ func TestReaderDuringRotations(t *testing.T) {
 	}
 }
 
+// Proves process exit before/after atomic publication leaves a complete
+// old/new generation and permits explicit retry; it does not emulate power loss.
 func TestCrashBoundary(t *testing.T) {
 	if phase := os.Getenv("ENROLL_TEST_CRASH_PHASE"); phase != "" {
 		_ = install(os.Getenv("ENROLL_TEST_DIR"), strings.NewReader(fixture("new", 21)), true, func(p string, _ *os.File) error {

@@ -1,135 +1,143 @@
-# Courier authentication endpoint
+# Courier station commands
 
-The Courier endpoint provides local authentication-only Unix serving and
-operator registration. It does not execute commands, contact Matrix, load an
-identity's credentials, or provide a client, execution engine, migration,
-streaming, or a service unit. The same `a2a courier` namespace also includes
-`enroll`; see the [local station enrollment contract](courier-enroll.md).
+Courier runs existing a2a commands in process for an authenticated station's
+registered identity. Identity credentials and delivery state stay in the Courier
+home. No shell or second a2a process executes the request.
 
-## Local operator interface
+## Operator setup
 
 - `a2a courier register-station --home ABSOLUTE_PRIVATE_HOME --station S --identity I --uid U --emit - [--rotate] [--socket ABSOLUTE_PATH]`
 - `a2a courier unregister-station --home ABSOLUTE_PRIVATE_HOME --station S`
 - `a2a courier serve --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]`
+- `a2a courier enroll --dir HOME/.a2a --from - [--rotate]`
 
-`--home` is required and must name a dedicated Courier-owned directory at exactly
-0700. Its parent must already exist. Registration may create the last directory;
-serve and unregister require an existing registry. Neither A2A_CONFIG_DIR,
-A2A_AGENT nor a connection profile chooses this home or a credential provider.
+The explicit Courier home is owned by the Courier UID at exactly 0700. Registry
+and lock files are single-link regular 0600 files. Registration stores exactly
+`{identity, uid, secret}` for each station in `stations.json`; the secret is the
+original 32 random bytes in canonical padded standard base64. Station and
+identity names match `^[a-z0-9._=-]{1,64}$`. Rotation is deliberate, with matching
+registration and enrollment, never automatic. Registration's only deliberate
+secret output is the closed enrollment JSON on stdout. Keep it in the enrollment
+pipe. A failed output can follow committed registration; explicitly rotate to
+recover. Unregister removes only the named entry.
+
+Before serving commands, provision each identity's own a2a config base at
+`<courier-home>/identities/<identity>`, owned by Courier at 0700. The directory
+must already exist and be canonical. Its existing a2a configuration resolves its
+one connection: its own `connections.json` current profile and bound credential
+metadata, or its own legacy configuration and credential file. Named connection
+state uses the existing connection/identity paths beneath this base. No request
+selects a profile, credential backend or alternate config base. Missing or
+invalid identity configuration returns `courier: identity unavailable`, with no
+Matrix request. This component does not provision or migrate those identities.
+
 The socket defaults to `/private/var/run/a2a/courier.sock` on macOS and
-`/run/a2a/courier.sock` on Linux. Paths must be absolute and clean, with no symlink
-components; socket paths must contain 1–103 bytes including the leading slash. They must be
-valid UTF-8 and contain no NUL, CR, LF or BOM; paths are not restricted to ASCII.
-The shared `ValidateSocketPath` checks these v1 bytes without a pointer file's LF.
-`StationKeyLen = 32` and `ProtocolVersion = 1` are exported by package courier. Pass the same socket
-path to registration and serving.
+`/run/a2a/courier.sock` on Linux. The clean, absolute socket path has no symlink
+components and is at most 103 UTF-8 bytes, with no NUL, CR, LF or BOM. Its final
+directory is Courier-owned at 0711 with the effective Courier GID; the socket
+is 0666. Ancestors must permit intended users to traverse the path. A private
+ancestor keeps an override private. Existing wrong modes, ownership, socket
+paths and symlinks are refused without repair or unlinking. No OS users or
+shared groups are created. Same-UID stations are not a security boundary.
 
-Registration generates 32 random bytes and atomically replaces the station's
-entry in `stations.json`. The JSON object maps each station name to exactly
-`{identity, uid, secret}`: `secret` is the ORIGINAL 32 bytes encoded as canonical
-padded standard base64, not a digest. `uid` is an unsigned 32-bit decimal integer.
-Station and identity names both match `^[a-z0-9._=-]{1,64}$`, case sensitively.
-The registry and `.stations.lock` must be owned by the effective Courier UID,
-regular, singly linked, and exactly 0600. Wrong modes/owners, symlinks, malformed
-registries and a busy nonblocking registry lock are refused without repair.
-An existing binding is refused unless registration explicitly includes
-`--rotate`. Rotation is for environment recreation or an explicit operator action
-on both registration and enrollment; it is never automatic per launch. Unregister
-removes that entry and its secret. Other entries survive both operations.
+Serve takes a nonblocking `.courier.lock`. Shutdown closes connections and
+removes only its own unchanged socket inode. A stale socket needs explicit
+operator inspection while serving is stopped. Registry operations likewise
+refuse a busy nonblocking lock; simultaneous authentication attempts can refuse.
 
-The only deliberate secret output is one newline-terminated, closed JSON object
-on registration stdout, containing exactly `socket`, `identity`, `station`, and
-`secret_b64`. Send this directly through the operator's enrollment pipe; do not
-capture, log, echo, or place it in argv or environment variables. Courier does
-not write station files and has no `--secret-out`. The separate station enrollment component supplies
-`a2a courier enroll --dir HOME/.a2a --from - [--rotate]`. If output fails after registry replacement, the binding
-may have changed even though the command failed: recover by a fresh deliberate
-rotation and enrollment, without treating the old secret as current.
+## Station behavior and authorization
 
-## Socket access policy
+The station CLI discovers `<A2A_CONFIG_DIR>/.a2a` using normal config-base
+resolution. Absence preserves local behavior. Any present partial, invalid or
+noncanonical enrollment refuses without falling back to local credentials.
+See [enrollment](courier-enroll.md) for the exact four-file format and pinned
+reader. Local `courier` operator commands retain their explicit local interface.
 
-The socket directory must have Courier's effective UID and GID and be exactly
-0711: other users can
-traverse it without listing it. The socket is Courier-owned at 0666. The final
-directory may be created when its parent exists. Existing directories with other
-modes are refused without repair. Ancestors must also allow the intended station
-to traverse the full socket path; a private ancestor keeps an override private.
-No shared station group is needed. Connecting alone grants nothing: admission
-requires both the HMAC and the kernel peer UID to match the registry.
+The closed execution allowlist is `post`, `inbox`, `inbox show`, `read`, `topics`,
+`topic new`, `attach`, `files`, `wait`, `watch`, `hook stop|session-start|prompt`,
+`bind status`, `who`, `whoami`, and `post-operation status`. New options need
+explicit admission. Identity, connection, credential, configuration, keychain,
+administrative and Courier operations are refused by the execution engine.
 
-The Courier home remains 0700; its registry and lock remain 0600. A Courier home
-cannot double as the public socket directory. Deployment requires the intended
-OS users and parent paths to exist; this command does not create OS users or
-change ownership. Stations sharing one UID can read one another's station
-secrets; their isolation is not a security boundary.
+`--as` must match the enrolled identity on the client and the authenticated
+registration on the daemon. `--profile` and `--connection-fingerprint` are
+assertions against the daemon's independently resolved identity binding. Wrong
+assertions return the same fixed refusal as a wrong identity, without reselection
+or fallback. Daemon identity, config and session environment values are ignored.
+Every invocation constructs its own identity, connection, secret-store selection
+and state paths; previous and concurrent requests supply none of these values.
+`whoami` uses the registered identity and its own resolved connection.
 
-Serve takes a nonblocking `.courier.lock` in the socket directory. Existing socket
-paths are refused rather than unlinked or adopted. On shutdown it closes active
-connections, releases locks and removes only its own unchanged socket inode;
-lock files remain for subsequent starts. A stale socket requires explicit operator
-inspection and removal while the server is stopped.
+Body `@file`, topic `--body @file`, post `--envelope @file`, attachment files and
+captions are sent as contents. The daemon opens only invocation-owned memory for
+these inputs. `inbox show` accepts an explicit streamed `--from @file`; it does
+not reopen a retained station path. Output paths (`--out`, `--id-file`), implicit
+file-saving modes (`--brief`), voice side effects and other path options are
+refused. Save streamed stdout on the station instead. Input file arguments using
+an option's `=...` spelling are refused; use separate option and value arguments.
+A request, including argv, stdin and base64 file contents, must fit one frame;
+large attachments are refused rather than truncated. Ordinary local commands
+retain their existing filesystem behavior.
 
-## Wire contract
+Installed `<exe> --as NAME hook EVENT --runtime R` lines retain their syntax.
+Hook stdin is content, and station environment and filesystem paths are not
+forwarded. Muse's counts-only diagnostic journal is scoped to the resolved
+identity store rather than the daemon's working directory.
 
-Each frame is a 4-byte unsigned big-endian JSON payload byte length, followed by
-exactly that many bytes. The inclusive payload limit is **65536 bytes**, with a
-minimum of one byte. Fragmented reads and short writes are completed. Oversize
-lengths are refused before allocating a payload. JSON is UTF-8; objects use exact
-case-sensitive fields. Unknown, missing, duplicate or trailing data are refused.
-This is protocol version 1, without wire version negotiation or an alternative
-schema in this leaf. The version constant does not add a new wire field.
+## Wire and delivery
 
-1. Courier sends `{"type":"challenge","nonce":"<64 lowercase hex digits>"}`,
-   using a fresh cryptographically random 32-byte nonce for every connection.
-2. The station sends exactly
-   `{"type":"hello","station":"S","identity":"I","mac":"<64 lowercase hex digits>"}`.
-   The MAC is HMAC-SHA256 keyed by the ORIGINAL station secret over the raw
-   32 nonce bytes followed immediately by the station's ASCII bytes and the
-   identity's ASCII bytes: `raw_nonce || station || identity`. No separators,
-   lengths, hex nonce text, NUL or newline enter that transcript.
-3. Courier independently reads kernel peer credentials (Linux SO_PEERCRED;
-   macOS LOCAL_PEERCRED), looks up the exact station, checks the registered UID
-   and exact registered identity, and compares the MAC in constant time. A client
-   identity cannot replace the registry binding. An unknown station still performs
-   a dummy-key MAC comparison and receives the same refusal as a known station.
-4. Success is exactly `{"type":"authenticated"}`. This grants no command or
-   data operation. A clean disconnect ends the session; every additional frame,
-   including a second hello, is refused. Idle authenticated sessions expire.
+Frames use a four-byte unsigned big-endian length followed by UTF-8 JSON, with
+an inclusive 65536-byte payload cap. Unknown, duplicate, missing, case-changed
+and trailing fields refuse. All refusals are bounded and never echo request
+bytes. Daemon diagnostics contain no request content or message bodies.
 
-The raw concatenation is not a globally self-delimiting identifier encoding.
-Authorization always uses the exact station lookup, its independently generated
-secret, its stored UID and its stored identity. A MAC for another binding cannot
-select or override that binding, even when two name pairs concatenate identically.
-Registry bytes belong exclusively to the trusted Courier operator; sharing keys
-between station entries is unsupported. Rotation is read on each new hello and
-makes old keys fail; existing authenticated sockets carry no executable authority.
+The C1 hello and registry schema remain unchanged:
 
-Every connection refusal attempts the same frame `{"type":"refused"}`, writes
-exactly one fixed line `courier: refused` to stderr, then closes. No client bytes,
-names, UID, MAC, nonce, secret or reason appear in refusals or logs. This hides
-station existence in the response schema and log; it is not a constant-time
-network service or protection against an endpoint owner inspecting its registry.
-Startup/operator failures are closed local errors rather than wire responses.
+1. Courier sends `{"type":"challenge","nonce":"<64 lowercase hex>"}` using a
+   fresh 32-byte nonce.
+2. The station sends `{"type":"hello","station":"S","identity":"I","mac":"<64 lowercase hex>"}`.
+   HMAC-SHA256 uses the original station key over exactly
+   `raw_nonce || station || identity`, without separators, lengths or LF.
+3. Courier checks the registry binding, kernel peer UID (Linux SO_PEERCRED or
+   macOS LOCAL_PEERCRED) and MAC in constant time. Unknown stations use a dummy
+   key and the same refusal. A client cannot replace the registered identity.
+4. Success is `{"type":"authenticated"}`. The CLI endpoint then accepts one
+   `request` with `id` (32 lowercase hex digits), `argv`, `stdin` (base64 bytes),
+   and `files` (argv-index keys mapping to exact `{name,data}` objects, with
+   base64 content). No request environment or selection state is transmitted.
 
-The application admits at most 64 active connections, including authenticated
-ones. A handshake has a total 5-second read/write deadline; an authenticated
-session has a 5-second idle deadline. Refusal writes have a 1-second deadline,
-including capacity refusals. The registry is at most 512 KiB and 1024 stations.
-Busy registry locks fail closed instead of waiting. The caller must drain the
-server's fixed stderr log output. No request allocates from a client-declared
-unbounded length or spawns an execution engine.
+The original authentication-only `Serve` API retains its no-request behavior;
+CLI serving composes the execution handler through `ServeWithHandler`.
+Registration rotation affects future hellos; an already authenticated invocation
+keeps its identity binding until it ends. Raw concatenation is not globally
+self-delimiting: authorization depends on the exact registry lookup and its
+independently generated secret, UID and identity, not concatenation alone.
 
-## Reference alignment and validation limits
+`stdout` and `stderr` frames carry the invocation `id` and base64 `data`; the
+client decodes them as opaque bytes without peer-controlled framing additions.
+An `exit` frame carries the same `id` and an integer `code`. Known identity
+secrets are scrubbed before transport chunking. Command errors have fixed text;
+backend errors containing peer bodies or private paths are not daemon logs.
 
-The framing layout matches the stationlink reference's four-byte big-endian
-length prefix. That reference permits **1 MiB** and uses a different message and
-authentication schema. Matching this layout does not imply wire interoperability.
+At a delivery-completion point, the daemon sends `delivery` with the invocation
+`id`, authenticated `identity` and a fresh unpredictable `batch` token. Only an
+`ack` with those exact three values on that authenticated connection releases
+the delivery barrier. The station sends it only after local stdout writes and
+flushes succeed. Disconnects, timeouts, short writes, failed writes/flushes,
+missing ACKs and ACKs for other invocations, batches or identities cannot receipt.
+A crash after output but before receipt can print those entries again on retry.
+Wait/watch mark shown and hooks ring their doorbell; none of them receipt mail.
 
-Tests use synthetic registrations, same-UID kernel Unix sockets and injected UID
-mismatches. Socket mode tests check the public traversal/connect permission bits.
-A rootless host with only one mapped UID cannot exercise a genuinely different
-kernel UID or chown a private fixture to another host UID; injected UID checks and
-synthetic fstat owner metadata cover those refusals without claiming a multi-user
-runtime qualification. Linux checks do not qualify macOS runtime behavior; macOS
-CI and independent review remain necessary. No test creates host users or performs
-real enrollment.
+Wait and watch stream over the connection. Disconnect cancels the request.
+There are at most 64 connections; hello has a five-second total deadline, the
+first request a five-second deadline, and execution a sixty-second idle budget.
+Output activity renews the execution idle budget. Refusal writes have a
+one-second deadline. Registry size remains bounded to 512 KiB and 1024 stations.
+Longer streaming hardening, service management, an admin socket, migration and
+unrelated delivery repairs remain separate work.
+
+Tests use synthetic registrations, kernel Unix sockets and fake Matrix. They
+qualify same-UID serving, explicit UID mismatch checks, delivery barriers,
+request isolation and offline command execution. They do not qualify a second
+real OS user, live Matrix credentials, ACL isolation, service installation,
+whole-machine crash durability or every long-running streaming failure mode.
