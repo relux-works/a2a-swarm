@@ -735,6 +735,62 @@ func TestDurablePostBindingRecheckedBeforeReservation(t *testing.T) {
 	}
 }
 
+// Claim: binding changes after a strict ACK cannot prevent its persistence or
+// print refusal/event IDs; a pre-persistence fault reports closed UNKNOWN.
+// The unchanged-binding neighbour still acknowledges with exit 0. Inert
+// transport and local files prove ordering/output, not live server durability.
+func TestDurablePostACKBeforeBindingRecheck(t *testing.T) {
+	for _, stage := range []string{"unchanged", "after_ack_observed", "before_ack_persist", "ack_observed_fault"} {
+		t.Run(stage, func(t *testing.T) {
+			w := operationWorldNew(t)
+			a, out, diag := w.app()
+			a.postOperationFault = func(s string) error {
+				if stage == "ack_observed_fault" && s == "after_ack_observed" {
+					return errors.New("post operation refused: synthetic detail")
+				}
+				if s != stage {
+					return nil
+				}
+				changed := w.connection
+				changed.URL = "https://changed.example.invalid"
+				registry := config.ConnectionRegistry{SchemaVersion: 1, Current: "own", Profiles: map[string]config.Connection{"own": changed}}
+				data, err := json.Marshal(registry)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(w.base, "connections.json"), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				return nil
+			}
+			code := a.Run(context.Background(), operationArgs())
+			if w.sends.Load() != 1 {
+				t.Fatal("expected exactly one mutation attempt")
+			}
+			if stage == "unchanged" {
+				got := operationResult(t, out)
+				if code != 0 || got.Outcome != "acknowledged" || got.EventID != "$accepted" || w.record().Outcome != "acknowledged" {
+					t.Fatalf("valid ACK: code=%d result=%+v %s", code, got, diag)
+				}
+				return
+			}
+			wantState, wantReason := "acknowledged", "binding_changed_after_send"
+			if stage == "ack_observed_fault" {
+				wantState, wantReason = "unknown", "ack_persist_failed"
+			}
+			if code != 1 || !strings.Contains(diag.String(), "do not repost") || strings.Contains(out.String()+diag.String(), "refused") || strings.Contains(out.String()+diag.String(), "$accepted") || strings.Contains(out.String(), "event_id") {
+				t.Fatalf("unsafe post-ACK result: code=%d stdout=%s stderr=%s", code, out, diag)
+			}
+			if got := operationResult(t, out); got.Outcome != "unknown" || got.Reason != wantReason || got.EventID != "" {
+				t.Fatal("post-ACK failure projection", got)
+			}
+			if got := w.record(); got.Outcome != wantState || (wantState == "acknowledged" && got.EventID != "$accepted") {
+				t.Fatal("ACK evidence lost", got.Outcome)
+			}
+		})
+	}
+}
+
 func TestDurablePostMonotonicOnLaterValidationFailure(t *testing.T) {
 	for _, lost := range []bool{false, true} {
 		w := operationWorldNew(t)
@@ -765,6 +821,9 @@ type operationFlushWriter struct{}
 func (operationFlushWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (operationFlushWriter) Flush() error                { return io.ErrClosedPipe }
 
+// Claim: framed requests over 64 KiB refuse with exit 1 and a fixed reason
+// before sending; a large unescaped body still succeeds. This does not test
+// the independent record/journal caps or a live server.
 func TestDurablePostFramedRequestLimit(t *testing.T) {
 	for _, oversize := range []bool{false, true} {
 		w := operationWorldNew(t)
@@ -777,8 +836,8 @@ func TestDurablePostFramedRequestLimit(t *testing.T) {
 		args[len(args)-1] = strings.Repeat(text, MaxBodyBytes)
 		code := a.Run(context.Background(), args)
 		if oversize {
-			if code != 2 || w.sends.Load() != 0 || !strings.Contains(diag.String(), "64 KiB") {
-				t.Fatalf("framed max+1 refusal: code=%d %s", code, diag)
+			if code != 1 || w.sends.Load() != 0 || !strings.Contains(diag.String(), "post operation refused: framed_request_too_large;") || !strings.Contains(diag.String(), "64 KiB") {
+				t.Fatalf("oversized framed request refusal: code=%d %s", code, diag)
 			}
 		} else if code != 0 || w.sends.Load() != 1 {
 			t.Fatalf("valid large request refused: %d %s", code, diag)

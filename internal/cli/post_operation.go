@@ -227,7 +227,7 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 	}
 	request, err := json.Marshal(content)
 	if err != nil || len(request) > config.PostRequestLimit {
-		return usagef("durable post framed request exceeds 64 KiB; no send")
+		return errors.New("post operation refused: framed_request_too_large; 64 KiB limit; no send")
 	}
 	if a.secrets.Scrub(string(request)) != string(request) {
 		return errors.New("post operation refused: secret_content; no send")
@@ -274,21 +274,22 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 		return a.emitPostInvocation(record, "mutation_or_ack_unconfirmed")
 	}
 	if err := a.operationStep("after_ack_observed"); err != nil {
-		return err
+		return a.unknownPostACK(record, "ack_persist_failed")
 	}
-	if err := a.recheckOperation(own); err != nil {
-		return err
-	}
+	// Retain strict ACK evidence before rechecking mutable connection metadata.
 	if err := a.operationStep("before_ack_persist"); err != nil {
-		return a.unknownPostACK(record)
+		return a.unknownPostACK(record, "ack_persist_failed")
 	}
 	acknowledged, err := journal.RecordACK(record, receipt.EventID(), receipt.Status(), receipt.ContentLength())
 	if err != nil {
-		return a.unknownPostACK(record)
+		return a.unknownPostACK(record, "ack_persist_failed")
 	}
 	record = acknowledged
 	if err := a.operationStep("after_ack_persist"); err != nil {
 		return err
+	}
+	if err := a.recheckOperation(own); err != nil {
+		return a.unknownPostACK(record, "binding_changed_after_send")
 	}
 	// Follow-state work cannot erase or precede durable ACK evidence.
 	if err := s.rememberThread(root); err != nil {
@@ -297,12 +298,12 @@ func (a *App) durablePost(ctx context.Context, intent postIntent, h Header) erro
 	return a.emitPostInvocation(record, "original_endpoint_ack_retained")
 }
 
-func (a *App) unknownPostACK(reserved config.PostOperation) error {
+func (a *App) unknownPostACK(reserved config.PostOperation, reason string) error {
 	// The observed event ID is deliberately not an argument: only a durable
 	// acknowledged record may expose it. A failed replacement can have renamed
 	// already; this invocation still reports uncertainty, never success.
 	reserved.Outcome, reserved.EventID = "unknown", ""
-	return a.emitPostInvocation(reserved, "ack_persist_failed")
+	return a.emitPostInvocation(reserved, reason)
 }
 
 func durablePostInvocation(args []string) bool {

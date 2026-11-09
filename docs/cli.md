@@ -3621,9 +3621,10 @@ network filesystems are unsupported. Replacement writes an exclusive 0600
 directory. Readers ignore leftover temporary files; the next writer cleans
 them under the journal lock. A failed post-rename sync can leave the old or
 new record after a crash; it never grants a successful posting result.
-The complete framed request is capped at 64 KiB, a record at 128 KiB, the journal
-at 128 records and 16 MiB. A limit or unsupported durability/locking refuses;
-no unresolved record is evicted or automatically expired.
+The complete framed request is capped at 64 KiB; exceeding it refuses before
+sending with reason `framed_request_too_large` and exit 1. A record is capped at
+128 KiB, the journal at 128 records and 16 MiB. A limit or unsupported
+durability/locking refuses; no unresolved record is evicted or automatically expired.
 
 `a2a post-operation status op_1 --json` reads only existing local own metadata
 and journal evidence. It makes no HTTP request or credential-provider call. Local inspection uses
@@ -3646,7 +3647,10 @@ Refusal, storage and output failures exit 1; invalid usage or unsupported
 combinations/platforms exit 2. If an ACK was observed but persistence failed,
 the command reports UNKNOWN with reason `ack_persist_failed`, exits 1 and says
 “do not repost”; it does not print the observed event ID. Event IDs are exposed
-only from durable acknowledged records. A later stdout or
+only from durable acknowledged records. After a strict ACK, binding metadata is
+rechecked only after recording the ACK. A changed binding reports UNKNOWN with
+reason `binding_changed_after_send`, exits 1 and says “do not repost”, without
+printing the event ID or erasing the retained ACK. A later stdout or
 follow-state failure cannot erase a durable ACK; inspect local status.
 
 **An existing operation ID never sends again**, including `not_submitted` and
