@@ -61,7 +61,7 @@ func init() {
 // Close is idempotent; the supplied client remains owned by its caller.
 func (t *Transport) Close() error { t.closed.Store(true); return nil }
 func (t *Transport) Caps() tr.Capabilities {
-	return tr.Capabilities{Redaction: tr.Enforced, Threads: true, Membership: tr.ServerEnforced, MaxContentBytes: MaxContentBytes, IdempotentRetry: true}
+	return tr.Capabilities{Redaction: tr.Enforced, Threads: true, Membership: tr.ServerEnforced, MaxContentBytes: MaxContentBytes, MaxRawBytes: tr.MaxRawBytes, IdempotentRetry: true}
 }
 
 // T1 supports plaintext Matrix rooms. E2EE is not implemented by the wire client.

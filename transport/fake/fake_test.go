@@ -30,8 +30,14 @@ func harness(defect string) conformancetest.Harness {
 		if e = os.WriteFile(filepath.Join(sentinel, "keep"), []byte("untouched"), 0644); e != nil {
 			t.Fatal(e)
 		}
-		w := fake.NewWorld()
-		w.SetDefect(defect)
+		limit := tr.MaxRawBytes
+		if defect == "no-raw" || strings.HasPrefix(defect, "no-raw-") {
+			limit = 0
+		} else if defect == "lower-raw" || strings.HasPrefix(defect, "lower-raw-") {
+			limit = 4096
+		}
+		w := fake.NewWorldWithRawLimit(limit)
+		w.SetDefect(strings.TrimPrefix(strings.TrimPrefix(defect, "no-raw-"), "lower-raw-"))
 		a, e := w.New("alice", tr.Config{StateDir: filepath.Join(state, "a")})
 		if e != nil {
 			t.Fatal(e)
@@ -116,6 +122,26 @@ func harness(defect string) conformancetest.Harness {
 		if defect == "registration-extension" {
 			result.A = registration{result.A}
 		}
+		// Isolate exposure defects to one read method, keeping the other paths valid.
+		for _, path := range []string{"Sync", "History", "Event"} {
+			if defect == "no-raw-leak-"+path || defect == "lower-raw-leak-"+path {
+				result.B = rawExposureTransport{Transport: result.B, path: path}
+			}
+		}
+		for _, name := range []string{"A", "B", "C"} {
+			for _, bound := range []struct {
+				name string
+				n    int
+			}{{"negative", -1}, {"above", tr.MaxRawBytes + 1}} {
+				if defect == "caps-raw-"+name+"-"+bound.name {
+					field := reflect.ValueOf(result).Elem().FieldByName(name)
+					field.Set(reflect.ValueOf(rawCapsTransport{Transport: field.Interface().(tr.Transport), limit: bound.n}))
+				}
+			}
+		}
+		if defect == "no-raw-missing-hook" {
+			result.ReceivedRawAtSize = nil
+		}
 		return result
 	}}
 }
@@ -127,6 +153,111 @@ func TestFakeConformance(t *testing.T) {
 		h.New = nil
 	}
 	conformancetest.Run(t, h)
+}
+
+// Proves suppressing Raw preserves the complete contract, including restart,
+// ordinary read projections and oversized-wire rejection; no live service is used.
+func TestFakeNoRawConformance(t *testing.T) {
+	conformancetest.Run(t, harness("no-raw"))
+}
+
+// Proves the complete contract with a ceiling below the package absolute limit.
+func TestFakeLowerRawConformance(t *testing.T) {
+	conformancetest.Run(t, harness("lower-raw"))
+}
+
+type rawCapsTransport struct {
+	tr.Transport
+	limit int
+}
+
+func (r rawCapsTransport) Caps() tr.Capabilities {
+	caps := r.Transport.Caps()
+	caps.MaxRawBytes = r.limit
+	return caps
+}
+
+type rawExposureTransport struct {
+	tr.Transport
+	path string
+}
+
+func (r rawExposureTransport) Sync(ctx context.Context, c tr.Cursor, opt tr.SyncOptions) (tr.Batch, error) {
+	b, err := r.Transport.Sync(ctx, c, opt)
+	if r.path == "Sync" {
+		for i := range b.Events {
+			b.Events[i].Raw = make([]byte, r.Caps().MaxRawBytes+1)
+		}
+	}
+	return b, err
+}
+
+func (r rawExposureTransport) History(ctx context.Context, c tr.ConversationID, page tr.Cursor, limit int) (tr.Page, error) {
+	p, err := r.Transport.History(ctx, c, page, limit)
+	if r.path == "History" {
+		for i := range p.Events {
+			p.Events[i].Raw = make([]byte, r.Caps().MaxRawBytes+1)
+		}
+	}
+	return p, err
+}
+
+func (r rawExposureTransport) Event(ctx context.Context, c tr.ConversationID, id tr.EventID) (tr.Event, error) {
+	e, err := r.Transport.Event(ctx, c, id)
+	if err == nil && r.path == "Event" {
+		e.Raw = make([]byte, r.Caps().MaxRawBytes+1)
+	}
+	return e, err
+}
+
+// Proves each read path detects a zero-ceiling leak and N+1 exposure below the
+// absolute ceiling. Matching positive variants must pass the same named group.
+func TestRawExposureControls(t *testing.T) {
+	for _, variant := range []string{"no-raw", "lower-raw"} {
+		for _, path := range []string{"Sync", "History", "Event"} {
+			t.Run(variant+"_"+path, func(t *testing.T) {
+				runVerdict(t, variant, "raw_bounds", "", "PASS")
+				runVerdict(t, variant+"-leak-"+path, "raw_bounds", "Event.Raw exceeds MaxRawBytes declared by Caps", "FAIL")
+			})
+		}
+	}
+}
+
+// Proves both invalid Caps neighbours fail during fixture construction for each
+// identity, while zero and the absolute ceiling reach and pass the self group.
+func TestRawCapsControls(t *testing.T) {
+	for _, identity := range []string{"A", "B", "C"} {
+		for _, bound := range []struct {
+			name string
+			n    int
+		}{{"negative", -1}, {"above", tr.MaxRawBytes + 1}} {
+			t.Run(identity+"_"+bound.name, func(t *testing.T) {
+				runVerdict(t, "no-raw", "self", "", "PASS")
+				runVerdict(t, "", "self", "", "PASS")
+				reason := fmt.Sprintf("fixture %s Caps.MaxRawBytes=%d outside 0..%d", identity, bound.n, tr.MaxRawBytes)
+				runVerdict(t, "caps-raw-"+identity+"-"+bound.name, "self", reason, "FAIL")
+			})
+		}
+	}
+}
+
+// Proves lower/zero ceilings still drop rather than accept or clamp oversized
+// wire events, with an exact-bound/ordinary positive neighbour on each run.
+func TestRawReceiveControls(t *testing.T) {
+	for _, variant := range []string{"no-raw", "lower-raw"} {
+		for _, defect := range []string{"accept-raw", "clamp-raw"} {
+			t.Run(variant+"_"+defect, func(t *testing.T) {
+				runVerdict(t, variant, "raw_bounds/received", "", "PASS")
+				runVerdict(t, variant+"-"+defect, "raw_bounds/received", "oversized received event delivered", "FAIL")
+			})
+		}
+	}
+	// Proves an overstated positive ceiling cannot pass by rejecting exactly N.
+	runVerdict(t, "lower-raw", "raw_bounds/received", "", "PASS")
+	runVerdict(t, "lower-raw-reject-raw-bound", "raw_bounds/received", "logical event", "FAIL")
+	// Proves a zero declaration keeps the named optional-hook SKIP, not a pass.
+	runVerdict(t, "no-raw", "raw_bounds/received", "", "PASS")
+	runVerdict(t, "no-raw-missing-hook", "raw_bounds/received", "harness missing optional hook ReceivedRawAtSize", "SKIP")
 }
 
 // Proves each named plant fails the intended subtest with its own diagnostic;

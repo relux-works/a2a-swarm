@@ -19,7 +19,8 @@ import (
 
 const APIVersion = 1
 
-// MaxRawBytes bounds Event.Raw on every read path; larger events are dropped.
+// MaxRawBytes is the absolute ceiling for received Raw payloads. Each transport
+// declares its own exposure bound in Caps().MaxRawBytes; oversized events are dropped.
 const MaxRawBytes = 1 << 20
 
 type ConversationID string
@@ -70,7 +71,10 @@ type Event struct {
 	Time         time.Time
 	Message      Message
 	Redacted     bool
-	Raw          []byte
+	// Raw is optional, opaque wire data. Core never parses it or depends on its
+	// presence; the mailbox stores it only if present. Caps().MaxRawBytes bounds
+	// every read path, with zero meaning Raw is never exposed.
+	Raw []byte
 }
 
 // Batch is a delivery window. Dropped counts rejected events (for example an
@@ -159,6 +163,10 @@ type Capabilities struct {
 	// MaxContentBytes bounds the serialized transport content, including envelope overhead.
 	// A harness supplies a MessageAtSize hook because encoding is transport-specific.
 	MaxContentBytes int
+	// MaxRawBytes is 0 when Raw is never exposed on any read path. Values in
+	// 1..transport.MaxRawBytes bound exposed Raw; larger received payloads are
+	// dropped, never truncated. Values outside 0..transport.MaxRawBytes are invalid.
+	MaxRawBytes     int
 	IdempotentRetry bool
 }
 type ConversationCaps struct{ E2EE bool }

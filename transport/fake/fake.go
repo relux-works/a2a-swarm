@@ -42,6 +42,7 @@ var nextWorld atomic.Uint64
 
 type World struct {
 	id            uint64
+	maxRawBytes   int
 	partCalls     map[string]map[tr.PrincipalID]int
 	mu            sync.Mutex
 	events        []tr.Event
@@ -59,7 +60,17 @@ type World struct {
 }
 
 func NewWorld() *World {
-	return &World{id: nextWorld.Add(1), partCalls: map[string]map[tr.PrincipalID]int{}, unverified: map[tr.EventID]bool{}, publications: map[string]*publication{}, media: map[string][]byte{}, identities: map[tr.PrincipalID]bool{}}
+	return NewWorldWithRawLimit(tr.MaxRawBytes)
+}
+
+// NewWorldWithRawLimit declares an immutable receive Raw limit for all identities.
+// Zero suppresses Raw on every read path while retaining absolute wire-size validation.
+// Invalid limits panic; malformed capability plants should wrap Caps instead.
+func NewWorldWithRawLimit(n int) *World {
+	if n < 0 || n > tr.MaxRawBytes {
+		panic("fake: MaxRawBytes outside 0..transport.MaxRawBytes")
+	}
+	return &World{id: nextWorld.Add(1), maxRawBytes: n, partCalls: map[string]map[tr.PrincipalID]int{}, unverified: map[tr.EventID]bool{}, publications: map[string]*publication{}, media: map[string][]byte{}, identities: map[tr.PrincipalID]bool{}}
 }
 
 type Transport struct {
@@ -114,7 +125,7 @@ func (f *Transport) Self(ctx context.Context) (tr.Principal, error) {
 	return tr.Principal{ID: f.id}, nil
 }
 func (f *Transport) Caps() tr.Capabilities {
-	return tr.Capabilities{MaxContentBytes: 4096, IdempotentRetry: true, Membership: tr.SenderSide}
+	return tr.Capabilities{MaxContentBytes: 4096, MaxRawBytes: f.world.maxRawBytes, IdempotentRetry: true, Membership: tr.SenderSide}
 }
 func (f *Transport) ConversationCaps(ctx context.Context, c tr.ConversationID) (tr.ConversationCaps, error) {
 	if ctx.Err() != nil || f.closed.Load() {
@@ -381,8 +392,12 @@ func (w *World) PartCalls(id tr.PrincipalID) int {
 func (f *Transport) read(e tr.Event) (tr.Event, bool, bool) {
 	w := f.world
 	b, _ := Content(e.Message)
-	oversizeRaw := len(e.Raw) > tr.MaxRawBytes && w.defect != "accept-raw" && w.defect != "clamp-raw"
-	if oversizeRaw || len(e.Raw) >= tr.MaxRawBytes && w.defect == "reject-raw-bound" || len(b) > f.Caps().MaxContentBytes || (!w.identities[e.Sender] || w.unverified[e.ID]) && w.defect != "sender" && w.defect != "sender-rewrite" {
+	limit := w.maxRawBytes
+	if limit == 0 {
+		limit = tr.MaxRawBytes
+	}
+	oversizeRaw := len(e.Raw) > limit && w.defect != "accept-raw" && w.defect != "clamp-raw"
+	if oversizeRaw || len(e.Raw) >= limit && w.defect == "reject-raw-bound" || len(b) > f.Caps().MaxContentBytes || (!w.identities[e.Sender] || w.unverified[e.ID]) && w.defect != "sender" && w.defect != "sender-rewrite" {
 		return tr.Event{}, false, true
 	}
 	for _, p := range w.publications {
@@ -391,8 +406,11 @@ func (f *Transport) read(e tr.Event) (tr.Event, bool, bool) {
 		}
 	}
 	e = clone(e)
-	if w.defect == "clamp-raw" && len(e.Raw) > tr.MaxRawBytes {
-		e.Raw = e.Raw[:tr.MaxRawBytes]
+	if w.defect == "clamp-raw" && len(e.Raw) > limit {
+		e.Raw = e.Raw[:limit]
+	}
+	if w.maxRawBytes == 0 {
+		e.Raw = nil
 	}
 	if w.defect == "sender-rewrite" && w.unverified[e.ID] {
 		e.ID = "rewritten-" + e.ID
