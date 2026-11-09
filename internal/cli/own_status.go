@@ -80,7 +80,7 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 	token := matrix.NewTxnID()
 	var record config.AgentStatus
 	var send, priorUncertain bool
-	snapshot, err := config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	snapshot, err := config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(st *config.State) error {
 		if err := writeCtx.Err(); err != nil {
 			return err
 		}
@@ -108,7 +108,7 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 	snapshot.NoticeWriteUncertain = priorUncertain
 	previousLiveness, previousNotice := snapshot.Liveness, snapshot.NoticeStatus
 	publicationErr := s.putOwnStatus(writeCtx, &snapshot, record)
-	_, err = config.UpdateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+	_, err = config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(st *config.State) error {
 		if st.OwnStatusWrite == nil || st.OwnStatusWrite.Token != token {
 			return errors.New("own status publication superseded")
 		}

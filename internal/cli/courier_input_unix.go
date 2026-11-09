@@ -17,9 +17,7 @@ import (
 const stationInputPoll = 20 * time.Millisecond
 
 func readStationInput(ctx context.Context, r io.Reader, hook bool) ([]byte, error) {
-	if !hook {
-		return io.ReadAll(io.LimitReader(r, courier.MaxFrameBytes+1))
-	}
+
 	// In-memory readers finish synchronously. Unknown blocking reader adapters
 	// fail closed instead of leaving a detached goroutine behind the hook budget.
 	switch r.(type) {
@@ -28,7 +26,24 @@ func readStationInput(ctx context.Context, r io.Reader, hook bool) ([]byte, erro
 	}
 	f, ok := r.(*os.File)
 	if !ok {
-		return nil, courier.NotAllowed
+		if hook {
+			return nil, courier.NotAllowed
+		}
+		type inputResult struct {
+			data []byte
+			err  error
+		}
+		done := make(chan inputResult, 1)
+		go func() {
+			data, err := io.ReadAll(io.LimitReader(r, courier.MaxFrameBytes+1))
+			done <- inputResult{data, err}
+		}()
+		select {
+		case result := <-done:
+			return result.data, result.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	fd := int(f.Fd())
 	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)

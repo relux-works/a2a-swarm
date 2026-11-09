@@ -499,7 +499,7 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 		ttl = a.leaseTTL
 	}
 	a.leaseReuse = nil
-	_, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
+	_, err := config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}

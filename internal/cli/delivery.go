@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/courier"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -318,7 +319,7 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 		return fn(cur, mb)
 	}
 	if !withSubs {
-		return config.UpdateStateUntil(s.paths, s.name, deadline, func(cur *config.State) error {
+		return config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 			_, err := run(cur)
 			return err
 		})
@@ -623,6 +624,14 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 	if err != nil {
 		return err
 	}
+	releaseOnce := releaseConsumer
+	var consumerReleased bool
+	releaseConsumer = func() {
+		if !consumerReleased {
+			consumerReleased = true
+			releaseOnce()
+		}
+	}
 	defer releaseConsumer()
 	if err := refuseBoundWait(ctx, s); err != nil {
 		return err
@@ -661,7 +670,8 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 			lastHeartbeat = a.Now()
 		}
 		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), nativeRPCTimeout)
+			releaseConsumer()
+			stopCtx, cancel := context.WithTimeout(context.Background(), courier.LockReleaseBound)
 			defer cancel()
 			profile.Doorbell = "none"
 			if err := s.retryLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {

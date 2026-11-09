@@ -487,7 +487,7 @@ func (s *session) updateSubsWithPolicyBy(ctx context.Context, deadline time.Time
 		return config.State{}, SubList{}, err
 	}
 	var list SubList
-	st, err := config.UpdateStateUntil(s.paths, s.name, deadline, func(st *config.State) error {
+	st, err := config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
