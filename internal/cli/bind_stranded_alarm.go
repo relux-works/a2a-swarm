@@ -9,13 +9,35 @@ import (
 )
 
 const strandedAlarmKind = "stranded-notice"
+const consumerUnavailableAlarmKind = "consumer-unavailable"
+const consumerUnavailableReason = "consumer unavailable"
+
+func incidentAlarmKind(kind string) bool {
+	return kind == strandedAlarmKind || kind == consumerUnavailableAlarmKind
+}
+
+func incidentAlarmReport(st *config.State, kind string) *config.NoticeReport {
+	if st.Terminal == nil {
+		return nil
+	}
+	if kind == consumerUnavailableAlarmKind {
+		return st.Terminal.ConsumerReport
+	}
+	if kind == strandedAlarmKind {
+		return st.Terminal.NoticeReport
+	}
+	return nil
+}
 
 // Called under the state lock: enqueue and the episode fence commit together.
 // Each audience is pinned once. A missing owner route does not hide the lead
 // alert, and can become available later without repeating the lead alert.
 func queueStrandedAlarm(s *session, st *config.State, now time.Time) error {
+	return queueIncidentAlarm(s, st, st.Terminal.NoticeReport, strandedAlarmKind, orphanReason, now)
+}
+
+func queueIncidentAlarm(s *session, st *config.State, r *config.NoticeReport, kind, reason string, now time.Time) error {
 	b := st.Terminal
-	r := b.NoticeReport
 	if st.MailAlarm.Invalid {
 		r.Outcome = "unavailable: invalid alarm state"
 		return errors.New(r.Outcome)
@@ -44,7 +66,7 @@ func queueStrandedAlarm(s *session, st *config.State, now time.Time) error {
 		}
 		r.Alarm = true
 		target.ID, target.Identity, target.Host = id, s.name, alarmHost(b.Host)
-		target.Kind, target.Since, target.Reason = strandedAlarmKind, r.Since, orphanReason
+		target.Kind, target.Since, target.Reason = kind, r.Since, reason
 		target.At, target.Next = now, now
 		st.MailAlarm.Jobs = append(st.MailAlarm.Jobs, target)
 		*fence = id
@@ -61,7 +83,7 @@ func queueStrandedAlarm(s *session, st *config.State, now time.Time) error {
 		}
 	}
 	r.Outcome = "unavailable: alarm destination missing"
-	updateStrandedAlarmOutcome(st)
+	updateIncidentAlarmOutcome(st, r)
 	if r.AlarmOwner == "" || r.AlarmLeadRequired && r.AlarmLead == "" {
 		return errors.New(r.Outcome)
 	}
@@ -69,10 +91,14 @@ func queueStrandedAlarm(s *session, st *config.State, now time.Time) error {
 }
 
 func updateStrandedAlarmOutcome(st *config.State) {
-	if st.Terminal == nil || st.Terminal.NoticeReport == nil {
+	updateIncidentAlarmOutcome(st, incidentAlarmReport(st, strandedAlarmKind))
+	updateIncidentAlarmOutcome(st, incidentAlarmReport(st, consumerUnavailableAlarmKind))
+}
+
+func updateIncidentAlarmOutcome(st *config.State, r *config.NoticeReport) {
+	if r == nil {
 		return
 	}
-	r := st.Terminal.NoticeReport
 	if !r.Alarm {
 		return
 	}
@@ -102,10 +128,10 @@ func updateStrandedAlarmOutcome(st *config.State) {
 }
 
 func acknowledgeStrandedAlarm(st *config.State, job config.MailAlarmJob) {
-	if job.Kind != strandedAlarmKind || st.Terminal == nil || st.Terminal.NoticeReport == nil {
+	r := incidentAlarmReport(st, job.Kind)
+	if r == nil {
 		return
 	}
-	r := st.Terminal.NoticeReport
 	if !r.Alarm || r.Since != job.Since {
 		return
 	}
@@ -121,14 +147,13 @@ func acknowledgeStrandedAlarm(st *config.State, job config.MailAlarmJob) {
 // in-flight Matrix transaction may still complete; it cannot be recalled.
 func dropRetiredStrandedAlarms(st *config.State) {
 	st.MailAlarm.Jobs = slices.DeleteFunc(st.MailAlarm.Jobs, func(job config.MailAlarmJob) bool {
-		if job.Kind != strandedAlarmKind {
+		if !incidentAlarmKind(job.Kind) {
 			return false
 		}
-		b := st.Terminal
-		if b == nil || b.NoticeReport == nil {
+		r := incidentAlarmReport(st, job.Kind)
+		if r == nil {
 			return true
 		}
-		r := b.NoticeReport
 		return !r.Alarm || r.Since != job.Since || job.ID != r.AlarmOwner && job.ID != r.AlarmLead
 	})
 }

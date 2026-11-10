@@ -138,7 +138,7 @@ func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmCo
 	}
 	for _, j := range st.MailAlarm.Jobs {
 		route := &out.alarmRouteStatus
-		if j.Kind == strandedAlarmKind {
+		if incidentAlarmKind(j.Kind) {
 			route = &out.StuckNotice
 		}
 		route.Pending++
@@ -148,7 +148,7 @@ func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmCo
 		} else if j.Failure != "" {
 			route.State, route.Reason = "error", alarmFailureReason(j.Failure)
 		}
-		if j.Kind != strandedAlarmKind && j.Uncertain >= 2 {
+		if !incidentAlarmKind(j.Kind) && j.Uncertain >= 2 {
 			route.Held++
 			route.State, route.Reason = "error", "ambiguous alarm delivery; held"
 		}
@@ -341,8 +341,12 @@ func (a *App) observeMailAlarm(s *session, generation string, sample alarmSample
 	})
 }
 func alarmBody(j config.MailAlarmJob) string {
-	if j.Kind == strandedAlarmKind {
-		return fmt.Sprintf("SUSPECTED-DEAF: identity=%s host=%s since=%s reason=%s", j.Identity, j.Host, j.Since, orphanReason)
+	if incidentAlarmKind(j.Kind) {
+		reason := orphanReason
+		if j.Kind == consumerUnavailableAlarmKind {
+			reason = consumerUnavailableReason
+		}
+		return fmt.Sprintf("SUSPECTED-DEAF: identity=%s host=%s since=%s reason=%s", j.Identity, j.Host, j.Since, reason)
 	}
 	return fmt.Sprintf("Stale addressed mailbox: identity=%s count=%d oldest_age_minutes=%d readiness_reason=%s host=%s", j.Identity, j.Count, j.Minutes, j.Reason, j.Host)
 }
@@ -401,11 +405,15 @@ func alarmFailureReason(reason string) string {
 
 func validAlarmJob(job config.MailAlarmJob, identity string) bool {
 	payload := job.Kind == "" && job.Since == "" && job.Count > 0 && job.Minutes >= 0 && alarmSafeReason(job.Reason)
-	if job.Kind == strandedAlarmKind {
+	if incidentAlarmKind(job.Kind) {
 		since, ok := parseNoticeTimestamp(job.Since)
 		at, _ := parseNoticeTimestamp(job.At.UTC().Format(time.RFC3339Nano))
-		since.second = since.second.Add(strandedNoticeThreshold)
-		payload = ok && !at.before(since) && job.Count == 0 && job.Minutes == 0 && job.Reason == orphanReason
+		bound, reason := strandedNoticeThreshold, orphanReason
+		if job.Kind == consumerUnavailableAlarmKind {
+			bound, reason = bindingUnavailableAlarmAfter, consumerUnavailableReason
+		}
+		since.second = since.second.Add(bound)
+		payload = ok && !at.before(since) && job.Count == 0 && job.Minutes == 0 && job.Reason == reason
 	}
 	return payload && job.Identity == identity && config.ValidateName(job.Identity) == nil && aliasLocalRE.MatchString(job.Host) && strings.HasPrefix(job.ID, "a2a-mail-alarm-") && len(job.ID) == 47 && (job.Topic == "" || slugRE.MatchString(job.Topic) || alarmEventRE.MatchString(job.Topic)) && (job.ResolvedRoom == "" || alarmRoom(job.ResolvedRoom)) && (job.Root == "" || alarmEventRE.MatchString(job.Root)) && alarmRoom(job.Room) && (job.Target == "" || alarmTarget(job.Target))
 }
@@ -419,7 +427,7 @@ func (a *App) sendMailAlarm(ctx context.Context, s *session, generation string) 
 		if ctx.Err() != nil {
 			return
 		}
-		if !alarmJobEnabled(s, st, job) || job.Kind != strandedAlarmKind && job.Uncertain >= 2 || a.Now().Before(job.Next) {
+		if !alarmJobEnabled(s, st, job) || !incidentAlarmKind(job.Kind) && job.Uncertain >= 2 || a.Now().Before(job.Next) {
 			continue
 		}
 		// Invalid persisted outbox data is held, never reflected into a message.
@@ -543,16 +551,20 @@ func (a *App) finishMailAlarm(s *session, generation string, job config.MailAlar
 // Stranded incidents remain eligible through hook gates; ordinary mail alarms
 // retain their existing policy. A queued destination is pinned across edits.
 func alarmJobEnabled(s *session, st config.State, job config.MailAlarmJob) bool {
-	if job.Kind == strandedAlarmKind {
+	if incidentAlarmKind(job.Kind) {
 		c := config.MailAlarmConfig{Minutes: defaultAlarmMinutes, Owner: "auto"}
 		if st.MailAlarmConfig != nil {
 			c = *st.MailAlarmConfig
 		}
-		if st.MailAlarm.Invalid || !validAlarmConfig(c) || st.Terminal == nil || st.Terminal.NoticeReport == nil {
+		r := incidentAlarmReport(&st, job.Kind)
+		if st.MailAlarm.Invalid || !validAlarmConfig(c) || r == nil {
 			return false
 		}
-		b, r := st.Terminal, st.Terminal.NoticeReport
-		if !r.Alarm || r.Since != job.Since || b.OwnNotice.Since != job.Since || b.OwnNotice.PossiblyOrphaned == nil || !*b.OwnNotice.PossiblyOrphaned {
+		b := st.Terminal
+		if !r.Alarm || r.Since != job.Since {
+			return false
+		}
+		if job.Kind == strandedAlarmKind && (b.OwnNotice.Since != job.Since || b.OwnNotice.PossiblyOrphaned == nil || !*b.OwnNotice.PossiblyOrphaned) {
 			return false
 		}
 		return job.ID == r.AlarmOwner && c.Owner != "off" || job.ID == r.AlarmLead && c.Lead != ""

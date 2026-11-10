@@ -49,6 +49,7 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 		delay := time.Duration(0)
 		var retryDeadline time.Time
 		diagnostic := &terminalRefresh{}
+		availability := &bindingAvailability{}
 		expired := func() bool {
 			if retryDeadline.IsZero() || a.Now().Before(retryDeadline) {
 				return false
@@ -97,6 +98,8 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 					return err
 				}
 				diagnostic.recordStatus(fresh, generation, "startup_ready")
+				// Credential readiness alone is not a successful delivery cycle.
+				// runTerminal clears/logs the episode after fresh target and sync checks.
 				return run(fresh, initial, lock)
 			}
 			reason := transientCredentialReason(err)
@@ -119,6 +122,7 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 				_ = a.reportStrandedTerminalNoticeMode(ctx, s, generation, false)
 			}
 			fmt.Fprintf(a.Stderr, "binding consumer unavailable; bounded retry cause=%s\n", reason)
+			a.observeBindingConsumer(s, generation, availability, false)
 			if expired() {
 				return errStartupCredentialsUnavailable
 			}

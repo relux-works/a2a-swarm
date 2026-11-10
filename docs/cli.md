@@ -2356,6 +2356,27 @@ or bytes change, then requires stability again. No argv, environment, path, erro
 authority/state observations postpone refresh. Sync failures retain the existing bounded retry and do not by themselves block a safe refresh;
 refresh never drops the lease or starts a second consumer.
 
+After one or more failed startup/consumer attempts, the first complete successful
+consumer cycle logs exactly `binding consumer ready`. Credential recovery alone
+does not claim that target inspection, sync or dispatch has recovered. A first-try
+success logs no ready line. Existing `binding consumer unavailable; bounded retry
+cause=...` lines keep their format; `connection` here denotes owner-process or
+tmux-target inspection, before Matrix sync.
+
+Continuous unavailability for ten minutes queues a separate incident through the
+existing `mail-alarm` owner/optional-lead routes with the closed reason `consumer
+unavailable`, even when there is no stranded own notice. The binding journal
+retains this episode and its alarm fence through in-place re-exec. Each episode
+attempts alarm enqueue once; missing/invalid alarm routes log the existing
+`binding incident report: unavailable: ...` outcome once and leave consumer
+retries running. Queued sends retain the ordinary bounded mail-alarm retries and
+transaction deduplication. Recovery clears unsent jobs for that episode and
+rearms a later episode. Already in-flight sends cannot be recalled. Secret-store
+unavailability can queue locally but cannot send without credentials; unreadable
+or unwritable state can only produce the local unavailable diagnostic until it
+recovers. Persisted times use wall time across exec, so a clock rollback delays
+the threshold. These diagnostics grant no terminal input or receipt authority.
+
 The only typed text is `a2a: N new peer events; run a2a inbox`. Ordinary fresh delivery requires two consecutive qualified rendered-empty
 observations at least `--interval` apart on the same pinned target. Busy, unknown, draft, gate, session/generation/daemon or authority changes
 reset qualification; the first glimpse spends no typing, hourly reservation or retry. Codex empty admission requires its shortcuts hint;

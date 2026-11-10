@@ -12,8 +12,88 @@ import (
 )
 
 const strandedNoticeThreshold = 10 * time.Minute
+const bindingUnavailableAlarmAfter = 10 * time.Minute
 
 var errIncidentUnchanged = errors.New("incident report unchanged")
+
+// RAM retains failures even when the state file itself is unavailable. The
+// separate persisted report carries the episode/fence across executable refresh
+// without inventing an own notice, touching mail or granting terminal authority.
+type bindingAvailability struct {
+	since       time.Time
+	failed      bool
+	readyLogged bool
+	alarmLogged bool
+}
+
+func (a *App) observeBindingConsumer(s *session, generation string, episode *bindingAvailability, ready bool) {
+	if !ready && !episode.failed {
+		episode.since = a.Now()
+		episode.failed, episode.readyLogged, episode.alarmLogged = true, false, false
+	}
+	recovered := episode.failed
+	outcome := ""
+	_, err := a.updateStateBy(s.paths, s.name, time.Now(), func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
+		b := st.Terminal
+		if b == nil || b.Stopped || b.Generation != generation {
+			return errIncidentUnchanged
+		}
+		if ready {
+			recovered = recovered || b.ConsumerReport != nil
+			if b.ConsumerReport == nil {
+				return errIncidentUnchanged
+			}
+			b.ConsumerReport = nil
+			dropRetiredStrandedAlarms(st)
+			return nil
+		}
+		created := b.ConsumerReport == nil
+		if created {
+			b.ConsumerReport = &config.NoticeReport{Since: episode.since.UTC().Format(time.RFC3339Nano)}
+		}
+		r := b.ConsumerReport
+		since, parseErr := time.Parse(time.RFC3339Nano, r.Since)
+		if parseErr != nil {
+			since, r.Since = episode.since, episode.since.UTC().Format(time.RFC3339Nano)
+			created = true
+		}
+		episode.since = since
+		// Outcome is the durable once-per-episode attempt fence, including a
+		// missing/invalid mail-alarm route. The sender owns bounded send retries.
+		if r.Outcome != "" || a.Now().Before(since.Add(bindingUnavailableAlarmAfter)) {
+			if created {
+				return nil
+			}
+			return errIncidentUnchanged
+		}
+		if err := queueIncidentAlarm(s, st, r, consumerUnavailableAlarmKind, consumerUnavailableReason, a.Now()); err != nil && r.Outcome == "" {
+			r.Outcome = "unavailable: invalid alarm state"
+		}
+		r.LoggedOutcome = r.Outcome
+		outcome = r.Outcome
+		return nil
+	})
+	if ready {
+		if recovered && !episode.readyLogged {
+			fmt.Fprintln(a.Stderr, "binding consumer ready")
+		}
+		episode.failed, episode.readyLogged = false, true
+		return
+	}
+	if err == nil && outcome != "" {
+		fmt.Fprintf(a.Stderr, "binding incident report: %s\n", outcome)
+		episode.alarmLogged = true
+	} else if err != nil && !errors.Is(err, errIncidentUnchanged) && !episode.alarmLogged && !a.Now().Before(episode.since.Add(bindingUnavailableAlarmAfter)) {
+		// An unreadable/unwritable journal must not crash or spin the binding.
+		// Its existing unavailable vocabulary is logged once locally; a later
+		// writable cycle can still persist the outbox and its durable fence.
+		fmt.Fprintln(a.Stderr, "binding incident report: unavailable: invalid alarm state")
+		episode.alarmLogged = true
+	}
+}
 
 // Reporting grants no input authority. Persist the destination, transaction and
 // immutable content before sending; Matrix deduplicates a possibly applied send.

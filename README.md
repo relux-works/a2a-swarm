@@ -112,6 +112,13 @@ kept 2 of 30. The board-resource thread used before hit exactly this: a real ove
 
 Wake has one consumer per identity. A bound session uses its supervised consumer; do not add a parallel `wait`, `watch` or Monitor.
 
+Terminal consumers log `binding consumer ready` once after an unavailable episode;
+first-try success stays quiet. Ten minutes of continuous unavailability queues
+one metadata-only incident per configured owner/lead destination through
+`mail-alarm`, even without a pending terminal notice. Episode fences survive
+in-place executable refresh; recovery rearms the next episode. See the
+[terminal binding reference](docs/cli.md).
+
 Strict consumers can use `a2a --as <own-identity> read '!room-id' --event '$event-id' --verification-input --json`
 for one bounded original-endpoint observation with full identity spelling and
 lossless base64url content. This is separate from safe display JSON and does not
