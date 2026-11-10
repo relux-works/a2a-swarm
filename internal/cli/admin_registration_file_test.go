@@ -61,6 +61,7 @@ func (rt *adminFileTransport) RoundTrip(r *http.Request) (*http.Response, error)
 // dialect. File stores only a 0600 token; Keychain keeps its metadata/recovery
 // password behavior. Rejection, lost response and pre-publication interruption
 // retain a secret-free journal, publish no file secrets, and forbid a retry.
+// A broad owner-sender subscription is present and unchanged in every scenario.
 func TestAdminRegistrationCredentialBackends(t *testing.T) {
 	for _, backend := range []string{"file", "keychain"} {
 		for _, mode := range []string{"success", "ambiguous", "rejected", "publication-interruption"} {
@@ -70,6 +71,8 @@ func TestAdminRegistrationCredentialBackends(t *testing.T) {
 					serverMode = "expired"
 				}
 				f := newAdmin198Backend(t, serverMode, backend)
+				f.subscriptions = &SubList{V: 1, Subs: []Sub{{ID: "owner-wide", SubSelector: SubSelector{From: admin198Owner}}}}
+				beforeSubs := f.subscriptionSnapshot()
 				var out, stderr bytes.Buffer
 				a := f.app(&out, &stderr)
 				rt := &adminFileTransport{fixture: f, loseResponse: mode == "ambiguous"}
@@ -212,17 +215,19 @@ func TestAdminRegistrationCredentialBackends(t *testing.T) {
 					}
 				}
 				f.assertNoExports(out.Bytes(), stderr.Bytes())
+				f.assertSubscriptionsUnchanged(beforeSubs)
 			})
 		}
 	}
 }
 
 // File archive uses the bound file session and retains the existing admin-room
-// exclusion, while an ordinary room still reaches the fake history transport.
+// exclusion with a broad owner-sender row, while an ordinary room still reaches
+// the fake history transport.
 func TestAdminFileArchive(t *testing.T) {
 	for _, room := range []string{admin198Room, admin198Normal} {
 		t.Run(room, func(t *testing.T) {
-			f := newAdmin198Backend(t, "delivery", "file")
+			f := newAdmin198Backend(t, "delivery-owner", "file")
 			var out, stderr bytes.Buffer
 			a := f.app(&out, &stderr)
 			forbidFileKeychain(a)

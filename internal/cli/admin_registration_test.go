@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +31,7 @@ const admin198Room = "!admin:test.invalid"
 const admin198Bot = "@server:test.invalid"
 const admin198User = "@admin:test.invalid"
 const admin198Normal = "!normal:test.invalid"
+const admin198Owner = "@owner:test.invalid"
 
 type admin198Fixture struct {
 	t                                                        *testing.T
@@ -44,6 +46,8 @@ type admin198Fixture struct {
 	issued                                                   bool
 	wire                                                     []byte
 	logs                                                     bytes.Buffer
+	subscriptions                                            *SubList
+	subscriptionWrites                                       int
 }
 
 func newAdmin198(t *testing.T, mode string) *admin198Fixture {
@@ -106,6 +110,43 @@ func (f *admin198Fixture) paths() config.Paths {
 	p, _ := f.c.Paths(config.Paths{Base: f.root}, "admin", false)
 	return p
 }
+
+func (f *admin198Fixture) subscriptionSnapshot() []byte {
+	f.t.Helper()
+	a := f.app(io.Discard, io.Discard)
+	a.as = "admin"
+	s, err := a.session()
+	if err != nil {
+		f.t.Fatal("subscription snapshot session unavailable")
+	}
+	list, err := s.getSubs(context.Background())
+	if err != nil {
+		f.t.Fatal("subscription snapshot unavailable")
+	}
+	state, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		f.t.Fatal("subscription mute-state snapshot unavailable")
+	}
+	raw, err := json.Marshal(struct {
+		Subscriptions SubList
+		Muted         []string
+	}{list, state.Muted})
+	if err != nil {
+		f.t.Fatal("subscription snapshot encoding failed")
+	}
+	return raw
+}
+
+func (f *admin198Fixture) assertSubscriptionsUnchanged(before []byte) {
+	f.t.Helper()
+	after := f.subscriptionSnapshot()
+	f.mu.Lock()
+	writes := f.subscriptionWrites
+	f.mu.Unlock()
+	if !bytes.Equal(before, after) || writes != 0 {
+		f.t.Fatal("registration changed, rewrote or muted subscriptions")
+	}
+}
 func (f *admin198Fixture) reply() matrix.Event {
 	body := fmt.Sprintf("New registration token issued: `%s` - Token used 0 times. Expires after 1 uses or in 4.98 minutes (%s).", admin198Secret, f.now.Add(5*time.Minute).Truncate(time.Second).Format("2006-01-02 15:04:05"))
 	content := map[string]any{"msgtype": "m.notice", "body": body, "m.relates_to": map[string]any{"m.in_reply_to": map[string]any{"event_id": "$command"}}}
@@ -139,6 +180,12 @@ func (f *admin198Fixture) eventForDelivery(room string) matrix.Event {
 	if room == admin198Normal {
 		content["body"] = "ordinary-room-control"
 		e.EventID = "$ordinary"
+	}
+	if f.mode == "delivery-owner" {
+		// Neither mentions nor To supplies relevance: the exact sender row must.
+		delete(content, "m.mentions")
+		content[ContentKey] = Header{V: 1, Type: "message", From: "owner", Kind: "question", Slug: "alpha"}
+		e.Sender = admin198Owner
 	}
 	e.Content, _ = json.Marshal(content)
 	return e
@@ -175,9 +222,24 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			subs = append(subs, Sub{ID: "unsafe", SubSelector: SubSelector{Room: admin198Room, AllEvents: true}})
 		}
 		if f.mode == "broad-subscription" {
-			subs = append(subs, Sub{ID: "unsafe", SubSelector: SubSelector{From: admin198Bot}})
+			subs = append(subs, Sub{ID: "sender-wide", SubSelector: SubSelector{From: admin198Bot}})
 		}
-		respond(SubList{V: 1, Subs: subs})
+		if f.mode == "delivery-owner" {
+			subs = append(subs, Sub{ID: "owner-wide", SubSelector: SubSelector{From: admin198Owner}})
+		}
+		list := SubList{V: 1, Subs: subs}
+		if f.subscriptions != nil {
+			list = *f.subscriptions
+		}
+		if strings.HasSuffix(path, "/"+SubsType) && r.Method == http.MethodPut {
+			f.subscriptionWrites++
+			if json.Unmarshal(raw, &list) != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.subscriptions = &list
+		}
+		respond(list)
 	case strings.Contains(path, "/redact/"):
 		f.redactions++
 		if f.mode == "redaction-failure" || f.mode == "expired-redaction-failure" {
@@ -209,7 +271,7 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			respond(map[string]string{"event_id": "$sent"})
 		}
 	case strings.HasSuffix(path, "/sync"):
-		if f.mode == "delivery" {
+		if f.mode == "delivery" || f.mode == "delivery-owner" {
 			respond(map[string]any{"next_batch": "next", "rooms": map[string]any{"join": map[string]any{admin198Room: map[string]any{"timeline": map[string]any{"events": []matrix.Event{f.eventForDelivery(admin198Room)}}}, admin198Normal: map[string]any{"timeline": map[string]any{"events": []matrix.Event{f.eventForDelivery(admin198Normal)}}}}}})
 			return
 		}
@@ -285,6 +347,84 @@ func safeAdmin198Absent(t *testing.T, data []byte, channel string) {
 	t.Helper()
 	if bytes.Contains(data, []byte(admin198Secret)) {
 		t.Fatal("secret sentinel escaped through " + channel)
+	}
+}
+
+// Matching prerequisite fixtures pair broad-owner and ordinary-room success with
+// explicit protected-room refusals, even for expired/restricted selectors. The
+// refusal must precede issue, UIA, secret creation, journal and credential output;
+// broad non-sender/invalid selectors keep the conservative preflight policy.
+func TestAdmin198SubscriptionBoundary(t *testing.T) {
+	for _, backend := range []string{"file", "keychain"} {
+		for _, tc := range []struct {
+			name string
+			sel  SubSelector
+			ok   bool
+		}{
+			{"broad-owner", SubSelector{From: admin198Owner}, true},
+			{"broad-owner-kind", SubSelector{From: admin198Owner, Kinds: []string{"question"}}, true},
+			{"expired-broad-owner", SubSelector{From: admin198Owner, Until: "2000-01-01T00:00:00Z"}, true},
+			{"ordinary-room", SubSelector{Room: admin198Normal, AllEvents: true}, true},
+			{"broad-kind", SubSelector{Kinds: []string{"question"}}, false},
+			{"broad-subject", SubSelector{Subject: "ordinary"}, false},
+			{"invalid-broad-sender", SubSelector{From: "owner"}, false},
+			{"invalid-broad-all-events", SubSelector{From: admin198Owner, AllEvents: true}, false},
+			{"explicit-all-events", SubSelector{Room: admin198Room, AllEvents: true}, false},
+			{"explicit-sender", SubSelector{Room: admin198Room, From: admin198Owner}, false},
+			{"explicit-kind", SubSelector{Room: admin198Room, Kinds: []string{"question"}}, false},
+			{"explicit-topic", SubSelector{Room: admin198Room, Topic: "$topic"}, false},
+			{"explicit-subject", SubSelector{Room: admin198Room, Subject: "ordinary"}, false},
+			{"expired-explicit-all-events", SubSelector{Room: admin198Room, AllEvents: true, Until: "2000-01-01T00:00:00Z"}, false},
+			{"expired-explicit-sender", SubSelector{Room: admin198Room, From: admin198Owner, Until: "2000-01-01T00:00:00Z"}, false},
+		} {
+			t.Run(backend+"/"+tc.name, func(t *testing.T) {
+				f := newAdmin198Backend(t, "positive", backend)
+				f.subscriptions = &SubList{V: 1, Subs: []Sub{{ID: "selected", SubSelector: tc.sel, CreatedAt: f.now.Add(-time.Minute).Format(createdAtLayout)}}}
+				before := f.subscriptionSnapshot()
+				var out, stderr bytes.Buffer
+				a := f.app(&out, &stderr)
+				if backend == "file" {
+					forbidFileKeychain(a)
+				}
+				code := a.Run(context.Background(), []string{"--as", "admin", "connection", "register", "newbie", "--via-admin-room"})
+				p, err := f.c.Paths(config.Paths{Base: f.root}, "newbie", false)
+				if err != nil {
+					t.Fatal("destination inspection unavailable")
+				}
+				f.mu.Lock()
+				issues, auths, registrations, sends, redactions := f.issues, f.auths, f.registrations, f.sends, f.redactions
+				f.mu.Unlock()
+				if tc.ok {
+					if code != 0 || issues != 1 || auths != 1 || registrations != 2 || redactions != 2 || !strings.Contains(out.String(), "registered newbie;") {
+						t.Fatal("valid subscription did not complete registration/cleanup")
+					}
+					creds, err := config.LoadCredentialMetadata(p, "newbie", false)
+					binding, bindErr := f.c.Binding("newbie", false)
+					if err != nil || bindErr != nil || config.ValidateBoundCredentials(creds, binding) != nil {
+						t.Fatal("valid subscription did not publish bound credentials")
+					}
+				} else {
+					want := "a2a: admin registration stage=room-subscriptions errcode=LOCAL_REFUSAL HTTP=0; no automatic retry\n"
+					if code == 0 || stderr.String() != want || issues != 0 || auths != 0 || registrations != 0 || sends != 0 || redactions != 0 || out.Len() != 0 {
+						t.Fatal("subscription refusal lost intended preflight diagnostic/no-effects")
+					}
+					if _, err := os.Lstat(p.AgentFile("newbie")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatal("subscription refusal published credentials")
+					}
+					if _, err := os.Lstat(filepath.Join(p.Base, "registration.pending.json")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatal("subscription refusal started destination transaction")
+					}
+					f.store.mu.Lock()
+					creates := len(f.store.creates)
+					f.store.mu.Unlock()
+					if creates != 0 {
+						t.Fatal("subscription refusal created secret-store items")
+					}
+				}
+				f.assertSubscriptionsUnchanged(before)
+				f.assertNoExports(out.Bytes(), stderr.Bytes())
+			})
+		}
 	}
 }
 
@@ -389,14 +529,18 @@ func (f *admin198Fixture) assertNoExports(out, err []byte) {
 	}
 }
 
+// The complete token/UIA/cleanup flow accepts a broad exact-sender row without
+// changing it; explicit protected-room subscription and policy failures still
+// stop before issue. Other negative scenarios retain their original bounds.
 func TestAdmin198Registration(t *testing.T) {
 	for _, mode := range []string{"positive", "thread", "expired", "used", "non-admin", "unparsable", "wrong-sender", "unrelated", "late", "stale", "extra-member", "federated", "wrong-room", "extra-body", "bad-expiry", "subscribed", "broad-subscription", "deadline", "redaction-failure", "expired-redaction-failure", "session-401", "server-code-secret", "two-replies"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newAdmin198(t, mode)
+			beforeSubs := f.subscriptionSnapshot()
 			var out, err bytes.Buffer
 			a := f.app(&out, &err)
 			exit := a.Run(context.Background(), []string{"--as", "admin", "connection", "register", "newbie", "--via-admin-room"})
-			positive := mode == "positive" || mode == "thread" || mode == "redaction-failure"
+			positive := mode == "positive" || mode == "thread" || mode == "redaction-failure" || mode == "broad-subscription"
 			if (exit == 0) != positive {
 				t.Log(regexp.MustCompile(`stage=[a-z-]+ errcode=[A-Z_]+ HTTP=[0-9]+`).FindString(err.String()))
 				t.Fatal("registration outcome differs from independent server scenario")
@@ -405,7 +549,7 @@ func TestAdmin198Registration(t *testing.T) {
 			issues, auths, redactions := f.issues, f.auths, f.redactions
 			wire := append([]byte(nil), f.wire...)
 			f.mu.Unlock()
-			preflight := mode == "extra-member" || mode == "federated" || mode == "subscribed" || mode == "broad-subscription"
+			preflight := mode == "extra-member" || mode == "federated" || mode == "subscribed"
 			if preflight && issues != 0 || !preflight && issues != 1 {
 				t.Log(regexp.MustCompile(`stage=[a-z-]+ errcode=[A-Z_]+ HTTP=[0-9]+`).FindString(err.String()))
 				t.Fatal("issue-attempt bound violated")
@@ -444,6 +588,7 @@ func TestAdmin198Registration(t *testing.T) {
 			if shouldRegister && a.secrets.Scrub(admin198Secret) == admin198Secret {
 				t.Fatal("token missing from redaction set")
 			}
+			f.assertSubscriptionsUnchanged(beforeSubs)
 		})
 	}
 }
@@ -492,12 +637,14 @@ func TestAdmin198Prerequisites(t *testing.T) {
 	}
 }
 
+// A broad owner-sender row does not authorize protected history; the raw client
+// control still observes a real matching protected event in memory.
 func TestAdmin198ReadExclusions(t *testing.T) {
 	for _, args := range [][]string{
 		{"read", admin198Room}, {"read", admin198Room, "--json"}, {"read", admin198Room, "--event", "$protected"}, {"read", admin198Room, "--event", "$protected", "--json"}, {"read", admin198Room, "--topic", "$protected"}, {"read", admin198Room, "--event", "$protected", "--json", "--verification-input"}, {"topics", admin198Room}, {"files", admin198Room}, {"fetch", admin198Room, "$protected"},
 	} {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
-			f := newAdmin198(t, "delivery")
+			f := newAdmin198(t, "delivery-owner")
 			var out, err bytes.Buffer
 			a := f.app(&out, &err)
 			all := append([]string{"--as", "admin"}, args...)
@@ -513,7 +660,7 @@ func TestAdmin198ReadExclusions(t *testing.T) {
 	// A genuine unprotected client exercises the historical read path and proves
 	// the server fixture carries the sentinel; it is never printed or exported.
 	t.Run("unprotected-control", func(t *testing.T) {
-		f := newAdmin198(t, "delivery")
+		f := newAdmin198(t, "delivery-owner")
 		c := matrix.New(f.server.URL, "isolated")
 		ev, e := c.GetEvent(context.Background(), admin198Room, "$protected")
 		if e != nil || !bytes.Contains(ev.Content, []byte(admin198Secret)) {
@@ -526,10 +673,14 @@ func TestAdmin198ReadExclusions(t *testing.T) {
 	})
 }
 
+// Both rooms contain real events matching the broad owner row, without To or
+// mentions. Protected events stay excluded from each output route while ordinary
+// read/inbox/doorbell/project/archive controls remain observable; retained mail
+// still refuses before display rather than becoming an empty success.
 func TestAdmin198DeliveryExclusions(t *testing.T) {
 	for _, command := range []string{"inbox", "doorbell", "project", "archive", "archive-all", "ordinary-read", "old-mailbox"} {
 		t.Run(command, func(t *testing.T) {
-			f := newAdmin198(t, "delivery")
+			f := newAdmin198(t, "delivery-owner")
 			var out, err bytes.Buffer
 			a := f.app(&out, &err)
 			p := f.paths()
@@ -603,9 +754,12 @@ func TestAdmin198DeliveryExclusions(t *testing.T) {
 	}
 }
 
-// The unprotected client exercises the historical path, not a copy of a guard.
+// The raw client supplies a protected event which is relevant only through the
+// broad exact-sender row; collectBatch must exclude it before sender admission
+// while keeping the ordinary-room match. Owner-DM overlap still blocks mirroring
+// and registration preflight. This uses isolated files and fake transport only.
 func TestAdmin198RelevanceAndOwnerDMExclusions(t *testing.T) {
-	f := newAdmin198(t, "delivery")
+	f := newAdmin198(t, "delivery-owner")
 	var out, err bytes.Buffer
 	a := f.app(&out, &err)
 	a.as = "admin"
@@ -622,10 +776,24 @@ func TestAdmin198RelevanceAndOwnerDMExclusions(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatal("unprotected sync control lacks protected event")
 	}
-	if rel, _, _ := classify(events[0], admin198Room, admin198User, "admin", config.State{}, nil); rel == "" {
-		t.Fatal("protected fixture is not genuinely mailbox-relevant")
+	list, e := s.getSubs(context.Background())
+	if e != nil || len(list.Subs) != 1 || list.Subs[0].From != admin198Owner || list.Subs[0].Room != "" {
+		t.Fatal("broad owner subscription control unavailable")
 	}
-	batch, e := s.collectBatch(context.Background(), response, "baseline", config.State{}, nil, map[string]bool{admin198Room: true, admin198Normal: true}, map[string]string{})
+	for _, room := range []string{admin198Room, admin198Normal} {
+		roomEvents := response.Rooms.Join[room].Timeline.Events
+		if len(roomEvents) != 1 {
+			t.Fatal("sender fixture lacks its protected/ordinary event")
+		}
+		ev := roomEvents[0]
+		if rel, _, _ := classify(ev, room, admin198User, "admin", config.State{}, nil); rel != "" {
+			t.Fatal("sender fixture acquired implicit address/mention relevance")
+		}
+		if rel, _, matched := classify(ev, room, admin198User, "admin", config.State{}, list.Subs); rel != relSub || len(matched) != 1 {
+			t.Fatal("protected/ordinary event did not match the real sender selector")
+		}
+	}
+	batch, e := s.collectBatch(context.Background(), response, "baseline", config.State{}, list.Subs, map[string]bool{}, map[string]string{})
 	if e != nil {
 		t.Fatal("batch exclusion failed")
 	}
@@ -633,8 +801,8 @@ func TestAdmin198RelevanceAndOwnerDMExclusions(t *testing.T) {
 		t.Fatal("batch did not retain exactly the unrelated normal control")
 	}
 	files := ownerFiles(f.paths(), "admin")
-	ownerPut(t, files.path("pin"), ownerDMPin{Mode: "owner-channel", Owner: admin198Bot})
-	ownerPut(t, files.path("json"), ownerDMConfig{V: 1, Generation: 1, Active: true, Owner: admin198Bot, Room: admin198Room, Mirror: true, Render: "outside-frame"})
+	ownerPut(t, files.path("pin"), ownerDMPin{Mode: "owner-channel", Owner: admin198Owner})
+	ownerPut(t, files.path("json"), ownerDMConfig{V: 1, Generation: 1, Active: true, Owner: admin198Owner, Room: admin198Room, Mirror: true, Render: "outside-frame"})
 	payload, _ := json.Marshal(map[string]string{"session_id": "isolated", "prompt_id": "one", "last_assistant_message": admin198Secret})
 	a.ownerMirrorStop(context.Background(), "claude", hookInput{Payload: payload})
 	if f.sends != 0 {

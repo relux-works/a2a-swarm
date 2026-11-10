@@ -168,10 +168,11 @@ func (a *App) checkAdminRegistrationRoom(ctx context.Context, s *session) error 
 	if err != nil {
 		return adminRegistrationError("room-subscriptions", err)
 	}
-	// Broad selectors might include this room now or after new messages; refuse
-	// them conservatively, including expired selectors awaiting removal.
+	// Ordinary delivery/history exclude this room independently of sender matches.
+	// Valid broad sender selectors may remain; other broad selectors and explicit
+	// protected-room selectors still refuse, including expired rows awaiting removal.
 	for _, sub := range subs.Subs {
-		if sub.Room == "" || sub.Room == r.RoomID {
+		if sub.Room == r.RoomID || sub.Room == "" && (sub.From == "" || sub.validate() != nil) {
 			return adminRegistrationError("room-subscriptions", nil)
 		}
 	}

@@ -3857,8 +3857,14 @@ required before landing; fake-server tests do not qualify an installed server.
 Before issue, the CLI verifies the selected session with the server, the room's
 local server-qualified ID and bot-created state, explicit `m.federate: false`,
 and exactly the configured joined members, including the administrator and bot.
-Invites, knocks, extra members, broad or room-specific subscriptions, retained
-relevant mailbox entries, and an overlapping owner-DM route refuse. Membership
+Invites, knocks, extra members, subscriptions explicitly targeting the configured
+admin room, retained relevant mailbox entries, and an overlapping owner-DM route
+refuse. An explicit admin-room selector refuses even when expired or restricted
+by sender, kind, topic, subject or all-events. Valid broad exact-sender selectors
+(`room=all from=@user:server`, including owner-sender rows) may coexist with
+registration and remain unchanged: they are not deleted, trimmed, rewritten or
+muted. Broad selectors without a valid typed sender retain the conservative
+refusal, including unrelated broad kind/subject selectors. Membership
 is a point-in-time observation; it does not lock the room against changes by
 another administrator. No local power-level check grants server administration
 rights. A server refusal reports a fixed stage, recognized Matrix errcode and
@@ -3901,6 +3907,9 @@ it, and owner-DM mirroring cannot target it. A retained mailbox entry from this
 room causes delivery to refuse for private owner recovery; it is never printed.
 These exclusions apply to the selected connection's configured room. Unrelated
 rooms retain normal read, delivery, projection and archive behavior.
+Protected-room exclusion is independent of sender matches and precedes ordinary
+delivery/history access; a broad sender subscription never makes that room an
+ordinary subscription source.
 
 ### Internal notice projection
 
