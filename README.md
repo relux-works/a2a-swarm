@@ -324,6 +324,49 @@ The registry-free legacy path remains supported.
 
 ## Credential storage
 
+E2EE foundations for #308 live in `internal/e2ee` and are not activated by any
+CLI command. They use mautrix-go v0.30.0's pure-Go goolm primitives, explicit
+isolated checkpoints and AES-GCM snapshots. The backend takes an explicit root
+and has no production wiring or environment/home fallback. U2a may wire custody
+only to the Courier identity home with a dedicated `_a2a` daemon, beyond the
+ordinary agent user's read/write access: 0600 files in an effective-UID-owned
+0700 root, including the distinct fixed account password section. Local non-Courier
+identities get no custody; there is no OS Keychain backend. Host pins retain the
+owner's fingerprinted MSK/USK and MSK signature over the USK; U1 checks their shape,
+and U2a must verify the chain and obtain a live Element ceremony witness.
+See [the E2EE design](docs/e2ee.md)
+for the owner decisions, limits and U2a/U2b integration gates. Existing token
+storage below is unchanged by these library foundations.
+
+### E2EE foundation tools
+
+Go remains declared as `1.25.12`. Offline checks require the admitted module
+cache; neither libolm nor cgo is used. Logs and scratch artifacts belong in
+`.temp/`. On the authorized CI/precheck runner, the focused tests and snapshot
+latency benchmark are:
+
+```bash
+CGO_ENABLED=0 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off go build ./...
+CGO_ENABLED=0 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off go vet ./...
+CGO_ENABLED=0 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOOS=linux go vet ./...
+CGO_ENABLED=1 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off go test ./internal/e2ee -race
+CGO_ENABLED=0 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off go test ./internal/e2ee -run '^$' -bench '^BenchmarkSnapshot' -benchtime=3x -count=1
+```
+
+For race detection use a runner's supported race toolchain with `CGO_ENABLED=1`;
+this does not select libolm (the adapter imports concrete goolm packages).
+The benchmark builds actual 1/8/64MiB Snapshots with account/Olm/Megolm
+pickles, replay state and bounded prepared message evidence. It times Save plus
+Load, including one JSON encoding / one strict typed Decode, bounds/canonical-size
+checks, inventory, AEAD and durable IO. Readback equality is checked separately
+outside timing. Cold-handle/warm-handle p50/p95 have two size-specific gates:
+**1MiB and 8MiB: p95 <=500ms operational**; **64MiB: p95 <=10s capacity**.
+The 64MiB result is evidence of capacity, not an interactive latency promise or
+an extension of the 5-second hook budget. Engine checkpoint generation is setup;
+OS disk-cache eviction and complete U4 hook/lock-contention latency are not
+claimed. Optimized-path runner measurements remain pending. Worker benches that
+prohibit tests run formatting/build/vet only and hand tests off.
+
 `A2A_SECRET_STORE=keychain` opts into macOS login Keychain storage. The generic
 password service is `works.relux.a2a.relux.works`; its account is the full Matrix
 user ID. File mode (the default, or `file`) remains supported on other platforms.

@@ -1,13 +1,14 @@
 # E2EE rooms: first usable MVP (#308)
 
-Status: proposed design, not activation approval. Source baseline:
+Status: proposed design, not activation approval. Historical S0 baseline:
 `08976619cfd38d54a79c5c20f0060ea8b77ba4c6`. Revised against the offline S0 verdict
 `../.out/review-s0-verdict.md` and the five follow-up findings in
-`../.out/review-s0b-verdict.md`. This revision changes this document only and stays
-uncommitted. No network, tests, builds or tmux are used for this revision.
-Library sources unavailable locally remain **verify in U1**; proposed commands,
-storage schemas and controls below are implementation requirements, not shipped APIs.
-Section 11 decisions gate U1, not merely live activation. Recommendations are not approvals.
+`../.out/review-s0b-verdict.md`. Those S0 revisions were documentation only.
+The U1 source diff adds offline store/engine foundations; no activation, network,
+test execution or tmux is used on the worker bench. Commands and downstream
+integration controls below remain requirements, not shipped CLI APIs.
+Section 11 records the approved Q1/Q2/Q3/Q5/Q6 inputs; Q4 still gates U2b and later.
+U1 foundations do not activate E2EE. Tests, latency and runner evidence remain gates.
 
 ## 1. Outcome and boundary
 
@@ -40,8 +41,8 @@ Excluded: encrypted media, backup/restore, secret sharing, forwarded/imported ro
 keys, automatic key recovery, device cloning, group-room application traffic and
 encrypted projection/archive. Unsupported operations refuse before upload/export.
 The server still sees membership, timing and ciphertext sizes. Plaintext at rest
-in the mailbox and explicitly saved output requires owner approval Q5; this spec
-does not silently authorize it. E2EE alone gives no local disk isolation.
+in the mailbox and explicitly saved output remains approved under Q5 = a.
+E2EE alone gives no local disk isolation.
 
 Local sources checked: `internal/matrix/client.go`, `txn.go`, `envelope.go`;
 `internal/cli/account.go`, `connection_registration.go`, `room.go`, `topics.go`,
@@ -63,18 +64,30 @@ No authoritative issue bodies for #163/#173 were recovered; do not infer them.
 | Account-password custody | Persist from registration; owner reset/UIA; admin bypass; new identity | Q2. Existing identities usually have no recoverable password; see section 3. |
 | Owner ceremony / pin provisioning | Cross-user signature; interoperable SAS; host provisioning mechanism | Q3. A local trust boolean/TOFU is never evidence. |
 | New cross-signed devices | Automatic admission; explicit approval per device | Q4; no automatic policy is silently selected. |
-| Plaintext at rest | Existing private mailbox/output; seal both; ephemeral reads only | Q5; changes output/storage scope and U1/U4 design. |
+| Plaintext at rest | Existing private mailbox/output; seal both; ephemeral reads only | Q5 = a: keep accepted plaintext on disk as today. |
 | Room creation | Owner-provisioned room; new narrowly authorized agent DM exception | Q6; existing sole agent exception is unencrypted Owner DM S1. |
 | Sync | SDK cursor; second cursor; shared coordinator | One coordinator and one version-fenced cursor, including projector refusal. |
 | MVP audience | Groups; two-member DMs | Two-member DMs only, with the qualified provenance guarantee in section 3. |
 | S1 migration | In-place; automatic adoption; separate room | Separate provisioned room. Preserve Owner DM S1 encryption refusal and #173 boundary. |
 
-No download is attempted here. A later authorized U1 admission lane obtains exact
-candidate/transitive sources, checks provenance, checksums, licenses, security
-history and Go 1.25.5 compatibility, and records versions/hashes/tags in review.
+U1 pins mautrix-go v0.30.0 and uses its concrete pure-Go goolm account/session
+packages behind an isolated adapter. Its default high-level `crypto` package
+selects libolm unless built with `goolm`; the U1 adapter imports no libolm and
+requires no build tag or global driver registration. `OlmMachine` is not the
+ingress engine: it mutates before payload admission and can start network work.
+The adapter forks explicit pickles, validates their allocation counts and codec
+versions, and exposes exact decrypted bytes; U3/U4 supply authenticated provenance
+and policy around these primitives. No high-level SDK sync is installed.
+
+No download is attempted here. Cached-source provenance, checksums, licenses,
+security-history limits and Go compatibility are recorded in the U1 handoff.
+The repository remains on `go 1.25.12`; v0.31.0 and v0.32.0 require Go 1.26 and
+are not candidates without a separately approved toolchain change. v0.30.0's
+`go 1.25.0` minimum is compatible; its dependency `toolchain` directive does not
+change this repository's toolchain under `GOTOOLCHAIN=local`.
 With admitted inputs, compile the full CLI offline using `CGO_ENABLED=0 GOPROXY=off
 GOSUMDB=off GOTOOLCHAIN=local GOENV=off`; prove no libolm/toolchain fetch. Targets
-are supported macOS/Linux architectures, not mobile. goolm tag: **verify in U1**.
+are darwin/linux amd64/arm64, not mobile. No libolm or cgo is admitted.
 Main has no vendor tree. Refresh the append-only `curator-build` branch, run its
 committed-tree equality gate and publish the full build OID through its pin flow.
 A warm module cache alone is not reproducible admission.
@@ -98,11 +111,18 @@ U1 must prove the following from actual library sources, each **verify in U1**:
 If any load-bearing contract fails, U1 records the exact constraint and clean
 alternatives. Do not add mocks/flags that conceal a protocol or platform limit.
 
+Source's U1 r2 resolution supplies the owner's public proof chain in the host pin
+record (section 3). The agent cannot fetch another user's USK via `/keys/query`.
+This resolved visibility constraint does not block U1's offline foundation; a live
+Element ceremony witness still gates U2a shipment. Runtime, latency and dependency
+admission checks remain separate gates, not implied by this resolution.
+
 ## 3. Trust model, pins and cross-signing bootstrap
 
 ### Host-written trust artifact
 
-Trust anchors are public master keys bound to full MXIDs and connection binding,
+Trust anchors include public master keys and the owner's signed public USK,
+bound to full MXIDs and connection binding,
 never names, invitations or a server response. Keep Owner DM `NAME.pin` unchanged.
 Use a separate host-managed artifact outside the agent's writable config tree:
 
@@ -119,7 +139,10 @@ Use a separate host-managed artifact outside the agent's writable config tree:
   `{"v":1,"binding":"B","identity":"@agent:server","device_id":"D",
   "revision":1,"owner":"@owner:server","principals":[{"mxid":"@owner:server",
   "master_key_id":"ed25519:K","master_public_key":"BASE64",
-  "master_sha256":"HEX","approved_devices":["OWNERDEVICE"]}]}`.
+  "master_sha256":"HEX","user_signing_key_id":"ed25519:U",
+  "user_signing_public_key":"BASE64","user_signing_sha256":"HEX",
+  "user_signing_master_signature":"BASE64_SIGNATURE",
+  "approved_devices":["OWNERDEVICE"]}]}`.
   Hash is SHA256 of decoded public-key bytes; key ID, algorithm, length and usage
   must agree with the fetched standard master-key object. Device approvals apply
   only under Q4's explicit-admission option; they do not replace signatures.
@@ -129,9 +152,31 @@ Use a separate host-managed artifact outside the agent's writable config tree:
   parent-directory fsync (including newly created ancestor entries). Like Owner
   DM pin provisioning, this is an owner/host step, never an a2a command.
 
+Source's r2 finding: Matrix `/keys/query` returns `user_signing_keys` only for
+the requesting user's own keys. The agent cannot discover the owner's USK or
+verify owner-MSK -> owner-USK -> agent-MSK using server data alone. For the owner
+principal, the host pin therefore includes both MSK and USK public keys, both
+SHA256 fingerprints, and the owner's MSK signature on the USK. Keys are canonical
+unpadded standard base64 of 32 bytes; signature is canonical unpadded standard
+base64 of 64 bytes. Each key ID is `ed25519:` plus its public key. The signed USK
+object is the standard object with `user_id` equal to the pinned owner MXID,
+`usage:["user_signing"]` and `keys:{user_signing_key_id:user_signing_public_key}`;
+`user_signing_master_signature` is its signature under the pinned MSK key ID.
+The shape supports this exact object; extended signed fields need an explicit
+reader/schema change, never silently dropping fields during verification.
+
+U1 validates this retained public record's shape and fingerprints on snapshot
+save/load, without granting trust. U2a verifies the pin's MSK signature over that
+USK object, then verifies the owner-USK signature on the agent's own MSK returned
+by the agent's own key query. An unsigned USK or a local trust flag cannot stand
+in for either signature. A live standard Element ceremony witness is required
+before U2a ships; it does not block U1. No owner USK lookup, private owner key,
+password or token is required by this resolution.
+
 The CLI never creates, edits, repairs or replaces this artifact, including on init,
 refresh, recovery or rotation. U2 owns its reader, strict validation, safe open,
-change detection and provisioning instructions; U1 owns binding/hash primitives.
+change detection and provisioning instructions; U1 owns binding/hash primitives
+and the retained owner proof record's structural validation.
 Absent/invalid/unreadable pin blocks E2EE readiness. Same revision with changed
 bytes, decreasing revision or conflicting master enters `changed`. Higher revision
 requires host authority and invalidates cached trust; it never silently admits a
@@ -142,8 +187,10 @@ The host principals MXID coverage list remains separate from cryptographic trust
 
 ### Trust-root and device-approval lifecycle
 
-The following is the proposed lifecycle for owner Q3/Q4 approval, not permission
-for an agent to replace pins. Persist the last accepted artifact revision/digest
+Q3 selects standard Element cross-signing of the agent master and host/root public
+pin provisioning. A root change means a new fingerprint, exactly revision + 1,
+and the same ceremony. This is not permission for an agent to replace pins.
+Q4 still gates device admission. Persist the last accepted artifact revision/digest
 and each accepted principal root in sealed state. A host update uses exactly
 accepted revision + 1, including recovery from `changed`; skipped revisions require
 the host to supply and validate the intervening revisions. Quiesce trusted
@@ -158,8 +205,8 @@ U2 quarantines the changed principal and invalidates cached chains and the agent
 owner-verification evidence. Complete a fresh bounded query and validate the new
 master/self-signing/device chains against the replacement pin. Repeat the selected
 Q3 ceremony for the **existing agent master**: a fresh owner user-signing signature
-(under the currently pinned owner master), or the approved SAS alternative with
-retained master-binding evidence. If the rotating principal is the owner, only
+(under the currently pinned owner master), using standard Element cross-signing.
+If the rotating principal is the owner, only
 their new pinned chain can supply this evidence. The principal's new devices must
 also satisfy Q4. Do not regenerate the agent's keys to accommodate a peer rotation.
 
@@ -202,15 +249,18 @@ fields are not a supported recovery source. An access token/registration token i
 not the account password. UIA requirements depend on the server; flows/session
 handling and upload API remain **verify in U1**.
 
-Q2 offers: persist account passwords in the selected credential store from future
-registration onward; owner-performed admin password reset or supported UIA step
-for existing accounts; server-admin bypass if explicitly supported/authorized;
-or recreate the identity. Persistence alone cannot recover an already discarded
-password. An owner UIA step only helps if that flow actually supports their access;
-an owner who never knew the password cannot simply type it. Admin reset may revoke
-tokens/devices and requires a coordinated recovery plan. No automatic reset, bypass,
-password custody expansion or identity replacement is authorized by this spec.
-U2 implements only the approved per-backend route; unavailable UIA leaves keys
+Q2 = A+B: a2a generates a per-agent password at onboarding and keeps it in the
+fixed file-store section `(service: works.relux.a2a.account-password.v1,
+account: exact full MXID)`. Only the a2a daemon binary reads it; the card names the
+section, never the value. The admin sets it at registration; it serves key reset.
+Q1 overrides the original proposed OS Keychain medium: the section uses the same
+0600-file/0700-directory custody backend under `_a2a`. U1 supplies the bounded,
+create-only section adapter; onboarding/registration wiring and UIA are U2a.
+First cross-signing upload is passwordless where allowed; a2a supplies the stored
+password whenever UIA asks, with no owner steps or per-use prompts. This does not
+recover discarded passwords for existing accounts or authorize an uncoordinated
+token/device reset. Missing approved credentials leave the identity unavailable.
+Unavailable UIA leaves keys
 persisted locally and status `awaiting-uia`, with no upload-success claim.
 
 ### Bootstrap and session-originator evidence
@@ -256,23 +306,44 @@ device is admitted only under Q4's approved policy. Pending output is revalidate
 
 ## 4. Crypto state, custody, locking and resource bounds
 
-Paths use selected `Paths.Base`: legacy `<config>/crypto/NAME/`, named
-`<config>/connections/ID/identities/CLASS/H/crypto/NAME/`. Store full identity,
-device and binding in authenticated metadata. No cross-profile/name fallback.
-Endpoint/backend/device changes need explicit migration; token rotation on the
-same binding must not erase crypto state. Root custody is conditional on Q1.
+U1 takes the custody root as an explicit constructor argument and wires it to
+no production path. Tests use only `t.TempDir()` roots, resolved before entering
+the no-symlink backend. The backend requires effective-UID ownership and mode
+exactly 0700; group/world-accessible or foreign-owned roots refuse without repair.
+Files are regular 0600, with the same owner/no-symlink checks. No constructor
+default, environment override, agent-home or local-base fallback exists.
+
+Production wiring is a U2a obligation: custody is available only under the
+Courier home of an identity whose daemon runs as the dedicated service user
+(`_a2a`), with the ordinary agent user unable to read or write that custody. This
+includes device keys, cross-signing keys and the Q2 password. Effective-UID checks
+alone do not establish that service-user boundary; U2a must enforce it before
+opening the store. A local, non-Courier identity gets no custody. An agent-owned
+0700 directory is not a valid production substitute.
+
+U2a provisioning must supply an effective-UID-owned 0700 parent if the backend
+is to create the final root; it creates no ancestors. Alternatively the host
+pre-creates the exact 0700 root under a safe existing parent. The backend checks
+mode bits/UID, not ACLs: provisioning must inspect/remove any ACL granting the
+ordinary agent UID access to the root or its custody files. A successful open
+alone is not proof of the Courier service-user/ACL boundary.
+
+Store full identity, device and binding in authenticated metadata. No
+cross-profile/name fallback. Endpoint/backend/device changes need explicit
+migration; token rotation on the same binding must not erase crypto state.
+There are no per-use prompts and no MVP backup; new-device recovery is explicit.
 
 | Artifact | Contents / protection |
 | --- | --- |
 | Root-secret bundle | Version/generation, three 32-byte cross-signing seeds, random 32-byte wrapping key; immutable per generation. |
 | `<crypto-dir>/generation.json` | Strict versioned pointer containing `G`, namespace digest `N`, binding, full MXID and device; regular 0600 file in the 0700 crypto dir defined above, no symlinks. File fsync, create-only publish and directory/created-parent fsync **before** creating the root item/bundle. |
-| `state.json` in crypto dir | Versioned AES-256-GCM envelope (key ID, fresh random nonce, ciphertext); AAD binds version, binding, MXID, device and generation. |
-| Sealed payload | Account/private OTKs, Olm/Megolm sessions, trust/context revisions, replay windows/retirement tombstones, verdicts, outbox and prepared batch. Codec: **verify in U1**. |
+| `state.bin` in crypto dir | U1 binary codec v1: fixed magic/version, bounded payload length, fresh 12-byte nonce and AES-256-GCM ciphertext/tag; AAD binds header, binding, MXID, device and generation. File fsync, atomic rename, directory fsync. |
+| Sealed payload | Versioned strict JSON with explicit goolm pickles, trust pins, replay windows/retirement tombstones and prepared evidence. U3/U4 extend typed evidence for context, verdicts and outbox before activation. Unknown/duplicate JSON fields and unknown pickle versions refuse; embedded library allocation counts are validated before unpickling. |
 | `refusals.jsonl` | Bounded compactable metadata journal with monotonic sequence; no content, ciphertext or secret material. |
 | `crypto.lock` | Exclusive OS lock for mutation and crypto-dependent admission/output/send. |
 | Active delivery generation | Versioned state/mailbox/output paths and legacy-path fence, described in section 5. |
 
-### Exact Keychain item and file backend
+### Exact file-custody namespace and generation
 
 Do not append an arbitrary suffix to the token service. Derive from a canonical
 length-prefixed UTF-8 tuple `(v=1, endpoint, server, connection_id-or-legacy,
@@ -284,11 +355,12 @@ random identifier persisted before root creation. E2EE service is
 account bound 255. Tuple encoding uses 32-bit big-endian byte lengths, no delimiter
 ambiguity; legacy token service is `works.relux.a2a.relux.works`.
 
-U1 owns `generation.json` persistence and safe open; U2 owns init/recovery using
-it. Init durably publishes the pointer before the create-only Keychain write, then
+U1 owns `generation.json` persistence and safe open; U2a owns init using it and
+U2b owns explicit recovery/rotation. Init durably publishes the pointer before
+the create-only file-bundle write, then
 reads back and validates that exact `root.G` bundle before writing/fsyncing the
 first sealed state. No public upload precedes durable account/state. A crash after
-the Keychain create but before `state.json` leaves the pointer as the recovery
+the bundle create but before `state.bin` leaves the pointer as the recovery
 locator: reopen it, read only the derived service/account, validate the full bundle
 binding/generation and reuse its seeds/wrapping key to finish local bootstrap.
 Never generate another `G`, overwrite the item or enumerate/fall back to other
@@ -312,24 +384,45 @@ service. Validate full identity binding on decoded readback; no alias fallback.
 This reserves a namespace even if another profile is maliciously misconfigured.
 No token/password item is reused, probed for an E2EE bundle or overwritten.
 
+The service/account pair is a logical namespace and recovery locator, not an OS
+Keychain item. Only a typed seam is retained for a future prompt-free `_a2a`
+backend; U1 has no keychain implementation, subprocess, probe or cooldown.
+
 Encode the strict compact JSON bundle as `a2a-e2ee-root-v1:` + unpadded base64url
 of UTF-8 JSON; each seed/key inside JSON is unpadded base64url, not raw binary.
 Reject controls, noncanonical encoding, unknown/duplicate fields and wrong lengths.
-Bound encoded bundle to 1024 bytes and actual fully quoted `security -i` line
-including target path/newline to <4096 bytes. Refuse an overlong path/command.
-Use existing probe, deadlines, cooldown, quoting and readback; no secret argv/env.
-U1 measures actual size and readback. Every root write uses `createOnly=true`,
-never `-U`; a duplicate is reconciled by readback equality or refused. Init never
+Bound encoded bundle to 1024 bytes. There is no `security -i` command or command
+encoding in file custody. Open directory components and files without following
+symlinks, validate the effective daemon UID and exact 0700/0600 modes, and refuse
+unsafe existing objects without repair. Publish new files create-only, file fsync
+then directory fsync, and validate readback before bootstrap continues. A duplicate
+is refused; U2a may read and reuse an exactly matching existing generation. Init never
 silently replaces roots. Rotation is only through explicit owner-operated
 `a2a e2ee rotate --new-device` with renewed verification, not init/refresh/retry.
 That verb is separately gated and must preserve old pending/outbox evidence.
 
 For file backend on **macOS and Linux**, roots live in separate regular 0600
 `secrets.json` in the 0700 crypto dir; no Keychain calls. Credentials retain the
-existing token policy. Q2 password persistence, if approved, uses a distinct
-password-store item/file, not this root bundle or public connection metadata.
+existing token policy. Q2 password persistence uses a distinct file named by the
+hash of its fixed service and full MXID, not this root bundle or public metadata.
 Sealed state plus adjacent wrapping key does not protect a stolen whole directory.
-Keychain roots likewise do not make exported device pickles non-exportable keys.
+File custody does not make exported device pickles non-exportable keys.
+
+Checkpoint/pickle output must never be persisted unsealed: libolmpickle derives
+deterministic encryption from its key and uses an 8-byte MAC. Only the fresh-nonce
+outer AEAD provides snapshot confidentiality/integrity. U2a seed derivation must
+use concrete `crypto/goolm/pk`, not nil-driver `crypto/olm` PK constructors or
+`CrossSigningSeeds.Decode` without a driver. No global driver is registered in U1.
+The Megolm session ID is the raw-standard-base64 signing key; U3 binds the
+authenticated originator evidence to it, never to outer device hints.
+
+An older valid sealed snapshot under the same binding is not detected as a
+rollback by U1. A partial directory restore could therefore rewind replay floors
+or OTK consumption. U2a must provide/verify a durable monotonic anchor outside
+the rollback domain before activation; a revision inside the same snapshot is
+not that anchor. U2a or a dedicated follow-up also adds an executable import-boundary
+test forbidding `OlmMachine` and libolm driver imports; current imports and offline
+builds alone do not prevent a future accidental boundary violation.
 
 ### Secret handling and budgets
 
@@ -345,17 +438,40 @@ No secrets in argv/env/logs/metadata/Git/archive/owner messages; public keys and
 signatures are public. Room keys leave only over eligible Olm. Go zeroing is best
 effort; same-UID/root/RAM dumps remain outside this custody boundary.
 
-Full snapshot unseal/reseal must fit the existing 5-second hook total budget.
-U1 measures cold/warm p50/p95 at 1 MiB and the 64 MiB cap on macOS/Linux: local
-crypto I/O target p95 <=500 ms, lock wait <=100 ms for hooks, leaving >=1 second
-for cancellation/output. No measured claim exists yet. A process may reuse an
-unsealed snapshot only while holding the lock with matching generation/revision;
-no cross-process plaintext cache or daemon. No-change sync skips reseal. A hook
-that cannot reserve the measured prepare+commit time skips before crypto mutation,
-leaves cursor unchanged and uses bounded diagnostics; interactive consumers recover.
-Honor existing 5-minute Keychain cooldown; never retry interactively from a hook.
-If full-cap persistence cannot meet budget, U1 must change the store design before
-admission rather than relax durability or extend hook deadlines silently.
+Secret/token containers have fixed-label String/GoString/Format methods, including
+Working, Snapshot, Prepared, Cursor, password records and their holders. Verb,
+flags and width cannot select a private representation. JSON storage is separate
+and must still remain sealed. Inventory retains at most 256MiB / 1,048,576 unique
+values; overflow suppresses all diagnostics and reports capacity until explicit
+Reset. Reset only after diagnostics finish and the old working set is retired.
+Scrubbing includes compact JSON numeric byte arrays and URL query escaping as
+well as raw/base64/hex/JSON-string forms. App diagnostic integration remains U2a.
+
+The operational SaveSnapshot+LoadSnapshot gate is **p95 <=500 ms at both
+1 MiB and 8 MiB**, in cold-handle and warm-handle modes. The full-cap **64 MiB**
+case records capacity p50/p95 and fails only above **10 seconds p95**. Its result
+is evidence of capacity, not an interactive latency promise; the 10-second bound
+does not extend the existing 5-second hook budget. These are Source's two-tier
+gates after Meta's Mac precheck of r3 (96fbb10b) found 1MiB p95 130ms cold /
+105ms warm, but 64MiB p95 about 5.99s cold / 5.55s warm. Those supplied results
+are prior-revision evidence, not measurements of the optimized path.
+
+U1's benchmark measures actual 1/8/64MiB Snapshots: real account/Olm/Megolm
+pickles, replay windows and bounded prepared message evidence, through Save plus
+Load including bounds/canonical-size checks, one JSON encoding / one strict typed
+Decode, inventory, AEAD and durable file/directory IO. Readback equality is a
+separate untimed check in the same benchmark. Engine checkpoint construction is
+setup. Cold means reopened handles, not evicted OS disk cache. Each size reports
+p50/p95 and applies only its own operational/capacity bound. Post-optimization
+runner measurements remain required. U4 separately measures full hook/coordinator
+work and lock wait <=100ms, leaving >=1 second for cancellation/output. A process
+may reuse an unsealed snapshot only while holding the lock with matching
+generation/revision; no cross-process plaintext cache or daemon. No-change sync
+skips reseal. A hook that cannot reserve measured prepare+commit time skips
+before crypto mutation, leaves the cursor unchanged and uses bounded diagnostics;
+interactive consumers recover. Honor the existing 5-minute Keychain cooldown;
+never retry interactively from a hook. Capacity evidence never permits weakening
+durability or silently extending hook deadlines.
 
 ### Bounded retention and recovery
 
@@ -422,6 +538,14 @@ Runtime-consumer lifetime lock remains separate; E2EE coordinator owns the curso
 capability under crypto lock. Never acquire crypto/owner-DM locks from state/mailbox
 callbacks; preserve inherited consumer FDs over exec. Section 7 defines output
 revalidation before `lockedDeliver` and the revision check inside it.
+
+U1 rejects same-process crypto-lock reentry immediately with ErrLock, including
+another handle for the same directory inode. Only cross-process contention may
+wait with context cancellation. Recover callbacks run under the lease and must
+not acquire crypto/outer locks, recursively Recover or close the lease; these
+reentry paths refuse with ErrLock, which callbacks must propagate. U4 owns actual
+composite lock-order integration; the unused advisory ValidateLockOrder API was
+removed rather than claiming it enforced acquisition order.
 
 ## 5. Activation, encryption context and recoverable sync
 
@@ -599,8 +723,8 @@ Every boundary artifact has explicit durability, not just rename/readback:
 
 | Artifact / operation | Required persistence before moving on |
 | --- | --- |
-| New roots/file bundle, activation intents, active-path migration copies | File fsync; create-only publish/rename; containing directory fsync; fsync parents for new directories. Keychain: successful create-only readback before account/public upload. |
-| `generation.json` | Regular 0600 pointer: temp-file fsync, create-only publish for init, crypto-directory and newly created parent fsyncs before Keychain/file root creation. Explicit generation switch: durable intent, temp fsync, atomic rename, directory fsync; recovery retains the prior locator until safe retirement. |
+| New roots/file bundle, activation intents, active-path migration copies | File fsync; create-only publish/rename; containing directory fsync; fsync parents for new directories. Validate exact create-only file readback before account/public upload. |
+| `generation.json` | Regular 0600 pointer: temp-file fsync, create-only publish for init, crypto-directory and newly created parent fsyncs before file root creation. Explicit generation switch: durable intent, temp fsync, atomic rename, directory fsync; recovery retains the prior locator until safe retirement. |
 | Sealed prepare, outbox mutation, committed snapshot | Same-directory 0600 temp, file fsync, rename, crypto-directory fsync. |
 | Refusal journal / mailbox append | Fsync file; if newly created, fsync parent before cursor. Rewrite/compaction: temp fsync, rename, directory fsync. |
 | Delivery state/cursor, subscription recovery metadata, display watermark, legacy fences | Temp-file fsync, rename and actual containing-directory fsync, even when outside crypto dir. |
@@ -623,10 +747,10 @@ exclusions remain in force before exposing content.
 
 ## 6. DM lifecycle and outbound behavior
 
-Encrypted creation (if Q6 permits it) sets `m.room.encryption` algorithm
+The owner-created DM must set `m.room.encryption` algorithm
 `m.megolm.v1.aes-sha2` in initial state, private_chat, is_direct, invite-only,
 joined history and the exact named principal invite. is_direct/title are not
-proof of audience. Recommended path is an owner-provisioned separate room.
+proof of audience. Q6 requires an owner-provisioned separate room; the agent only joins.
 Do not add general `room new --encrypted` in MVP or change S1 binding implicitly.
 
 `join R --require-encrypted --peer @principal:server` is proposed admission, not
@@ -771,7 +895,7 @@ Every command uses explicit selected identity/profile; no owner impersonation.
 | `e2ee activate` | Explicit coordinated activation/fence/context migration, after owner gates and host quiescence; no payload send. |
 | `e2ee ready --room R --peer P --json` | Validate current joined audience, context and eligible peer devices; readiness only. |
 | `join R --require-encrypted --peer P`; `leave R` | Quarantined join then verified encrypted-context admission; leave semantics in section 6. |
-| `dm new --to P --encrypted` | Conditional on Q6 approval and authoritative #173 review; otherwise absent. No agent creation exception is assumed. |
+| `dm new --to P --encrypted` | Absent. Q6 selects owner creation and agent join only. |
 | `topic new R SLUG TITLE --body TEXT`; `post R --topic SLUG TEXT` | Encrypt root and text after audience/recipient checks; decrypt/validate roots when resolving topics. `post --re EVENT` similarly uses validated target. |
 | `e2ee refusals [--room R] [--event E | --refusal-id D] [--json]` | Read-only latest 50 retained metadata records by default, max 200; no receipt, display-watermark advance or network sync. |
 | `e2ee events [--room R] [--event E] --json` | Bounded retained verdict metadata, including irrelevant/muted accepted events; retention limits explicit. |
@@ -816,9 +940,10 @@ contracts and refuse encrypted selections with `e2ee_operation_unsupported`.
 ### Acceptance runbook (future authorized U5, not run for this revision)
 
 Zero here means no agent identity/crypto state; host routing/registration admission
-must first be provisioned by its owner. This sequence deliberately uses the existing
-named-Keychain password route on macOS; file/legacy routes require resolved Q2.
-Owner approves Q1-Q6, supplies a named `PROFILE`, host registration admission and
+and the dedicated service-user Courier identity home must first be provisioned
+by the host. A local non-Courier identity cannot use this custody/runbook. This sequence deliberately uses the existing
+Q2 password section in daemon file custody after U2a registration wiring.
+Q4 must be resolved before this U5 run. Owner supplies a named `PROFILE`, host registration admission and
 principal public pins. After registration the owner creates a **separate** encrypted
 invite-only DM, joins and invites the returned agent MXID. No S1 binding is adopted.
 Host provisions section 3's pin for the registration's actual device, and performs
@@ -832,7 +957,7 @@ its row below before executing the next line. A nonzero exit stops the shell;
 a missing observation or incomplete human gate stops the procedure even at exit 0.
 
 ```sh
-# Existing commands; PROFILE's named Keychain routing is already host-provisioned.
+# Existing commands; PROFILE routing and daemon file custody are host-provisioned.
 a2a --profile "$PROFILE" register "$NAME" --authorize-registration || exit $?
 a2a --profile "$PROFILE" --as "$NAME" whoami || exit $?
 # Owner now creates/joins the separate encrypted DM and invites the returned MXID.
@@ -896,14 +1021,17 @@ from a hook-only sync must later be displayed to inbox's independent consumer.
 
 ## 9. Owner ceremony and S1 compatibility
 
-Host provisions exact owner/principal MXIDs and public masters outside the agent.
+Host provisions exact owner/principal MXIDs, public masters and the owner's
+signed public USK evidence outside the agent, as defined in section 3.
 Identity publishes persisted keys and shows its master fingerprint. Owner compares
 and verifies in their trusted client. Refresh validates standard owner master ->
-owner user-signing -> exact identity master evidence; visibility/APIs **verify in
-U1**. Store validated public signature objects, signer IDs, signed master, binding,
+owner user-signing -> exact identity master evidence using the host-pinned owner
+chain and the agent's own queried master signatures. Source r2 resolves the USK
+visibility constraint; a live Element witness gates U2a. Store validated public
+signature objects, signer IDs, signed master, binding,
 trust revision and observation time in sealed state; validate after restart.
-If chosen client cannot expose this chain, remain awaiting-owner; Q3 selects a
-standard SAS alternative only with retained master-binding evidence proven by U1.
+If the live Element witness does not supply the agent-master signature, remain
+awaiting-owner and record the constraint; Q3 does not authorize a silent SAS alternative.
 Verifying an unrelated device, comparing emoji in chat, or a local flag is insufficient.
 No agent uses an owner's password/token or completes the owner's human step.
 
@@ -915,7 +1043,7 @@ Owner DM S1 stays plaintext and `ownerAudience` continues refusing encrypted roo
 no mirror send, S2 tags/rendering or undecryptable placeholder is enabled here.
 Crypto acceptance uses the separate room with archive exclusion before any payload.
 For Principal DM S1 (#173), preserve lifecycle and retrieve authoritative body before
-changing/adopting it. Q6 covers whether any encrypted creation exception is allowed.
+changing/adopting it. Q6 excludes agent encrypted-room creation.
 Future S1 migration needs explicit owner room selection, audience/readiness, new
 binding generation, archive exclusions, ordering/locks and required protocol acks.
 Old rooms/exclusions remain, without copied history or retroactive secrecy. In-place
@@ -923,16 +1051,22 @@ encryption is irreversible and leaves prior plaintext; rollback never downgrades
 
 ## 10. Producer DAG, ownership and review contracts
 
-Sequence: owner Q1-Q6 resolved -> U1 -> U2 -> U3 -> U4 -> U5. These are work units,
-not instructions to spawn agents. U3 lands adapter/client/accepted-event interfaces
+**DAG r2:** recorded Q1/Q2/Q3/Q5/Q6 -> U1 -> U2a -> U2b -> U3 -> U4 -> U5.
+Q4 gates U2b and later, not U1 or U2a. The grant key-binding node follows U2a
+and consumes its public identity evidence; it is separate from this E2EE MVP and
+waits for authoritative Swarma grant/key definitions. It does not replace Matrix
+cross-signing or imply authority from a device. These are work units, not
+instructions to spawn agents. U3 lands adapter/client/accepted-event interfaces
 before U4 implements coordinated sync/delivery against them; no parallel rewrite
 of `client.go`, and integration is finished before U5 acceptance.
 
 | Unit | Owned output / integration boundary | Likely files |
 | --- | --- | --- |
-| U1: dependency/store foundations | Offline closure, typed engine adapter, secret inventory, store codec/durability, replay/pruning primitives, global locks, Keychain derivation/create-only and durable generation pointer, latency capability evidence. Reads approved custody/ceremony inputs. | `go.mod`, `go.sum`, new `internal/e2ee/`, config crypto paths, CLI secret-store adapter; Curator vendor/pin flow. |
-| U2: identity trust/bootstrap | Per-backend UIA/password route and any approved registration custody change, host-pin reader/validation/provisioning docs, principal-root revision/re-ceremony and Q4 approval transitions, cross-signing, owner-evidence verification, init/status/refresh and explicit recovery/rotation. | `internal/cli/account.go`, `connection_registration.go`, `credentials.go`, new `e2ee.go`; config credential APIs, matrix key/UIA methods, trust adapter. |
-| U3: room/send/history interfaces | Shared accepted-event/evidence contract and versioned matrix response/state/key APIs; quarantined join/leave, approved creation only, context reconciliation primitives and recipient snapshots, durable outbox, topic/root/history decrypt, outbound files/voice/raw-send refusal audit. | `internal/matrix/client.go`, `txn.go`; actual `internal/cli/room.go`, `account.go`, `topics.go`, send/media callers, crypto adapter. |
+| U1: dependency/store foundations | Offline closure, typed pure-Go engine adapter, secret inventory, sealed codec/durability, replay/pruning primitives, identity-wide crypto locking (composite ordering integrates in U4), Q1 file custody and durable `root.G` pointer, Q2 create-only password-section adapter and latency benchmark. No keychain implementation. Tests/benchmarks run on approved runners, not the Source worker bench. | `go.mod`, `go.sum`, new `internal/e2ee/`; Curator vendor/pin delivery remains Source's integration obligation. |
+| U2a: cross-signing bootstrap and identity evidence | A1 Courier-only custody root/service-user wiring, excluding agent access and refusing local non-Courier identities; Q2 onboarding/admin-registration wiring; passwordless first cross-signing upload and automatic stored-password UIA fallback; initial host-pin reader/validation and Element owner-signature verification using pinned MSK/USK evidence; init and `a2a e2ee identity show`. Live Element ceremony witness required before shipment. No owner password steps. Publishes public evidence for the grant key-binding node. | `internal/cli/account.go`, `connection_registration.go`, `credentials.go`, new `e2ee.go`; matrix key/UIA methods and trust adapter. |
+| U2b: remaining identity trust/lifecycle | Rest of U2: principal-root revision + 1/re-ceremony, Q4 device admission/approval transitions, refresh/status and explicit new-device recovery/rotation. Q4 is still a gate. | Trust/pin adapter, crypto lifecycle and CLI status/refresh/recovery. |
+| Grant key binding (after U2a) | Bind Swarma grant keys to the public identity evidence using the authoritative platform contract when available. Separate node, no invented grant/key formats in U1. | Separate platform scope. |
+| U3: room/send/history interfaces | Shared accepted-event/evidence contract and versioned matrix response/state/key APIs; quarantined join/leave of owner-created DMs only, context reconciliation primitives and recipient snapshots, durable outbox, topic/root/history decrypt, outbound files/voice/raw-send refusal audit. No agent room creation. | `internal/matrix/client.go`, `txn.go`; actual `internal/cli/room.go`, `account.go`, `topics.go`, send/media callers, crypto adapter. |
 | U4: coordinated ingress/output | Activation/migration and old-binary/projector/admin-registration fences, complete section 5 sync inventory, context bootstrap/every-sync reconciliation using U3 APIs, query-failure batch abort, prepare/commit/recovery, bounded verdict/journal controls, mailbox evidence/compaction/output revalidation, display watermarks, inbound archive/files/voice/export refusal audit. U3/U4 integration lands here. | `delivery.go`, `delivery_firstsync.go`, `wait.go`, `wait_retry.go`, `inbox.go`, `json.go`, `project.go`, `internal/cli/admin_registration.go`, admin preflight in `connection_registration.go`, `internal/matrix/admin_registration.go`, hooks/runtime/backfill/archive/media readers; U3 client interfaces, config state/mailbox durability and evidence. |
 | U5: real acceptance / docs | Execute section 8 only after integrated U4; real owner ceremony witness, honest provenance limits, S1 compatibility and redacted commands/outcomes. No deferred engine/coordinator integration. | Acceptance fixtures/evidence, `docs/cli.md`, README/tools, protocol docs only with agreed MSG IDs. |
 
@@ -943,17 +1077,20 @@ cases, with comments stating exactly what each proves and its limits:
   key/binding, corrupt/unknown codec, unsafe mode/symlink, absent item, full disk,
   each file and directory fsync interruption. Prove prepared recovery skips Olm,
   including to-device-only batch and cursor-rename power loss; no orphaned ratchet.
-  Known integrity violation must cause the intended gate failure. Keychain long
-  services, token/password collisions, command bounds, duplicate create and newline
+  Known integrity violation must cause the intended gate failure. Fixed file-store
+  services, token/password collisions, item bounds, duplicate create and newline
   encodings refuse without modifying credential items. Scrub planted loaded secrets
   in each supported encoding and suppress body-bearing library errors. Record
-  full-cap latency, offline target builds and missing-module negative control.
-  Interrupt after pointer fsync, after create-only Keychain success and before
+  1/8MiB operational p95 and 64MiB capacity p50/p95 against their separate gates,
+  offline target builds and missing-module negative control.
+  Interrupt after pointer fsync, after create-only file-bundle success and before
   first sealed state: recovery locates the same `root.G`, without overwrite or
   credential-item changes. Missing/tampered pointer or conflicting bundle refuses;
   uninterrupted init/restart is the neighboring positive control.
-- **U2:** Stable repeat init/restart beside interrupted upload, unknown UIA password,
-  named-Keychain success, approved existing-account recovery and wrong whoami/device.
+- **U2a/U2b:** Stable repeat init/restart beside interrupted upload, unknown UIA
+  password, prompt-free file-password success, approved existing-account recovery
+  and wrong whoami/device. U2a proves passwordless-first upload, stored-password
+  fallback and public `identity show` output; U2b adds the gated lifecycle cases.
   Valid host pin beside agent-writable ancestor, replacement/same-revision bytes,
   wrong binding, symlink and unknown schema. CLI never provisions/repairs a pin.
   Valid master/self/device and owner evidence beside forged/wrong-usage/MXID chain,
@@ -1016,19 +1153,21 @@ cases, with comments stating exactly what each proves and its limits:
 
 ## 11. Owner questions, source questions and future seam
 
-All Q1-Q6 require recorded owner decisions **before U1 begins**. This revision
-records options/recommendations only. Rejected alternatives change downstream
-scope and must be reflected in the spec before implementation; they are not flags
-an agent may choose for convenience.
+Recorded inputs below are authoritative for U1. Source: #308 comment 6753998005
+and U1 brief r1 (2026-11-09 23:45Z), superseded for the custody boundary and
+owner public-proof provision by Source's U1 r2 / addendum A1. Q1 was delegated by Ivan at
+2026-11-09 22:58:31Z and decided by Lead under that delegation; Q2 = A+B and Q5 = a
+were recorded by Alexis. Q4 alone remains unresolved and gates U2b and later.
+These decisions do not authorize activation or bypass runner/review gates.
 
 | Question | Options | Recommendation | Consequence / owning unit |
 | --- | --- | --- | --- |
-| Q1: root custody and recovery | Unattended backend bundle + sealed state; host-unlocked broker; hardware/external signing boundary. For file backend on macOS **and** Linux: approve 0600 roots or require another backend. Approve explicit new-device recovery without MVP backup, or add backup scope. | Approve backend bundle/sealed account only on hosts whose disk/same-UID boundary the owner accepts; prefer Keychain on macOS. | Agent can use all three cross-signing private keys; adjacent file wrapping key cannot protect whole-directory theft. Rejecting requires custody redesign before U1; U1/U2 own implementation/recovery. |
-| Q2: account-password custody and existing UIA | Persist passwords in selected credential store from future registration onward (including legacy/file); owner-performed admin reset or supported UIA step; authorized server-admin bypass; recreate identity. Existing discarded passwords cannot be recovered by persistence. | Persist future passwords in a distinct selected-store purpose; use owner-operated supported UIA/reset for existing identities after token/device impact review. Keep current named-Keychain route. | Expands long-lived agent-readable secrets; file mode adds disk password custody. Existing-account reset/bypass/recreation is a separate owner action, never automatic. Decline persistence means future UIA depends on manual recovery/server support. U2 owns all per-backend paths. |
-| Q3: owner verification and host pins | Standard cross-user master signature; interoperable SAS with retained master evidence; wait for a suitable client. Host/root provisions public pins; alternatively design an equivalent agent-excluded broker. Approve section 3's principal-root rotation/`changed` recovery ceremony or defer rotation and keep it blocked. | Host/root provisions section 3 artifact; owner independently verifies replacement principal fingerprint, authorizes revision + 1, then repeats the selected ceremony for the existing agent master. A rotating owner must use their newly pinned chain. U1 verifies evidence visibility. | Requires real owner/client and host-admin work, including each root change; no local flag/TOFU substitutes. Root changes invalidate prior owner evidence; neither refresh nor the host edit alone restores readiness. SAS option changes U1 capability proof/U2 flow. Agent never writes anchors. U2 owns the explicit exit from `changed`. |
+| Q1: root custody and recovery — A1 boundary | File custody on macOS and Linux under the dedicated daemon service user (`_a2a`), never readable/writable by the ordinary agent user. | U1 takes an explicit root, no production wiring. Exact effective-UID ownership, 0700 directory, 0600 files; never repairs. U2a wires only to the Courier identity home with the dedicated service-user daemon. Local non-Courier identities get no custody; no local-base/home fallback or environment override. No per-use prompt. | No OS keychain backend in U1; only a typed seam for a future prompt-free `_a2a` backend. Explicit new-device recovery, no MVP backup. Adjacent wrapping key does not protect whole-directory theft. U1 owns storage; U2a enforces production root/user selection and U2b owns later lifecycle. |
+| Q2: password custody / UIA — A+B decided | a2a generates a per-agent password during onboarding; the admin sets it at registration. | Fixed service + full-MXID section in Q1 file custody; only a2a reads it, card contains section reference only. Password serves key reset. | First cross-signing upload is passwordless where allowed; a2a supplies the password whenever UIA asks, with no owner steps. U1 owns the bounded create-only store adapter; U2a owns registration/UIA. Discarded existing passwords remain unavailable until an explicit recovery route. |
+| Q3: owner verification / rotation — Source r2 resolution | Owner signs the agent master with standard Element cross-signing; host/root writes public pins containing owner MSK and USK, both fingerprinted, plus the MSK signature over the USK. | `/keys/query` returns USKs only for the requesting user; an agent cannot fetch the owner's USK. U2a verifies the host-pinned MSK -> USK evidence and then the USK signature on the agent's own queried MSK. A rotating owner root has a new fingerprint, revision + 1 and the same ceremony. | U1 retains and structurally validates this public proof shape, without network code. The resolved visibility constraint does not block U1. A live Element ceremony witness is required before U2a ships; U2b handles revision/re-ceremony transitions. No local trust boolean or agent-written pin. |
 | Q4: admission of future devices | Automatically admit a newly observed valid cross-signed device under the pinned master; require explicit approval of each device ID plus valid chain. For explicit mode decide who authorizes additions/removals: owner only, or a separately defined delegated host authority. | Owner authorizes each `approved_devices` change; host atomically provisions revision + 1 in a coordinated window. Apply section 3's fresh-query/revalidation/session-rotation transition; unchanged roots need no repeated Q3. | More owner provisioning when devices change; host provisioning alone is not delegated approval. Automatic option ignores `approved_devices` as authority, delegates admission to peer cross-signing-key custody and still cannot prove server freshness. U2/U3/U4 implement only the chosen policy, preserve tombstones/final refusals and withhold removed-device output/sharing. |
-| Q5: accepted plaintext at rest | Approve private plaintext mailbox and saved output; seal mailbox/output bodies; ephemeral display without durable plaintext. | Approve existing private plaintext storage only if owner accepts host disk/backups/same-UID exposure. | E2EE remains transport protection; saved output may outlive receipts. Decline changes U1/U4 storage/render/receipt architecture and acceptance; never silently drop durability or store plaintext. |
-| Q6: encrypted DM creation / #173 | Owner creates room and agent joins; grant narrowly scoped new encrypted-DM agent exception; defer pending authoritative #173/protocol decision. | Owner-provisioned separate encrypted DM for MVP; no new agent creation exception. | `dm new --encrypted` remains absent unless explicitly approved with required protocol decision/acks; general encrypted-room creation deferred. U3 owns selected lifecycle; U5 uses approved path. |
+| Q5: accepted plaintext at rest — a decided | Accepted plaintext mailbox and saved output stay on disk as today. | Preserve existing private storage and receipt/output behavior. | No U1 mailbox/output encryption change. E2EE remains transport protection; U4 carries evidence and U5 records the limit. |
+| Q6: encrypted DM creation — decided | Owner creates the encrypted DM; the agent only joins. | No agent room creation. | U1 adds no room code. U3 implements join-only lifecycle; U5 uses the owner-provisioned room. No new encrypted creation verb. |
 
 Source work remains separate from owner policy: U1 selects actual audited engine,
 codec, typed errors and hooks from readable sources; **verify in U1** for every
@@ -1065,6 +1204,7 @@ reopened. Numbers below refer to `review-s0b-verdict.md`, with original S0 refer
 | 4 (2) | Section 3 defines host revision + 1, independently checked replacement root, renewed Q3 ceremony and exit from `changed`; Q4 device edits use revisioned fresh validation/revalidation/rotation. Owner policy remains explicitly gated by expanded Q3/Q4 in section 11; U2 transition controls added in section 10. |
 | 5 (9) | Sections 4/5 name the 0600 `generation.json` artifact, binding, pointer-before-root fsync order, create-only Keychain-to-first-state crash window and same-generation recovery/refusal rules. U1/U2 ownership and interruption/negative controls added in section 10. |
 
-Only `docs/e2ee.md` was revised; no code was changed. No tests, builds, network
-calls or tmux commands were run. All proposed implementation controls await their
-own units. This document remains uncommitted, with owner Q1-Q6 unresolved.
+In the historical S0 pass only `docs/e2ee.md` was revised. No tests, builds, network
+calls or tmux commands were run in the historical S0 pass. U1 now adds offline
+foundations and reconciles the recorded decisions above. U1 tests and benchmarks
+await approved runners; Q4 remains unresolved for U2b and later.
