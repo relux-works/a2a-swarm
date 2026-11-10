@@ -52,7 +52,7 @@ func WithRuntimeLock(p Paths, name, kind string, deadline time.Time, fn func() e
 }
 
 // WithRuntimeLockContext cancels lock acquisition with the invocation. The
-// legacy API retains its independent deadline for non-Courier callers.
+// legacy API retains its independent deadline for non-Daemon callers.
 func WithRuntimeLockContext(ctx context.Context, p Paths, name, kind string, deadline time.Time, fn func() error) error {
 	if ctx == nil {
 		ctx = context.Background()

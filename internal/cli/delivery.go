@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
-	"github.com/relux-works/a2a-swarm/internal/courier"
+	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/deliverypolicy"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
@@ -676,7 +676,7 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 		}
 		defer func() {
 			releaseConsumer()
-			stopCtx, cancel := context.WithTimeout(context.Background(), courier.LockReleaseBound)
+			stopCtx, cancel := context.WithTimeout(context.Background(), daemon.LockReleaseBound)
 			defer cancel()
 			profile.Doorbell = "none"
 			if err := s.retryLivenessSource(stopCtx, profile, "wait-disarm"); err != nil {

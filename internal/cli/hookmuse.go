@@ -241,14 +241,14 @@ func (a *App) runMuseHook(ctx context.Context, rt hookRuntime, ev hookEvent) {
 		return nil
 	}()
 	if err != nil {
-		a.noteCourierError(err)
+		a.noteDaemonError(err)
 		fail(museFailureClass(err))
 	}
 }
 
-// Courier hook journals share the resolved identity's store, never daemon cwd.
+// Daemon hook journals share the resolved identity's store, never daemon cwd.
 func (a *App) museHookJournal() (*museHookJournal, error) {
-	if !a.courierEngine {
+	if !a.daemonEngine {
 		return openMuseHookJournal(a.as)
 	}
 	p, err := a.paths()

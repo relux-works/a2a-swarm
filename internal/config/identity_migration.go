@@ -17,9 +17,9 @@ var ErrMigrationStateUnavailable = errors.New("identity migration state unavaila
 // IdentityMigration remains at the source until an explicit verified rollback.
 // Unknown/malformed phases are fenced too; this is never a lease or a timeout.
 type IdentityMigration struct {
-	Phase       string    `json:"phase"`
-	CourierBase string    `json:"courier_base"`
-	At          time.Time `json:"at"`
+	Phase      string    `json:"phase"`
+	DaemonBase string    `json:"daemon_base"`
+	At         time.Time `json:"at"`
 	// Durable intent distinguishes a proven pre-cutover abort from a lost
 	// private target after source removal, including a recreated Keychain item.
 	CutoverStarted bool `json:"cutover_started,omitempty"`
@@ -50,25 +50,25 @@ func CheckIdentityMigration(p Paths, name string) error {
 	return nil
 }
 
-var ErrCourierMigration = errors.New("courier migration refused; source remains fenced if migration started")
-var ErrCourierSourceSecrets = fmt.Errorf("%w: source_credentials_contain_secrets; complete creds migrate or repair source credentials", ErrCourierMigration)
-var ErrCourierPostPending = fmt.Errorf("%w: post_operation_pending; finish the active post and inspect post-operation status before migration", ErrCourierMigration)
+var ErrDaemonMigration = errors.New("daemon migration refused; source remains fenced if migration started")
+var ErrDaemonSourceSecrets = fmt.Errorf("%w: source_credentials_contain_secrets; complete creds migrate or repair source credentials", ErrDaemonMigration)
+var ErrDaemonPostPending = fmt.Errorf("%w: post_operation_pending; finish the active post and inspect post-operation status before migration", ErrDaemonMigration)
 
-// CourierSecretStore is injected by the CLI. Errors and values from a provider
+// DaemonSecretStore is injected by the CLI. Errors and values from a provider
 // never enter migration diagnostics or the nonsecret journal. Restore must be
 // idempotent and verify readback; Delete must accept an already missing item.
-type CourierSecretStore interface {
+type DaemonSecretStore interface {
 	Read(context.Context, Credentials) (Credentials, error)
 	Delete(context.Context, Credentials) error
 	Restore(context.Context, Credentials) error
 }
 
-type CourierMigrationOptions struct {
+type DaemonMigrationOptions struct {
 	Binding          *ConnectionBinding
 	To               string
 	Resume, Rollback bool
 	Keychain         bool
-	Secrets          CourierSecretStore
+	Secrets          DaemonSecretStore
 	Now              time.Time
 	// Package-private fault seam; no flag/environment can inject filesystem code.
 	step func(string) error

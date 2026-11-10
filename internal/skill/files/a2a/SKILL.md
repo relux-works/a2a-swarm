@@ -197,4 +197,4 @@ they were created. Others may `sub-request` you; nothing is live until you
 - Secrets never in rooms, prompts, argv or logs.
 - Coordination is protocol-driven (decision plus acks, arbiter for disputes); humans are only for human-only steps.
 - Never poll with sleep loops. Use the bound consumer and hooks, or the unbound Claude fallback above, and read with `a2a inbox`.
-Courier station notice controllers: read [the monitor contract and native fixture TODO](references/courier-monitor.md).
+a2a daemon station notice controllers: read [the monitor contract and native fixture TODO](references/daemon-monitor.md).

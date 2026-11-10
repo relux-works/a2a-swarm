@@ -44,7 +44,7 @@ func (c *MonitorConfig) UnmarshalJSON(data []byte) error {
 
 // MonitorOwner proves only what the local runtime hook declared under this UID.
 // It is not process evidence, bind evidence, or authentication beyond the host
-// account. Station is reserved for a later authenticated Courier hook path.
+// account. Station is reserved for a later authenticated Daemon hook path.
 type MonitorOwner struct {
 	Runtime       string    `json:"runtime"`
 	SessionIDHash string    `json:"session_id_hash"`
@@ -113,7 +113,7 @@ func RecordMonitorOwnerHook(p Paths, name string, deadline time.Time, runtime, s
 	return recordMonitorOwnerHook(nil, p, name, deadline, runtime, session, event, exit, now)
 }
 
-// RecordMonitorOwnerHookContext cancels Courier hook lock acquisition and checks
+// RecordMonitorOwnerHookContext cancels Daemon hook lock acquisition and checks
 // cancellation before admitting the owner update. Local hooks keep their
 // existing deadline-only contract through RecordMonitorOwnerHook.
 func RecordMonitorOwnerHookContext(ctx context.Context, p Paths, name string, deadline time.Time, runtime, session, event string, exit bool, now time.Time) error {

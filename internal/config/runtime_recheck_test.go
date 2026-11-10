@@ -27,7 +27,7 @@ func (c *cancelAfterSnapshot) Err() error {
 	return err
 }
 
-func TestCourierRuntimeLockRecheck(t *testing.T) {
+func TestDaemonRuntimeLockRecheck(t *testing.T) {
 	for _, kind := range []string{"control", "consumer", "subscription-policy"} {
 		for _, immediate := range []bool{false, true} {
 			t.Run(kind+map[bool]string{false: "/ordinary", true: "/immediate"}[immediate], func(t *testing.T) {

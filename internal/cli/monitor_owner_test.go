@@ -171,7 +171,7 @@ func TestMonitorOwnerHookRefusals(t *testing.T) {
 
 // Proves the actual sink seam and status fail closed at TTL expiry, leaving
 // durable mail and the existing lease untouched; a later Start re-admits only
-// the association. This does not enable a live monitor or Courier path.
+// the association. This does not enable a live monitor or Daemon path.
 func TestMonitorOwnerExpiryKeepsPending(t *testing.T) {
 	e, _, s := cliMonitorFixture(t)
 	mb := e.mailbox("alice")

@@ -17,12 +17,12 @@ import (
 // This test uses only the admitted C5 fixture, fake Matrix and the landed
 // L02/L03 API. It does not depend on the draft CM implementation.
 func cmPrerequisiteOwnerInbox(t *testing.T, requireStationSuccess bool) {
-	f := newCourierFixture(t)
+	f := newDaemonFixture(t)
 	const ownerSession = "cm-prerequisite-session"
 	f.run("alice", `{"session_id":"cm-prerequisite-session","hook_event_name":"SessionStart"}`, "--as", "alice", "hook", "session-start", "--runtime", "muse").ok(t)
 	st, err := config.LoadState(f.paths["alice"], "alice")
 	if err != nil || st.Lease == nil || st.Lease.Holder != ownerSession || st.MonitorOwner == nil {
-		t.Fatal("valid Courier hook did not establish the owner and existing lease")
+		t.Fatal("valid Daemon hook did not establish the owner and existing lease")
 	}
 	// Valid neighbour: the same station inbox can borrow the owner lease while
 	// no monitor is active. No mail is injected yet.
@@ -57,7 +57,7 @@ func cmPrerequisiteOwnerInbox(t *testing.T, requireStationSuccess bool) {
 			if r.code != ExitOK || strings.Count(r.stdout, id) != 1 || !f.received("alice", id) {
 				t.Fatalf("CM required owner inbox through station: exit=%d, closed diagnostic=%q", r.code, r.stderr)
 			}
-			if courierReceiptCount(t, f, "alice", id) != 1 {
+			if daemonReceiptCount(t, f, "alice", id) != 1 {
 				t.Fatal("first owner inbox did not receipt exactly once")
 			}
 			stationOut.Reset()
@@ -65,7 +65,7 @@ func cmPrerequisiteOwnerInbox(t *testing.T, requireStationSuccess bool) {
 			if code := station.Run(context.Background(), []string{"--as", "alice", "inbox"}); code != ExitOK || strings.Contains(stationOut.String(), id) {
 				t.Fatal("second station inbox was not empty")
 			}
-			if courierReceiptCount(t, f, "alice", id) != 1 {
+			if daemonReceiptCount(t, f, "alice", id) != 1 {
 				t.Fatal("second inbox duplicated receipt")
 			}
 			return nil
@@ -74,7 +74,7 @@ func cmPrerequisiteOwnerInbox(t *testing.T, requireStationSuccess bool) {
 		if err != nil || !bytes.Equal(before, after) {
 			t.Fatal("refused session changed State", err)
 		}
-		if r.code != ExitError || r.stdout != "" || r.stderr != "a2a: courier: courier_lease_conflict\n" || f.received("alice", id) {
+		if r.code != ExitError || r.stdout != "" || r.stderr != "a2a: daemon: daemon_lease_conflict\n" || f.received("alice", id) {
 			t.Fatal("C5 failure differs from the isolated closed refusal")
 		}
 		// Valid neighbour with actual same-session evidence: the engine's local

@@ -328,7 +328,7 @@ session id: the hook's stdin `session_id` for hooks, otherwise `A2A_SESSION_ID` 
 `watch` and unbounded `wait --timeout 0` ignore both ambient native runtime IDs: unless explicitly owned through `A2A_SESSION_ID` (or a supplied hook id),
 their holder is their own PID with the process birth where supported below. All renewals, including retries, use that same process scope. Default `wait` (25 minutes), other finite waits,
 `inbox` and hooks retain session sharing. Every raw `wait` and `watch`, including default and finite waits from the monitor owner,
-refuses a retained non-stopped monitor before acquiring a lease or consumer lock. An enrolled station reports `courier_lease_conflict`.
+refuses a retained non-stopped monitor before acquiring a lease or consumer lock. An enrolled station reports `daemon_lease_conflict`.
 With a cleanly stopped monitor or no monitor record, default and finite station waits retain ambient runtime session evidence.
 A newly acquired lease records that runtime session as its holder.
 Native bound consumers already use the binding's explicit session id; this does not change their ownership or exclusive consumer locks.
@@ -3926,7 +3926,7 @@ digests, event type and transaction. The bytes sent are the verified reservation
 snapshot. A conflicting replacement before either gate refuses; an ACK mismatch
 remains UNKNOWN. These checks and cooperative locks do not isolate arbitrary
 code running as the same OS user. No journal lock spans remote I/O. A separate
-identity post-attempt lock spans the invocation to exclude Courier migration;
+identity post-attempt lock spans the invocation to exclude a2a daemon migration;
 concurrent active attempts refuse with no send, while local status remains
 available under the short journal lock.
 
@@ -4000,34 +4000,35 @@ or resend is implemented here. Issue #97 remains open. A separately decided
 future resume route requires a known server transaction-deduplication horizon;
 this feature makes no such assumption.
 
-## Courier authentication endpoint
+## Daemon authentication endpoint
 
-`a2a courier serve|register-station|unregister-station` is local-only and requires
-an explicit private `--home`. Registration emits only into an operator pipe with
-`--emit -`. See the [Courier wire and custody contract](courier.md) for framing,
+The a2a daemon (a2ad) exposes local-only operator commands:
+`a2a daemon serve|register-station|unregister-station` requires an explicit
+private `--home`. Registration emits only into an operator pipe with
+`--emit -`. See the [a2a daemon wire and custody contract](daemon.md) for framing,
 limits and the 0711 directory / 0666 socket access policy.
 
-## Courier station enrollment
+## Daemon station enrollment
 
-`a2a courier enroll --dir HOME/.a2a --from - [--rotate]` installs a station
+`a2a daemon enroll --dir HOME/.a2a --from - [--rotate]` installs a station
 user enrollment from a closed v1 pipe payload without consulting credentials.
 The parent is canonicalized once; the final directory and its entries refuse
-symlinks. See the [station enrollment contract](courier-enroll.md) for byte
+symlinks. See the [station enrollment contract](daemon-enroll.md) for byte
 formats, canonical ownership checks, pinned readers and atomic rotation.
 
-### Courier identity migration (C4 constituent)
+### Daemon identity migration (C4 constituent)
 
 Upgrade the shared `a2a` binary first, then explicitly stop **every session of
 that identity** before running migration. Legacy binaries without the migration
 fence are unsupported during migration: they cannot enforce its exclusion.
 Do not treat the commands below as evidence that a host migration was run.
-This constituent provides migration only; Courier enrollment, serving, engine
+This constituent provides migration only; a2a daemon enrollment, serving, engine
 and service installation compose separately.
 
 ```
-a2a courier migrate <identity> --to <absolute-courier-base>
-a2a courier migrate <identity> --to <absolute-courier-base> --resume
-a2a courier migrate <identity> --to <absolute-courier-base> --rollback
+a2a daemon migrate <identity> --to <absolute-daemon-base>
+a2a daemon migrate <identity> --to <absolute-daemon-base> --resume
+a2a daemon migrate <identity> --to <absolute-daemon-base> --rollback
 ```
 
 The source is the selected config resolver's identity, including an explicit
@@ -4054,7 +4055,7 @@ paths and retain their inodes forever; migration and rollback never rename or
 unlink a lock.
 
 Before copying, migration durably writes a sealed source State record:
-`migration: {phase: "in_progress", courier_base, at}`. Successful completion
+`migration: {phase: "in_progress", daemon_base, at}`. Successful completion
 changes its phase to `done`. Both phases refuse compatible credential/session
 loading, cached-session connection checks, lease acquisition/renewal, consumer
 admission, hooks, wait, watch and bind with `identity_migrated`. Ordinary State
@@ -4071,7 +4072,7 @@ top-level fields and its
 sticky foreign-writer observation; migration does not reset that observation
 or authorize a monitor.
 
-The private target is `<courier-base>/identities/<identity>/`. Its `agents/`,
+The private target is `<daemon-base>/identities/<identity>/`. Its `agents/`,
 `state/`, `owner-dm/` and `post-operations/agents/<identity>/` directories retain
 per-identity files, including the mailbox. Acknowledged and quiesced unknown
 post journals are copied byte-for-byte and digest-verified; target journals
@@ -4082,7 +4083,7 @@ before retrying migration. The command never resubmits or deletes such evidence.
 Source locks, shared routing, registration credentials and other
 identities are excluded. Existing identity-prefixed `.migrated` copies refuse
 migration for explicit operator recovery; the command does not delete them.
-The sealed source State snapshot is recovery evidence, not a running Courier
+The sealed source State snapshot is recovery evidence, not a running a2a daemon
 State. `credential.json` is a verified file backend for subsequent composition;
 `agents/<identity>.json` is an identity snapshot. No daemon starts here.
 
@@ -4098,12 +4099,12 @@ Cutover holds all locks and the sealed `in_progress` fence throughout:
 1. Copy identity files into the private target and verify every digest.
 2. Write and digest-verify `rollback/source-credential.json` (byte-identical
    source file) and `rollback/credential.json` (materialized backend value).
-   Rollback material exists only inside this Courier-private `rollback/`
+   Rollback material exists only inside this a2a daemon-private `rollback/`
    directory, with 0700 directories and 0600 files. A separately owned service
    storage boundary is required operationally; directory fixtures do not prove
    cross-UID access control.
 3. For the file backend, atomically replace the source credential with the
-   closed nonsecret tombstone `{"migrated_to_courier":true,"at":...,"identity":...}`
+   closed nonsecret tombstone `{"migrated_to_daemon":true,"at":...,"identity":...}`
    at 0600, using nonsecret temp bytes, fsync and rename. No source `.migrated`
    credential copy is made. For Keychain, delete the selected item only after
    private verification, then verify again that the source file contains no secret
@@ -4137,7 +4138,7 @@ the operator after verified recovery. Metadata/journals are bounded to 1 MiB,
 individual payload files to 64 MiB, and copied payloads to 256 MiB and 4096 files.
 
 Qualification uses generated fixtures and injectable fake secret stores only.
-Native macOS Keychain behavior, cross-user handoff and complete Courier
+Native macOS Keychain behavior, cross-user handoff and complete a2a daemon
 composition need their own qualification. Stopped sessions and a fully upgraded
 shared binary remain mandatory operational preconditions.
 
@@ -4148,28 +4149,28 @@ A running bind may retry such a read with its existing bounded diagnostics and
 no dispatch; a valid migration fence terminates admission with
 `identity_migrated`. Muse retains its runtime-specific closed diagnostic format.
 
-## Courier streaming, cancellation and station hooks
+## Daemon streaming, cancellation and station hooks
 
 In station mode, `A2A_CONFIG_DIR` is a2a's managed config base. Its `.a2a/`
-child contains exactly `courier.sock`, `identity`, `station.key`, and `station`.
-Commands execute in the authenticated identity's Courier home. The station
-never writes a mailbox, State, credentials, a journal or a saved inbox. The station also writes `state/courier-hook-failures.log` (0600) on its first
-failed-open hook and `state/courier-notice-listener.endpoint` (0600) while
-the notice listener runs. `courier status` reads local hook counts and queries
+child contains exactly `daemon.sock`, `identity`, `station.key`, and `station`.
+Commands execute in the authenticated identity's a2a daemon home. The station
+never writes a mailbox, State, credentials, a journal or a saved inbox. The station also writes `state/daemon-hook-failures.log` (0600) on its first
+failed-open hook and `state/daemon-notice-listener.endpoint` (0600) while
+the notice listener runs. `daemon status` reads local hook counts and queries
 the authenticated endpoint for `log_dropped`; it loads no identity credentials.
 
-Silent `wait` and `watch` invocations have no Courier execution idle cutoff.
+Silent `wait` and `watch` invocations have no a2a daemon execution idle cutoff.
 The command's own timeout decides when it ends. The daemon sends invisible
 `keepalive` frames every 20 seconds; the station read deadline is three intervals
-(60 seconds). Missing liveness yields `courier_idle_timeout`. Disconnect cancels
+(60 seconds). Missing liveness yields `daemon_idle_timeout`. Disconnect cancels
 the invocation context. Its consumer and state/lease locks must release within
 five seconds. SIGINT closes the station connection and returns 130. SIGTERM
-cancels the daemon's in-flight invocations, which report `courier_unavailable`.
+cancels the daemon's in-flight invocations, which report `daemon_unavailable`.
 An unacknowledged receipt is never completed by shutdown.
 
 Output is sent in bounded chunks, with one chunk awaiting a flow ACK after the
 station writes and flushes it. The daemon blocks the command writer until that
-ACK arrives. A stalled reader gets a framed `courier_idle_timeout`; there is no
+ACK arrives. A stalled reader gets a framed `daemon_idle_timeout`; there is no
 unbounded output queue. Flow ACKs are bound to invocation, chunk batch and
 identity, and cannot complete receipts. Receipts still require the separate
 `delivery`/`ack` barrier after stdout write and flush. Watch, wait and hook
@@ -4189,12 +4190,12 @@ The station errors form a closed set and contain no request operands:
 | Class | Meaning |
 | --- | --- |
 | `enrollment_invalid` | Invalid/incomplete enrollment or authentication; the only class that suggests re-running enroll |
-| `courier_unavailable` | Endpoint unavailable, shutdown, or a closed execution failure |
+| `daemon_unavailable` | Endpoint unavailable, shutdown, or a closed execution failure |
 | `identity_mismatch` | Requested `--as` differs from the authenticated binding |
 | `not_allowed` | Command, option, input or connection assertion is outside the closed schema |
-| `courier_idle_timeout` | Missing liveness, stalled output/ACK, or exhausted hook work budget |
-| `courier_busy` | Per-station, global invocation, or execution connection capacity reached |
-| `courier_lease_conflict` | Another owner holds this identity's lease; the active monitor refused the claimed session |
+| `daemon_idle_timeout` | Missing liveness, stalled output/ACK, or exhausted hook work budget |
+| `daemon_busy` | Per-station, global invocation, or execution connection capacity reached |
+| `daemon_lease_conflict` | Another owner holds this identity's lease; the active monitor refused the claimed session |
 
 The seven classes above are the complete station diagnostic set. Invocation
 session evidence is optional and negotiated per connection. A station that has
@@ -4234,18 +4235,18 @@ in bounded memory until a successful exit. A successful hook preserves its
 existing `--as` and doorbell output contract.
 
 Each failed-open delivery appends a UTC timestamp, one fixed hook event name and
-one closed error class to `state/courier-hook-failures.log`. No bodies, tokens,
+one closed error class to `state/daemon-hook-failures.log`. No bodies, tokens,
 argv or paths are recorded. The newest 256 failure lines are retained, dropping
 oldest lines at the cap. Pending count and oldest unreported UTC time are stored
-in the same file's `user.a2a.courier-hook-gap` extended attribute, under the file's
+in the same file's `user.a2a.daemon-hook-gap` extended attribute, under the file's
 lock, so no counter sidecar or fifth enrolled entry is created. The local
 filesystem must support file extended attributes. Accounting errors are visible
-as a closed `courier_unavailable` line on stderr; hooks still exit 0.
+as a closed `daemon_unavailable` line on stderr; hooks still exit 0.
 
 The next successful hook emits one counts-only line on stderr:
-`courier: N hook deliveries failed open since UTC_TIME`. The gap counter is reset under the log lock before emitting the line,
+`daemon: N hook deliveries failed open since UTC_TIME`. The gap counter is reset under the log lock before emitting the line,
 so a failed reset cannot duplicate it. Failure history is retained. With no failures there is no log file or
-gap line. `a2a courier status` prints `hook_failures`, `oldest_unreported` and the
+gap line. `a2a daemon status` prints `hook_failures`, `oldest_unreported` and the
 daemon sink's `log_dropped` counter.
 No native idle-wake reliability is established by a doorbell or these tests;
 external watchdog, sweep and soak qualification are separate work.
@@ -4279,7 +4280,7 @@ that owns a duplicate of the destination descriptor. The sink does not set
 a blocking write may retain one worker and its descriptors until its reader
 resumes; shutdown does not wait for that worker. The queue and pipe remain
 bounded. In-process embeddings can supply
-`NonblockingLogWriter` with a promptly returning `TryCourierLog`; unclassified
+`NonblockingLogWriter` with a promptly returning `TryDaemonLog`; unclassified
 writer adapters are dropped and counted rather than called without a cancellation
 contract. In-memory byte buffers and discarded output are also supported.
 Registry lookup uses shared locks so valid station hellos can run concurrently.
@@ -4288,7 +4289,7 @@ refusal after binding removes only the socket inode it created.
 
 Per-identity credential metadata may set `admission_policy` (default `none`); `a2a status admission --json` shows refusal counts only. See [admission](admission.md).
 
-## Courier notice monitor
+## Daemon notice monitor
 
 `a2a watch --notices [--json]` runs a counts-only, owner-bound engine watch.
 An enrolled station may add `--listen` to serve one output-only WebSocket
@@ -4308,12 +4309,12 @@ owner `inbox` still prints the untrusted body and receipts the exact event; the
 second inbox does not repeat it.
 
 The listener atomically publishes a single line, `ws://127.0.0.1:PORT/ CAPABILITY`
-plus LF, in `<A2A_CONFIG_DIR>/state/courier-notice-listener.endpoint`. The state
+plus LF, in `<A2A_CONFIG_DIR>/state/daemon-notice-listener.endpoint`. The state
 directory is 0700; the file is 0600, owned by the station user. Treat the entire
-file as a secret: never print, log or forward it to Courier. A local controller
+file as a secret: never print, log or forward it to a2a daemon. A local controller
 reads it privately and uses `Authorization: Bearer CAPABILITY` for the WebSocket
 upgrade. The sole path is `/`, with no query. Invalid credentials get HTTP 403
-`not_allowed`; a second authenticated client gets HTTP 409 `courier_busy`.
+`not_allowed`; a second authenticated client gets HTTP 409 `daemon_busy`.
 Malformed upgrades return a closed `not_allowed` body. Client data frames close
 with policy reason `not_allowed`; ping/pong control frames remain allowed.
 Each server text frame contains one canonical L01 JSON object. No remote
@@ -4323,9 +4324,9 @@ The engine invocation starts only after authentication. A successfully forwarded
 notice records `monitor.last_notice_at`; refused, stale, empty and failed
 outputs do not. This is transport delivery evidence, not an application receipt
 or proof that the controller woke the agent. Disconnect cancels the invocation
-and releases its consumer locks within five seconds. Courier death closes the
-WebSocket with `courier_unavailable`; absent keepalives close it with
-`courier_idle_timeout` at the 60-second C5 read deadline. Listener death drops
+and releases its consumer locks within five seconds. a2a daemon death closes the
+WebSocket with `daemon_unavailable`; absent keepalives close it with
+`daemon_idle_timeout` at the 60-second C5 read deadline. Listener death drops
 the socket; reconnect/alert policy belongs to the external controller.
 
 Normal stop removes only this generation's endpoint inode. SIGKILL cannot run

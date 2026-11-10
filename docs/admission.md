@@ -2,7 +2,7 @@
 
 `internal/admission` is a build-time seam for downstream policy implementations.
 Upstream imports no chain, signature, name registry or grant implementation and
-links only the stateless `none` checker. This is independent of Courier station
+links only the stateless `none` checker. This is independent of a2a daemon station
 enrollment and monitor admission.
 
 The optional credential metadata field `admission_policy` selects a registered
@@ -14,7 +14,7 @@ Unknown names refuse session startup with `admission: policy_unknown`.
 
 A checker is constructed when an authenticated or metadata session opens, and
 closed at invocation completion, including error exits. A long-lived consumer
-keeps its checker for its session. Courier constructs these sessions inside its
+keeps its checker for its session. a2a daemon constructs these sessions inside its
 daemon's per-invocation engine, beneath the authenticated identity home; stations
 neither construct checkers nor access their state. Each session receives:
 
@@ -28,7 +28,7 @@ type Config struct {
 
 `StateDir` is `<identity-base>/admission/<identity>/`, created with mode 0700.
 The base is the selected local credential namespace, or its counterpart inside
-Courier's identity home. It is derived by the engine, never supplied separately
+a2a daemon's identity home. It is derived by the engine, never supplied separately
 by a caller. Files are mode 0600; links and permissive files/directories are
 refused. Every current Matrix identity has `Nostr: false`.
 
@@ -131,7 +131,7 @@ support the engine's existing macOS/Linux targets; other targets fail closed.
 
 `a2a status admission --json` returns only `{"counts":{"denied":3}}` (an empty
 map if nothing was refused), scoped to the selected identity. No bodies,
-senders, room names, held records or spool contents are projected. Courier
+senders, room names, held records or spool contents are projected. a2a daemon
 allows this read-only query through its normal command boundary.
 
 Inbox, wait, watch, hook notices and unread counts read only the mailbox;

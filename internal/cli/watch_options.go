@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"github.com/relux-works/a2a-swarm/internal/courier"
+	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"strings"
 )
 
@@ -33,7 +33,7 @@ func parseWatchOptions(args []string) (watchOptions, error) {
 		return o, usagef("--all needs at least one --room")
 	}
 	if o.listen && !o.notices {
-		return o, courier.NotAllowed
+		return o, daemon.NotAllowed
 	}
 	o.predicates, err = p.check()
 	return o, err
@@ -41,7 +41,7 @@ func parseWatchOptions(args []string) (watchOptions, error) {
 
 // Serialize parsed semantics, rather than inserting transport flags into raw
 // argv: a trailing -- and values that look like flags must retain their meaning.
-func (o watchOptions) noticeListenerArgs(selection courier.Selection) []string {
+func (o watchOptions) noticeListenerArgs(selection daemon.Selection) []string {
 	args := []string{"watch", "--notices=true", "--listen=true", "--json=true"}
 	for _, field := range []struct{ name, value string }{
 		{"as", selection.As}, {"profile", selection.Profile}, {"connection-fingerprint", selection.Fingerprint},

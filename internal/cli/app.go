@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
-	"github.com/relux-works/a2a-swarm/internal/courier"
+	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/redact"
 	"github.com/relux-works/a2a-swarm/internal/voice"
@@ -31,9 +31,9 @@ const (
 // App carries the process environment so tests can run commands in-process.
 type App struct {
 	admissionSessions        []*identityAdmission
-	courierEngine            bool
-	courierLeaseConflict     bool
-	courierFiles             map[string]courier.InputFile
+	daemonEngine             bool
+	daemonLeaseConflict      bool
+	daemonFiles              map[string]daemon.InputFile
 	Stdout                   io.Writer
 	Stderr                   io.Writer
 	Stdin                    io.Reader
@@ -55,7 +55,7 @@ type App struct {
 	authorizeRegistration bool
 	beforeNamedPublish    func() error
 	connectionSecretStore connectionSecretStore
-	courierSecrets        config.CourierSecretStore // package-test-only; no external fake selection
+	daemonSecrets         config.DaemonSecretStore // package-test-only; no external fake selection
 	// human selects a human operator's own account (humans/<name>.json); never
 	// set by agents. It needs --as and ignores A2A_AGENT.
 	human   bool
@@ -144,7 +144,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"courier", "courier serve|register-station|unregister-station|enroll | migrate <identity> --to <courier-base> [--resume|--rollback]   local Courier, station enrollment and quiesced identity migration", cmdCourier},
+		{"daemon", "daemon serve|register-station|unregister-station|enroll|status | migrate <identity> --to <daemon-base> [--resume|--rollback]   local a2a daemon (a2ad), station enrollment and quiesced identity migration", cmdDaemon},
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room   named Matrix routing", cmdConnection},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
@@ -230,7 +230,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		a.HTTP = &http.Client{}
 	}
 	command := stationCommand(args)
-	if command != "fetch" && command != "courier" && command != "help" && command != "--help" && command != "-h" && command != "" && !a.courierEngine {
+	if command != "fetch" && command != "daemon" && command != "help" && command != "--help" && command != "-h" && command != "" && !a.daemonEngine {
 		if handled, code := a.stationInvocation(ctx, args); handled {
 			return code
 		}
@@ -254,13 +254,13 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	if len(rest) > 0 && rest[0] == "fetch" {
 		// Fetch help and flag errors have always been environment-free. Parse
-		// them before discovery; an executable fetch still reaches Courier's
+		// them before discovery; an executable fetch still reaches Daemon's
 		// closed command allowlist before credentials or filesystem effects.
 		if _, err := parseFetchFlags(a, rest[1:]); err != nil {
 			return a.fail(err)
 		}
 	}
-	if command == "fetch" && !a.courierEngine {
+	if command == "fetch" && !a.daemonEngine {
 		if handled, code := a.stationInvocation(ctx, args); handled {
 			return code
 		}
@@ -283,7 +283,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		if c.name == rest[0] {
 			// Enrollment is a local operator command; it must not read a
 			// connection, credentials, environment identity or owner-DM state.
-			if c.name == "courier" && len(rest) > 1 && rest[1] == "enroll" {
+			if c.name == "daemon" && len(rest) > 1 && rest[1] == "enroll" {
 				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// Stored association is effect-free and has its own closed JSON
@@ -291,9 +291,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			if c.name == "bind" && len(rest) > 1 && rest[1] == "association" {
 				return a.bindAssociation(rest[2:])
 			}
-			// Courier manages only its explicit local home and socket. Never run
+			// Daemon manages only its explicit local home and socket. Never run
 			// connection preflight or owner diagnostics on this path.
-			if c.name == "courier" {
+			if c.name == "daemon" {
 				return a.fail(c.run(ctx, a, rest[1:]))
 			}
 			// These inspections have their own routing-only validation. They

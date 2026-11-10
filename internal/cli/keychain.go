@@ -376,7 +376,7 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 }
 
 // writeLocked is called only under a credential reservation/guard, or by the
-// explicit Courier rollback while migration owns its credential lock and fence.
+// explicit Daemon rollback while migration owns its credential lock and fence.
 // It nests the provider lock inside the credential lock, never in reverse order.
 func (k *keychainStore) writeLocked(ctx context.Context, uid, token string) error {
 	if token == "" {

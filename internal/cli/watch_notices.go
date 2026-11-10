@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
-	"github.com/relux-works/a2a-swarm/internal/courier"
+	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
@@ -32,9 +32,9 @@ func (w *noticeWindow) ready(now time.Time, pending, priority bool) bool {
 }
 
 func (a *App) watchNotices(ctx context.Context, rooms []string, all, asJSON, listener bool, predicates deliveryPredicates) error {
-	// CM's notice owner lives in Courier. No ambient local session can arm it.
-	if !a.courierEngine {
-		return courier.NotAllowed
+	// CM's notice owner lives in Daemon. No ambient local session can arm it.
+	if !a.daemonEngine {
+		return daemon.NotAllowed
 	}
 	s, err := a.session()
 	if err != nil {
@@ -48,7 +48,7 @@ func (a *App) watchNotices(ctx context.Context, rooms []string, all, asJSON, lis
 		return config.ErrMonitorOwner
 	}
 	sessionID := a.Getenv(EnvSessionID)
-	if !courier.ValidSession(sessionID) {
+	if !daemon.ValidSession(sessionID) {
 		return config.ErrMonitorOwner
 	}
 	birthCtx, birthCancel := context.WithTimeout(ctx, time.Second)
@@ -60,11 +60,11 @@ func (a *App) watchNotices(ctx context.Context, rooms []string, all, asJSON, lis
 	}
 	var id [16]byte
 	if _, err = rand.Read(id[:]); err != nil {
-		return courier.Unavailable
+		return daemon.Unavailable
 	}
 	// The lease supplies only a candidate; L03 validates the owner's hash,
 	// runtime, freshness, host and exact existing lease again under its locks.
-	record := config.Monitor{Version: 1, Kind: "monitor", Runtime: "muse", Generation: hex.EncodeToString(id[:]), SessionID: sessionID, Host: machineLabel(), OwnerPID: st.Lease.PID, OwnerBirth: ownerBirth, ConsumerPID: os.Getpid(), ConsumerBirth: consumerBirth, Transport: "stdout", Phase: "streaming", HeartbeatEvery: courier.KeepaliveInterval, HeartbeatAt: time.Now().UTC()}
+	record := config.Monitor{Version: 1, Kind: "monitor", Runtime: "muse", Generation: hex.EncodeToString(id[:]), SessionID: sessionID, Host: machineLabel(), OwnerPID: st.Lease.PID, OwnerBirth: ownerBirth, ConsumerPID: os.Getpid(), ConsumerBirth: consumerBirth, Transport: "stdout", Phase: "streaming", HeartbeatEvery: daemon.KeepaliveInterval, HeartbeatAt: time.Now().UTC()}
 	err = config.WithMonitorGeneration(s.paths, s.name, time.Now().Add(time.Second), config.MonitorAutomatic, record, func(g *config.MonitorGeneration) error {
 		if err := g.RenewOwnerLease(record.Generation); err != nil {
 			return err
@@ -147,7 +147,7 @@ func (a *App) noticeLoop(ctx context.Context, s *session, g *config.MonitorGener
 			}
 			window.due = time.Time{}
 		}
-		poll := courier.KeepaliveInterval
+		poll := daemon.KeepaliveInterval
 		if !window.due.IsZero() && !st.HooksPaused {
 			poll = min(poll, max(time.Millisecond, time.Until(window.due)))
 		}

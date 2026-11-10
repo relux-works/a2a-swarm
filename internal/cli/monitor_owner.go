@@ -61,7 +61,7 @@ func (a *App) recordHookOwner(ctx context.Context, rt hookRuntime, ev hookEvent,
 		return err
 	}
 	deadline, _ := ctx.Deadline()
-	if a.courierEngine {
+	if a.daemonEngine {
 		err = config.RecordMonitorOwnerHookContext(ctx, p, name, deadline, rt.name, in.SessionID, ev.name, ev.arg == "stop" && in.StopReason == "exit", a.Now())
 	} else {
 		err = config.RecordMonitorOwnerHook(p, name, deadline, rt.name, in.SessionID, ev.name, ev.arg == "stop" && in.StopReason == "exit", a.Now())

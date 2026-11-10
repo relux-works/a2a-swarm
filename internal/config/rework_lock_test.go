@@ -28,7 +28,7 @@ func (c *observedLockContext) Err() error {
 // A real contender remains held after cancellation. Observing the first Err
 // snapshot ensures cancellation cannot bypass the first attempted flock. A
 // blocking-flock mutant must fail this test, even on a fast machine.
-func TestCourierContextFlockContender(t *testing.T) {
+func TestDaemonContextFlockContender(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestCourierContextFlockContender(t *testing.T) {
 	unlock()
 }
 
-func TestCourierRuntimeLockContext(t *testing.T) {
+func TestDaemonRuntimeLockContext(t *testing.T) {
 	for _, kind := range []string{"control", "consumer", "subscription-policy"} {
 		t.Run(kind, func(t *testing.T) {
 			root, err := filepath.EvalSymlinks(t.TempDir())
@@ -136,7 +136,7 @@ func TestCourierRuntimeLockContext(t *testing.T) {
 	}
 }
 
-func TestCourierPostJournalLockCancellation(t *testing.T) {
+func TestDaemonPostJournalLockCancellation(t *testing.T) {
 	for _, write := range []bool{false, true} {
 		t.Run(map[bool]string{false: "read", true: "write"}[write], func(t *testing.T) {
 			p, j := operationFixture(t)

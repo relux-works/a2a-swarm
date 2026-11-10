@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
-	"github.com/relux-works/a2a-swarm/internal/courier"
+	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -114,7 +114,7 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 	// nonblocking lock even at an expired deadline, so uncontended cleanup is
 	// possible without extending the original budget. Any contention is capped
 	// by both that budget and the consumer-release bound.
-	cleanupDeadline := time.Now().Add(courier.LockReleaseBound)
+	cleanupDeadline := time.Now().Add(daemon.LockReleaseBound)
 	if deadline.Before(cleanupDeadline) {
 		cleanupDeadline = deadline
 	}

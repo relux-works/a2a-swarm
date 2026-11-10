@@ -224,7 +224,7 @@ func TestStateJSONCurrentSchemaCaseVariants(t *testing.T) {
 				if _, err := LoadState(p, "a"); err == nil {
 					t.Fatal("null migration accepted")
 				}
-				seedStateJSON(t, p, `{"MIGRATION":{"phase":"in_progress","courier_base":"/fixture","at":"2026-01-02T03:04:05Z"}}`)
+				seedStateJSON(t, p, `{"MIGRATION":{"phase":"in_progress","daemon_base":"/fixture","at":"2026-01-02T03:04:05Z"}}`)
 				st, err := LoadState(p, "a")
 				if err != nil || st.Migration == nil {
 					t.Fatal("case-folded migration not typed", err)
