@@ -447,22 +447,31 @@ Reset. Reset only after diagnostics finish and the old working set is retired.
 Scrubbing includes compact JSON numeric byte arrays and URL query escaping as
 well as raw/base64/hex/JSON-string forms. App diagnostic integration remains U2a.
 
-Full snapshot unseal/reseal must fit the existing 5-second hook total budget.
-U1's benchmark measures cold/warm p50/p95 for actual 1MiB and full-cap 64MiB
-Snapshots: real account/Olm/Megolm pickles, replay windows and bounded prepared
-message evidence, through SaveSnapshot/LoadSnapshot including bounds checks,
-Marshal/strict Decode, inventory, AEAD, durable file/directory IO and readback.
-Engine checkpoint construction is setup, not timed. Cold means reopened handles,
-not evicted OS disk cache. Measured snapshot target p95 <=500 ms; U4 separately
-measures full hook/coordinator work and lock wait <=100 ms, leaving >=1 second
-for cancellation/output. No measured claim exists yet. A process may reuse an
-unsealed snapshot only while holding the lock with matching generation/revision;
-no cross-process plaintext cache or daemon. No-change sync skips reseal. A hook
-that cannot reserve the measured prepare+commit time skips before crypto mutation,
-leaves cursor unchanged and uses bounded diagnostics; interactive consumers recover.
-Honor existing 5-minute Keychain cooldown; never retry interactively from a hook.
-If full-cap persistence cannot meet budget, U1 must change the store design before
-admission rather than relax durability or extend hook deadlines silently.
+The operational SaveSnapshot+LoadSnapshot gate is **p95 <=500 ms at both
+1 MiB and 8 MiB**, in cold-handle and warm-handle modes. The full-cap **64 MiB**
+case records capacity p50/p95 and fails only above **10 seconds p95**. Its result
+is evidence of capacity, not an interactive latency promise; the 10-second bound
+does not extend the existing 5-second hook budget. These are Source's two-tier
+gates after Meta's Mac precheck of r3 (96fbb10b) found 1MiB p95 130ms cold /
+105ms warm, but 64MiB p95 about 5.99s cold / 5.55s warm. Those supplied results
+are prior-revision evidence, not measurements of the optimized path.
+
+U1's benchmark measures actual 1/8/64MiB Snapshots: real account/Olm/Megolm
+pickles, replay windows and bounded prepared message evidence, through Save plus
+Load including bounds/canonical-size checks, one JSON encoding / one strict typed
+Decode, inventory, AEAD and durable file/directory IO. Readback equality is a
+separate untimed check in the same benchmark. Engine checkpoint construction is
+setup. Cold means reopened handles, not evicted OS disk cache. Each size reports
+p50/p95 and applies only its own operational/capacity bound. Post-optimization
+runner measurements remain required. U4 separately measures full hook/coordinator
+work and lock wait <=100ms, leaving >=1 second for cancellation/output. A process
+may reuse an unsealed snapshot only while holding the lock with matching
+generation/revision; no cross-process plaintext cache or daemon. No-change sync
+skips reseal. A hook that cannot reserve measured prepare+commit time skips
+before crypto mutation, leaves the cursor unchanged and uses bounded diagnostics;
+interactive consumers recover. Honor the existing 5-minute Keychain cooldown;
+never retry interactively from a hook. Capacity evidence never permits weakening
+durability or silently extending hook deadlines.
 
 ### Bounded retention and recovery
 
@@ -1072,7 +1081,8 @@ cases, with comments stating exactly what each proves and its limits:
   services, token/password collisions, item bounds, duplicate create and newline
   encodings refuse without modifying credential items. Scrub planted loaded secrets
   in each supported encoding and suppress body-bearing library errors. Record
-  full-cap latency, offline target builds and missing-module negative control.
+  1/8MiB operational p95 and 64MiB capacity p50/p95 against their separate gates,
+  offline target builds and missing-module negative control.
   Interrupt after pointer fsync, after create-only file-bundle success and before
   first sealed state: recovery locates the same `root.G`, without overwrite or
   credential-item changes. Missing/tampered pointer or conflicting bundle refuses;

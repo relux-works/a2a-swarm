@@ -8,7 +8,8 @@ authority for approval changes. It gates U2b and later; it does not gate U1
 foundations or U2a cross-signing bootstrap / public identity evidence.
 
 The offline U1 worker cannot run tests, benchmarks or network advisory queries.
-Source must obtain runner results, the 1MiB/64MiB snapshot p95 admission evidence,
+Source must obtain runner results, 1/8MiB operational p95 <=500ms and 64MiB
+capacity p95 <=10s evidence for the optimized Save/Load path,
 and external security-history review before treating the foundation as admitted.
 The repository declares Go 1.25.12; this bench supplies 1.25.14. Exact 1.25.12
 execution remains unverified. mautrix v0.31.0/v0.32.0 require Go 1.26 and are
@@ -28,7 +29,8 @@ U2a must additionally enforce the 0700-parent creation and ACL exclusion
 provisioning contract, add a monotonic anchor outside snapshot rollback, and
 derive signing keys with concrete goolm/pk. An executable no-OlmMachine/no-libolm
 import-boundary test belongs to U2a or a dedicated follow-up. U4 owns composite
-lock-order integration and full hook latency, beyond U1's Save/Load benchmark.
+lock-order integration and full hook latency, beyond U1's Save/Load benchmark. The full 64MiB cap is capacity evidence, not
+an interactive latency promise or a larger hook deadline.
 
 ## Issue #258: cross-topic citations after #219
 

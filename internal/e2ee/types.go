@@ -86,8 +86,16 @@ func text(s string, max int) bool {
 	return true
 }
 func hexSize(s string, n int) bool {
-	b, e := hex.DecodeString(s)
-	return e == nil && len(b) == n && hex.EncodeToString(b) == s
+	// Exact lowercase hex needs no decode/re-encode allocation per replay digest.
+	if len(s) != 2*n {
+		return false
+	}
+	for i := range len(s) {
+		if !(s[i] >= '0' && s[i] <= '9' || s[i] >= 'a' && s[i] <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Binding is authenticated in every snapshot and repeated in pointer/root readback.

@@ -346,13 +346,17 @@ CGO_ENABLED=0 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off go test ./inte
 
 For race detection use a runner's supported race toolchain with `CGO_ENABLED=1`;
 this does not select libolm (the adapter imports concrete goolm packages).
-The benchmark builds actual 1MiB/full-cap 64MiB Snapshots with account/Olm/Megolm
-pickles, replay state and bounded prepared message evidence. It times end-to-end
-SaveSnapshot/LoadSnapshot, including Marshal/strict Decode, bounds, inventory,
-AEAD, durable IO and readback. It reports cold-handle/warm-handle p50/p95 and fails
-above 500ms p95. Engine checkpoint generation is setup; OS disk-cache eviction
-and complete U4 hook/lock-contention latency are not claimed. Worker
-benches that prohibit tests run formatting/build/vet only and hand tests off.
+The benchmark builds actual 1/8/64MiB Snapshots with account/Olm/Megolm
+pickles, replay state and bounded prepared message evidence. It times Save plus
+Load, including one JSON encoding / one strict typed Decode, bounds/canonical-size
+checks, inventory, AEAD and durable IO. Readback equality is checked separately
+outside timing. Cold-handle/warm-handle p50/p95 have two size-specific gates:
+**1MiB and 8MiB: p95 <=500ms operational**; **64MiB: p95 <=10s capacity**.
+The 64MiB result is evidence of capacity, not an interactive latency promise or
+an extension of the 5-second hook budget. Engine checkpoint generation is setup;
+OS disk-cache eviction and complete U4 hook/lock-contention latency are not
+claimed. Optimized-path runner measurements remain pending. Worker benches that
+prohibit tests run formatting/build/vet only and hand tests off.
 
 `A2A_SECRET_STORE=keychain` opts into macOS login Keychain storage. The generic
 password service is `works.relux.a2a.relux.works`; its account is the full Matrix

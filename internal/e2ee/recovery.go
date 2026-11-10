@@ -1,6 +1,9 @@
 package e2ee
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // Cursor identity includes the batch digest and revision: matching a token alone
 // never proves that a prepared batch was committed.
@@ -66,21 +69,47 @@ func (l *LockedStore) SaveSnapshot(c *Codec, b Binding, s Snapshot, createOnly b
 	if s.Prepared != nil && s.Prepared.Generation != b.Generation {
 		return ErrIntegrity
 	}
-	raw, err := s.Marshal()
+	size, err := s.validate()
 	if err != nil {
 		return err
 	}
-	return l.WriteSealed(c, b, raw, createOnly)
+	// Encoder buffers internally, but writes directly into our AEAD input buffer.
+	// Reserve the binary header/nonce and tag, then remove Encode's final newline.
+	// Seal appends at the prefix and encrypts this exact plaintext range in place.
+	buffer := bytes.NewBuffer(make([]byte, 24, size+envelopeOverhead+1))
+	if err = json.NewEncoder(buffer).Encode(s); err != nil {
+		return ErrCodec
+	}
+	encoded := buffer.Bytes()
+	if len(encoded) != 24+size+1 || encoded[len(encoded)-1] != '\n' {
+		return ErrCodec
+	}
+	raw := encoded[24 : len(encoded)-1]
+	c.secrets.observeSnapshot(s, raw)
+	sealed, err := c.sealInto(b, encoded[:24], raw)
+	if err != nil {
+		return err
+	}
+	return l.publish("state.bin", sealed, createOnly)
 }
 func (l *LockedStore) LoadSnapshot(c *Codec, b Binding) (Snapshot, error) {
-	raw, err := l.ReadSealed(c, b)
+	sealed, err := l.read("state.bin", MaxSnapshot+envelopeOverhead)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	raw, err := c.unseal(b, sealed)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	c.secrets.Register(raw)
 	s, err := DecodeSnapshot(raw)
 	if err != nil {
+		// Preserve inventory coverage for rejected input too; only the cold
+		// error path needs a generic parse of an invalid storage value.
+		c.secrets.ObserveJSON(raw)
 		return Snapshot{}, err
 	}
+	c.secrets.observeSnapshot(s, nil)
 	if s.Prepared != nil && s.Prepared.Generation != b.Generation {
 		return Snapshot{}, ErrIntegrity
 	}

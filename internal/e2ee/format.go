@@ -61,3 +61,7 @@ type inventoryFormat struct{}
 func (inventoryFormat) String() string                   { return "<e2ee-secret-inventory>" }
 func (v inventoryFormat) GoString() string               { return v.String() }
 func (v inventoryFormat) Format(state fmt.State, _ rune) { formatLabel(state, v.String()) }
+
+func (jsonScan) String() string                   { return "<e2ee-json-scan>" }
+func (v jsonScan) GoString() string               { return v.String() }
+func (v jsonScan) Format(state fmt.State, _ rune) { formatLabel(state, v.String()) }

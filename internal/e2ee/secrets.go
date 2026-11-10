@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/url"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/relux-works/a2a-swarm/internal/redact"
 )
@@ -171,4 +173,71 @@ func (s *Inventory) ObserveJSON(data []byte) {
 		}
 	}
 	walk(v)
+}
+
+// observeSnapshot inventories the already-typed storage value. It preserves the
+// generic JSON observer's string/base64 and fixed-array coverage without decoding
+// a second full snapshot into map[string]any. Only opaque evidence needs that
+// walk; the schema reflection metadata is shared with the canonical size counter.
+func (s *Inventory) observeSnapshot(snapshot Snapshot, raw []byte) {
+	if s == nil {
+		return
+	}
+	s.Register(raw)
+	var walk func(reflect.Value)
+	walk = func(v reflect.Value) {
+		if v.Type() == rawJSONType {
+			s.ObserveJSON(v.Bytes())
+			return
+		}
+		switch v.Kind() {
+		case reflect.Pointer:
+			if !v.IsNil() {
+				walk(v.Elem())
+			}
+		case reflect.Struct:
+			for _, field := range snapshotFields[v.Type()] {
+				walk(v.Field(field.index))
+			}
+		case reflect.String:
+			value := v.String()
+			s.Register([]byte(value))
+			if !utf8.ValidString(value) {
+				value = string([]rune(value))
+				s.Register([]byte(value))
+			}
+			if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
+				s.Register(decoded)
+			}
+		case reflect.Slice:
+			if v.Type().Elem().Kind() == reflect.Uint8 {
+				if !v.IsNil() {
+					s.Register(v.Bytes())
+					s.Register([]byte(base64.StdEncoding.EncodeToString(v.Bytes())))
+				}
+				return
+			}
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		case reflect.Array:
+			if v.Type().Elem().Kind() == reflect.Uint8 && v.Len() >= 16 {
+				raw := make([]byte, v.Len())
+				for i := range raw {
+					raw[i] = byte(v.Index(i).Uint())
+				}
+				s.Register(raw)
+				return
+			}
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		case reflect.Map:
+			iter := v.MapRange()
+			for iter.Next() {
+				walk(iter.Value())
+			}
+		}
+	}
+	walk(reflect.ValueOf(snapshot))
 }

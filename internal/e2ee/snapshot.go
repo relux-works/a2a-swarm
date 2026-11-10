@@ -51,8 +51,31 @@ func (c *Codec) Seal(b Binding, raw []byte) ([]byte, error) {
 		return nil, ErrCapacity
 	}
 	c.secrets.ObserveJSON(raw)
+	return c.seal(b, raw)
+}
+
+// Typed snapshot IO inventories its existing value instead of parsing JSON again.
+func (c *Codec) seal(b Binding, raw []byte) ([]byte, error) {
+	if !b.valid() {
+		return nil, ErrInvalid
+	}
+	if len(raw) > MaxSnapshot {
+		return nil, ErrCapacity
+	}
+	out := make([]byte, 24, len(raw)+envelopeOverhead)
+	return c.sealInto(b, out, raw)
+}
+
+// sealInto permits exact plaintext/output overlap after the envelope prefix.
+// Typed Save encodes into this owned buffer; raw Seal keeps caller input intact.
+func (c *Codec) sealInto(b Binding, out, raw []byte) ([]byte, error) {
+	if !b.valid() {
+		return nil, ErrInvalid
+	}
+	if len(raw) > MaxSnapshot {
+		return nil, ErrCapacity
+	}
 	a := c.aead()
-	out := make([]byte, 12+a.NonceSize(), len(raw)+envelopeOverhead)
 	copy(out, snapshotMagic)
 	binary.BigEndian.PutUint32(out[8:12], uint32(len(raw)))
 	nonce := out[12:]
@@ -63,6 +86,13 @@ func (c *Codec) Seal(b Binding, raw []byte) ([]byte, error) {
 	return a.Seal(out, nonce, raw, auth), nil
 }
 func (c *Codec) Unseal(b Binding, sealed []byte) ([]byte, error) {
+	raw, err := c.unseal(b, sealed)
+	if err == nil {
+		c.secrets.ObserveJSON(raw)
+	}
+	return raw, err
+}
+func (c *Codec) unseal(b Binding, sealed []byte) ([]byte, error) {
 	if !b.valid() {
 		return nil, ErrInvalid
 	}
@@ -78,7 +108,6 @@ func (c *Codec) Unseal(b Binding, sealed []byte) ([]byte, error) {
 	if err != nil {
 		return nil, ErrIntegrity
 	}
-	c.secrets.ObserveJSON(raw)
 	return raw, nil
 }
 func (l *LockedStore) WriteSealed(c *Codec, b Binding, raw []byte, createOnly bool) error {
@@ -106,59 +135,69 @@ type Snapshot struct {
 	Prepared  *Prepared               `json:"prepared,omitempty"`
 }
 
-func (s Snapshot) Marshal() ([]byte, error) {
+// validate checks the single value, including exact canonical encoded budgets.
+// It does not marshal it or decode it again. Opaque evidence is scanned at its
+// actual nesting depth; all other fields are generated from the typed schema.
+func (s Snapshot) validate() (int, error) {
 	if s.Version != 1 || s.Revision == 0 || s.Engine.Version != 1 {
-		return nil, ErrCodec
+		return 0, ErrCodec
 	}
 	if err := s.validateBounds(); err != nil {
-		return nil, err
+		return 0, err
 	}
 	for _, pin := range s.Pins {
 		if err := pin.Validate(); err != nil {
-			return nil, err
+			return 0, err
 		}
 	}
-	// Reserve space independently of current prepared size. Protected evidence is
-	// never evicted to fit a batch; the caller must prune or stop before mutation.
-	base := s
-	base.Prepared = nil
-	raw, err := json.Marshal(base)
+	base, prepared, total, err := snapshotSizes(s)
 	if err != nil {
-		return nil, ErrCodec
+		return 0, err
 	}
-	if len(raw) > MaxSnapshot-RecoveryReserve {
-		return nil, ErrCapacity
+	if base > MaxSnapshot-RecoveryReserve {
+		return 0, ErrCapacity
 	}
-	if s.Prepared != nil {
-		p, err := json.Marshal(s.Prepared)
-		if err != nil {
-			return nil, ErrCodec
-		}
-		if len(p) > RecoveryReserve || !s.Prepared.valid() {
-			return nil, ErrCapacity
-		}
+	if s.Prepared != nil && (prepared > RecoveryReserve || !s.Prepared.valid()) {
+		return 0, ErrCapacity
 	}
-	raw, err = json.Marshal(s)
+	return total, nil
+}
+
+func (s Snapshot) Marshal() ([]byte, error) {
+	size, err := s.validate()
+	if err != nil {
+		return nil, err
+	}
+	// Public owned-JSON helper: one standard-library encoding. SaveSnapshot uses
+	// Encoder directly into its AEAD input buffer with the same value validation.
+	raw, err := json.Marshal(s)
 	if err != nil {
 		return nil, ErrCodec
 	}
 	if len(raw) > MaxSnapshot {
 		return nil, ErrCapacity
 	}
-	// Opaque prepared evidence must not make our own output unreadable (e.g.
-	// duplicate fields or excessive nesting). Validate before any publication.
-	var check Snapshot
-	if err := strictJSON(raw, &check, MaxSnapshot); err != nil {
-		return nil, err
+	// A schema/size-counter drift must fail closed, never silently weaken either
+	// partition budget. This check uses the sole encoded output, without parsing it.
+	if len(raw) != size {
+		return nil, ErrCodec
 	}
 	return raw, nil
 }
 func DecodeSnapshot(raw []byte) (Snapshot, error) {
-	var s Snapshot
-	if err := strictJSON(raw, &s, MaxSnapshot); err != nil {
+	if len(raw) > MaxSnapshot {
+		return Snapshot{}, ErrCodec
+	}
+	if _, err := scanJSON(raw, 0); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := s.Marshal(); err != nil {
+	var s Snapshot
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&s); err != nil {
+		return Snapshot{}, ErrCodec
+	}
+	if _, err := s.validate(); err != nil {
 		return Snapshot{}, err
 	}
 	return s, nil
