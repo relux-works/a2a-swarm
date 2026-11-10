@@ -20,9 +20,9 @@ import (
 // FileStore is a directory capability, not a path subsequently resolved again.
 // Its explicit root must be owned by the effective UID, mode exactly 0700. U1
 // wires it to no production path and has no home/env/local-base fallback. U2a
-// may wire only a Courier identity home whose daemon runs as the dedicated
+// may wire only an a2ad identity home whose daemon runs as the dedicated
 // service user (_a2a), excluding the agent user's access to all custody. A local
-// non-Courier identity gets no custody. This library never changes UID or repairs
+// identity outside a2ad gets no custody. This library never changes UID or repairs
 // permissions; effective-UID checking alone does not prove the service-user role.
 type FileStore struct {
 	dir   *os.File

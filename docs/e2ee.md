@@ -314,11 +314,11 @@ Files are regular 0600, with the same owner/no-symlink checks. No constructor
 default, environment override, agent-home or local-base fallback exists.
 
 Production wiring is a U2a obligation: custody is available only under the
-Courier home of an identity whose daemon runs as the dedicated service user
+identity home managed by a2ad running as the dedicated service user
 (`_a2a`), with the ordinary agent user unable to read or write that custody. This
 includes device keys, cross-signing keys and the Q2 password. Effective-UID checks
 alone do not establish that service-user boundary; U2a must enforce it before
-opening the store. A local, non-Courier identity gets no custody. An agent-owned
+opening the store. A local identity outside a2ad gets no custody. An agent-owned
 0700 directory is not a valid production substitute.
 
 U2a provisioning must supply an effective-UID-owned 0700 parent if the backend
@@ -326,7 +326,7 @@ is to create the final root; it creates no ancestors. Alternatively the host
 pre-creates the exact 0700 root under a safe existing parent. The backend checks
 mode bits/UID, not ACLs: provisioning must inspect/remove any ACL granting the
 ordinary agent UID access to the root or its custody files. A successful open
-alone is not proof of the Courier service-user/ACL boundary.
+alone is not proof of the a2ad service-user/ACL boundary.
 
 Store full identity, device and binding in authenticated metadata. No
 cross-profile/name fallback. Endpoint/backend/device changes need explicit
@@ -338,7 +338,7 @@ There are no per-use prompts and no MVP backup; new-device recovery is explicit.
 | Root-secret bundle | Version/generation, three 32-byte cross-signing seeds, random 32-byte wrapping key; immutable per generation. |
 | `<crypto-dir>/generation.json` | Strict versioned pointer containing `G`, namespace digest `N`, binding, full MXID and device; regular 0600 file in the 0700 crypto dir defined above, no symlinks. File fsync, create-only publish and directory/created-parent fsync **before** creating the root item/bundle. |
 | `state.bin` in crypto dir | U1 binary codec v1: fixed magic/version, bounded payload length, fresh 12-byte nonce and AES-256-GCM ciphertext/tag; AAD binds header, binding, MXID, device and generation. File fsync, atomic rename, directory fsync. |
-| Sealed payload | Versioned strict JSON with explicit goolm pickles, trust pins, replay windows/retirement tombstones and prepared evidence. U3/U4 extend typed evidence for context, verdicts and outbox before activation. Unknown/duplicate JSON fields and unknown pickle versions refuse; embedded library allocation counts are validated before unpickling. |
+| Sealed payload | Versioned strict JSON with explicit goolm pickles, trust pins, replay windows/retirement tombstones and prepared evidence. U3/U4 extend typed evidence for context, verdicts and outbox before activation. Unknown fields, exact decoded duplicate JSON member names and unknown pickle versions refuse; embedded library allocation counts are validated before unpickling. Compatibility aliases remain subject to the canonical-only inventory limit below. |
 | `refusals.jsonl` | Bounded compactable metadata journal with monotonic sequence; no content, ciphertext or secret material. |
 | `crypto.lock` | Exclusive OS lock for mutation and crypto-dependent admission/output/send. |
 | Active delivery generation | Versioned state/mailbox/output paths and legacy-path fence, described in section 5. |
@@ -447,12 +447,34 @@ Reset. Reset only after diagnostics finish and the old working set is retired.
 Scrubbing includes compact JSON numeric byte arrays and URL query escaping as
 well as raw/base64/hex/JSON-string forms. App diagnostic integration remains U2a.
 
+Typed inventory equivalence with the prior generic observer is guaranteed for
+canonical encodings emitted by the snapshot writer, not every AEAD-valid spelling
+accepted by `encoding/json`. Case-insensitive struct-member aliases (for example,
+`account` and `Account`) and numeric map-key spelling aliases (`1` and `01`) can
+overwrite earlier values during typed decoding, leaving those values outside the
+typed inventory walk. Stored noncanonical base64 forms can also normalize on
+decode, losing their original spelling. Constructing an altered AEAD-valid
+snapshot requires the per-generation wrapping key. The legacy compatibility
+oracle shares alias gaps and does not prove these limits absent. Scanner/decoder
+compatibility is preserved here; rejecting or otherwise inventorying these forms
+remains unresolved future hardening, not a claim of this unit.
+
+Snapshot JSON has a maximum absolute value depth of 32, with the root at depth 0.
+Prepared evidence starts at depth 2: 30 nested arrays around a scalar reach depth
+32 and must save/load; 31 reach depth 33 and must refuse with `ErrCodec` before
+publishing `state.bin`, preserving the prior bytes and loadable snapshot.
+
 The operational SaveSnapshot+LoadSnapshot gate is **p95 <=500 ms at both
 1 MiB and 8 MiB**, in cold-handle and warm-handle modes. The full-cap **64 MiB**
 case records capacity p50/p95 and fails only above **10 seconds p95**. Its result
 is evidence of capacity, not an interactive latency promise; the 10-second bound
-does not extend the existing 5-second hook budget. These are Source's two-tier
-gates after Meta's Mac precheck of r3 (96fbb10b) found 1MiB p95 130ms cold /
+does not extend the existing 5-second hook budget. These two-tier gates are
+Source's engineering decision, not owner ratification. A full-cap save can exceed
+that hook budget. U2a/U3 must keep full-cap saves off the hook path with a
+pre-mutation size/latency guard or an equivalent separately admitted design;
+that wiring is not implemented by this follow-up. Hosted CI does not run the
+capacity benchmark, and this follow-up supplies no new performance results.
+Meta's Mac precheck of r3 (96fbb10b) found 1MiB p95 130ms cold /
 105ms warm, but 64MiB p95 about 5.99s cold / 5.55s warm. Those supplied results
 are prior-revision evidence, not measurements of the optimized path.
 
@@ -940,8 +962,9 @@ contracts and refuse encrypted selections with `e2ee_operation_unsupported`.
 ### Acceptance runbook (future authorized U5, not run for this revision)
 
 Zero here means no agent identity/crypto state; host routing/registration admission
-and the dedicated service-user Courier identity home must first be provisioned
-by the host. A local non-Courier identity cannot use this custody/runbook. This sequence deliberately uses the existing
+and the a2ad identity home under the dedicated service user must first be
+provisioned by the host. A local identity outside a2ad cannot use this custody/runbook.
+This sequence deliberately uses the existing
 Q2 password section in daemon file custody after U2a registration wiring.
 Q4 must be resolved before this U5 run. Owner supplies a named `PROFILE`, host registration admission and
 principal public pins. After registration the owner creates a **separate** encrypted
@@ -1063,7 +1086,7 @@ of `client.go`, and integration is finished before U5 acceptance.
 | Unit | Owned output / integration boundary | Likely files |
 | --- | --- | --- |
 | U1: dependency/store foundations | Offline closure, typed pure-Go engine adapter, secret inventory, sealed codec/durability, replay/pruning primitives, identity-wide crypto locking (composite ordering integrates in U4), Q1 file custody and durable `root.G` pointer, Q2 create-only password-section adapter and latency benchmark. No keychain implementation. Tests/benchmarks run on approved runners, not the Source worker bench. | `go.mod`, `go.sum`, new `internal/e2ee/`; Curator vendor/pin delivery remains Source's integration obligation. |
-| U2a: cross-signing bootstrap and identity evidence | A1 Courier-only custody root/service-user wiring, excluding agent access and refusing local non-Courier identities; Q2 onboarding/admin-registration wiring; passwordless first cross-signing upload and automatic stored-password UIA fallback; initial host-pin reader/validation and Element owner-signature verification using pinned MSK/USK evidence; init and `a2a e2ee identity show`. Live Element ceremony witness required before shipment. No owner password steps. Publishes public evidence for the grant key-binding node. | `internal/cli/account.go`, `connection_registration.go`, `credentials.go`, new `e2ee.go`; matrix key/UIA methods and trust adapter. |
+| U2a: cross-signing bootstrap and identity evidence | A1 a2ad-only custody root/service-user wiring, excluding agent access and refusing local identities outside a2ad; Q2 onboarding/admin-registration wiring; passwordless first cross-signing upload and automatic stored-password UIA fallback; initial host-pin reader/validation and Element owner-signature verification using pinned MSK/USK evidence; init and `a2a e2ee identity show`. Live Element ceremony witness required before shipment. No owner password steps. Publishes public evidence for the grant key-binding node. | `internal/cli/account.go`, `connection_registration.go`, `credentials.go`, new `e2ee.go`; matrix key/UIA methods and trust adapter. |
 | U2b: remaining identity trust/lifecycle | Rest of U2: principal-root revision + 1/re-ceremony, Q4 device admission/approval transitions, refresh/status and explicit new-device recovery/rotation. Q4 is still a gate. | Trust/pin adapter, crypto lifecycle and CLI status/refresh/recovery. |
 | Grant key binding (after U2a) | Bind Swarma grant keys to the public identity evidence using the authoritative platform contract when available. Separate node, no invented grant/key formats in U1. | Separate platform scope. |
 | U3: room/send/history interfaces | Shared accepted-event/evidence contract and versioned matrix response/state/key APIs; quarantined join/leave of owner-created DMs only, context reconciliation primitives and recipient snapshots, durable outbox, topic/root/history decrypt, outbound files/voice/raw-send refusal audit. No agent room creation. | `internal/matrix/client.go`, `txn.go`; actual `internal/cli/room.go`, `account.go`, `topics.go`, send/media callers, crypto adapter. |
@@ -1162,7 +1185,7 @@ These decisions do not authorize activation or bypass runner/review gates.
 
 | Question | Options | Recommendation | Consequence / owning unit |
 | --- | --- | --- | --- |
-| Q1: root custody and recovery — A1 boundary | File custody on macOS and Linux under the dedicated daemon service user (`_a2a`), never readable/writable by the ordinary agent user. | U1 takes an explicit root, no production wiring. Exact effective-UID ownership, 0700 directory, 0600 files; never repairs. U2a wires only to the Courier identity home with the dedicated service-user daemon. Local non-Courier identities get no custody; no local-base/home fallback or environment override. No per-use prompt. | No OS keychain backend in U1; only a typed seam for a future prompt-free `_a2a` backend. Explicit new-device recovery, no MVP backup. Adjacent wrapping key does not protect whole-directory theft. U1 owns storage; U2a enforces production root/user selection and U2b owns later lifecycle. |
+| Q1: root custody and recovery — A1 boundary | File custody on macOS and Linux under the dedicated daemon service user (`_a2a`), never readable/writable by the ordinary agent user. | U1 takes an explicit root, no production wiring. Exact effective-UID ownership, 0700 directory, 0600 files; never repairs. U2a wires only to an a2ad identity home with the dedicated service-user daemon. Local identities outside a2ad get no custody; no local-base/home fallback or environment override. No per-use prompt. | No OS keychain backend in U1; only a typed seam for a future prompt-free `_a2a` backend. Explicit new-device recovery, no MVP backup. Adjacent wrapping key does not protect whole-directory theft. U1 owns storage; U2a enforces production root/user selection and U2b owns later lifecycle. |
 | Q2: password custody / UIA — A+B decided | a2a generates a per-agent password during onboarding; the admin sets it at registration. | Fixed service + full-MXID section in Q1 file custody; only a2a reads it, card contains section reference only. Password serves key reset. | First cross-signing upload is passwordless where allowed; a2a supplies the password whenever UIA asks, with no owner steps. U1 owns the bounded create-only store adapter; U2a owns registration/UIA. Discarded existing passwords remain unavailable until an explicit recovery route. |
 | Q3: owner verification / rotation — Source r2 resolution | Owner signs the agent master with standard Element cross-signing; host/root writes public pins containing owner MSK and USK, both fingerprinted, plus the MSK signature over the USK. | `/keys/query` returns USKs only for the requesting user; an agent cannot fetch the owner's USK. U2a verifies the host-pinned MSK -> USK evidence and then the USK signature on the agent's own queried MSK. A rotating owner root has a new fingerprint, revision + 1 and the same ceremony. | U1 retains and structurally validates this public proof shape, without network code. The resolved visibility constraint does not block U1. A live Element ceremony witness is required before U2a ships; U2b handles revision/re-ceremony transitions. No local trust boolean or agent-written pin. |
 | Q4: admission of future devices | Automatically admit a newly observed valid cross-signed device under the pinned master; require explicit approval of each device ID plus valid chain. For explicit mode decide who authorizes additions/removals: owner only, or a separately defined delegated host authority. | Owner authorizes each `approved_devices` change; host atomically provisions revision + 1 in a coordinated window. Apply section 3's fresh-query/revalidation/session-rotation transition; unchanged roots need no repeated Q3. | More owner provisioning when devices change; host provisioning alone is not delegated approval. Automatic option ignores `approved_devices` as authority, delegates admission to peer cross-signing-key custody and still cannot prove server freshness. U2/U3/U4 implement only the chosen policy, preserve tombstones/final refusals and withhold removed-device output/sharing. |

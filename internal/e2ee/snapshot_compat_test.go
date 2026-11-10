@@ -126,8 +126,9 @@ func TestSnapshotStrictRoundTripEquivalence(t *testing.T) {
 	}
 }
 
-// Control: exact encoding/json lengths include HTML/Unicode escaping, integer
-// boundaries, nil/empty collections, base64 pickles and numeric refusal arrays.
+// Control: exact encoding/json lengths include UTF-8 and control escapes in map
+// keys, cursor strings and evidence, plus integer boundaries, nil/empty
+// collections, base64 pickles and numeric refusal arrays.
 // Witness: UTF-8 key normalization collisions and opaque duplicate evidence
 // remain ErrCodec; compact input that expands beyond the reserve stays refused.
 func TestSnapshotCanonicalSizeEquivalence(t *testing.T) {
@@ -151,23 +152,32 @@ func TestSnapshotCanonicalSizeEquivalence(t *testing.T) {
 	cases[2].Engine = EngineState{Version: 1, Account: []byte{}, Olm: map[string][]byte{"<>&\"\n\u2028\u2029\xff": {0, 128, 255}}, Inbound: map[string][]byte{}, Outbound: map[string][]byte{}}
 	cases[2].Replay = map[string]ReplayWindow{}
 	cases[3].Prepared = &Prepared{Generation: prepared.Generation, Since: prepared.Since, Next: prepared.Next, Digest: digest, Evidence: json.RawMessage("null")}
-	for i, s := range cases {
+	checkCanonicalSize := func(t *testing.T, s Snapshot) {
+		t.Helper()
 		raw, err := json.Marshal(s)
 		if err != nil {
 			t.Fatal(err)
 		}
 		b := s
 		b.Prepared = nil
-		baseRaw, _ := json.Marshal(b)
+		baseRaw, err := json.Marshal(b)
+		if err != nil {
+			t.Fatal(err)
+		}
 		baseSize, preparedSize, total, err := snapshotSizes(s)
 		if err != nil || baseSize != len(baseRaw) || total != len(raw) {
-			t.Fatalf("size control %d", i)
+			t.Fatalf("size control: base=%d want=%d total=%d want=%d err=%v", baseSize, len(baseRaw), total, len(raw), err)
 		}
 		if s.Prepared != nil {
-			p, _ := json.Marshal(s.Prepared)
+			p, err := json.Marshal(s.Prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if preparedSize != len(p) {
 				t.Fatal("prepared size control")
 			}
+		} else if preparedSize != 0 {
+			t.Fatal("absent prepared size control")
 		}
 		old, err := legacySnapshotMarshal(s)
 		if err != nil {
@@ -177,6 +187,48 @@ func TestSnapshotCanonicalSizeEquivalence(t *testing.T) {
 		if err != nil || !bytes.Equal(old, new) {
 			t.Fatal("canonical bytes control", err)
 		}
+	}
+	for i, s := range cases {
+		t.Run(fmt.Sprintf("fixture-%d", i), func(t *testing.T) {
+			checkCanonicalSize(t, s)
+		})
+	}
+	// Each placement uses encoding/json as the byte/length oracle, rather than
+	// reproducing the counter. The 2/3/4-byte runes catch byte-to-rune undercounts.
+	for _, tc := range []struct {
+		name, value string
+	}{
+		{"multibyte-utf8", "é界𐐀"},
+		{"backspace", "\b"},
+		{"form-feed", "\f"},
+		{"carriage-return", "\r"},
+		{"tab", "\t"},
+		{"other-c0", "\x00\x01\x02\x03\x04\x05\x06\x07\x0b\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"},
+		{"del", "\x7f"},
+	} {
+		t.Run(tc.name+"/base-map-key", func(t *testing.T) {
+			s := base
+			s.Engine.Olm = map[string][]byte{tc.value: {0, 128, 255}}
+			checkCanonicalSize(t, s)
+		})
+		t.Run(tc.name+"/prepared-string", func(t *testing.T) {
+			s := base
+			p := prepared
+			p.Since.Token = tc.value
+			s.Prepared = &p
+			checkCanonicalSize(t, s)
+		})
+		t.Run(tc.name+"/evidence-string-and-key", func(t *testing.T) {
+			s := base
+			p := prepared
+			evidence, err := json.Marshal(map[string]string{tc.value: tc.value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.Evidence = evidence
+			s.Prepared = &p
+			checkCanonicalSize(t, s)
+		})
 	}
 	for _, tc := range []struct {
 		name string
@@ -214,6 +266,64 @@ func TestSnapshotCanonicalSizeEquivalence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Control: the snapshot root is depth 0 and prepared.evidence is depth 2, so
+// 30 arrays put the scalar at the allowed absolute depth 32 and survive Save/Load.
+// Witness: 31 arrays reach depth 33; Save must return ErrCodec without replacing
+// state.bin or changing the previously loadable snapshot. Together these pin
+// both directions of the Save-side relative-depth offset.
+func TestSnapshotSaveEvidenceDepthBoundary(t *testing.T) {
+	_, lease, c, pointer, inv := fixture(t)
+	root := mustPointerRoot(t, c, pointer, inv)
+	codec := codecFor(t, root, inv)
+	_, w, key := working(t)
+	state, err := w.Checkpoint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := TupleHash("save-depth")
+	prepared := Prepared{Generation: pointer.Binding.Generation, Since: Cursor{Token: "before"}, Next: Cursor{Token: "after", Revision: 1, Batch: digest}, Digest: digest, Evidence: json.RawMessage(strings.Repeat("[", 30) + "0" + strings.Repeat("]", 30))}
+	snapshot := Snapshot{Version: 1, Revision: 1, Engine: state, Prepared: &prepared}
+	expected, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lease.SaveSnapshot(codec, pointer.Binding, snapshot, true); err != nil {
+		t.Fatal("absolute depth 32 save control", err)
+	}
+	before, err := lease.read("state.bin", MaxSnapshot+envelopeOverhead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPriorSnapshot := func() {
+		t.Helper()
+		loaded, err := lease.LoadSnapshot(codec, pointer.Binding)
+		if err != nil {
+			t.Fatal("absolute depth 32 load control", err)
+		}
+		if loaded.Prepared == nil || !bytes.Equal(loaded.Prepared.Evidence, prepared.Evidence) {
+			t.Fatal("depth boundary changed persisted evidence")
+		}
+		raw, err := json.Marshal(loaded)
+		if err != nil || !bytes.Equal(raw, expected) {
+			t.Fatal("depth boundary changed prior snapshot content", err)
+		}
+	}
+	assertPriorSnapshot()
+	invalid := snapshot
+	invalid.Revision++
+	tooDeep := prepared
+	tooDeep.Evidence = json.RawMessage(strings.Repeat("[", 31) + "0" + strings.Repeat("]", 31))
+	invalid.Prepared = &tooDeep
+	if err = lease.SaveSnapshot(codec, pointer.Binding, invalid, false); err != ErrCodec {
+		t.Fatal("absolute depth 33 save must refuse with ErrCodec", err)
+	}
+	after, err := lease.read("state.bin", MaxSnapshot+envelopeOverhead)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatal("depth refusal changed state.bin bytes", err)
+	}
+	assertPriorSnapshot()
 }
 
 // The new allocation-light scanner must agree with the original token strict
@@ -316,8 +426,12 @@ func TestSnapshotStrictDecoderRefusals(t *testing.T) {
 	}
 }
 
-// Typed inventory must cover every registration the previous generic observer
-// made, including decoded pickles, ratchet byte arrays and opaque evidence.
+// For canonical encodings emitted by the snapshot writer, typed inventory must
+// cover every registration the previous generic observer made, including decoded
+// pickles, ratchet byte arrays and opaque evidence. This does not prove coverage
+// for all AEAD-valid input: struct-member case aliases, numeric map-key spelling
+// aliases and stored noncanonical base64 can lose values/spellings on typed load.
+// The legacy compatibility oracle shares alias gaps; see docs/e2ee.md section 4.
 // Control: a valid typed load scrubs planted secrets and preserves public text.
 // Witness: rejected snapshot versions still inventory their secret-bearing input
 // via the error path, using a fresh inventory so the writer cannot mask a gap.

@@ -329,10 +329,10 @@ E2EE foundations for #308 live in `internal/e2ee` and are not activated by any
 CLI command. They use mautrix-go v0.30.0's pure-Go goolm primitives, explicit
 isolated checkpoints and AES-GCM snapshots. The backend takes an explicit root
 and has no production wiring or environment/home fallback. U2a may wire custody
-only to the Courier identity home with a dedicated `_a2a` daemon, beyond the
+only to an a2ad identity home under the dedicated service user `_a2a`, beyond the
 ordinary agent user's read/write access: 0600 files in an effective-UID-owned
-0700 root, including the distinct fixed account password section. Local non-Courier
-identities get no custody; there is no OS Keychain backend. Host pins retain the
+0700 root, including the distinct fixed account password section. Local identities
+outside a2ad get no custody; there is no OS Keychain backend. Host pins retain the
 owner's fingerprinted MSK/USK and MSK signature over the USK; U1 checks their shape,
 and U2a must verify the chain and obtain a live Element ceremony witness.
 See [the E2EE design](docs/e2ee.md)
