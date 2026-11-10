@@ -3,13 +3,18 @@
 package daemonsvc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -174,8 +179,9 @@ func physicalTemp(t *testing.T) string {
 	return p
 }
 
-// W-BOOT/C-RUNDIR: absent boot directory is published as 401:401/0711; a
-// correct existing inode is retained. Symlink/file/wrong metadata never change.
+// W-BOOT/C-RUNDIR: absent boot directory succeeds with mapped 401:401 and real
+// mode 0711; a correct inode is retained. Symlink/file/wrong metadata never
+// change. UID/GID and refusal metadata are mapped; no root is provisioned.
 func TestPrepareRunDirRefusals(t *testing.T) {
 	for _, kind := range []string{"absent", "correct", "symlink", "file", "owner", "group", "mode"} {
 		t.Run(kind, func(t *testing.T) {
@@ -222,6 +228,12 @@ func TestPrepareRunDirRefusals(t *testing.T) {
 				if st.Uid != 401 || st.Gid != 401 || st.Mode&07777 != 0711 {
 					t.Fatal("wrong prepared metadata")
 				}
+				if kind == "absent" {
+					actual, err := os.Stat(target)
+					if err != nil || actual.Mode().Perm() != 0711 {
+						t.Fatal("prepared mode was not applied", err)
+					}
+				}
 				if before != nil {
 					after, _ := os.Lstat(target)
 					if !os.SameFile(before, after) {
@@ -240,6 +252,47 @@ func TestPrepareRunDirRefusals(t *testing.T) {
 				if len(children) != 1 {
 					t.Fatal("refusal wrote sibling")
 				}
+			}
+		})
+	}
+}
+
+// W-PARENT/C-PARENT: a mapped root/0755 parent permits creation; wrong owner or
+// mode of that same fixture parent refuses before any chown or sibling write.
+// Real runner ownership and a sticky /tmp ancestor remain behind the stat seam.
+func TestPrepareRunDirParentRefusals(t *testing.T) {
+	for _, kind := range []string{"valid", "owner", "mode"} {
+		t.Run(kind, func(t *testing.T) {
+			root := physicalTemp(t)
+			target := filepath.Join(root, "a2a")
+			d, meta := fixtureDisk(t)
+			parent := ownership{0, 0, 0755}
+			if kind == "owner" {
+				parent.uid = 42
+			}
+			if kind == "mode" {
+				parent.mode = 0775
+			}
+			meta[inode(t, root)] = parent
+			chown := d.chown
+			calls := 0
+			d.chown = func(fd, uid, gid int) error {
+				calls++
+				return chown(fd, uid, gid)
+			}
+			err := d.prepare(target, 401, 401)
+			if kind == "valid" {
+				if err != nil || calls != 1 {
+					t.Fatalf("valid parent: error=%v chown_calls=%d", err, calls)
+				}
+				return
+			}
+			if !errors.Is(err, ErrRefused) || calls != 0 {
+				t.Fatalf("unsafe parent: error=%v chown_calls=%d", err, calls)
+			}
+			children, err := os.ReadDir(root)
+			if err != nil || len(children) != 0 {
+				t.Fatal("parent refusal wrote a child", err)
 			}
 		})
 	}
@@ -394,36 +447,144 @@ func TestNativeSupervisorStateParsing(t *testing.T) {
 	}
 }
 
-// W-HEARTBEAT/C-DEATH: alive, stale boundary, future and missing pulses are
-// distinguished within one 300s sweep cadence, without invoking a supervisor.
+// W-HEARTBEAT/C-ROUNDING/C-DEATH: a child holds a fractional-microsecond pulse.
+// Named snapshots distinguish alive, exact-stale, one-cadence-old and future;
+// killing/reaping that PID exposes even its fresh pulse at the next snapshot.
+// Time offsets are injected: this does not run a scheduler or native service.
 func TestHeartbeatDeathWithinCadence(t *testing.T) {
 	home := physicalTemp(t)
-	os.Chmod(home, 0700)
-	now := time.Now()
+	if err := os.Chmod(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 123456789)
 	if !daemonDown(home, now) {
 		t.Fatal("missing alive")
 	}
-	h, e := OpenHeartbeat(home)
-	if e != nil {
-		t.Fatal(e)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	defer h.Close()
-	if e = h.Pulse(now); e != nil {
-		t.Fatal(e)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestHeartbeatHolderProcess$")
+	cmd.Dir = home
+	cmd.Env = append(os.Environ(), "A2A_C6_HEARTBEAT_HOLDER=1", "A2A_C6_HEARTBEAT_HOME="+home, "A2A_C6_HEARTBEAT_TIME="+now.Format(time.RFC3339Nano))
+	cmd.WaitDelay = time.Second
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if daemonDown(home, now) || !daemonDown(home, now.Add(StaleSeconds*time.Second)) || !daemonDown(home, now.Add(300*time.Second)) || !daemonDown(home, now.Add(-time.Second)) {
-		t.Fatal("liveness boundary")
+	defer input.Close()
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if e := h.Close(); e != nil {
-		t.Fatal(e)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Kill() // Only the child PID started by this fixture.
+			<-done
+		}
+	}()
+	ready := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(output).ReadString('\n')
+		if err == nil && line != "heartbeat-ready "+strconv.Itoa(cmd.Process.Pid)+"\n" {
+			err = errors.New("unexpected heartbeat holder readiness")
+		}
+		ready <- err
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatal("child did not acquire and pulse heartbeat", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("heartbeat child readiness timed out")
+	}
+	pulse, err := os.Stat(filepath.Join(home, "heartbeat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("pulse_floors_fractional_microsecond", func(t *testing.T) {
+		if !pulse.ModTime().Equal(now.Truncate(time.Microsecond)) {
+			t.Fatalf("mtime=%s, want floor %s", pulse.ModTime(), now.Truncate(time.Microsecond))
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		down bool
+	}{
+		{"alive_at_pulse", now, false},
+		{"down_at_exact_stale_boundary", now.Add(StaleSeconds * time.Second), true},
+		{"down_after_one_cadence", now.Add(300 * time.Second), true},
+		{"down_for_future_pulse", now.Add(-time.Second), true},
+		{"alive_before_stored_stale_boundary", pulse.ModTime().Add(StaleSeconds*time.Second - time.Nanosecond), false},
+		{"down_at_stored_stale_boundary", pulse.ModTime().Add(StaleSeconds * time.Second), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := daemonDown(home, tc.at); got != tc.down {
+				t.Fatalf("daemonDown=%v, want %v", got, tc.down)
+			}
+		})
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal("kill owned heartbeat child", err)
+	}
+	err = <-done
+	waited = true
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatal("child did not exit from injected kill", err)
+	}
+	status, ok := exit.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Fatal("child exit was not the intended SIGKILL", err)
 	}
 	if !daemonDown(home, now) {
 		t.Fatal("fresh pulse hid daemon death")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if h.Run(ctx, make(chan time.Time)) != nil {
+	h, err := OpenHeartbeat(home)
+	if err != nil {
+		t.Fatal("death did not release heartbeat lock", err)
+	}
+	defer h.Close()
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	if h.Run(stopped, make(chan time.Time)) != nil {
 		t.Fatal("bounded stop")
+	}
+}
+
+// Fixture helper for W-HEARTBEAT/C-DEATH: a separate process holds the actual
+// lifetime flock after Pulse until its parent kills it. Never a service unit.
+func TestHeartbeatHolderProcess(t *testing.T) {
+	if os.Getenv("A2A_C6_HEARTBEAT_HOLDER") != "1" {
+		t.Skip("heartbeat subprocess only")
+	}
+	now, err := time.Parse(time.RFC3339Nano, os.Getenv("A2A_C6_HEARTBEAT_TIME"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenHeartbeat(os.Getenv("A2A_C6_HEARTBEAT_HOME"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if err := h.Pulse(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(os.Stdout, "heartbeat-ready "+strconv.Itoa(os.Getpid())+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatal(err)
 	}
 }
 

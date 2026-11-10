@@ -200,26 +200,27 @@ func (d disk) prepare(path string, uid, gid uint32) error {
 	if e == unix.ENOENT {
 		// Build a private sibling first, then publish atomically without replacing
 		// anything. Failed ownership setup never leaves an adopted final directory.
-		temp, e := os.MkdirTemp(filepath.Dir(path), ".a2ad-run-")
-		if e != nil {
+		temp, err := os.MkdirTemp(filepath.Dir(path), ".a2ad-run-")
+		if err != nil {
 			return ErrRefused
 		}
 		defer os.Remove(temp)
-		f, e := d.directory(temp)
-		if e != nil {
-			return e
+		f, err := d.directory(temp)
+		if err != nil {
+			return err
 		}
-		e = d.chown(int(f.Fd()), int(uid), int(gid))
-		if e == nil {
-			e = unix.Fchmod(int(f.Fd()), 0711)
+		err = d.chown(int(f.Fd()), int(uid), int(gid))
+		if err == nil {
+			err = unix.Fchmod(int(f.Fd()), 0711)
 		}
 		f.Close()
-		if e != nil {
+		if err != nil {
 			return ErrRefused
 		}
-		if e = renameExclusive(int(parent.Fd()), filepath.Base(temp), name); e != nil {
+		if err = renameExclusive(int(parent.Fd()), filepath.Base(temp), name); err != nil {
 			return ErrRefused
 		}
+		// Update the original open error, not a block-local shadow of ENOENT.
 		fd, e = unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	}
 	if e != nil {

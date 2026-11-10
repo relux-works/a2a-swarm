@@ -63,7 +63,9 @@ func OpenHeartbeat(home string) (*Heartbeat, error) {
 }
 func (h *Heartbeat) Close() error { return h.f.Close() }
 func (h *Heartbeat) Pulse(now time.Time) error {
-	stamp := unix.NsecToTimeval(now.UnixNano())
+	// NsecToTimeval rounds up. Floor first so a fresh pulse cannot appear in
+	// the future or postpone the exact stale boundary by a fractional usec.
+	stamp := unix.NsecToTimeval(now.Truncate(time.Microsecond).UnixNano())
 	if unix.Futimes(int(h.f.Fd()), []unix.Timeval{stamp, stamp}) != nil {
 		return ErrRefused
 	}
