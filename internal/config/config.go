@@ -59,6 +59,7 @@ type Getenv func(string) string
 
 // Paths resolves files under the base directory.
 type Paths struct {
+	DaemonOwner    string // Immutable service-start policy; never loaded from State.
 	Base           string
 	Root           string // Original registry and host root in named mode.
 	MetadataBase   string // Connection-scoped identity metadata root.

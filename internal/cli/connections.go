@@ -69,7 +69,12 @@ func (a *App) selectedConnection() (*config.Connection, error) {
 	a.connection = &c
 	return &c, nil
 }
-func (a *App) pathsFor(name string) (config.Paths, error) {
+func (a *App) pathsFor(name string) (result config.Paths, err error) {
+	defer func() {
+		if a.daemonEngine {
+			result.DaemonOwner = a.daemonOwner
+		}
+	}()
 	p, e := config.ResolvePaths(a.Getenv)
 	if e != nil {
 		return p, e

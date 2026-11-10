@@ -56,6 +56,8 @@ func (a *App) daemonHandler(home string) daemon.Handler {
 		// Dependency injection is explicit; this is a stateless backend adapter, not
 		// a selected identity, connection cache, environment or previous request.
 		request.connectionSecretStore = a.connectionSecretStore
+		request.daemonOwner = a.daemonOwner
+		request.daemonOwnerEpoch = a.daemonOwnerEpoch
 		request.Stdout = daemonOutput{request, inv.Stdout}
 		request.Stderr = daemonOutput{request, inv.Stderr}
 		if request.Now == nil {
