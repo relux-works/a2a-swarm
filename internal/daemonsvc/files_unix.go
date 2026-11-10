@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -18,13 +19,13 @@ type disk struct {
 	stat    func(int, *unix.Stat_t) error
 	chown   func(int, int, int) error
 	noWrite func(int, string) bool
+	aclSafe func(int) bool
+	rename  func(int, string, string) error
+	syncDir func(*os.File) error
 }
 
 func realDisk() disk {
-	return disk{stat: unix.Fstat, chown: unix.Fchown, noWrite: func(fd int, name string) bool {
-		e := unix.Faccessat(fd, name, unix.W_OK, unix.AT_EACCESS)
-		return e == unix.EACCES || e == unix.EPERM
-	}}
+	return disk{stat: unix.Fstat, chown: unix.Fchown, noWrite: effectiveNoWrite, aclSafe: aclNoWriteGrants, rename: renameExclusive, syncDir: func(f *os.File) error { return f.Sync() }}
 }
 func (d disk) directory(path string) (*os.File, error) {
 	if !validPath(path) {
@@ -54,27 +55,34 @@ func (d disk) rootDir(path string) (*os.File, error) {
 		f.Close()
 		return nil, ErrRefused
 	}
-	if os.Geteuid() != 0 && !d.noWrite(int(f.Fd()), ".") {
+	if !d.aclSafe(int(f.Fd())) || os.Geteuid() != 0 && !d.noWrite(int(f.Fd()), ".") {
 		f.Close()
 		return nil, ErrRefused
 	}
-	// Every ancestor must be root-controlled; the final directory's exact mode
-	// alone cannot protect a policy beneath an agent-writable ancestor.
+	if d.rootAncestors(path) != nil {
+		f.Close()
+		return nil, ErrRefused
+	}
+	return f, nil
+}
+
+// Ancestors retain the strict root/no-group-or-world-write policy. The run
+// parent's listed system-group exception is never propagated to other paths.
+func (d disk) rootAncestors(path string) error {
+	var st unix.Stat_t
 	for parent := filepath.Dir(path); parent != "/"; parent = filepath.Dir(parent) {
 		a, e := d.directory(parent)
 		if e != nil {
-			f.Close()
-			return nil, ErrRefused
+			return ErrRefused
 		}
 		e = d.stat(int(a.Fd()), &st)
-		denied := os.Geteuid() == 0 || d.noWrite(int(a.Fd()), ".")
+		denied := d.aclSafe(int(a.Fd())) && (os.Geteuid() == 0 || d.noWrite(int(a.Fd()), "."))
 		a.Close()
 		if e != nil || st.Uid != 0 || st.Mode&0022 != 0 || !denied {
-			f.Close()
-			return nil, ErrRefused
+			return ErrRefused
 		}
 	}
-	return f, nil
+	return nil
 }
 func (d disk) readAt(dir *os.File, name string, uid, gid, mode uint32, limit int64) ([]byte, error) {
 	fd, e := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
@@ -87,7 +95,7 @@ func (d disk) readAt(dir *os.File, name string, uid, gid, mode uint32, limit int
 	if d.stat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uid || (gid != ^uint32(0) && st.Gid != gid) || uint32(st.Mode)&07777 != mode || st.Nlink != 1 {
 		return nil, ErrRefused
 	}
-	if uid == 0 && os.Geteuid() != 0 && !d.noWrite(int(dir.Fd()), name) {
+	if uid == 0 && (!d.aclSafe(fd) || os.Geteuid() != 0 && !d.noWrite(int(dir.Fd()), name)) {
 		return nil, ErrRefused
 	}
 	b, e := io.ReadAll(io.LimitReader(f, limit+1))
@@ -181,16 +189,24 @@ func (d disk) image(path, hash string) error {
 // PrepareRunDir creates only the final directory. Existing objects are checked
 // without chmod/chown/adoption. A held root-owned parent prevents redirection.
 func PrepareRunDir(path string, uid, gid uint32) error {
-	if os.Geteuid() != 0 {
+	p, ok := runParentPolicyFor(runtime.GOOS)
+	if os.Geteuid() != 0 || !ok || path != p.path+"/a2a" {
 		return ErrRefused
 	}
 	return realDisk().prepare(path, uid, gid)
 }
 func (d disk) prepare(path string, uid, gid uint32) error {
+	return d.prepareFor(path, uid, gid, runtime.GOOS)
+}
+func (d disk) prepareFor(path string, uid, gid uint32, platform string) error {
 	if uid == 0 || gid == 0 || !validPath(path) {
 		return ErrRefused
 	}
-	parent, e := d.rootDir(filepath.Dir(path))
+	policy, ok := runParentPolicyFor(platform)
+	if !ok {
+		return ErrRefused
+	}
+	parent, e := d.runParent(filepath.Dir(path), policy)
 	if e != nil {
 		return e
 	}
@@ -217,7 +233,7 @@ func (d disk) prepare(path string, uid, gid uint32) error {
 		if err != nil {
 			return ErrRefused
 		}
-		if err = renameExclusive(int(parent.Fd()), filepath.Base(temp), name); err != nil {
+		if err = d.rename(int(parent.Fd()), filepath.Base(temp), name); err != nil {
 			return ErrRefused
 		}
 		// Update the original open error, not a block-local shadow of ENOENT.
@@ -228,7 +244,7 @@ func (d disk) prepare(path string, uid, gid uint32) error {
 	}
 	defer unix.Close(fd)
 	var st unix.Stat_t
-	if d.stat(fd, &st) != nil || st.Uid != uid || st.Gid != gid || st.Mode&07777 != 0711 {
+	if d.stat(fd, &st) != nil || st.Uid != uid || st.Gid != gid || st.Mode&07777 != 0711 || !d.aclSafe(fd) {
 		return ErrRefused
 	}
 	return nil

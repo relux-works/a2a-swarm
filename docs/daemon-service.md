@@ -55,6 +55,12 @@ The file must be root:service-group 0440, regular and singly linked, in a
 root-owned 0755 directory. Ancestor symlinks and agent-writable ancestors refuse.
 At non-root startup the effective-access check also rejects ACL write grants
 to the service account on the policy, image or their parent directories.
+The separate descriptor ACL check also runs as root. Darwin accepts read-only
+permits and deny entries, and rejects any write-capable permit; malformed or
+unreadable ACL data refuses. Linux conservatively requires no extended/default
+POSIX ACL on trust paths (including no read-only extended ACL) and uses kernel
+`faccessat2` without the ACL-blind emulation fallback. Unsupported access checks
+fail closed. Native ACL syscall behaviour still needs host precheck evidence.
 Missing files, bad ownership/mode, duplicate identities and hash mismatches
 refuse with the closed `daemon: not_allowed` diagnostic before socket creation
 or heartbeat publication. No service command writes the policy file.
@@ -97,8 +103,23 @@ only `/private/var/run/a2a`. It checks the pinned image and provisioned account,
 then opens the root-controlled parent without following symlinks. If absent,
 it creates a private sibling, sets only that new inode to 401:401/0711 and
 publishes with exclusive rename. Existing symlinks, files, wrong owner/group or
-any mode other than 0711 refuse without changes. A correct existing directory
+any mode other than 0711 or an ACL write grant refuse without changes. A correct existing directory
 keeps its inode and metadata. No existing object is adopted or chmodded.
+
+The named platform policy applies only to this run-dir parent, not arbitrary
+policy/image directories or their ancestors:
+
+| Platform / parent | UID | GID | Exact modes |
+| --- | --- | --- | --- |
+| macOS `/private/var/run` | 0 | 0 (`wheel`) or 1 (`daemon`) | 0755 or 0775 |
+| Linux `/run` | 0 | Any; group write forbidden | 0755 |
+
+Source's read-only native evidence on ivmbp, macOS 27.2 build 26B123, is
+`root:daemon 0775`, uid 0/gid 1, with no ACL; the daemon group is gid 1.
+World write, unlisted macOS groups, non-root ownership, ancestor group write,
+symlinks and ACL write grants refuse. No system parent is chmodded or chowned.
+Linux preserves the earlier uid-0/0755 assumption; Linux creation is normally
+owned by systemd RuntimeDirectory, not this macOS-only CLI command.
 
 The daemon refuses an absent run directory before readiness and never creates
 it as `_a2a`. Launchd boot ordering can start it before preparation; KeepAlive
@@ -143,7 +164,10 @@ Supervisor parsing is deliberately conservative. Launchd requires the expected
 path, program, username, argv and stable state from `launchctl print`.
 Only its explicit service-not-found result proves absence. Systemd requires
 loaded fragment, exact argv, service account, `NeedDaemonReload=no` and stable
-active/dead/failed substates. Permission failures, timeouts and unfamiliar
+active/dead/failed substates. During post-install readiness only, known matching
+`activating` start substates are tolerated and main/timer units continue to be
+polled until running. This does not allow transitional uninstall. Permission
+failures, timeouts and unfamiliar
 responses refuse; there is no "force" or "assume stopped" flag. These native
 output shapes still need host precheck recording; synthetic parser fixtures do
 not qualify an installed service manager version.
@@ -155,6 +179,12 @@ linked regular file, holds an exclusive lifetime flock and pulses its mtime
 immediately and every 30 seconds. Readiness is after the serve lock and socket
 bind. Heartbeat I/O failure cancels the service; a failed startup cannot publish
 a fresh heartbeat. Shutdown cancels and joins the heartbeat loop.
+Pulse timestamps are floored to microseconds before the OS timeval conversion.
+Opening the lifetime lock retries only EAGAIN/EWOULDBLOCK, at 10ms intervals
+for at most 100ms, so the sweep's short probe cannot spuriously fail startup
+when it releases within that bound. Persistent contention and other errors
+refuse. Unit file create/remove and first rescue-log creation sync their parent
+directory before reporting success; fsync failures remain unresolved/refused.
 
 The separate sweep runs as the service account, verifies the same pinned image
 and root policy, and writes `<home>/sweep-report.json` at 0600 with atomic rename.

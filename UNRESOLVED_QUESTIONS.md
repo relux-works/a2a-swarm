@@ -166,6 +166,14 @@ supply these remaining evidence artifacts before native sign-off:
   crash restart, bounded SIGTERM cancellation and next-cadence sweep detection.
 - Controller integration that records actual recovered-delivery/traffic counts
   in the existing service context, followed by owner-selected real-traffic soak.
+  C6-r3/P3-rescue-caller: the controller needs an authorized service-context
+  reporting/accounting channel; C6 must not grant agents write access or add C7.
+  C6-r3/P3-daily-soak: the owner must choose calendar days versus rolling 24-hour
+  windows and minimum daily traffic; the current artifact uses interval totals
+  and cannot certify daily traffic or authorize fallback removal.
+- C6-r3/ACL-native: verify Darwin fgetattrlist ACL decoding on the installed
+  target and Linux kernel faccessat2/no-extended-ACL assumptions. The private
+  grant seam and SDK-shaped parser fixtures do not qualify native ACL denial.
 - Exact installed Muse hook stdin/stdout and monitor websocket fixtures. This
   producer does not invent an installed version pin, upstream issue, local shim
   or native qualification verdict. Existing Claude/Codex fixtures remain.

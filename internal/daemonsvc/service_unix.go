@@ -19,10 +19,11 @@ import (
 type State string
 
 const (
-	Absent  State = "absent"
-	Stopped State = "stopped"
-	Running State = "running"
-	Unknown State = "unknown"
+	Absent     State = "absent"
+	Stopped    State = "stopped"
+	Running    State = "running"
+	Activating State = "activating" // matching loaded unit, start in progress
+	Unknown    State = "unknown"
 )
 
 // Supervisor is used only by explicit service install/uninstall/status. Stop
@@ -40,6 +41,7 @@ type Manager struct {
 	Supervisor Supervisor
 	d          disk
 	dir        string
+	poll       <-chan time.Time // private readiness clock
 }
 
 func NewManager(s Supervisor) *Manager { return &Manager{Supervisor: s, d: realDisk()} }
@@ -64,19 +66,30 @@ func (m *Manager) Run(ctx context.Context, p Plan, op string) (map[string]State,
 	sort.Strings(names)
 	// Audit every file and supervisor state before changing any unit.
 	present := map[string]bool{}
+	candidate := make(map[string][]byte, len(files))
 	states := map[string]State{}
 	for _, name := range names {
+		candidate[name] = files[name]
 		var st unix.Stat_t
 		e := unix.Fstatat(int(root.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW)
 		if e == nil {
 			b, e := m.d.readAt(root, name, 0, ^uint32(0), 0644, 65536)
-			if e != nil || !bytes.Equal(b, files[name]) {
+			if e != nil {
 				return nil, ErrUnresolved
 			}
 			present[name] = true
+			candidate[name] = b
 		} else if e != unix.ENOENT {
 			return nil, ErrUnresolved
 		}
+	}
+	// Static grammar checks the actual installed bytes before any supervisor
+	// interaction. Missing files use the expected render; partial install still
+	// refuses below, while a matching partial uninstall remains possible.
+	if ValidateUnits(p, candidate) != nil {
+		return nil, ErrUnresolved
+	}
+	for _, name := range names {
 		state, e := m.Supervisor.State(ctx, p, name)
 		if e != nil || (state != Absent && state != Running && state != Stopped) || (state != Absent && !present[name]) {
 			return nil, ErrUnresolved
@@ -106,7 +119,7 @@ func (m *Manager) Run(ctx context.Context, p Plan, op string) (map[string]State,
 					e = f.Sync()
 				}
 				ce := f.Close()
-				if e != nil || ce != nil {
+				if e != nil || ce != nil || m.d.syncDir(root) != nil {
 					return states, ErrUnresolved
 				}
 			}
@@ -136,11 +149,15 @@ func (m *Manager) Run(ctx context.Context, p Plan, op string) (map[string]State,
 		defer deadline.Stop()
 		tick := time.NewTicker(200 * time.Millisecond)
 		defer tick.Stop()
+		poll := m.poll
+		if poll == nil {
+			poll = tick.C
+		}
 		for {
 			ready := true
 			for _, name := range names {
 				state, e := m.Supervisor.State(ctx, p, name)
-				if e != nil || (state != Absent && state != Running && state != Stopped) {
+				if e != nil || (state != Absent && state != Running && state != Stopped && state != Activating) {
 					return states, ErrUnresolved
 				}
 				states[name] = state
@@ -156,7 +173,7 @@ func (m *Manager) Run(ctx context.Context, p Plan, op string) (map[string]State,
 				return states, ErrUnresolved
 			case <-deadline.C:
 				return states, ErrUnresolved
-			case <-tick.C:
+			case <-poll:
 			}
 		}
 	}
@@ -181,7 +198,7 @@ func (m *Manager) Run(ctx context.Context, p Plan, op string) (map[string]State,
 	for _, name := range names {
 		if present[name] {
 			b, e := m.d.readAt(root, name, 0, ^uint32(0), 0644, 65536)
-			if e != nil || !bytes.Equal(b, files[name]) || unix.Unlinkat(int(root.Fd()), name, 0) != nil {
+			if e != nil || !bytes.Equal(b, files[name]) || unix.Unlinkat(int(root.Fd()), name, 0) != nil || m.d.syncDir(root) != nil {
 				return states, ErrUnresolved
 			}
 		}
@@ -292,6 +309,11 @@ func (s nativeSupervisor) State(ctx context.Context, p Plan, name string) (State
 		}
 	}
 	switch fields["ActiveState"] {
+	case "activating":
+		switch fields["SubState"] {
+		case "start-pre", "start", "start-post", "auto-restart":
+			return Activating, nil
+		}
 	case "active":
 		if (strings.HasSuffix(name, ".timer") && fields["SubState"] == "waiting") || (strings.HasSuffix(name, ".service") && fields["SubState"] == "running") {
 			return Running, nil

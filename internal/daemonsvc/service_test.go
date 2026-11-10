@@ -121,20 +121,21 @@ type ownership struct {
 	mode     uint32
 }
 
-// Fixtures never chown, need root, or touch a host unit/run path. Metadata
-// mapping is the only fake; no-follow opens and actual file operations are real.
-func fixtureDisk(t *testing.T) (disk, map[uint64]ownership) {
+// Fixtures never chown, need root, or touch a host unit/run path. Ownership and
+// access metadata are mapped; no-follow opens and byte operations remain real.
+func fixtureDisk(t *testing.T, root string) (disk, map[uint64]ownership) {
 	t.Helper()
 	meta := map[uint64]ownership{}
+	// Explicit fixture ancestors only: an unmapped directory retains its real
+	// metadata. Parent-policy rows overwrite this root entry with their shape.
+	for p := root; p != "/"; p = filepath.Dir(p) {
+		meta[inode(t, p)] = ownership{0, 0, 0755}
+	}
 	stat := func(fd int, st *unix.Stat_t) error {
 		if e := unix.Fstat(fd, st); e != nil {
 			return e
 		}
-		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
-			st.Uid = 0
-			st.Gid = 0
-			st.Mode = (st.Mode &^ 07777) | 0755
-		} else {
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
 			st.Uid = 0
 			st.Gid = 401
 		}
@@ -152,7 +153,7 @@ func fixtureDisk(t *testing.T) (disk, map[uint64]ownership) {
 		}
 		return nil
 	}
-	d := disk{stat: stat, noWrite: func(int, string) bool { return true }, chown: func(fd, uid, gid int) error {
+	d := disk{stat: stat, noWrite: func(int, string) bool { return true }, aclSafe: func(int) bool { return true }, rename: renameExclusive, syncDir: func(f *os.File) error { return f.Sync() }, chown: func(fd, uid, gid int) error {
 		var st unix.Stat_t
 		if e := unix.Fstat(fd, &st); e != nil {
 			return e
@@ -183,11 +184,11 @@ func physicalTemp(t *testing.T) string {
 // mode 0711; a correct inode is retained. Symlink/file/wrong metadata never
 // change. UID/GID and refusal metadata are mapped; no root is provisioned.
 func TestPrepareRunDirRefusals(t *testing.T) {
-	for _, kind := range []string{"absent", "correct", "symlink", "file", "owner", "group", "mode"} {
+	for _, kind := range []string{"absent", "correct", "symlink", "file", "owner", "group", "mode", "acl"} {
 		t.Run(kind, func(t *testing.T) {
 			root := physicalTemp(t)
 			target := filepath.Join(root, "a2a")
-			d, meta := fixtureDisk(t)
+			d, meta := fixtureDisk(t, root)
 			if kind == "symlink" {
 				if os.Symlink(root, target) != nil {
 					t.Fatal("symlink")
@@ -208,8 +209,18 @@ func TestPrepareRunDirRefusals(t *testing.T) {
 					v.gid = 42
 				case "mode":
 					v.mode = 0755
+					if os.Chmod(target, 0755) != nil {
+						t.Fatal("mode plant")
+					}
 				}
 				meta[inode(t, target)] = v
+				if kind == "acl" {
+					targetInode := inode(t, target)
+					d.aclSafe = func(fd int) bool {
+						var st unix.Stat_t
+						return unix.Fstat(fd, &st) == nil && st.Ino != targetInode
+					}
+				}
 			}
 			var before os.FileInfo
 			before, _ = os.Lstat(target)
@@ -265,13 +276,13 @@ func TestPrepareRunDirParentRefusals(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			root := physicalTemp(t)
 			target := filepath.Join(root, "a2a")
-			d, meta := fixtureDisk(t)
+			d, meta := fixtureDisk(t, root)
 			parent := ownership{0, 0, 0755}
 			if kind == "owner" {
 				parent.uid = 42
 			}
 			if kind == "mode" {
-				parent.mode = 0775
+				parent.mode = 0777 // world write is forbidden on both platforms
 			}
 			meta[inode(t, root)] = parent
 			chown := d.chown
@@ -305,7 +316,7 @@ func TestPolicyStartupRefusals(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			root := physicalTemp(t)
 			path := filepath.Join(root, "owner.json")
-			d, meta := fixtureDisk(t)
+			d, meta := fixtureDisk(t, root)
 			b := []byte(`{"version":1,"owner":"@ivan:fixture.invalid","identities":["alice"]}`)
 			if kind == "duplicate" {
 				b = []byte(`{"version":1,"owner":"@ivan:fixture.invalid","identities":["alice","alice"]}`)
@@ -366,7 +377,7 @@ func TestServiceTransactions(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			root := physicalTemp(t)
 			p := testPlan()
-			d, _ := fixtureDisk(t)
+			d, _ := fixtureDisk(t, root)
 			s := &fakeSupervisor{states: map[string]State{}, failStop: kind == "stop-failure"}
 			m := &Manager{Supervisor: s, d: d, dir: root}
 			files, _ := Render(p)
@@ -727,7 +738,8 @@ func TestSweepNamedConnection(t *testing.T) {
 }
 
 // W-LINUX-STATE/C-FOREIGN: exact loaded image argv, service account, fragment
-// and stable substate are required; pending reload or transitional jobs refuse.
+// and stable substate are required; pending reload or inconsistent active/start
+// jobs refuse. Separate tests cover the explicit activating/start state.
 func TestLinuxSupervisorStateParsing(t *testing.T) {
 	p := testPlan()
 	p.Platform = "linux"

@@ -4,11 +4,13 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -85,6 +87,124 @@ func TestServiceOrphanSocketRecovery(t *testing.T) {
 				if !os.SameFile(before, after) {
 					t.Fatal("refused object changed")
 				}
+			}
+		})
+	}
+}
+
+// W-SERVE-READY/M-READY/M-REQUIRE: drive serve itself with requireRunDir on a
+// prepared 0711 fixture. Readiness verifies a bound/connectable 0666 socket and
+// cancels the server. W-SERVE-ORPHAN drives reclaim through the same start path.
+// C-SERVE-REFUSE narrows this to owned directories/dead sockets and a successful
+// ready callback. No station authentication, host boot or real unit is claimed.
+func TestServicePreparedDirectoryStarts(t *testing.T) {
+	// Keep the Unix path below Darwin's 103-byte limit even if the caller's
+	// isolated TMPDIR is long. The nested fixtures still come from t.TempDir.
+	outer, err := os.MkdirTemp("/tmp", "c6-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outer) })
+	// BSD may inherit /tmp's group. Align only this owned scratch inode to
+	// our own primary group, never to the real service account or a host path.
+	if err := os.Chown(outer, -1, os.Getegid()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", outer)
+	for _, kind := range []string{"prepared", "orphan", "live", "file", "directory_mode", "ready_failure"} {
+		t.Run(kind, func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(root, "h")
+			if _, err = Register(home, "station", "identity", uint32(os.Geteuid()), false); err != nil {
+				t.Fatal(err)
+			}
+			run := filepath.Join(root, "r")
+			if os.Mkdir(run, 0711) != nil || os.Chmod(run, 0711) != nil {
+				t.Fatal("run fixture")
+			}
+			socket := filepath.Join(run, "s")
+			if kind == "orphan" || kind == "live" {
+				l, e := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+				if e != nil {
+					t.Fatal(e)
+				}
+				l.SetUnlinkOnClose(false)
+				defer l.Close()
+				if os.Chmod(socket, 0666) != nil {
+					t.Fatal("socket mode")
+				}
+				if kind == "orphan" {
+					if e = l.Close(); e != nil {
+						t.Fatal(e)
+					}
+				}
+			}
+			if kind == "file" {
+				if os.WriteFile(socket, []byte("keep"), 0600) != nil {
+					t.Fatal("file plant")
+				}
+			}
+			if kind == "directory_mode" {
+				if os.Chmod(run, 0755) != nil {
+					t.Fatal("mode plant")
+				}
+			}
+			before, _ := os.Lstat(socket)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			calls := 0
+			s := &server{home: home, log: io.Discard, requireRunDir: true, conns: map[*net.UnixConn]bool{}}
+			s.serviceReady = func() error {
+				calls++
+				info, e := os.Lstat(socket)
+				if e != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0666 {
+					return errors.New("ready before socket bind/permissions")
+				}
+				c, e := net.DialTimeout("unix", socket, time.Second)
+				if e != nil {
+					return e
+				}
+				c.Close()
+				if kind == "ready_failure" {
+					return errRefused
+				}
+				cancel()
+				return nil
+			}
+			err = s.serve(ctx, socket, nil)
+			if kind == "prepared" || kind == "orphan" {
+				if err != nil || calls != 1 || ctx.Err() != context.Canceled {
+					t.Fatalf("ready/cancel: err=%v calls=%d context=%v", err, calls, ctx.Err())
+				}
+			} else if kind == "ready_failure" {
+				if !errors.Is(err, errRefused) || calls != 1 {
+					t.Fatal("ready error not propagated", err, calls)
+				}
+			} else {
+				if !errors.Is(err, errRefused) || calls != 0 {
+					t.Fatal("unsafe start", err, calls)
+				}
+				if before != nil {
+					after, _ := os.Lstat(socket)
+					if !os.SameFile(before, after) {
+						t.Fatal("refusal replaced path")
+					}
+				}
+				return
+			}
+			if _, err = os.Lstat(socket); !os.IsNotExist(err) {
+				t.Fatal("socket cleanup not joined", err)
+			}
+			lock, err := os.OpenFile(filepath.Join(run, ".daemon.lock"), os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lock.Close()
+			if unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
+				t.Fatal("serve lock not released")
 			}
 		})
 	}

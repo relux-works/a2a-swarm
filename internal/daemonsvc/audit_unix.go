@@ -28,17 +28,26 @@ func privateDir(path string) (*os.File, error) {
 	return f, nil
 }
 func privateOutput(dir *os.File, name string) (*os.File, error) {
-	fd, e := unix.Openat(int(dir.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0600)
+	f, _, err := privateOutputCreated(dir, name)
+	return f, err
+}
+func privateOutputCreated(dir *os.File, name string) (*os.File, bool, error) {
+	flags := unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+	fd, e := unix.Openat(int(dir.Fd()), name, flags|unix.O_CREAT|unix.O_EXCL, 0600)
+	created := e == nil
+	if e == unix.EEXIST {
+		fd, e = unix.Openat(int(dir.Fd()), name, flags, 0)
+	}
 	if e != nil {
-		return nil, ErrRefused
+		return nil, false, ErrRefused
 	}
 	f := os.NewFile(uintptr(fd), name)
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) != nil || st.Uid != uint32(os.Geteuid()) || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&07777 != 0600 || st.Nlink != 1 {
 		f.Close()
-		return nil, ErrRefused
+		return nil, false, ErrRefused
 	}
-	return f, nil
+	return f, created, nil
 }
 
 // Heartbeat starts only after the server owns the socket and serve lock. Its
@@ -46,6 +55,13 @@ func privateOutput(dir *os.File, name string) (*os.File, error) {
 type Heartbeat struct{ f *os.File }
 
 func OpenHeartbeat(home string) (*Heartbeat, error) {
+	return openHeartbeat(home, func(fd int) error { return unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB) }, func() { time.Sleep(heartbeatLockDelay) })
+}
+
+const heartbeatLockAttempts = 11
+const heartbeatLockDelay = 10 * time.Millisecond
+
+func openHeartbeat(home string, lock func(int) error, pause func()) (*Heartbeat, error) {
 	dir, e := privateDir(home)
 	if e != nil {
 		return nil, e
@@ -55,11 +71,18 @@ func OpenHeartbeat(home string) (*Heartbeat, error) {
 	if e != nil {
 		return nil, e
 	}
-	if unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
-		f.Close()
-		return nil, ErrRefused
+	for attempt := 0; attempt < heartbeatLockAttempts; attempt++ {
+		err := lock(int(f.Fd()))
+		if err == nil {
+			return &Heartbeat{f}, nil
+		}
+		if (err != unix.EWOULDBLOCK && err != unix.EAGAIN) || attempt == heartbeatLockAttempts-1 {
+			break
+		}
+		pause()
 	}
-	return &Heartbeat{f}, nil
+	f.Close()
+	return nil, ErrRefused
 }
 func (h *Heartbeat) Close() error { return h.f.Close() }
 func (h *Heartbeat) Pulse(now time.Time) error {
@@ -249,6 +272,9 @@ type RescueRecord struct {
 }
 
 func RecordRescue(home string, p Policy, r RescueRecord) error {
+	return recordRescue(home, p, r, realDisk())
+}
+func recordRescue(home string, p Policy, r RescueRecord, d disk) error {
 	if !p.Allows(r.Identity) || r.Count <= 0 || r.Count > 1000000 || r.At.IsZero() || (r.Layer != "sweep" && r.Layer != "watchdog" && r.Layer != "manual" && r.Layer != "traffic") {
 		return ErrRefused
 	}
@@ -257,7 +283,7 @@ func RecordRescue(home string, p Policy, r RescueRecord) error {
 		return e
 	}
 	defer dir.Close()
-	f, e := privateOutput(dir, r.Identity+".rescue.jsonl")
+	f, created, e := privateOutputCreated(dir, r.Identity+".rescue.jsonl")
 	if e != nil {
 		return e
 	}
@@ -273,6 +299,9 @@ func RecordRescue(home string, p Policy, r RescueRecord) error {
 	b = append(b, '\n')
 	n, e := f.Write(b)
 	if e != nil || n != len(b) || f.Sync() != nil {
+		return ErrRefused
+	}
+	if created && d.syncDir(dir) != nil {
 		return ErrRefused
 	}
 	return nil

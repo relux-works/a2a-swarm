@@ -164,29 +164,60 @@ func (a *App) serveDaemonService(ctx context.Context, home, socket, pin, pinHash
 	if e != nil {
 		return e
 	}
+	return a.superviseDaemonService(ctx, home, socket, policy, nativeServiceRuntime())
+}
+
+type serviceHeartbeat interface {
+	Pulse(time.Time) error
+	Run(context.Context, <-chan time.Time) error
+	Close() error
+}
+type serviceRuntime struct {
+	serve func(context.Context, string, string, io.Writer, daemon.Handler, func() error) error
+	open  func(string) (serviceHeartbeat, error)
+	clock func() (<-chan time.Time, func())
+	now   func() time.Time
+}
+
+func nativeServiceRuntime() serviceRuntime {
+	return serviceRuntime{
+		serve: daemon.ServeService,
+		open:  func(home string) (serviceHeartbeat, error) { return daemonsvc.OpenHeartbeat(home) },
+		clock: func() (<-chan time.Time, func()) {
+			t := time.NewTicker(daemonsvc.HeartbeatSeconds * time.Second)
+			return t.C, t.Stop
+		},
+		now: time.Now,
+	}
+}
+
+// Only the guarded public service path calls this lifecycle helper. Its private
+// dependencies let fixtures drive ready/cancel/join without root or a supervisor;
+// no CLI argument or station request can replace account/image/policy checks.
+func (a *App) superviseDaemonService(ctx context.Context, home, socket string, policy daemonsvc.Policy, rt serviceRuntime) error {
 	a.daemonOwner = policy.Owner
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var heartbeat *daemonsvc.Heartbeat
+	var heartbeat serviceHeartbeat
 	var done chan error
 	a.daemonOwnerEpoch = newDaemonOwnerEpoch()
 	handler := freshServiceHandler(policy, a.daemonOwnerEpoch, a.daemonHandler(home))
-	err := daemon.ServeService(child, home, socket, a.Stderr, handler, func() error {
+	err := rt.serve(child, home, socket, a.Stderr, handler, func() error {
 		var e error
-		heartbeat, e = daemonsvc.OpenHeartbeat(home)
+		heartbeat, e = rt.open(home)
 		if e != nil {
 			return e
 		}
-		if e = heartbeat.Pulse(time.Now()); e != nil {
+		if e = heartbeat.Pulse(rt.now()); e != nil {
 			heartbeat.Close()
 			heartbeat = nil
 			return e
 		}
 		done = make(chan error, 1)
+		ticks, stop := rt.clock()
 		go func() {
-			ticker := time.NewTicker(daemonsvc.HeartbeatSeconds * time.Second)
-			defer ticker.Stop()
-			e := heartbeat.Run(child, ticker.C)
+			e := heartbeat.Run(child, ticks)
+			stop()
 			if e != nil {
 				cancel()
 			}
