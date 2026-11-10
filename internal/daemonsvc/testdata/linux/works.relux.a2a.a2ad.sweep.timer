@@ -1,0 +1,9 @@
+[Unit]
+Description=a2ad sweep cadence
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=300s
+AccuracySec=1s
+Unit=works.relux.a2a.a2ad.sweep.service
+[Install]
+WantedBy=timers.target

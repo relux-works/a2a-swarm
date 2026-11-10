@@ -15,9 +15,12 @@ import (
 )
 
 func cmdDaemon(ctx context.Context, a *App, args []string) error {
-	const help = "usage: a2a daemon serve|register-station|unregister-station|enroll|migrate|status; migrate <identity> --to <daemon-base> [--resume|--rollback]; enroll --dir HOME/.a2a --from - [--rotate]; serve|register-station|unregister-station --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]; register-station --station S --identity I --uid U --emit - [--rotate]; unregister-station --station S"
+	const help = "usage: a2a daemon serve|register-station|unregister-station|enroll|migrate|status|service|prepare-run-dir|sweep|rescue|soak; service install|uninstall|status --plan FILE; migrate <identity> --to <daemon-base> [--resume|--rollback]; enroll --dir HOME/.a2a --from - [--rotate]; serve --home ABS --owner-pin FILE --owner-pin-sha256 HASH --image-sha256 HASH --service-gid GID; register-station|unregister-station --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]; register-station --station S --identity I --uid U --emit - [--rotate]; unregister-station --station S"
 	if len(args) == 0 {
 		return usagef("%s", help)
+	}
+	if args[0] == "service" || args[0] == "prepare-run-dir" || args[0] == "sweep" || args[0] == "rescue" || args[0] == "soak" {
+		return cmdDaemonService(ctx, a, args)
 	}
 	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
 		_, err := fmt.Fprintln(a.Stdout, help)
@@ -39,6 +42,14 @@ func cmdDaemon(ctx context.Context, a *App, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // flag errors can contain argv; keep diagnostics closed.
 	home := fs.String("home", "", "Daemon-only home (0700)")
+	var pin, pinHash, imageHash string
+	var serviceGID uint
+	if sub == "serve" {
+		fs.StringVar(&pin, "owner-pin", "", "root-owned owner policy")
+		fs.StringVar(&pinHash, "owner-pin-sha256", "", "pinned policy digest")
+		fs.StringVar(&imageHash, "image-sha256", "", "pinned executable digest")
+		fs.UintVar(&serviceGID, "service-gid", 0, "service group")
+	}
 	var station, identity, uidText, emit string
 	var rotate bool
 	socket := daemon.DefaultSocket()
@@ -69,7 +80,7 @@ func cmdDaemon(ctx context.Context, a *App, args []string) error {
 	}
 	switch sub {
 	case "serve":
-		return daemon.ServeWithHandler(ctx, *home, socket, a.Stderr, a.daemonHandler(*home))
+		return a.serveDaemonService(ctx, *home, socket, pin, pinHash, imageHash, serviceGID)
 	case "unregister-station":
 		return daemon.Unregister(*home, station)
 	default:

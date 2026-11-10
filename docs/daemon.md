@@ -8,8 +8,15 @@ home. No shell or second a2a process executes the request.
 
 - `a2a daemon register-station --home ABSOLUTE_PRIVATE_HOME --station S --identity I --uid U --emit - [--rotate] [--socket ABSOLUTE_PATH]`
 - `a2a daemon unregister-station --home ABSOLUTE_PRIVATE_HOME --station S`
-- `a2a daemon serve --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]`
+- `a2a daemon serve --home ABSOLUTE_PRIVATE_HOME --owner-pin FILE --owner-pin-sha256 HASH --image-sha256 HASH --service-gid GID`
 - `a2a daemon enroll --dir HOME/.a2a --from - [--rotate]`
+- `a2a daemon service install|uninstall|status --plan ROOT_PLAN`
+
+The public serve command requires the provisioned service account and immutable
+root policy. The socket uses the platform default and must already have its
+root-prepared directory. See [service supervision, external sweep and rescue
+accounting](daemon-service.md) for unit templates, preparation refusals,
+heartbeat and qualification limits.
 
 The explicit a2a daemon home is owned by the a2a daemon UID at exactly 0700. Registry
 and lock files are single-link regular 0600 files. Registration stores exactly
@@ -37,12 +44,15 @@ components and is at most 103 UTF-8 bytes, with no NUL, CR, LF or BOM. Its final
 directory is a2a daemon-owned at 0711 with the effective a2a daemon GID; the socket
 is 0666. Ancestors must permit intended users to traverse the path. A private
 ancestor keeps an override private. Existing wrong modes, ownership, socket
-paths and symlinks are refused without repair or unlinking. No OS users or
+paths and symlinks are refused without repair or unlinking by the library API.
+The supervised service has only the narrow orphaned-socket exception below. No OS users or
 shared groups are created. Same-UID stations are not a security boundary.
 
 Serve takes a nonblocking `.daemon.lock`. Shutdown closes connections and
-removes only its own unchanged socket inode. A stale socket needs explicit
-operator inspection while serving is stopped. Registry operations likewise
+removes only its own unchanged socket inode. A supervised restart can reclaim
+only an owned 0666 orphaned socket, with the exclusive serve lock, a bounded
+`ECONNREFUSED` probe and an inode recheck. All other stale/foreign paths need
+explicit operator inspection while serving is stopped. Registry operations likewise
 refuse a busy nonblocking lock. Authentication lookups hold shared registry
 locks, so simultaneous valid hellos do not exclude each other.
 

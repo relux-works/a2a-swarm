@@ -330,6 +330,16 @@ func ServeWithHandler(ctx context.Context, home, socket string, log io.Writer, h
 	return s.serve(ctx, socket, nil)
 }
 
+// ServeService preserves the C5 transport and shutdown path. The root-prepared
+// run directory must already exist; ready is called with the serve lock held.
+func ServeService(ctx context.Context, home, socket string, log io.Writer, handler Handler, ready func() error) error {
+	if log == nil {
+		log = io.Discard
+	}
+	s := &server{home: home, log: log, conns: map[*net.UnixConn]bool{}, peer: peerUID, handshake: handshakeTimeout, idle: idleTimeout, handler: handler, serviceReady: ready, requireRunDir: true}
+	return s.serve(ctx, socket, nil)
+}
+
 // Client authenticates using the unchanged nonce transcript, sends exactly one
 // request, and ACKs delivery only after each local output write and flush works.
 func Client(ctx context.Context, socket, station, identity string, key []byte, r Request, stdout, stderr io.Writer) (int, error) {

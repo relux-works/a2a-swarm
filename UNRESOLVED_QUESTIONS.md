@@ -180,3 +180,36 @@ Codex owner-DM companion rules deny known selected, resolved and launch spelling
 Arbitrary undiscovered aliases and later image versions remain outside these
 spelling-based rules; independent host-terminal checks still apply. No live
 Codex rule-engine or existing-hook fleet verification was performed.
+
+## C6: host and native qualification evidence
+
+C6's repository implementation and inert unit fixtures are documented in
+[daemon-service.md](docs/daemon-service.md). This disposable producer bench is
+not authorized to execute tests, start/install a unit, reboot, provision root
+files or inspect an installed native runtime. Source/Meta and host keepers must
+supply these remaining evidence artifacts before native sign-off:
+
+- Mac precheck and CI test execution, including planted negative controls.
+- Provisioned `_a2a`/Linux account, final Infra owner-policy path/hash and reviewed
+  script alignment; service-UID policy/image/directory ACL write-denial check.
+- Recorded native `launchctl print`/`systemctl show` shapes for the conservative
+  matching parser, then explicit install/status/uninstall checks.
+- A removed-run-dir/reboot-equivalent boot followed by a real station connect,
+  crash restart, bounded SIGTERM cancellation and next-cadence sweep detection.
+- Controller integration that records actual recovered-delivery/traffic counts
+  in the existing service context, followed by owner-selected real-traffic soak.
+  C6-r3/P3-rescue-caller: the controller needs an authorized service-context
+  reporting/accounting channel; C6 must not grant agents write access or add C7.
+  C6-r3/P3-daily-soak: the owner must choose calendar days versus rolling 24-hour
+  windows and minimum daily traffic; the current artifact uses interval totals
+  and cannot certify daily traffic or authorize fallback removal.
+- C6-r3/ACL-native: verify Darwin fgetattrlist ACL decoding on the installed
+  target and Linux kernel faccessat2/no-extended-ACL assumptions. The private
+  grant seam and SDK-shaped parser fixtures do not qualify native ACL denial.
+- Exact installed Muse hook stdin/stdout and monitor websocket fixtures. This
+  producer does not invent an installed version pin, upstream issue, local shim
+  or native qualification verdict. Existing Claude/Codex fixtures remain.
+
+Infra owns the operator `--check` exemption for an absent boot-volatile run
+directory. Source owns acceptance of the documented preparation fallback;
+there is no launchd inherited-listener path in this producer patch.

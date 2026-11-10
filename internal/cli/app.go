@@ -32,6 +32,8 @@ const (
 type App struct {
 	admissionSessions        []*identityAdmission
 	daemonEngine             bool
+	daemonOwner              string // Root policy snapshot, inherited by requests only.
+	daemonOwnerEpoch         *daemonOwnerEpoch
 	daemonLeaseConflict      bool
 	daemonFiles              map[string]daemon.InputFile
 	Stdout                   io.Writer

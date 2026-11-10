@@ -29,9 +29,9 @@ func TestDaemonComposedDispatchAndFormats(t *testing.T) {
 			t.Fatalf("%s dispatch exit = %d, want %d", args[0], got, want)
 		}
 	}
-	// A real serve refusal must reach the endpoint, not the unknown-command path.
+	// Missing immutable startup policy is a closed refusal, with no endpoint.
 	run(ExitError, "serve", "--home", home)
-	if diag.String() != "a2a: daemon: refused\n" {
+	if diag.String() != "a2a: daemon: not_allowed\n" {
 		t.Fatal("serve did not reach the closed endpoint refusal")
 	}
 	run(ExitOK, "register-station", "--home", home, "--station", "station", "--identity", "local.name_=-", "--uid", strconv.Itoa(os.Geteuid()), "--emit", "-")

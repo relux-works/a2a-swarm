@@ -1,0 +1,8 @@
+[Unit]
+Description=a2ad read-only sweep
+[Service]
+Type=oneshot
+User=a2a
+Group=a2a
+UMask=0077
+ExecStart=/opt/a2a/image/a2a daemon sweep --home /private/var/a2a --owner-pin /Library/ApplicationSupport/a2a/owner.json --owner-pin-sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --image-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --service-gid 401

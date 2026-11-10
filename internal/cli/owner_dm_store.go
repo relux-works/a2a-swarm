@@ -47,10 +47,10 @@ type ownerDMBindings struct {
 	Watermarks map[string]ownerDMMutation `json:"watermarks"`
 	Records    []ownerDMMutation          `json:"records"`
 }
-type ownerDMFiles struct{ base string }
+type ownerDMFiles struct{ base, daemonOwner string }
 
 func ownerFiles(p config.Paths, name string) ownerDMFiles {
-	return ownerDMFiles{filepath.Join(p.Base, "owner-dm", name)}
+	return ownerDMFiles{base: filepath.Join(p.Base, "owner-dm", name), daemonOwner: p.DaemonOwner}
 }
 func (f ownerDMFiles) path(ext string) string { return f.base + "." + ext }
 
@@ -73,6 +73,9 @@ func ownerRead(path string) ([]byte, os.FileInfo, error) {
 	return b, st, err
 }
 func (f ownerDMFiles) pin() ownerDMPin {
+	if f.daemonOwner != "" {
+		return ownerDMPin{Mode: "host", Owner: f.daemonOwner}
+	}
 	b, _, err := ownerRead(f.path("pin"))
 	var p ownerDMPin
 	if err != nil || ownerObject(b, map[string]byte{"mode": 's', "owner": 's'}, &p) != nil || !ownerMXID.MatchString(p.Owner) || (p.Mode != "host" && p.Mode != "owner-channel") {
