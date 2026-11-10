@@ -82,14 +82,24 @@ func TestLinuxRegistryIdentityFences(t *testing.T) {
 
 // Darwin stays an explicit UTC ps-birth/domain contract on every runner OS;
 // adding Linux support must not reinterpret dates as ticks or accept mixing.
+// Complete records take the production JSON path, including numeric field types.
 func TestDarwinRegistryIdentityFences(t *testing.T) {
 	for _, mode := range []string{"wrong-birth", "mixed-linux-domain", "ticks-as-birth", "missing-local-birth"} {
 		t.Run(mode, func(t *testing.T) {
 			m := registryFixture("3.0.0", "idle")
 			id := registryIdentity{PID: 1234, Domain: "darwin", Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
-			if got := registryIdentityReason(m, id); got != RuntimeNone {
-				t.Fatal("Darwin valid control", got)
+			check := func(wantReason RuntimeReason, wantState RuntimeState) {
+				t.Helper()
+				raw, err := json.Marshal(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := decodeRegistry(raw, id)
+				if got.Reason != wantReason || got.State != wantState {
+					t.Fatalf("Darwin reason=%s state=%s want=%s/%s", got.Reason, got.State, wantReason, wantState)
+				}
 			}
+			check(RuntimeNone, RuntimeReady)
 			switch mode {
 			case "wrong-birth":
 				m["procStart"] = "Sun Oct 25 12:00:00 2026"
@@ -100,9 +110,7 @@ func TestDarwinRegistryIdentityFences(t *testing.T) {
 			case "missing-local-birth":
 				id.Birth = time.Time{}
 			}
-			if got := registryIdentityReason(m, id); got != RuntimeIdentityMismatch {
-				t.Fatal("Darwin identity refusal", got)
-			}
+			check(RuntimeIdentityMismatch, RuntimeRefused)
 		})
 	}
 }

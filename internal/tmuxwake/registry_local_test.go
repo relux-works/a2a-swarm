@@ -3,6 +3,7 @@ package tmuxwake
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,7 @@ func localRegistryFields(t *testing.T, pid int) (domain, start string) {
 
 // Real local collection must agree with independent fields of this test's own
 // process. An incorrect owner-birth pin or canceled context cannot qualify it.
+// The complete record uses the production JSON path, including numeric types.
 // This does not prove provider responsiveness or eliminate the final I/O race.
 func TestLiveRegistryIdentityLocalPlatform(t *testing.T) {
 	ctx := context.Background()
@@ -65,6 +67,10 @@ func TestLiveRegistryIdentityLocalPlatform(t *testing.T) {
 	domain, start := localRegistryFields(t, pid)
 	m := registryFixture("3.0.0", "idle")
 	m["pid"], m["pidDomain"], m["procStart"] = pid, domain, start
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, mode := range []string{"valid", "wrong-owner-birth", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			owner := target
@@ -84,8 +90,12 @@ func TestLiveRegistryIdentityLocalPlatform(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || id.Domain != domain || registryIdentityReason(m, id) != RuntimeNone {
+			if err != nil || id.Domain != domain {
 				t.Fatal("independent local identity disagreed", err)
+			}
+			got := decodeRegistry(raw, id)
+			if got.Reason != RuntimeNone || got.State != RuntimeReady {
+				t.Fatalf("independent local record reason=%s state=%s want=none/ready", got.Reason, got.State)
 			}
 		})
 	}
