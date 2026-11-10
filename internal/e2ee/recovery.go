@@ -26,6 +26,8 @@ func (p Prepared) valid() bool {
 // BatchArtifacts must revalidate current policy without crypto, idempotently
 // fsync delivery/journal effects, and verify their durable readback. U4 supplies
 // this adapter; no mailbox, subscriptions, cursor or sync caller is changed here.
+// Callbacks run under the lease: never acquire crypto/outer locks, recursively
+// Recover, or close the lease. Reentry returns ErrLock and must be propagated.
 type BatchArtifacts interface {
 	Apply(Prepared) error
 	Verify(Prepared) error
@@ -90,6 +92,11 @@ func (l *LockedStore) LoadSnapshot(c *Codec, b Binding) (Snapshot, error) {
 // Olm here. It rereads authoritative disk state rather than trusting a caller's
 // cached snapshot. Recovery always runs before a new sync or preparation.
 func (l *LockedStore) Recover(c *Codec, b Binding, artifacts BatchArtifacts) (Snapshot, bool, error) {
+	if l.closed || l.recovering {
+		return Snapshot{}, false, ErrLock
+	}
+	l.recovering = true
+	defer func() { l.recovering = false }()
 	s, err := l.LoadSnapshot(c, b)
 	if err != nil {
 		return Snapshot{}, false, err

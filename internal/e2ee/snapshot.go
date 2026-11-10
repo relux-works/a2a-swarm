@@ -18,8 +18,8 @@ type Codec struct {
 	secrets *Inventory
 }
 
-func (c *Codec) String() string   { return "<e2ee-codec>" }
-func (c *Codec) GoString() string { return c.String() }
+func (c Codec) String() string   { return "<e2ee-codec>" }
+func (c Codec) GoString() string { return c.String() }
 func NewCodec(key []byte, secrets *Inventory) (*Codec, error) {
 	if len(key) != 32 || secrets == nil {
 		return nil, ErrInvalid
@@ -109,6 +109,9 @@ type Snapshot struct {
 func (s Snapshot) Marshal() ([]byte, error) {
 	if s.Version != 1 || s.Revision == 0 || s.Engine.Version != 1 {
 		return nil, ErrCodec
+	}
+	if err := s.validateBounds(); err != nil {
+		return nil, err
 	}
 	for _, pin := range s.Pins {
 		if err := pin.Validate(); err != nil {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -26,14 +27,46 @@ import (
 type FileStore struct {
 	dir   *os.File
 	fault func(string) error
+	// writeStage is an internal IO seam; nil uses the actual file writer. A
+	// partial failure leaves a private stage for next-lock recovery, never publish.
+	writeStage func(*os.File, []byte) (int, error)
 }
 
 // LockedStore holds the identity-wide crypto lock. All store operations require
 // it. It is not goroutine-safe: one coordinator owns a lease and its savepoints.
 type LockedStore struct {
-	store  *FileStore
-	lock   *os.File
-	closed bool
+	store      *FileStore
+	lock       *os.File
+	closed     bool
+	localID    lockIdentity
+	recovering bool
+}
+
+type lockIdentity struct{ device, inode uint64 }
+
+var processLocks = struct {
+	sync.Mutex
+	held map[lockIdentity]bool
+}{held: map[lockIdentity]bool{}}
+
+func reserveProcessLock(dir *os.File) (lockIdentity, error) {
+	var st unix.Stat_t
+	if unix.Fstat(int(dir.Fd()), &st) != nil {
+		return lockIdentity{}, ErrIO
+	}
+	key := lockIdentity{uint64(st.Dev), uint64(st.Ino)}
+	processLocks.Lock()
+	defer processLocks.Unlock()
+	if processLocks.held[key] {
+		return key, ErrLock
+	}
+	processLocks.held[key] = true
+	return key, nil
+}
+func releaseProcessLock(key lockIdentity) {
+	processLocks.Lock()
+	defer processLocks.Unlock()
+	delete(processLocks.held, key)
 }
 
 func safeStat(f *os.File, directory bool) error {
@@ -168,6 +201,18 @@ func (s *FileStore) Lock(ctx context.Context) (*LockedStore, error) {
 	if safeStat(s.dir, true) != nil {
 		return nil, ErrUnsafe
 	}
+	// Fail closed immediately on same-process reentry, even through a different
+	// FileStore handle for this inode. Cross-process contention alone may wait.
+	localID, err := reserveProcessLock(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			releaseProcessLock(localID)
+		}
+	}()
 	// O_EXCL distinguishes creation, whose directory entry must be durable.
 	fd, err := unix.Openat(int(s.dir.Fd()), "crypto.lock", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 	created := err == nil
@@ -198,7 +243,8 @@ func (s *FileStore) Lock(ctx context.Context) (*LockedStore, error) {
 				f.Close()
 				return nil, err
 			}
-			return &LockedStore{store: s, lock: f}, nil
+			transferred = true
+			return &LockedStore{store: s, lock: f, localID: localID}, nil
 		}
 		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
 			f.Close()
@@ -255,12 +301,13 @@ func (s *FileStore) cleanStages() error {
 	return nil
 }
 func (l *LockedStore) Close() error {
-	if l.closed {
+	if l.closed || l.recovering {
 		return ErrLock
 	}
 	l.closed = true
 	err := unix.Flock(int(l.lock.Fd()), unix.LOCK_UN)
 	closeErr := l.lock.Close()
+	releaseProcessLock(l.localID)
 	if err != nil || closeErr != nil {
 		return ErrLock
 	}
@@ -315,15 +362,26 @@ func (l *LockedStore) publish(name string, data []byte, createOnly bool) error {
 		return ErrIO
 	}
 	f := os.NewFile(uintptr(fd), "e2ee-stage")
-	defer func() { f.Close(); _ = unix.Unlinkat(int(s.dir.Fd()), tmp, 0) }()
+	removeStage := true
+	defer func() {
+		f.Close()
+		if removeStage {
+			_ = unix.Unlinkat(int(s.dir.Fd()), tmp, 0)
+		}
+	}()
 	if err = safeStat(f, false); err != nil {
 		return err
 	}
 	if s.step(name+":write") != nil {
 		return ErrIO
 	}
-	n, err := f.Write(data)
+	write := s.writeStage
+	if write == nil {
+		write = func(file *os.File, raw []byte) (int, error) { return file.Write(raw) }
+	}
+	n, err := write(f, data)
 	if err != nil || n != len(data) {
+		removeStage = false
 		return ErrIO
 	}
 	if s.step(name+":file-sync") != nil || f.Sync() != nil {
@@ -359,26 +417,6 @@ func (l *LockedStore) publish(name string, data []byte, createOnly bool) error {
 		if s.syncDir(name+":cleanup-sync") != nil {
 			return ErrIO
 		}
-	}
-	return nil
-}
-
-// LockRank documents and validates composite acquisition before any effects.
-// Existing subscription serialization stays inside State; there is no new policy
-// mutex. Consumer lifetime FDs remain separate and belong to the caller.
-type LockRank uint8
-
-const (
-	OwnerDMLock LockRank = iota + 1
-	CryptoLock
-	SubscriptionPolicyLock
-	StateLock
-	MailboxLock
-)
-
-func ValidateLockOrder(held, next LockRank) error {
-	if next < OwnerDMLock || next > MailboxLock || next <= held {
-		return ErrLock
 	}
 	return nil
 }

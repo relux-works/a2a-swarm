@@ -346,8 +346,12 @@ CGO_ENABLED=0 GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off go test ./inte
 
 For race detection use a runner's supported race toolchain with `CGO_ENABLED=1`;
 this does not select libolm (the adapter imports concrete goolm packages).
-The benchmark reports cold-handle/warm-handle p50/p95 at 1MiB and 64MiB and fails
-above the 500ms p95 gate. Cold OS disk-cache eviction is not claimed. Worker
+The benchmark builds actual 1MiB/full-cap 64MiB Snapshots with account/Olm/Megolm
+pickles, replay state and bounded prepared message evidence. It times end-to-end
+SaveSnapshot/LoadSnapshot, including Marshal/strict Decode, bounds, inventory,
+AEAD, durable IO and readback. It reports cold-handle/warm-handle p50/p95 and fails
+above 500ms p95. Engine checkpoint generation is setup; OS disk-cache eviction
+and complete U4 hook/lock-contention latency are not claimed. Worker
 benches that prohibit tests run formatting/build/vet only and hand tests off.
 
 `A2A_SECRET_STORE=keychain` opts into macOS login Keychain storage. The generic

@@ -24,6 +24,12 @@ boolean substitute is authorized. Under A1, U2a must also enforce Courier-only
 custody under the dedicated service-user daemon, excluding agent access; local
 non-Courier identities get no custody and no home/local-base/env fallback.
 
+U2a must additionally enforce the 0700-parent creation and ACL exclusion
+provisioning contract, add a monotonic anchor outside snapshot rollback, and
+derive signing keys with concrete goolm/pk. An executable no-OlmMachine/no-libolm
+import-boundary test belongs to U2a or a dedicated follow-up. U4 owns composite
+lock-order integration and full hook latency, beyond U1's Save/Load benchmark.
+
 ## Issue #258: cross-topic citations after #219
 
 The current #219 reply contract in `docs/cli.md` and

@@ -9,6 +9,74 @@ import (
 	"testing"
 )
 
+type callbackArtifacts struct{ apply func(Prepared) error }
+
+func (a callbackArtifacts) Apply(p Prepared) error { return a.apply(p) }
+func (a callbackArtifacts) Verify(Prepared) error  { return nil }
+
+// Witness callbacks cannot reacquire the crypto lock, recursively Recover or
+// release their active lease. Propagated ErrLock leaves cursor/prepared bytes
+// unchanged; control: ordinary idempotent disk-artifact callbacks finish recovery.
+func TestRecoveryCallbackReentry(t *testing.T) {
+	store, lease, c, p, inv := fixture(t)
+	root := mustPointerRoot(t, c, p, inv)
+	codec := codecFor(t, root, inv)
+	_, w, key := working(t)
+	state, err := w.Checkpoint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	since := Cursor{Token: "since"}
+	digest := TupleHash("callback-batch")
+	prepared := &Prepared{Generation: p.Binding.Generation, Since: since, Next: Cursor{Token: "next", Revision: 1, Batch: digest}, Digest: digest, Evidence: json.RawMessage(`{"accepted":[]}`)}
+	snapshot := Snapshot{Version: 1, Revision: 1, Engine: state, Prepared: prepared}
+	if err = lease.CreateCursor(since); err != nil {
+		t.Fatal(err)
+	}
+	if err = lease.SaveSnapshot(codec, p.Binding, snapshot, true); err != nil {
+		t.Fatal(err)
+	}
+	before, err := lease.read("state.bin", MaxSnapshot+envelopeOverhead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"lock", "recursive-recover", "close"} {
+		t.Run(mode, func(t *testing.T) {
+			attempted := false
+			callback := callbackArtifacts{apply: func(Prepared) error {
+				attempted = true
+				switch mode {
+				case "lock":
+					next, err := store.Lock(t.Context())
+					if next != nil {
+						next.Close()
+					}
+					return err
+				case "recursive-recover":
+					_, _, err := lease.Recover(codec, p.Binding, nil)
+					return err
+				default:
+					return lease.Close()
+				}
+			}}
+			if _, _, err = lease.Recover(codec, p.Binding, callback); err != ErrLock || !attempted {
+				t.Fatal("callback reentry witness", err)
+			}
+			after, err := lease.read("state.bin", MaxSnapshot+envelopeOverhead)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("callback refusal changed preparation", err)
+			}
+			cursor, err := lease.ReadCursor()
+			if err != nil || cursor != since {
+				t.Fatal("callback refusal advanced cursor", err)
+			}
+		})
+	}
+	if recovered, did, err := lease.Recover(codec, p.Binding, &diskArtifacts{lease: lease}); err != nil || !did || recovered.Prepared != nil {
+		t.Fatal("callback positive control", err)
+	}
+}
+
 type diskArtifacts struct {
 	lease *LockedStore
 	apply int

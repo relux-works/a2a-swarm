@@ -1,6 +1,6 @@
 # E2EE rooms: first usable MVP (#308)
 
-Status: proposed design, not activation approval. Source baseline:
+Status: proposed design, not activation approval. Historical S0 baseline:
 `08976619cfd38d54a79c5c20f0060ea8b77ba4c6`. Revised against the offline S0 verdict
 `../.out/review-s0-verdict.md` and the five follow-up findings in
 `../.out/review-s0b-verdict.md`. Those S0 revisions were documentation only.
@@ -321,6 +321,13 @@ alone do not establish that service-user boundary; U2a must enforce it before
 opening the store. A local, non-Courier identity gets no custody. An agent-owned
 0700 directory is not a valid production substitute.
 
+U2a provisioning must supply an effective-UID-owned 0700 parent if the backend
+is to create the final root; it creates no ancestors. Alternatively the host
+pre-creates the exact 0700 root under a safe existing parent. The backend checks
+mode bits/UID, not ACLs: provisioning must inspect/remove any ACL granting the
+ordinary agent UID access to the root or its custody files. A successful open
+alone is not proof of the Courier service-user/ACL boundary.
+
 Store full identity, device and binding in authenticated metadata. No
 cross-profile/name fallback. Endpoint/backend/device changes need explicit
 migration; token rotation on the same binding must not erase crypto state.
@@ -401,6 +408,22 @@ hash of its fixed service and full MXID, not this root bundle or public metadata
 Sealed state plus adjacent wrapping key does not protect a stolen whole directory.
 File custody does not make exported device pickles non-exportable keys.
 
+Checkpoint/pickle output must never be persisted unsealed: libolmpickle derives
+deterministic encryption from its key and uses an 8-byte MAC. Only the fresh-nonce
+outer AEAD provides snapshot confidentiality/integrity. U2a seed derivation must
+use concrete `crypto/goolm/pk`, not nil-driver `crypto/olm` PK constructors or
+`CrossSigningSeeds.Decode` without a driver. No global driver is registered in U1.
+The Megolm session ID is the raw-standard-base64 signing key; U3 binds the
+authenticated originator evidence to it, never to outer device hints.
+
+An older valid sealed snapshot under the same binding is not detected as a
+rollback by U1. A partial directory restore could therefore rewind replay floors
+or OTK consumption. U2a must provide/verify a durable monotonic anchor outside
+the rollback domain before activation; a revision inside the same snapshot is
+not that anchor. U2a or a dedicated follow-up also adds an executable import-boundary
+test forbidding `OlmMachine` and libolm driver imports; current imports and offline
+builds alone do not prevent a future accidental boundary violation.
+
 ### Secret handling and budgets
 
 Before a loaded/generated secret can reach a library, subprocess or error path,
@@ -415,9 +438,23 @@ No secrets in argv/env/logs/metadata/Git/archive/owner messages; public keys and
 signatures are public. Room keys leave only over eligible Olm. Go zeroing is best
 effort; same-UID/root/RAM dumps remain outside this custody boundary.
 
+Secret/token containers have fixed-label String/GoString/Format methods, including
+Working, Snapshot, Prepared, Cursor, password records and their holders. Verb,
+flags and width cannot select a private representation. JSON storage is separate
+and must still remain sealed. Inventory retains at most 256MiB / 1,048,576 unique
+values; overflow suppresses all diagnostics and reports capacity until explicit
+Reset. Reset only after diagnostics finish and the old working set is retired.
+Scrubbing includes compact JSON numeric byte arrays and URL query escaping as
+well as raw/base64/hex/JSON-string forms. App diagnostic integration remains U2a.
+
 Full snapshot unseal/reseal must fit the existing 5-second hook total budget.
-U1 measures cold/warm p50/p95 at 1 MiB and the 64 MiB cap on macOS/Linux: local
-crypto I/O target p95 <=500 ms, lock wait <=100 ms for hooks, leaving >=1 second
+U1's benchmark measures cold/warm p50/p95 for actual 1MiB and full-cap 64MiB
+Snapshots: real account/Olm/Megolm pickles, replay windows and bounded prepared
+message evidence, through SaveSnapshot/LoadSnapshot including bounds checks,
+Marshal/strict Decode, inventory, AEAD, durable file/directory IO and readback.
+Engine checkpoint construction is setup, not timed. Cold means reopened handles,
+not evicted OS disk cache. Measured snapshot target p95 <=500 ms; U4 separately
+measures full hook/coordinator work and lock wait <=100 ms, leaving >=1 second
 for cancellation/output. No measured claim exists yet. A process may reuse an
 unsealed snapshot only while holding the lock with matching generation/revision;
 no cross-process plaintext cache or daemon. No-change sync skips reseal. A hook
@@ -492,6 +529,14 @@ Runtime-consumer lifetime lock remains separate; E2EE coordinator owns the curso
 capability under crypto lock. Never acquire crypto/owner-DM locks from state/mailbox
 callbacks; preserve inherited consumer FDs over exec. Section 7 defines output
 revalidation before `lockedDeliver` and the revision check inside it.
+
+U1 rejects same-process crypto-lock reentry immediately with ErrLock, including
+another handle for the same directory inode. Only cross-process contention may
+wait with context cancellation. Recover callbacks run under the lease and must
+not acquire crypto/outer locks, recursively Recover or close the lease; these
+reentry paths refuse with ErrLock, which callbacks must propagate. U4 owns actual
+composite lock-order integration; the unused advisory ValidateLockOrder API was
+removed rather than claiming it enforced acquisition order.
 
 ## 5. Activation, encryption context and recoverable sync
 
@@ -1008,7 +1053,7 @@ of `client.go`, and integration is finished before U5 acceptance.
 
 | Unit | Owned output / integration boundary | Likely files |
 | --- | --- | --- |
-| U1: dependency/store foundations | Offline closure, typed pure-Go engine adapter, secret inventory, sealed codec/durability, replay/pruning primitives, global lock order, Q1 file custody and durable `root.G` pointer, Q2 create-only password-section adapter and latency benchmark. No keychain implementation. Tests/benchmarks run on approved runners, not the Source worker bench. | `go.mod`, `go.sum`, new `internal/e2ee/`; Curator vendor/pin delivery remains Source's integration obligation. |
+| U1: dependency/store foundations | Offline closure, typed pure-Go engine adapter, secret inventory, sealed codec/durability, replay/pruning primitives, identity-wide crypto locking (composite ordering integrates in U4), Q1 file custody and durable `root.G` pointer, Q2 create-only password-section adapter and latency benchmark. No keychain implementation. Tests/benchmarks run on approved runners, not the Source worker bench. | `go.mod`, `go.sum`, new `internal/e2ee/`; Curator vendor/pin delivery remains Source's integration obligation. |
 | U2a: cross-signing bootstrap and identity evidence | A1 Courier-only custody root/service-user wiring, excluding agent access and refusing local non-Courier identities; Q2 onboarding/admin-registration wiring; passwordless first cross-signing upload and automatic stored-password UIA fallback; initial host-pin reader/validation and Element owner-signature verification using pinned MSK/USK evidence; init and `a2a e2ee identity show`. Live Element ceremony witness required before shipment. No owner password steps. Publishes public evidence for the grant key-binding node. | `internal/cli/account.go`, `connection_registration.go`, `credentials.go`, new `e2ee.go`; matrix key/UIA methods and trust adapter. |
 | U2b: remaining identity trust/lifecycle | Rest of U2: principal-root revision + 1/re-ceremony, Q4 device admission/approval transitions, refresh/status and explicit new-device recovery/rotation. Q4 is still a gate. | Trust/pin adapter, crypto lifecycle and CLI status/refresh/recovery. |
 | Grant key binding (after U2a) | Bind Swarma grant keys to the public identity evidence using the authoritative platform contract when available. Separate node, no invented grant/key formats in U1. | Separate platform scope. |

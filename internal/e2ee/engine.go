@@ -34,7 +34,8 @@ type EngineState struct {
 func (s EngineState) String() string   { return "<e2ee-engine-state>" }
 func (s EngineState) GoString() string { return s.String() }
 
-// Working deliberately has no String/JSON representation exposing crypto structs.
+// Working contains live secret-bearing primitives. Its fmt methods emit only a
+// fixed label; JSON sees no exported fields. Never reflect into it for logging.
 type Working struct {
 	engine   *Engine
 	account  *account.Account
@@ -61,6 +62,8 @@ func (e *Engine) observe(v any) {
 
 // Checkpoint uses explicit library pickles, not gob/global pickle keys. The
 // caller supplies the per-generation wrapping key; the outer AEAD binds identity.
+// Never persist this output unsealed: libolmpickle uses deterministic encryption
+// and an 8-byte MAC. Only the fresh-nonce outer snapshot AEAD protects storage.
 func (w *Working) Checkpoint(key []byte) (EngineState, error) {
 	if len(key) != 32 {
 		return EngineState{}, ErrInvalid
@@ -283,6 +286,8 @@ func (w *Working) DecryptOlm(sid id.SessionID, kind id.OlmMsgType, ciphertext st
 
 // Megolm primitives carry no room policy. U3 owns authenticated distribution
 // metadata, source/tombstone checks and exact room/content validation on the fork.
+// A Megolm session ID IS the raw-standard-base64 signing key; U3 must bind the
+// authenticated originator evidence to that key, not an outer device hint.
 func (w *Working) NewOutboundMegolm() (id.SessionID, []byte, error) {
 	if len(w.outbound) >= 32 {
 		return "", nil, ErrCapacity

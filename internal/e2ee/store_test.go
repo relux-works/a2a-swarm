@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -603,7 +604,7 @@ func TestSecretInventory(t *testing.T) {
 	inv := new(Inventory)
 	inv.Register(secret)
 	quoted, _ := json.Marshal(string(secret))
-	encodings := []string{string(secret), string(quoted), base64.StdEncoding.EncodeToString(secret), base64.RawStdEncoding.EncodeToString(secret), base64.URLEncoding.EncodeToString(secret), base64.RawURLEncoding.EncodeToString(secret), hex.EncodeToString(secret), strings.ToUpper(hex.EncodeToString(secret))}
+	encodings := []string{string(secret), string(quoted), base64.StdEncoding.EncodeToString(secret), base64.RawStdEncoding.EncodeToString(secret), base64.URLEncoding.EncodeToString(secret), base64.RawURLEncoding.EncodeToString(secret), hex.EncodeToString(secret), strings.ToUpper(hex.EncodeToString(secret)), url.QueryEscape(string(secret)), numericBytes(secret)}
 	for i, encoded := range encodings {
 		if got := inv.Scrub("prefix " + encoded + " suffix"); strings.Contains(got, encoded) {
 			t.Fatalf("encoding %d survived", i)
@@ -618,8 +619,7 @@ func TestSecretInventory(t *testing.T) {
 	}
 }
 
-// OS exclusion works across separate directory handles; cancellation terminates
-// a contender, and release permits a new holder. Every wait observes completion
+// Local exclusion refuses a contender, and release permits a new holder. Every wait observes completion
 // or failure instead of waiting forever on a readiness signal.
 func TestGlobalCryptoLock(t *testing.T) {
 	s, l, _, _, _ := fixture(t)
@@ -649,29 +649,70 @@ func TestGlobalCryptoLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	next.Close()
-	for held := LockRank(0); held <= MailboxLock; held++ {
-		for next := OwnerDMLock; next <= MailboxLock; next++ {
-			err := ValidateLockOrder(held, next)
-			var want error
-			if next <= held {
-				want = ErrLock
-			}
-			if err != want {
-				t.Fatalf("order %d -> %d", held, next)
-			}
-		}
-	}
+
 }
 
-// Metadata and errors cannot accidentally render root/codec private keys.
+// Witness Working must emit only its label (this assertion fails on b719459c);
+// Root/Codec are controls. Every secret/token container is checked for every
+// requested verb, against raw, hex, decimal-array and base64 planted encodings.
+// A method-free legacy view proves the label oracle detects an unprotected type.
 func TestValueFreeFormatting(t *testing.T) {
-	_, _, c, p, inv := fixture(t)
+	store, lease, c, p, inv := fixture(t)
 	r := mustPointerRoot(t, c, p, inv)
+	secret := bytes.Repeat([]byte{128, 9, 171, 127}, 8)
+	for i := range r.Seeds {
+		r.Seeds[i] = base64.RawURLEncoding.EncodeToString(secret)
+	}
+	r.Wrap = base64.RawURLEncoding.EncodeToString(secret)
 	codec := codecFor(t, r, inv)
-	output := fmt.Sprintf("%v %#v %v %#v", r, r, codec, codec)
-	for _, secret := range append(r.Seeds[:], r.Wrap) {
-		if strings.Contains(output, secret) {
-			t.Fatal("private material formatted")
+	engine, w, _ := working(t)
+	w.account.IdKeys.Ed25519.PrivateKey = append(append([]byte(nil), secret...), secret...)
+	w.account.IdKeys.Curve25519.PrivateKey = append([]byte(nil), secret...)
+	token := base64.RawStdEncoding.EncodeToString(secret)
+	cursor := Cursor{Token: token}
+	prepared := Prepared{Since: cursor, Next: cursor, Evidence: json.RawMessage(`{"body":"` + token + `"}`)}
+	state := EngineState{Version: 1, Account: secret, Olm: map[string][]byte{"pickle": secret}}
+	snapshot := Snapshot{Version: 1, Revision: 1, Engine: state, Prepared: &prepared}
+	password := passwordRecord{Version: 1, Value: token}
+	type legacyWorking Working
+	if fmt.Sprintf("%v", (*legacyWorking)(w)) == "<e2ee-working>" {
+		t.Fatal("formatter witness not discriminating")
+	}
+	values := []struct {
+		name, label string
+		value       any
+	}{
+		{"witness-Working", "<e2ee-working>", w}, {"Working-value", "<e2ee-working>", *w},
+		{"control-Root", "<e2ee-root>", r}, {"Root-pointer", "<e2ee-root>", &r},
+		{"control-Codec", "<e2ee-codec>", codec}, {"Codec-value", "<e2ee-codec>", *codec},
+		{"Snapshot", "<e2ee-snapshot>", snapshot}, {"Snapshot-pointer", "<e2ee-snapshot>", &snapshot},
+		{"Prepared", "<e2ee-prepared>", prepared}, {"Prepared-pointer", "<e2ee-prepared>", &prepared},
+		{"Cursor", "<e2ee-cursor>", cursor}, {"Cursor-pointer", "<e2ee-cursor>", &cursor},
+		{"EngineState", "<e2ee-engine-state>", state}, {"EngineState-pointer", "<e2ee-engine-state>", &state},
+		{"PinRecord", "<e2ee-pin-record>", shapePin()},
+		{"Inventory", "<e2ee-secret-inventory>", inv},
+		{"Inventory-zero-value", "<e2ee-secret-inventory>", Inventory{}},
+		{"Engine", "<e2ee-engine>", engine}, {"Engine-value", "<e2ee-engine>", *engine},
+		{"PasswordRecord", "<e2ee-password-record>", password}, {"PasswordRecord-pointer", "<e2ee-password-record>", &password},
+		{"FileCustody", "<e2ee-file-custody>", c}, {"FileCustody-value", "<e2ee-file-custody>", *c},
+		{"FileStore", "<e2ee-file-store>", store}, {"FileStore-value", "<e2ee-file-store>", *store},
+		{"LockedStore", "<e2ee-locked-store>", lease}, {"LockedStore-value", "<e2ee-locked-store>", *lease},
+	}
+	var encodings []string
+	for _, raw := range [][]byte{secret, append(append([]byte(nil), secret...), secret...)} {
+		encodings = append(encodings, string(raw), hex.EncodeToString(raw), strings.ToUpper(hex.EncodeToString(raw)), fmt.Sprint(raw), strings.ReplaceAll(fmt.Sprint(raw), " ", ","), base64.StdEncoding.EncodeToString(raw), base64.RawStdEncoding.EncodeToString(raw), base64.RawURLEncoding.EncodeToString(raw))
+	}
+	for _, tc := range values {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x"} {
+			output := fmt.Sprintf(verb, tc.value)
+			if output != tc.label {
+				t.Fatalf("%s %s is not a fixed label", tc.name, verb)
+			}
+			for _, encoded := range encodings {
+				if strings.Contains(output, encoded) {
+					t.Fatalf("%s %s exposes a planted encoding", tc.name, verb)
+				}
+			}
 		}
 	}
 }

@@ -7,26 +7,48 @@ import (
 	"encoding/json"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/relux-works/a2a-swarm/internal/redact"
 )
 
-// Inventory is operation-scoped. A caller must discard it with the working
-// snapshot; it must not accumulate historical snapshots in a daemon-wide cache.
+// Inventory has bounded retained bytes/entries and an explicit Reset. Reset is
+// permitted only after diagnostics finish and the old working set is retired.
+// On overflow it retains no new values and suppresses ALL diagnostics until Reset,
+// rather than forgetting an older secret or emitting unregistered new values.
 // Raw secrets are copied once and deduplicated. Encodings are generated only
 // during scrub and only if they can fit in the diagnostic, so a 64MiB snapshot
 // doesn't allocate all its encodings on every seal. No API returns secret values.
 // Go cannot promise RAM erasure. U2 must route CLI diagnostics through Scrub.
 type Inventory struct {
+	inventoryFormat
 	mu     sync.Mutex
 	values []string
 	seen   map[[32]byte]bool
+	used   int
+	full   bool
 }
 
-func (s *Inventory) String() string   { return "<e2ee-secret-inventory>" }
-func (s *Inventory) GoString() string { return s.String() }
+const MaxInventoryBytes = 4 * MaxSnapshot
+const MaxInventoryEntries = 1 << 20
+
+func (s *Inventory) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.values)
+	s.values, s.seen, s.used, s.full = nil, nil, 0, false
+}
+
+func (s *Inventory) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.full {
+		return ErrCapacity
+	}
+	return nil
+}
 
 func (s *Inventory) Register(secret []byte) {
 	if s == nil || len(secret) == 0 {
@@ -35,12 +57,20 @@ func (s *Inventory) Register(secret []byte) {
 	hash := sha256.Sum256(secret)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.full {
+		return
+	}
 	if s.seen == nil {
 		s.seen = map[[32]byte]bool{}
 	}
 	if !s.seen[hash] {
+		if len(secret) > MaxInventoryBytes-s.used || len(s.values) >= MaxInventoryEntries {
+			s.full = true
+			return
+		}
 		s.seen[hash] = true
 		s.values = append(s.values, string(secret))
+		s.used += len(secret)
 	}
 }
 func (s *Inventory) Scrub(message string) string {
@@ -49,6 +79,9 @@ func (s *Inventory) Scrub(message string) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.full {
+		return "<e2ee-diagnostic-suppressed>"
+	}
 	encodings := make([]string, 0, len(s.values))
 	for _, raw := range s.values {
 		if len(raw) > len(message) {
@@ -66,11 +99,28 @@ func (s *Inventory) Scrub(message string) string {
 		if hex.EncodedLen(len(b)) <= len(message) {
 			encodings = append(encodings, hex.EncodeToString(b), strings.ToUpper(hex.EncodeToString(b)))
 		}
+		if 2*len(b)+1 <= len(message) {
+			encodings = append(encodings, numericBytes(b))
+		}
 	}
 	sort.Slice(encodings, func(i, j int) bool { return len(encodings[i]) > len(encodings[j]) })
 	var set redact.Set
 	set.Add(encodings...)
 	return set.Scrub(message)
+}
+
+// numericBytes is the compact JSON representation of a fixed byte array, which
+// differs from encoding/json's base64 representation of a []byte slice.
+func numericBytes(raw []byte) string {
+	out := make([]byte, 0, 4*len(raw)+2)
+	out = append(out, '[')
+	for i, v := range raw {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = strconv.AppendUint(out, uint64(v), 10)
+	}
+	return string(append(out, ']'))
 }
 
 // ObserveJSON inventories serialized fields and decoded byte fields (Go encodes

@@ -42,3 +42,85 @@ func TestPickleAllocationGate(t *testing.T) {
 		}
 	}
 }
+
+// Witness authenticated malformed Olm/Megolm layouts never reach count-trusting
+// library decoders. Control: each actual emitted session restores unchanged.
+func TestSessionPickleLayoutMutations(t *testing.T) {
+	w, key, sender, ciphertext, _ := prekey(t)
+	if _, _, err := w.DecryptPrekey(sender, ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	sid, sharing, err := w.NewOutboundMegolm()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.AcceptDirectMegolm(sharing); err != nil {
+		t.Fatal(err)
+	}
+	state, err := w.Checkpoint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.engine.Restore(state, key); err != nil {
+		t.Fatal("session restore control", err)
+	}
+	var olmID string
+	for id := range state.Olm {
+		olmID = id
+	}
+	for _, tc := range []struct {
+		kind, id string
+		pickle   []byte
+	}{
+		{"olm", olmID, state.Olm[olmID]},
+		{"inbound", string(sid), state.Inbound[string(sid)]},
+		{"outbound", string(sid), state.Outbound[string(sid)]},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			raw, err := libolmpickle.Unpickle(key, tc.pickle)
+			if err != nil || !validPickleLayout(tc.kind, raw) {
+				t.Fatal("emitted layout control", err)
+			}
+			mutations := map[string]func([]byte) []byte{
+				"version":   func(b []byte) []byte { binary.BigEndian.PutUint32(b[:4], 99); return b },
+				"truncated": func(b []byte) []byte { return b[:len(b)-1] },
+				"trailing":  func(b []byte) []byte { return append(b, 0) },
+			}
+			if tc.kind == "olm" {
+				senders := int(binary.BigEndian.Uint32(raw[133:137]))
+				receiverOffset := 137 + senders*100
+				receivers := int(binary.BigEndian.Uint32(raw[receiverOffset : receiverOffset+4]))
+				skippedOffset := receiverOffset + 4 + receivers*68
+				for name, offset := range map[string]int{"senders": 133, "receivers": receiverOffset, "skipped": skippedOffset} {
+					mutations[name] = func(b []byte) []byte { binary.BigEndian.PutUint32(b[offset:offset+4], ^uint32(0)); return b }
+				}
+			}
+			for name, mutate := range mutations {
+				t.Run(name, func(t *testing.T) {
+					bad := mutate(append([]byte(nil), raw...))
+					encoded, err := libolmpickle.Pickle(key, bad)
+					if err != nil {
+						t.Fatal(err)
+					}
+					candidate := state
+					// Replace only the selected map; never corrupt the positive state's maps.
+					clone := map[string][]byte{tc.id: encoded}
+					switch tc.kind {
+					case "olm":
+						candidate.Olm = clone
+					case "inbound":
+						candidate.Inbound = clone
+					case "outbound":
+						candidate.Outbound = clone
+					}
+					if _, err = w.engine.Restore(candidate, key); err != ErrCodec {
+						t.Fatal("session layout witness", err)
+					}
+					if _, err = w.engine.Restore(state, key); err != nil {
+						t.Fatal("mutation changed control", err)
+					}
+				})
+			}
+		})
+	}
+}

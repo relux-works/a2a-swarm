@@ -184,6 +184,9 @@ func TestEngineInventoryAndBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	megolmData := w.outbound[string(sid)].Ratchet.Data[:]
+	if encoded := numericBytes(megolmData); strings.Contains(engine.secrets.Scrub(encoded), encoded) {
+		t.Fatal("fixed-array JSON numeric secret survived")
+	}
 	if encoded := base64.RawURLEncoding.EncodeToString(megolmData); strings.Contains(engine.secrets.Scrub(encoded), encoded) {
 		t.Fatal("fixed-array ratchet secret survived")
 	}

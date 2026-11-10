@@ -62,6 +62,9 @@ func ValidateServices(p Pointer, reserved []string) error {
 
 // Root is an immutable generation bundle. Seeds/wrapping key are canonical
 // unpadded base64url. It is never a replacement for the sealed device account.
+// U2a must derive signing keys with concrete crypto/goolm/pk constructors: the
+// crypto/olm PK driver variables are nil without global registration, which U1
+// intentionally does not perform.
 type Root struct {
 	Version int       `json:"v"`
 	Binding Binding   `json:"binding"`
@@ -215,7 +218,7 @@ func (c *FileCustody) CreatePointer(p Pointer) error {
 		return err
 	}
 	// Never fill in a missing locator in a directory with roots or state.
-	for _, name := range []string{"secrets.json", "state.bin"} {
+	for _, name := range []string{"secrets.json", "state.bin", "cursor.json"} {
 		f, err := c.lease.store.open(name)
 		if err == nil {
 			f.Close()
