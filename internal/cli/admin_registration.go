@@ -169,10 +169,11 @@ func (a *App) checkAdminRegistrationRoom(ctx context.Context, s *session) error 
 		return adminRegistrationError("room-subscriptions", err)
 	}
 	// Ordinary delivery/history exclude this room independently of sender matches.
-	// Valid broad sender selectors may remain; other broad selectors and explicit
-	// protected-room selectors still refuse, including expired rows awaiting removal.
+	// Valid broad sender selectors other than the configured server bot may remain;
+	// other broad selectors and explicit protected-room selectors still refuse,
+	// including expired rows awaiting removal.
 	for _, sub := range subs.Subs {
-		if sub.Room == r.RoomID || sub.Room == "" && (sub.From == "" || sub.validate() != nil) {
+		if sub.Room == r.RoomID || sub.Room == "" && (sub.From == "" || sub.From == r.ServerBotUserID || sub.validate() != nil) {
 			return adminRegistrationError("room-subscriptions", nil)
 		}
 	}

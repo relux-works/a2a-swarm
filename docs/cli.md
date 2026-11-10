@@ -3860,10 +3860,13 @@ and exactly the configured joined members, including the administrator and bot.
 Invites, knocks, extra members, subscriptions explicitly targeting the configured
 admin room, retained relevant mailbox entries, and an overlapping owner-DM route
 refuse. An explicit admin-room selector refuses even when expired or restricted
-by sender, kind, topic, subject or all-events. Valid broad exact-sender selectors
-(`room=all from=@user:server`, including owner-sender rows) may coexist with
-registration and remain unchanged: they are not deleted, trimmed, rewritten or
-muted. Broad selectors without a valid typed sender retain the conservative
+by sender, kind, topic, subject or all-events. Broad selectors whose typed sender
+is the configured server bot also refuse, including kind-restricted or expired
+rows; an explicit ordinary-room bot-sender selector retains the ordinary-room
+contract. Other valid broad exact-sender selectors (`room=all from=@user:server`,
+including owner-sender rows) may coexist with registration and remain unchanged:
+they are not deleted, trimmed, rewritten or muted, and existing mutes are preserved.
+Broad selectors without a valid typed sender retain the conservative
 refusal, including unrelated broad kind/subject selectors. Membership
 is a point-in-time observation; it does not lock the room against changes by
 another administrator. No local power-level check grants server administration

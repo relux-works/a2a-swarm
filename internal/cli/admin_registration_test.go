@@ -111,6 +111,23 @@ func (f *admin198Fixture) paths() config.Paths {
 	return p
 }
 
+// Seed and read back the selected admin's state so clearing existing mutes is
+// observable in the before/after snapshot, independently of subscription writes.
+func (f *admin198Fixture) seedExistingMute() {
+	f.t.Helper()
+	const root = "$existing-muted-root"
+	if _, err := config.UpdateState(f.paths(), "admin", func(st *config.State) error {
+		st.Muted = []string{root}
+		return nil
+	}); err != nil {
+		f.t.Fatal("existing mute setup failed")
+	}
+	st, err := config.LoadState(f.paths(), "admin")
+	if err != nil || len(st.Muted) != 1 || st.Muted[0] != root {
+		f.t.Fatal("existing mute was not persisted in admin state")
+	}
+}
+
 func (f *admin198Fixture) subscriptionSnapshot() []byte {
 	f.t.Helper()
 	a := f.app(io.Discard, io.Discard)
@@ -222,7 +239,7 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			subs = append(subs, Sub{ID: "unsafe", SubSelector: SubSelector{Room: admin198Room, AllEvents: true}})
 		}
 		if f.mode == "broad-subscription" {
-			subs = append(subs, Sub{ID: "sender-wide", SubSelector: SubSelector{From: admin198Bot}})
+			subs = append(subs, Sub{ID: "sender-wide", SubSelector: SubSelector{From: admin198Owner}})
 		}
 		if f.mode == "delivery-owner" {
 			subs = append(subs, Sub{ID: "owner-wide", SubSelector: SubSelector{From: admin198Owner}})
@@ -351,8 +368,9 @@ func safeAdmin198Absent(t *testing.T, data []byte, channel string) {
 }
 
 // Matching prerequisite fixtures pair broad-owner and ordinary-room success with
-// explicit protected-room refusals, even for expired/restricted selectors. The
-// refusal must precede issue, UIA, secret creation, journal and credential output;
+// broad configured-bot and explicit protected-room refusals, even for expired or
+// restricted selectors. Refusal precedes issue, UIA, secret creation, journal and
+// credential output. Every case preserves subscriptions and an existing mute;
 // broad non-sender/invalid selectors keep the conservative preflight policy.
 func TestAdmin198SubscriptionBoundary(t *testing.T) {
 	for _, backend := range []string{"file", "keychain"} {
@@ -362,9 +380,17 @@ func TestAdmin198SubscriptionBoundary(t *testing.T) {
 			ok   bool
 		}{
 			{"broad-owner", SubSelector{From: admin198Owner}, true},
+			{"broad-other-sender", SubSelector{From: "@other:test.invalid"}, true},
+			{"broad-other-server", SubSelector{From: "@server:other.invalid"}, true},
 			{"broad-owner-kind", SubSelector{From: admin198Owner, Kinds: []string{"question"}}, true},
 			{"expired-broad-owner", SubSelector{From: admin198Owner, Until: "2000-01-01T00:00:00Z"}, true},
 			{"ordinary-room", SubSelector{Room: admin198Normal, AllEvents: true}, true},
+			{"ordinary-room-bot", SubSelector{Room: admin198Normal, From: admin198Bot}, true},
+			{"ordinary-room-bot-kind", SubSelector{Room: admin198Normal, From: admin198Bot, Kinds: []string{"question"}}, true},
+			{"broad-bot", SubSelector{From: admin198Bot}, false},
+			{"broad-bot-kind", SubSelector{From: admin198Bot, Kinds: []string{"question"}}, false},
+			{"expired-broad-bot", SubSelector{From: admin198Bot, Until: "2000-01-01T00:00:00Z"}, false},
+			{"expired-broad-bot-kind", SubSelector{From: admin198Bot, Kinds: []string{"question"}, Until: "2000-01-01T00:00:00Z"}, false},
 			{"broad-kind", SubSelector{Kinds: []string{"question"}}, false},
 			{"broad-subject", SubSelector{Subject: "ordinary"}, false},
 			{"invalid-broad-sender", SubSelector{From: "owner"}, false},
@@ -380,6 +406,7 @@ func TestAdmin198SubscriptionBoundary(t *testing.T) {
 			t.Run(backend+"/"+tc.name, func(t *testing.T) {
 				f := newAdmin198Backend(t, "positive", backend)
 				f.subscriptions = &SubList{V: 1, Subs: []Sub{{ID: "selected", SubSelector: tc.sel, CreatedAt: f.now.Add(-time.Minute).Format(createdAtLayout)}}}
+				f.seedExistingMute()
 				before := f.subscriptionSnapshot()
 				var out, stderr bytes.Buffer
 				a := f.app(&out, &stderr)
@@ -529,13 +556,14 @@ func (f *admin198Fixture) assertNoExports(out, err []byte) {
 	}
 }
 
-// The complete token/UIA/cleanup flow accepts a broad exact-sender row without
-// changing it; explicit protected-room subscription and policy failures still
-// stop before issue. Other negative scenarios retain their original bounds.
+// The complete token/UIA/cleanup flow accepts a broad exact-owner row without
+// changing it or an existing mute; explicit protected-room subscription and
+// policy failures still stop before issue. Other negatives retain their bounds.
 func TestAdmin198Registration(t *testing.T) {
 	for _, mode := range []string{"positive", "thread", "expired", "used", "non-admin", "unparsable", "wrong-sender", "unrelated", "late", "stale", "extra-member", "federated", "wrong-room", "extra-body", "bad-expiry", "subscribed", "broad-subscription", "deadline", "redaction-failure", "expired-redaction-failure", "session-401", "server-code-secret", "two-replies"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newAdmin198(t, mode)
+			f.seedExistingMute()
 			beforeSubs := f.subscriptionSnapshot()
 			var out, err bytes.Buffer
 			a := f.app(&out, &err)
