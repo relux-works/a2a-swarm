@@ -1,0 +1,17 @@
+[Unit]
+Description=a2a daemon
+After=network.target
+[Service]
+Type=simple
+User=a2a
+Group=a2a
+RuntimeDirectory=a2a
+RuntimeDirectoryMode=0711
+RuntimeDirectoryPreserve=yes
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=10
+UMask=0077
+ExecStart=/opt/a2a/image/a2a daemon serve --home /private/var/a2a --owner-pin /Library/ApplicationSupport/a2a/owner.json --owner-pin-sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --image-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --service-gid 401
+[Install]
+WantedBy=multi-user.target

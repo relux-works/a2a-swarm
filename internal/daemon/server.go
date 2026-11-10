@@ -55,6 +55,9 @@ type server struct {
 	frameWrite       func(io.Writer, []byte) error // private transport-boundary fixture
 	keepaliveTicks   <-chan time.Time
 	keepaliveAttempt func()
+	serviceReady     func() error                         // service heartbeat starts only after binding
+	requireRunDir    bool                                 // a service never recreates the root-prepared dir
+	runDirectory     func(string, bool) (*os.File, error) // root-path fixture seam
 }
 
 func (s *server) refuse(c *net.UnixConn) {
@@ -190,7 +193,11 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 	if err := withRegistry(s.home, false, func(_ *os.File, _ registry) error { return nil }); err != nil {
 		return err
 	}
-	dir, err := openDirectoryMode(filepath.Dir(socket), true, 0711)
+	openRunDir := s.runDirectory
+	if openRunDir == nil {
+		openRunDir = func(path string, create bool) (*os.File, error) { return openDirectoryMode(path, create, 0711) }
+	}
+	dir, err := openRunDir(filepath.Dir(socket), !s.requireRunDir)
 	if err != nil {
 		return err
 	}
@@ -204,9 +211,16 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 		return errRefused
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
-	// An existing path is never unlinked, repaired, or adopted (including sockets).
+	// The library endpoint never adopts an existing path. A supervised restart
+	// may reclaim only its own dead socket after acquiring the exclusive lock.
 	var existing unix.Stat_t
 	err = unix.Fstatat(int(dir.Fd()), filepath.Base(socket), &existing, unix.AT_SYMLINK_NOFOLLOW)
+	if err == nil && s.requireRunDir {
+		if reclaimServiceSocket(dir, socket, &existing) != nil {
+			return errRefused
+		}
+		err = unix.Fstatat(int(dir.Fd()), filepath.Base(socket), &existing, unix.AT_SYMLINK_NOFOLLOW)
+	}
 	if err != unix.ENOENT {
 		return errRefused
 	}
@@ -259,6 +273,11 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 		s.mu.Unlock()
 	})
 	defer stop()
+	if s.serviceReady != nil {
+		if err := s.serviceReady(); err != nil {
+			return err
+		}
+	}
 	if ready != nil {
 		ready()
 	}
@@ -312,6 +331,23 @@ func (s *server) serve(ctx context.Context, socket string, ready func()) error {
 			s.handle(c)
 		}()
 	}
+}
+
+func reclaimServiceSocket(dir *os.File, path string, st *unix.Stat_t) error {
+	if st.Mode&unix.S_IFMT != unix.S_IFSOCK || st.Uid != uint32(os.Geteuid()) || st.Gid != uint32(os.Getegid()) || st.Mode&07777 != 0666 || st.Nlink != 1 {
+		return errRefused
+	}
+	probe, err := net.DialTimeout("unix", path, 100*time.Millisecond)
+	if probe != nil {
+		probe.Close()
+	}
+	if !errors.Is(err, unix.ECONNREFUSED) || !sameSocketInodeAt(dir, filepath.Base(path), uint64(st.Dev), st.Ino) {
+		return errRefused
+	}
+	if unix.Unlinkat(int(dir.Fd()), filepath.Base(path), 0) != nil {
+		return errRefused
+	}
+	return nil
 }
 
 // sameSocketAt pins pathname operations to the held directory and the socket

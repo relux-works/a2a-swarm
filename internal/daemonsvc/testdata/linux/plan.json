@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "platform": "linux",
+  "image": "/opt/a2a/image/a2a",
+  "image_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "home": "/private/var/a2a",
+  "owner_pin": "/Library/ApplicationSupport/a2a/owner.json",
+  "owner_pin_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "uid": 401,
+  "gid": 401,
+  "sweep_seconds": 300,
+  "soak_days": 3
+}

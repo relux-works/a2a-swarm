@@ -35,6 +35,9 @@ type principalConfig struct {
 }
 
 func (f ownerDMFiles) principals() ([]string, error) {
+	if f.daemonOwner != "" {
+		return []string{f.daemonOwner}, nil
+	}
 	b, st, err := ownerRead(f.path("principals.json"))
 	if err != nil {
 		return nil, fmt.Errorf("read host principals: %w", err)

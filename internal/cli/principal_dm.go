@@ -39,7 +39,7 @@ type principalDMState struct {
 }
 
 func principalFiles(p config.Paths, name string) ownerDMFiles {
-	return ownerDMFiles{filepath.Join(p.Base, "principal-dm", name)}
+	return ownerDMFiles{base: filepath.Join(p.Base, "principal-dm", name)}
 }
 
 // The pin is the host's allowlist. A missing pin pins nobody; an invalid one

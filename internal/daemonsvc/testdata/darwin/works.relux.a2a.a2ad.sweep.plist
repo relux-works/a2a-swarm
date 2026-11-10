@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>works.relux.a2a.a2ad.sweep</string>
+<key>UserName</key><string>_a2a</string>
+<key>ProgramArguments</key><array><string>/opt/a2a/image/a2a</string><string>daemon</string><string>sweep</string><string>--home</string><string>/private/var/a2a</string><string>--owner-pin</string><string>/Library/ApplicationSupport/a2a/owner.json</string><string>--owner-pin-sha256</string><string>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</string><string>--image-sha256</string><string>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</string><string>--service-gid</string><string>401</string></array>
+<key>ThrottleInterval</key><integer>30</integer>
+<key>ExitTimeOut</key><integer>10</integer>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>300</integer>
+</dict></plist>

@@ -4010,6 +4010,23 @@ limits and the 0711 directory / 0666 socket access policy.
 
 ## Daemon station enrollment
 
+Service supervision is explicit and local:
+
+```
+a2a daemon service install --plan ROOT_PLAN
+a2a daemon service uninstall --plan ROOT_PLAN
+a2a daemon service status --plan ROOT_PLAN
+```
+
+These operations require root and use a pinned public plan; they never elevate
+privileges. Unknown supervisor state preserves unit files and returns an
+unresolved refusal. `serve` now requires `--owner-pin FILE`,
+`--owner-pin-sha256 HASH`, `--image-sha256 HASH` and `--service-gid GID` with its
+explicit `--home`, and runs only as the provisioned service account at the fixed
+platform socket. See [C6 service, run-dir, sweep and audit commands](daemon-service.md)
+for rendered templates, `prepare-run-dir`, read-only `daemon sweep`, counts-only
+`daemon rescue`, owner-selected `daemon soak`, and native qualification limits.
+
 `a2a daemon enroll --dir HOME/.a2a --from - [--rotate]` installs a station
 user enrollment from a closed v1 pipe payload without consulting credentials.
 The parent is canonicalized once; the final directory and its entries refuse
