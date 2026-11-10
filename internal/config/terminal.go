@@ -44,6 +44,7 @@ type TerminalBinding struct {
 	OwnNotice          OwnNoticeObservation       `json:"own_notice"`
 	NoticePublication  string                     `json:"notice_publication"`
 	NoticeReport       *NoticeReport              `json:"notice_report,omitempty"`
+	ConsumerReport     *NoticeReport              `json:"consumer_report,omitempty"` // Diagnostic episode; never terminal authority.
 	Generation         string                     `json:"generation"`
 	SessionID          string                     `json:"session_id"`
 	Host               string                     `json:"host"`

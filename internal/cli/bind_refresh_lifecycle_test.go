@@ -33,6 +33,14 @@ func TestTerminalRefreshDetachedLifecycle(t *testing.T) {
 	testTerminalRefreshDetachedLifecycle(t, "direct")
 }
 
+// W2 witness: a real atomic executable replacement crosses exec while the
+// private tmux connection is unavailable. Once that same connection recovers,
+// the new image dispatches and logs one ready line, preserving pending mail.
+func TestTerminalRefreshConnectionRecovery(t *testing.T) {
+	isolateBindTest(t)
+	testTerminalRefreshDetachedLifecycle(t, "connection-recovery")
+}
+
 // Real consumers launched through a symlink refresh after atomic target
 // replacement or symlink retargeting, retaining the lifecycle guarantees above.
 func TestTerminalRefreshSymlinkLifecycle(t *testing.T) {
@@ -109,13 +117,17 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	}
 	f := newOrphanDispatchFixture(t)
 	f.a.Now = time.Now
+	gate := ""
+	if mode == "connection-recovery" {
+		gate = consumerConnectionGate(t)
+	}
 	exe := filepath.Join(f.dir, "a2a")
 	buildRefreshLifecycleCLI(t, exe)
 	// A cold build must not spend the consumer's lifecycle deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	launch := exe
-	if mode != "direct" {
+	if mode != "direct" && mode != "connection-recovery" {
 		launch = filepath.Join(t.TempDir(), "a2a")
 		if err := os.Symlink(exe, launch); err != nil {
 			t.Fatal(err)
@@ -216,6 +228,16 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	if strings.Contains(logs, "binding re-exec:") {
 		t.Fatal("unsafe journal crossed exec")
 	}
+	if gate != "" {
+		setConsumerConnectionGate(t, gate, true)
+		until = time.Now().Add(testDeadline)
+		for !strings.Contains(readFile(t, logPath), "binding consumer unavailable; bounded retry cause=connection\n") && time.Now().Before(until) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !strings.Contains(readFile(t, logPath), "binding consumer unavailable; bounded retry cause=connection\n") {
+			t.Fatal("connection-failure control never reached the consumer")
+		}
+	}
 	f.update(func(st *config.State) {
 		st.Terminal.AttemptIDs = nil
 		st.Terminal.Notice = ""
@@ -246,6 +268,19 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	current, err := bindingImage(ctx, child.Process.Pid)
 	if err != nil || current != candidate.Image {
 		t.Fatal("scanner still sees old image")
+	}
+	if gate != "" {
+		if strings.Contains(readFile(t, logPath), "binding consumer ready\n") {
+			t.Fatal("new image claimed recovery before the connection recovered")
+		}
+		setConsumerConnectionGate(t, gate, false)
+		until = time.Now().Add(testDeadline)
+		for !strings.Contains(readFile(t, logPath), "binding consumer ready\n") && time.Now().Before(until) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if strings.Count(readFile(t, logPath), "binding consumer ready\n") != 1 {
+			t.Fatalf("new image did not log recovery once: %s", readFile(t, logPath))
+		}
 	}
 	// A command launched from the new image now sees a same-image binding rather
 	// than ErrBindingOldImage; the ordinary wait-while-bound fence still applies.
@@ -289,6 +324,9 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	}
 	if strings.Count(readFile(t, logPath), "binding re-exec: executable changed\n") != 1 {
 		t.Fatal("replacement image entered exec loop")
+	}
+	if gate != "" && strings.Count(readFile(t, logPath), "binding consumer ready\n") != 1 {
+		t.Fatal("healthy replacement cycles repeated the recovery line")
 	}
 }
 

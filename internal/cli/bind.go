@@ -545,6 +545,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 	alarmWake := make(chan struct{}, 1)
 	go a.runMailAlarm(alarmCtx, s, generation, alarmWake)
 	delay := policy.Interval
+	availability := &bindingAvailability{}
 	qualificationInterrupted := true
 	for ctx.Err() == nil {
 		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
@@ -628,7 +629,9 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			// fresh state and reacquire its lease before it may touch the terminal.
 			a.unknownTerminalNotice(ctx, s, generation, true)
 			fmt.Fprintf(a.Stderr, "binding consumer unavailable; bounded retry cause=%s\n", bindingRetryCause(stage, err))
+			a.observeBindingConsumer(s, generation, availability, false)
 		} else {
+			a.observeBindingConsumer(s, generation, availability, true)
 			delay = policy.Interval
 			if fresh, readErr := config.LoadState(s.paths, s.name); readErr == nil {
 				delay = a.notificationWait(fresh, delay)
