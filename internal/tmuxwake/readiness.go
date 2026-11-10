@@ -95,6 +95,13 @@ func (t BoundTerminal) registry(ctx context.Context) registryAssessment {
 	if err != nil {
 		return registryAssessment{RuntimeAssessment: runtimeResult(RuntimeRegistryUnavailable, "")}
 	}
+	after, err := liveRegistryIdentity(ctx, t.Target, t.SessionID)
+	if err != nil {
+		return registryAssessment{RuntimeAssessment: runtimeResult(RuntimeTargetUnavailable, "")}
+	}
+	if after != id {
+		return registryAssessment{RuntimeAssessment: runtimeResult(RuntimeIdentityMismatch, "")}
+	}
 	return decodeRegistry(data, id)
 }
 

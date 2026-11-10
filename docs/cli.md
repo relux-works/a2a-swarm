@@ -2386,10 +2386,17 @@ Claude named-session top rules additionally require a registry record associated
 own-UID ancestry, owner birth and pane proof. Only that producer reads its inherited `CLAUDE_CONFIG_DIR`, or its own home `.claude` when
 unset. It stores the canonical proven root in the private binding; the detached consumer never guesses a home/root or scans profiles.
 Only `sessions/<owner-pid>.json` is opened, bounded to 64KiB, regular, owned by this UID and not a final-path symlink. Adjacent keys and
-messaging sockets are never opened. Root association compares the live PID, UTC `TZ=UTC LC_ALL=C ps -p PID -o lstart=` birth, record
-session ID and tmux pane with the already-pinned local target. The existing owner birth/UID fence is retained independently; `startedAt`
+messaging sockets are never opened. Root association compares the record PID, session ID and tmux pane with the already-pinned local target.
+On Darwin, process identity requires `pidDomain=darwin` and the UTC `TZ=UTC LC_ALL=C ps -p PID -o lstart=` birth.
+On Linux, it requires exact `pidDomain=linux:<machine-id>:<pidns>` from local `/etc/machine-id` and the pinned owner's
+`/proc/PID/ns/pid` link (for example, `pid:[123456]`), plus decimal `/proc/PID/stat` field-22 start ticks.
+The bounded stat parser handles parentheses and whitespace in `comm`; unavailable, malformed or unsupported local identity fails closed.
+Expected identity is collected independently of the registry, with start ticks checked around namespace collection and local identity
+rechecked across the registry read. The existing ps owner birth/UID and ancestry/pane fences remain independent; `startedAt`
 is not a process-birth substitute. A session handover clears the old root and readiness/idle observations; trusted rebind must prove the new
 association. A matching bind can associate a previously rootless binding without discarding its generation or attempt journal.
+Updating or re-executing only the detached consumer does not fill an already empty stored root; a trusted own association path is
+still required after the ordinary binary update. Neither source support nor synthetic tests establish restored live idle wake.
 
 Registry qualification follows observed structure, with no release allowlist. Any version matching `SafeRegistryVersion`
 (three dot-separated numeric components, each 1–5 digits) is admitted and retained in the assessment and readiness key.

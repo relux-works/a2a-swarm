@@ -23,7 +23,7 @@ func registryFixture(version, status string) map[string]any {
 // responsiveness. Each observed version pairs shell-empty eligibility with a
 // busy record carrying the identical background-feature fields.
 func TestRegistryQualifiedSchemas(t *testing.T) {
-	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	id := registryIdentity{PID: 1234, Domain: "darwin", Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
 	for _, version := range []string{"2.1.302", "2.1.309", "2.1.310", "2.1.312", "2.1.317", "2.1.318", "2.1.319", "3.0.0"} {
 		for _, status := range []string{"idle", "shell", "busy"} {
 			t.Run(version+"/"+status, func(t *testing.T) {
@@ -90,7 +90,7 @@ func TestRegistryQualifiedSchemas(t *testing.T) {
 // The converted-skills flag accepts absence, either boolean and null (including
 // on 2.1.318); other JSON types refuse. An additional hostSessionId is diagnostic only.
 func TestRegistryConvertedSkillsSchema(t *testing.T) {
-	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	id := registryIdentity{PID: 1234, Domain: "darwin", Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
 	for _, version := range []string{"2.1.312", "2.1.317", "2.1.318", "2.1.319", "3.0.0"} {
 		for _, c := range []struct {
 			name  string
@@ -132,7 +132,7 @@ func TestRegistryConvertedSkillsSchema(t *testing.T) {
 // Unlisted releases admit matching structure but still reject a missing required
 // key. The same release is its own positive control.
 func TestRegistryNeighborVersionsStructure(t *testing.T) {
-	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	id := registryIdentity{PID: 1234, Domain: "darwin", Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
 	for _, version := range []string{"2.1.311", "2.1.313", "2.1.316", "2.1.319", "3.0.0"} {
 		t.Run(version, func(t *testing.T) {
 			m := registryFixture(version, "idle")
@@ -152,7 +152,7 @@ func TestRegistryNeighborVersionsStructure(t *testing.T) {
 // Unknown values are ignored, while duplicate nested keys, trailing JSON,
 // excessive depth and size still fail the unchanged decoder boundary.
 func TestRegistryUnknownFieldBoundary(t *testing.T) {
-	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	id := registryIdentity{PID: 1234, Domain: "darwin", Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
 	m := registryFixture("3.0.0", "idle")
 	m["future"] = map[string]any{"secret": "DO-NOT-PROJECT"}
 	data, _ := json.Marshal(m)
@@ -170,7 +170,7 @@ func TestRegistryUnknownFieldBoundary(t *testing.T) {
 // known optional types and the recursive formerNames contract. An unchanged
 // record and a valid formerNames record are positive controls.
 func TestRegistryStructuralTypes(t *testing.T) {
-	id := registryIdentity{PID: 1234, Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
+	id := registryIdentity{PID: 1234, Domain: "darwin", Birth: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), SessionID: "11111111-1111-4111-8111-111111111111", Pane: "%1"}
 	check := func(t *testing.T, m map[string]any, want RuntimeReason) {
 		t.Helper()
 		data, _ := json.Marshal(m)

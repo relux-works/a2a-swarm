@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,9 +81,10 @@ func SafeRegistryVersion(version string) string {
 const maxRegistryBytes = 64 * 1024
 
 type registryIdentity struct {
-	PID             int
-	Birth           time.Time
-	SessionID, Pane string
+	PID                int
+	Birth              time.Time
+	Domain, StartTicks string
+	SessionID, Pane    string
 }
 type registryAssessment struct {
 	RuntimeAssessment
@@ -293,8 +295,22 @@ var registryPane = regexp.MustCompile(`^.+:@[0-9]+\.(%[0-9]+)$`)
 
 func registryIdentityReason(m map[string]any, id registryIdentity) RuntimeReason {
 	pid, ok := registryInt(m["pid"])
-	birth, err := parseUTCBirth(recordString(m, "procStart"))
-	if !ok || pid != int64(id.PID) || err != nil || !birth.Equal(id.Birth) || id.SessionID == "" || recordString(m, "sessionId") != id.SessionID {
+	if !ok || id.PID <= 1 || pid != int64(id.PID) || id.SessionID == "" || recordString(m, "sessionId") != id.SessionID {
+		return RuntimeIdentityMismatch
+	}
+	// Expected platform identity comes from the pinned owner, never the record.
+	// Keep Darwin's UTC date proof distinct from Linux's namespace/start ticks.
+	switch {
+	case id.Domain == "darwin":
+		birth, err := parseUTCBirth(recordString(m, "procStart"))
+		if err != nil || id.Birth.IsZero() || !birth.Equal(id.Birth) {
+			return RuntimeIdentityMismatch
+		}
+	case linuxRegistryDomain.MatchString(id.Domain):
+		if !validStartTicks(id.StartTicks) || recordString(m, "procStart") != id.StartTicks {
+			return RuntimeIdentityMismatch
+		}
+	default:
 		return RuntimeIdentityMismatch
 	}
 	if recordString(m, "entrypoint") != "cli" || recordString(m, "tmux") == "" {
@@ -304,7 +320,7 @@ func registryIdentityReason(m map[string]any, id registryIdentity) RuntimeReason
 	if len(pane) != 2 || pane[1] != id.Pane {
 		return RuntimeIdentityMismatch
 	}
-	if recordString(m, "pidDomain") != "darwin" {
+	if recordString(m, "pidDomain") != id.Domain {
 		return RuntimeIdentityMismatch
 	}
 	return RuntimeNone
@@ -360,14 +376,25 @@ func liveRegistryIdentity(ctx context.Context, t Target, session string) (regist
 	if err != nil || birth != t.OwnerBirth {
 		return id, errors.New("registry identity unavailable")
 	}
-	cmd := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(t.OwnerPID), "-o", "lstart=")
-	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
-	b, err := cmd.Output()
-	if err != nil {
+	switch runtime.GOOS {
+	case "darwin":
+		cmd := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(t.OwnerPID), "-o", "lstart=")
+		cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
+		b, e := cmd.Output()
+		if e != nil {
+			return id, errors.New("registry identity unavailable")
+		}
+		id.Domain = "darwin"
+		id.Birth, err = parseUTCBirth(string(b))
+	case "linux":
+		id.Domain, id.StartTicks, err = linuxRegistryProcess("/proc", "/etc/machine-id", t.OwnerPID)
+	default:
+		err = errors.New("registry identity unavailable")
+	}
+	if err != nil || ctx.Err() != nil {
 		return id, errors.New("registry identity unavailable")
 	}
-	id.Birth, err = parseUTCBirth(string(b))
-	return id, err
+	return id, nil
 }
 func registryBytes(root string, pid int) ([]byte, error) {
 	if !filepath.IsAbs(root) || pid <= 1 {
@@ -427,6 +454,10 @@ func AssociateRegistryRoot(ctx context.Context, t Target, session, root string) 
 		return ""
 	}
 	if _, _, _, err = t.Inspect(ctx); err != nil || ctx.Err() != nil {
+		return ""
+	}
+	after, err := liveRegistryIdentity(ctx, t, session)
+	if err != nil || after != id {
 		return ""
 	}
 	return root

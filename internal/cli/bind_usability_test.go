@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -66,14 +65,9 @@ func TestBindUsabilityStatusObservation(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "sessions"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("ps", "-p", strconv.Itoa(os.Getpid()), "-o", "lstart=")
-	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
-	birth, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	registry := map[string]any{"cwd": "/synthetic", "entrypoint": "cli", "kind": "interactive", "messagingSocketPath": "/synthetic/not-opened", "name": "synthetic", "nameSince": 1, "nameSource": "user", "peerFeatures": []string{"notify_idle"}, "peerProtocol": 1, "pid": os.Getpid(), "pidDomain": "darwin", "procStart": strings.TrimSpace(string(birth)), "sessionId": "owned", "startedAt": 1, "status": "busy", "statusUpdatedAt": 100, "tmux": "synthetic:@0.%0", "updatedAt": 100, "version": "2.1.310"}
-	_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+	domain, start := localClaudeRegistryFields(t, os.Getpid())
+	registry := map[string]any{"cwd": "/synthetic", "entrypoint": "cli", "kind": "interactive", "messagingSocketPath": "/synthetic/not-opened", "name": "synthetic", "nameSince": 1, "nameSource": "user", "peerFeatures": []string{"notify_idle"}, "peerProtocol": 1, "pid": os.Getpid(), "pidDomain": domain, "procStart": start, "sessionId": "owned", "startedAt": 1, "status": "busy", "statusUpdatedAt": 100, "tmux": "synthetic:@0.%0", "updatedAt": 100, "version": "2.1.310"}
+	_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 		st.Terminal = &config.TerminalBinding{Generation: "own", SessionID: "owned", Host: machineLabel(), OwnerPID: target.OwnerPID, OwnerBirth: target.OwnerBirth, Target: target, ClaudeRegistryRoot: root}
 		return nil
 	})

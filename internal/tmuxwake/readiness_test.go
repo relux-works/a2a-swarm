@@ -178,13 +178,10 @@ func newBoundFixture(t *testing.T, runtime, version, status string) *boundFixtur
 			t.Fatal(err)
 		}
 		out.b.ClaudeRegistryRoot = root
-		id, err := liveRegistryIdentity(context.Background(), f.target, b.SessionID)
-		if err != nil {
-			t.Fatal(err)
-		}
+		domain, start := localRegistryFields(t, pid)
 		out.m = registryFixture(version, status)
 		out.m["pid"] = pid
-		out.m["procStart"] = id.Birth.Format("Mon Jan _2 15:04:05 2006")
+		out.m["pidDomain"], out.m["procStart"] = domain, start
 		out.m["tmux"] = "synthetic:@0." + f.target.Pane
 		out.record = filepath.Join(root, "sessions", strconv.Itoa(pid)+".json")
 		out.write(t)

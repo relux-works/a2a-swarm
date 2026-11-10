@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,7 +17,44 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
-// All values are synthetic except this isolated fixture's own PID/birth.
+// Observe only the isolated test process, independently of the registry and
+// tmuxwake's collector. Pure cross-platform identity tests retain Darwin cases.
+func localClaudeRegistryFields(t *testing.T, pid int) (string, string) {
+	t.Helper()
+	if runtime.GOOS == "linux" {
+		raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := bytes.LastIndexByte(raw, ')')
+		if end < 0 || len(strings.Fields(string(raw[end+1:]))) < 20 {
+			t.Fatal("isolated stat unavailable")
+		}
+		start := strings.Fields(string(raw[end+1:]))[19] // documented field 22.
+		machine, err := os.ReadFile("/etc/machine-id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		namespace, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "ns", "pid"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "linux:" + strings.TrimSpace(string(machine)) + ":" + namespace, start
+	}
+	if runtime.GOOS != "darwin" {
+		t.Skip("local registry identity has no supported platform")
+	}
+	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "darwin", strings.TrimSpace(string(out))
+}
+
+// Record values are synthetic except the independently observed local process
+// identity fields: PID, platform domain and birth/start token.
 func dispatchRegistry(t *testing.T, f *orphanDispatchFixture, status string) (string, map[string]any) {
 	t.Helper()
 	b := f.binding()
@@ -24,13 +62,8 @@ func dispatchRegistry(t *testing.T, f *orphanDispatchFixture, status string) (st
 	if err := os.Mkdir(filepath.Join(root, "sessions"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("ps", "-p", strconv.Itoa(b.OwnerPID), "-o", "lstart=")
-	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := map[string]any{"cwd": "/synthetic", "entrypoint": "cli", "kind": "interactive", "messagingSocketPath": "/synthetic/not-opened", "name": "synthetic", "nameSince": 1, "nameSource": "user", "peerFeatures": []string{"notify_idle"}, "peerProtocol": 1, "pid": b.OwnerPID, "pidDomain": "darwin", "procStart": strings.TrimSpace(string(out)), "sessionId": b.SessionID, "startedAt": 1, "status": status, "statusUpdatedAt": 100, "tmux": "synthetic:@0." + b.Target.Pane, "updatedAt": 100, "version": "2.1.310"}
+	domain, start := localClaudeRegistryFields(t, b.OwnerPID)
+	m := map[string]any{"cwd": "/synthetic", "entrypoint": "cli", "kind": "interactive", "messagingSocketPath": "/synthetic/not-opened", "name": "synthetic", "nameSince": 1, "nameSource": "user", "peerFeatures": []string{"notify_idle"}, "peerProtocol": 1, "pid": b.OwnerPID, "pidDomain": domain, "procStart": start, "sessionId": b.SessionID, "startedAt": 1, "status": status, "statusUpdatedAt": 100, "tmux": "synthetic:@0." + b.Target.Pane, "updatedAt": 100, "version": "2.1.310"}
 	path := filepath.Join(root, "sessions", strconv.Itoa(b.OwnerPID)+".json")
 	writeDispatchRegistry(t, path, m)
 	f.update(func(st *config.State) { st.Terminal.Target.Runtime = "claude"; st.Terminal.ClaudeRegistryRoot = root })
@@ -112,6 +145,75 @@ func TestReadinessDispatch(t *testing.T) {
 			}
 			if f.e.received("alice", id) {
 				t.Fatal("dispatch receipted mail")
+			}
+		})
+	}
+}
+
+// Each Linux identity refusal has a valid named readiness control on the same
+// isolated target. Two dispatch cycles must retain mail without input, attempts,
+// reservations or changes to binding custody; readiness diagnostics may change.
+// Restoring only the record's identity must then deliver exactly one notice.
+func TestLinuxRegistryDispatchIdentityRefusals(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux collection/dispatch boundary")
+	}
+	isolateBindTest(t)
+	for _, mode := range []string{"wrong-machine-id", "wrong-pid-namespace", "reused-pid-start-ticks", "mixed-darwin-linux-domain"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newOrphanDispatchFixture(t)
+			mail := f.mail()
+			path, m := dispatchRegistry(t, f, "idle")
+			f.control(map[string]any{"claude": true, "named": true})
+			before := f.binding()
+			valid := boundTerminal(*before).AssessReadiness(context.Background())
+			if !valid.Eligible() || valid.Key.Route != tmuxwake.RegistryNamed {
+				t.Fatal("Linux named positive control refused", valid.Runtime.Reason)
+			}
+			domain, start := m["pidDomain"].(string), m["procStart"].(string)
+			parts := strings.SplitN(domain, ":", 3)
+			switch mode {
+			case "wrong-machine-id":
+				machine := strings.Repeat("a", 32)
+				if machine == parts[1] {
+					machine = strings.Repeat("b", 32)
+				}
+				m["pidDomain"] = "linux:" + machine + ":" + parts[2]
+			case "wrong-pid-namespace":
+				namespace := "pid:[1]"
+				if namespace == parts[2] {
+					namespace = "pid:[2]"
+				}
+				m["pidDomain"] = "linux:" + parts[1] + ":" + namespace
+			case "reused-pid-start-ticks":
+				m["procStart"] = "0"
+				if start == "0" {
+					m["procStart"] = "1"
+				}
+			case "mixed-darwin-linux-domain":
+				m["pidDomain"] = "darwin"
+			}
+			writeDispatchRegistry(t, path, m)
+			if got := boundTerminal(*before).AssessReadiness(context.Background()); got.Runtime.Reason != tmuxwake.RuntimeIdentityMismatch || got.Eligible() {
+				t.Fatal("Linux mismatch did not reach identity refusal", got.Runtime.Reason)
+			}
+			f.dispatch()
+			f.step()
+			after := f.binding()
+			screen := f.wait(func(s orphanScreen) bool { return s.PID > 1 })
+			if screen.Text != "" || len(screen.Submitted) != 0 || len(after.Reservations) != 0 || len(after.Rung) != 0 || len(after.AttemptIDs) != 0 || after.TypingStarted || after.Typed || after.Notice != "" || f.e.received("alice", mail) {
+				t.Fatal("identity refusal had input/delivery effects")
+			}
+			if after.Generation != before.Generation || after.SessionID != before.SessionID || after.Target != before.Target || after.ClaudeRegistryRoot != before.ClaudeRegistryRoot || after.Stopped != before.Stopped {
+				t.Fatal("identity refusal changed binding custody")
+			}
+			m["pidDomain"], m["procStart"] = domain, start
+			writeDispatchRegistry(t, path, m)
+			f.dispatch()
+			f.step()
+			screen = f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
+			if screen.Submitted[0] != tmuxwake.Notice(1) || len(f.binding().Rung) != 1 || f.e.received("alice", mail) {
+				t.Fatal("restored identity positive control did not deliver exactly once")
 			}
 		})
 	}
