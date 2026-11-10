@@ -1,5 +1,29 @@
 # Unresolved questions
 
+## Issue #308: Q4 and foundation runner gates
+
+Q1/Q2/Q3/Q5/Q6 are recorded in `docs/e2ee.md` section 11. Q4 still needs an
+owner decision on automatic versus explicit future-device admission and the
+authority for approval changes. It gates U2b and later; it does not gate U1
+foundations or U2a cross-signing bootstrap / public identity evidence.
+
+The offline U1 worker cannot run tests, benchmarks or network advisory queries.
+Source must obtain runner results, the 1MiB/64MiB snapshot p95 admission evidence,
+and external security-history review before treating the foundation as admitted.
+The repository declares Go 1.25.12; this bench supplies 1.25.14. Exact 1.25.12
+execution remains unverified. mautrix v0.31.0/v0.32.0 require Go 1.26 and are
+excluded without a separate toolchain decision. No E2EE activation is delivered.
+
+Source's U1 r2 resolution closes the server-only USK visibility assumption:
+`/keys/query` exposes USKs only for the requesting user's own keys. The host pin
+provides owner MSK/USK, both fingerprinted, and the MSK signature on the USK.
+U2a verifies that evidence and the USK signature on the agent's own queried MSK.
+A live Element ceremony witness still gates U2a shipment; it does not block U1.
+U1 validates retained public shape only. No private owner credentials or trust
+boolean substitute is authorized. Under A1, U2a must also enforce Courier-only
+custody under the dedicated service-user daemon, excluding agent access; local
+non-Courier identities get no custody and no home/local-base/env fallback.
+
 ## Issue #258: cross-topic citations after #219
 
 The current #219 reply contract in `docs/cli.md` and
