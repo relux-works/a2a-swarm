@@ -56,7 +56,10 @@ It alone authorizes release tags. Separate `.github/source-signers` entries use 
 exact generic `source-maintainer` principal and the three existing approved public
 source keys. Their fingerprints are pinned in both policy and the controller;
 unknown, unsigned, extra-key, wildcard-principal or ambient-trust source refuses.
-A source-only maintainer cannot sign a release tag. No private key or installed
+A source-only maintainer cannot sign a release tag. Admission refuses graft or
+shallow metadata at Git-resolved and common paths, including linked worktrees;
+even an empty metadata file refuses. This prerequisite does not protect against
+arbitrary concurrent filesystem mutation. No private key or installed
 trust file is read or changed by this policy.
 
 Stable annotated signed `vX.Y.Z` must match VERSION and the checked-out commit,
@@ -138,7 +141,9 @@ evidence remain unchanged. Malformed or genuinely different IDs refuse;
 API/JSON/notary failure aborts. The native signatures/full requirements and exact
 signed hashes are rechecked after notarization. The final archive is constructed
 ONLY then, with exactly both siblings, LICENSE, NOTICE and INSTALL.md. Archive
-readback compares exact executable bytes. Bare executables/ZIPs are not stapled;
+readback compares exact executable bytes and validates the complete gzip stream
+through its checksum/trailer EOF. Extra uncompressed data, trailing bytes and
+additional gzip members refuse. Bare executables/ZIPs are not stapled;
 Gatekeeper uses registered online tickets. Offline/no-UI behavior is a separate gate.
 
 Driver cleanup and the workflow's always step remove the private runner keychain,

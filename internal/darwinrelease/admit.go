@@ -40,6 +40,9 @@ func localGit(root string) runGit {
 // substitutes for signature verification. root/allowlist must be reviewed source.
 func verifyGit(root, tag, version, expectedObject string, p Policy, g runGit) (Admission, error) {
 	a := Admission{Tag: tag, Version: strings.TrimSpace(version)}
+	if e := checkGitGraph(g); e != nil {
+		return a, e
+	}
 	if e := checkSignerFile(filepath.Join(root, ".github/release-signers"), p.SignerFingerprint); e != nil {
 		return a, e
 	}
@@ -157,6 +160,35 @@ func checkSignerEntries(path, principal string, fingerprints []string) error {
 			return errors.New("signer-fingerprint")
 		}
 		seen[f[3]] = true
+	}
+	return nil
+}
+
+// Git's resolved paths account for linked worktrees and common metadata.
+// Reject metadata presence (even empty/symlink files), rather than trusting a
+// graph that can omit real parents. Environment overrides are stripped by
+// localGit; replacement objects remain disabled there. This is a prerequisite
+// check, not protection against concurrent arbitrary filesystem mutation.
+func checkGitGraph(g runGit) error {
+	refuse := errors.New("source-graph-metadata")
+	common, e := g("rev-parse", "--path-format=absolute", "--git-common-dir")
+	if e != nil || !filepath.IsAbs(common) {
+		return refuse
+	}
+	for _, name := range []string{"info/grafts", "shallow"} {
+		resolved, e := g("rev-parse", "--path-format=absolute", "--git-path", name)
+		if e != nil || !filepath.IsAbs(resolved) {
+			return refuse
+		}
+		for _, path := range []string{resolved, filepath.Join(common, name)} {
+			if _, e := os.Lstat(path); !errors.Is(e, os.ErrNotExist) {
+				return refuse
+			}
+		}
+	}
+	shallow, e := g("rev-parse", "--is-shallow-repository")
+	if e != nil || shallow != "false" {
+		return refuse
 	}
 	return nil
 }

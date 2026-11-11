@@ -3,6 +3,7 @@ package darwinrelease
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"debug/macho"
@@ -179,11 +180,13 @@ func verifyArchive(path, dir string) error {
 		return e
 	}
 	defer f.Close()
-	gz, e := gzip.NewReader(f)
+	compressed := bufio.NewReader(f)
+	gz, e := gzip.NewReader(compressed)
 	if e != nil {
 		return e
 	}
 	defer gz.Close()
+	gz.Multistream(false)
 	r := tar.NewReader(gz)
 	seen := map[string]bool{}
 	for {
@@ -219,7 +222,7 @@ func verifyArchive(path, dir string) error {
 			return errors.New("package-companion")
 		}
 	}
-	return nil
+	return finishArchiveStream(gz, compressed)
 }
 
 type NotaryResult struct {
@@ -278,6 +281,28 @@ func validateNotaryLog(data []byte, n NotaryResult, zipHash string, hashes map[s
 func matchCompiledRequirement(expected, actual []byte) error {
 	if len(expected) == 0 || !bytes.Equal(expected, actual) {
 		return errors.New("full-designated-requirement-mismatch")
+	}
+	return nil
+}
+
+// tar EOF is not gzip EOF. A ByteReader plus Multistream(false) preserves the
+// first stream boundary so a valid second member is also unexpected input.
+func finishArchiveStream(gz *gzip.Reader, compressed *bufio.Reader) error {
+	n, e := io.Copy(io.Discard, gz)
+	if e != nil {
+		return errors.New("archive-gzip-integrity")
+	}
+	if e := gz.Close(); e != nil {
+		return errors.New("archive-gzip-integrity")
+	}
+	if n != 0 {
+		return errors.New("archive-gzip-trailing-data")
+	}
+	if _, e := compressed.ReadByte(); e != io.EOF {
+		if e != nil {
+			return errors.New("archive-gzip-integrity")
+		}
+		return errors.New("archive-gzip-trailing-data")
 	}
 	return nil
 }
