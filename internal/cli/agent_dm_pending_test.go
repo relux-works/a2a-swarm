@@ -14,20 +14,34 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// Pair filtering leaves opaque ordinary mailbox entries visible. An opaque
-// known-pair entry stays unread and hidden; valid peer/principal controls prove
-// that the same transaction neither rejects all mail nor weakens a held pair.
+// Pair filtering leaves opaque ordinary entries visible and incomplete or
+// non-message pair entries unread and hidden. Active peer and real principal
+// controls cover qualified, pending, corrupt and unset retained pair contexts.
 func TestAgentDMPendingOpaqueOrdinaryIsolation(t *testing.T) {
-	for _, corrupt := range []bool{false, true} {
-		t.Run(map[bool]string{false: "qualified", true: "records-corrupt"}[corrupt], func(t *testing.T) {
+	for _, mode := range []string{"qualified", "pending", "records-corrupt", "unset"} {
+		t.Run(mode, func(t *testing.T) {
 			e, tr, a, b, room := activeAgentFixture(t)
 			ownerPut(t, ownerFiles(e.paths(), "bob").path("principals.json"), principalConfig{V: 1, Principals: []string{"@parent:" + testServer}})
-			if corrupt {
+			s, _ := agentRecoverySession(t, e, tr, "bob")
+			switch mode {
+			case "pending":
+				records, _, err := s.agentRecords()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pair := records.Pairs[a]
+				pair.Qualified = false
+				records.Pairs[a] = pair
+				if err := s.saveAgentRecords(context.Background(), records); err != nil {
+					t.Fatal(err)
+				}
+			case "records-corrupt":
 				if err := os.WriteFile(filepath.Join(agentDMDir(e.paths(), "bob"), "records.json"), []byte(`{`), 0600); err != nil {
 					t.Fatal(err)
 				}
+			case "unset":
+				e.as("bob", "agent-dm", "unset", a).ok(t)
 			}
-			s, _ := agentRecoverySession(t, e, tr, "bob")
 			peer, err := json.Marshal(agentDirectedEvent(t, "$opaque-peer", a, b))
 			if err != nil {
 				t.Fatal(err)
@@ -41,6 +55,11 @@ func TestAgentDMPendingOpaqueOrdinaryIsolation(t *testing.T) {
 				{ID: "$opaque-held", Kind: config.MailEvent, Room: room, Rel: "to"},
 				{ID: "$opaque-peer", Kind: config.MailEvent, Room: room, Rel: "to", Event: peer},
 				{ID: "$opaque-principal", Kind: config.MailEvent, Room: room, Rel: "to", Event: principal},
+				{ID: "$opaque-null", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`null`)},
+				{ID: "$opaque-object", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`{}`)},
+				{ID: "$opaque-array", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`[]`)},
+				{ID: "$opaque-string", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`"not an event"`)},
+				{ID: "$opaque-member", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`{"type":"m.room.member","sender":"@other:` + testServer + `"}`)},
 			}
 			if _, err := e.mailbox("bob").Append(entries); err != nil {
 				t.Fatal(err)
@@ -55,8 +74,8 @@ func TestAgentDMPendingOpaqueOrdinaryIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !visible["$opaque-ordinary"] || !visible["$opaque-principal"] || visible["$opaque-held"] || visible["$opaque-peer"] != !corrupt || len(visible) != map[bool]int{false: 3, true: 2}[corrupt] {
-				t.Fatalf("opaque ordinary/pair isolation assertion: corrupt=%v visible=%v", corrupt, visible)
+			if !visible["$opaque-ordinary"] || !visible["$opaque-principal"] || visible["$opaque-held"] || visible["$opaque-peer"] != (mode == "qualified") || len(visible) != map[bool]int{false: 2, true: 3}[mode == "qualified"] {
+				t.Fatalf("opaque ordinary/pair isolation assertion: mode=%s visible=%v", mode, visible)
 			}
 			mb := e.mailbox("bob")
 			for _, entry := range entries {

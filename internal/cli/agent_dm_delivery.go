@@ -373,7 +373,7 @@ func (s *session) agentMailboxView(mb *config.Mailbox) {
 			return true
 		}
 		var ev matrix.Event
-		if json.Unmarshal(e.Event, &ev) != nil {
+		if json.Unmarshal(e.Event, &ev) != nil || ev.Type != "m.room.message" {
 			return false
 		}
 		return g.decision(ev, e.Room, s.creds.UserID, principals) == "allow"
