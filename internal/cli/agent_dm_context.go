@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -23,10 +24,16 @@ type agentDMContexts struct {
 	Rooms      []string `json:"rooms"`
 }
 
-// Presence is independent of directory privacy for delivery only. Walk every
-// ancestor without following links before calling an absent file absent.
-// Existing files still pass the unchanged strict command reader.
-func agentDeliveryRead(dir, name string) ([]byte, error) {
+// Presence is independent of directory privacy for delivery only. Validate the
+// selected root and its feature namespace; prefixes above that admitted root
+// retain the resolver's existing semantics. Existing files still pass the
+// unchanged strict command reader, including all of its ancestor checks.
+func agentDeliveryRead(root, dir, name string) ([]byte, error) {
+	root, dir = filepath.Clean(root), filepath.Clean(dir)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, errors.New("agent-dm: delivery path outside selected root")
+	}
 	for cur := dir; ; cur = filepath.Dir(cur) {
 		st, err := os.Lstat(cur)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -35,7 +42,7 @@ func agentDeliveryRead(dir, name string) ([]byte, error) {
 		if err == nil && !st.IsDir() {
 			return nil, errors.New("agent-dm: non-physical delivery path")
 		}
-		if cur == filepath.Dir(cur) {
+		if cur == root {
 			break
 		}
 	}
@@ -43,6 +50,10 @@ func agentDeliveryRead(dir, name string) ([]byte, error) {
 		return nil, err
 	}
 	return agentRead(dir, name)
+}
+
+func (s *session) agentDeliveryRead(dir, name string) ([]byte, error) {
+	return agentDeliveryRead(s.paths.Base, dir, name)
 }
 
 func parseAgentContexts(raw []byte, caller, connection string) (agentDMContexts, error) {
@@ -122,7 +133,7 @@ func (s *session) checkAgentContextCapacity() error {
 }
 
 func (s *session) agentLocalGate() (agentDMDelivery, agentDMRecords, error) {
-	records, _, recordErr := s.agentRecordsWithReader(agentDeliveryRead)
+	records, _, recordErr := s.agentRecordsWithReader(s.agentDeliveryRead)
 	out := agentDMDelivery{Rooms: map[string]agentDMGate{}, Unknown: recordErr != nil, Stamp: s.agentGateStamp()}
 	state, err := config.LoadState(s.paths, s.name)
 	if err != nil {

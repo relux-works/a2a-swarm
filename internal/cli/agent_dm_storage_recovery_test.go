@@ -37,11 +37,53 @@ func agentRecoverySession(t *testing.T, e *env, tr *agentDMTestTransport, name s
 	return s, &output
 }
 
+// A configured physical root reached through an external path alias keeps
+// ordinary/principal initial positioning, delivery and receipts when pair
+// storage was never configured. No pair file or in-root link is trusted here.
+func TestAgentDMUnconfiguredOrdinaryRootAlias(t *testing.T) {
+	e, room := world(t)
+	e.sequentialSessions()
+	physical := principalDMTestResolve(t, e.dir)
+	e.dir = physical
+	ownerPut(t, ownerFiles(e.paths(), "alice").path("principals.json"), principalConfig{V: 1, Principals: []string{"@carol:" + testServer}})
+	alias := filepath.Join(principalDMTestResolve(t, t.TempDir()), "outside-root-alias")
+	if err := os.Symlink(filepath.Dir(physical), alias); err != nil {
+		t.Fatal(err)
+	}
+	e.dir = filepath.Join(alias, filepath.Base(physical))
+	e.as("alice", "invite", "#proj", "carol").ok(t)
+	e.as("carol", "join", "#proj").ok(t)
+	position := e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	if e.state("alice").NextBatch == "" || strings.Contains(position.stderr, "agent-dm:") {
+		t.Fatal("ordinary root alias positioning assertion:", position.stderr)
+	}
+	before := e.state("alice").NextBatch
+	ordinary := e.hs.inject(room, "@bob:"+testServer, msg("@alice:"+testServer+" root-alias-mail", nil))
+	principal := e.hs.inject(room, "@carol:"+testServer, msg("principal-root-alias-mail", nil))
+	shown := e.as("alice", "wait", "--timeout", "1s").ok(t)
+	if !strings.Contains(shown.stdout, "root-alias-mail") || !strings.Contains(shown.stdout, "principal-root-alias-mail") || e.state("alice").NextBatch == before {
+		t.Fatal("ordinary root alias mail assertion:", shown.stdout, shown.stderr)
+	}
+	mail := e.mailbox("alice")
+	if len(mail.Pending()) != 2 || !mail.Has(ordinary) || !mail.Has(principal) || mail.Received(ordinary) || mail.Received(principal) {
+		t.Fatal("ordinary root alias receipt boundary assertion")
+	}
+	e.as("alice", "ack", "all-shown").ok(t)
+	mail = e.mailbox("alice")
+	if !mail.Received(ordinary) || !mail.Received(principal) {
+		t.Fatal("ordinary root alias explicit receipt assertion")
+	}
+	replayed := e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	if strings.Contains(replayed.stdout, "root-alias-mail") || len(e.mailbox("alice").Pending()) != 0 {
+		t.Fatal("ordinary root alias replay assertion")
+	}
+}
+
 // Feature-local storage faults cannot suppress ordinary/principal mail or
 // turn a retained known pair into an ordinary room, even under --all.
 // Failed held persistence preserves the cursor and existing corrupt bytes.
 func TestAgentDMDeliveryStorageIsolation(t *testing.T) {
-	for _, mode := range []string{"absent-0700", "absent-0755", "records-absent", "records-json", "records-mode", "records-and-held-json", "directory-mode", "guard-json"} {
+	for _, mode := range []string{"absent-0700", "absent-0755", "records-absent", "records-json", "records-mode", "records-and-held-json", "directory-mode", "directory-symlink", "guard-json"} {
 		t.Run(mode, func(t *testing.T) {
 			e, tr, a, b := agentDMFixture(t)
 			room := "!unbound"
@@ -58,6 +100,13 @@ func TestAgentDMDeliveryStorageIsolation(t *testing.T) {
 			recordPath := filepath.Join(dir, "records.json")
 			heldPath := filepath.Join(dir, "held.json")
 			switch mode {
+			case "directory-symlink":
+				if err := os.Rename(dir, dir+"-retained"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(dir+"-retained", dir); err != nil {
+					t.Fatal(err)
+				}
 			case "records-absent":
 				if err := os.Remove(recordPath); err != nil {
 					t.Fatal(err)
@@ -113,7 +162,7 @@ func TestAgentDMDeliveryStorageIsolation(t *testing.T) {
 			if mode == "guard-json" && !mail.Has(pair.EventID) {
 				t.Fatal("storage isolation assertion: independently valid record/policy hidden by guard-only fault")
 			}
-			if mode == "records-and-held-json" || mode == "directory-mode" {
+			if mode == "records-and-held-json" || mode == "directory-mode" || mode == "directory-symlink" {
 				if state.NextBatch != "s0" || !s.agentReplayDeferred {
 					t.Fatal("storage replay assertion: cursor advanced over unretained pair mail")
 				}
@@ -149,15 +198,24 @@ func TestAgentDMDeliveryAbsenceBoundary(t *testing.T) {
 	if err := os.Mkdir(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agentDeliveryRead(dir, "records.json"); !os.IsNotExist(err) {
+	if _, err := agentDeliveryRead(base, dir, "records.json"); !os.IsNotExist(err) {
 		t.Fatal("physical absence refused", err)
 	}
 	link := filepath.Join(base, "redirect")
 	if err := os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agentDeliveryRead(link, "records.json"); err == nil || os.IsNotExist(err) {
+	if _, err := agentDeliveryRead(base, link, "records.json"); err == nil || os.IsNotExist(err) {
 		t.Fatal("symlink namespace became absence", err)
+	}
+	if _, err := agentDeliveryRead(base, filepath.Join(link, "missing"), "records.json"); err == nil || os.IsNotExist(err) {
+		t.Fatal("symlink ancestor became absence", err)
+	}
+	if _, err := agentDeliveryRead(link, filepath.Join(link, "missing"), "records.json"); err == nil || os.IsNotExist(err) {
+		t.Fatal("symlink selected root became absence", err)
+	}
+	if _, err := agentDeliveryRead(dir, base, "records.json"); err == nil || os.IsNotExist(err) {
+		t.Fatal("outside selected root became absence", err)
 	}
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -166,7 +224,7 @@ func TestAgentDMDeliveryAbsenceBoundary(t *testing.T) {
 	if err := os.Symlink(filepath.Join(base, "missing"), file); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agentDeliveryRead(dir, "records.json"); err == nil || os.IsNotExist(err) {
+	if _, err := agentDeliveryRead(base, dir, "records.json"); err == nil || os.IsNotExist(err) {
 		t.Fatal("dangling file became absence", err)
 	}
 	if err := os.Remove(file); err != nil {
@@ -175,7 +233,7 @@ func TestAgentDMDeliveryAbsenceBoundary(t *testing.T) {
 	if err := os.Mkdir(file, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agentDeliveryRead(dir, "records.json"); err == nil || os.IsNotExist(err) {
+	if _, err := agentDeliveryRead(base, dir, "records.json"); err == nil || os.IsNotExist(err) {
 		t.Fatal("directory file became absence", err)
 	}
 }

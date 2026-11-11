@@ -176,6 +176,13 @@ retain the owned 0700/0600 and no-symlink checks. Every mailbox selection,
 including `ack all-shown`, notices and binding wakes, refreshes current pair
 policy; stale snapshots do not admit or silently receipt pair mail.
 
+The delivery-only absence check validates the selected identity root and its
+feature namespace. Prefixes above that already selected root retain the
+resolver's existing semantics; a platform path alias there does not turn an
+unconfigured feature into a delivery failure. A symlink, wrong type or I/O
+failure inside the namespace remains unknown. Existing pair files still use
+the unchanged strict reader, including all ancestor checks.
+
 Repeated `ensure` reuses the mapping. Alias uniqueness is not an exactly-once
 create transaction. An attempted create with an unknown ACK leaves a fence;
 recovery can inspect the same alias but never automatically creates a replacement

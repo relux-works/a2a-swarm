@@ -296,7 +296,7 @@ func (g agentDMDelivery) decision(ev matrix.Event, room, me string, principals [
 
 func (s *session) readAgentHeld() (agentDMHeldStore, error) {
 	out := agentDMHeldStore{Contract: agentDMVersion, Entries: []agentDMHeld{}}
-	raw, err := agentDeliveryRead(agentDMDir(s.paths, s.name), "held.json")
+	raw, err := s.agentDeliveryRead(agentDMDir(s.paths, s.name), "held.json")
 	if errors.Is(err, os.ErrNotExist) {
 		return out, nil
 	}
