@@ -192,6 +192,11 @@ func cmdJoin(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Retain any pair context before joining: a transient observation failure
+	// must not admit this room through existing broad subscriptions either.
+	if err := s.captureAgentJoinedRoom(ctx, id); err != nil {
+		return err
+	}
 	if _, err := s.client.Join(ctx, id); err != nil {
 		if matrix.IsCode(err, "M_FORBIDDEN") {
 			return fmt.Errorf("join %s: forbidden (the room is invite-only; ask a member: a2a invite %s %s)", label, label, s.name)
@@ -199,9 +204,6 @@ func cmdJoin(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("join %s: %w", label, err)
 	}
 	a.printf("joined %s %s\n", label, id)
-	if err := s.captureAgentJoinedRoom(ctx, id); err != nil {
-		return err
-	}
 	return s.subscribeRoom(ctx, a, id, label, a.Now())
 }
 

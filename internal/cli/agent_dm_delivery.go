@@ -45,19 +45,19 @@ func (s *session) captureAgentJoinedRoom(ctx context.Context, room string) error
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return nil
+		return errors.New("agent-dm: cannot read join admission; no room subscription installed")
 	}
 	v, err := matrix.ParseStrictJSON(raw)
 	if err != nil {
-		return nil
+		return errors.New("agent-dm: malformed join admission")
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return nil
+		return errors.New("agent-dm: malformed join admission")
 	}
 	peers, ok := m["peers"].([]any)
-	if !ok || len(peers) > 64 {
-		return nil
+	if !ok || len(peers) == 0 || len(peers) > 64 {
+		return errors.New("agent-dm: invalid join admission peers")
 	}
 	connection, err := s.agentConnection()
 	if err != nil {
@@ -67,17 +67,23 @@ func (s *session) captureAgentJoinedRoom(ctx context.Context, room string) error
 	for _, item := range peers {
 		p, ok := item.(map[string]any)
 		if !ok {
-			continue
+			return errors.New("agent-dm: invalid join admission peer")
 		}
 		peer := agentString(p, "mxid")
 		if _, err := parseAgentAdmission(raw, s.creds.UserID, connection, peer); err != nil {
-			continue
+			return err
 		}
 		r, err := agentPair(s.creds.UserID, peer)
 		if err != nil {
-			continue
+			return err
 		}
 		resolved, err := s.client.WithoutRedirects().ResolvePairAlias(ctx, r.Alias)
+		if errors.Is(err, matrix.ErrUnknownAlias) {
+			continue
+		}
+		if err != nil {
+			return errors.New("agent-dm: pair alias observation unavailable; join refused before subscription")
+		}
 		if err == nil && resolved == room {
 			if matched != "" {
 				return errors.New("agent-dm: conflicting joined pair mappings")
