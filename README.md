@@ -503,7 +503,8 @@ The recorded pre-adoption follow-ups remain open: Darwin cgo-off late refusal;
 rare directory-sync/deadline paths that can strand an unstarted mutation's fence;
 and test gaps in ACL change-authorization analysis and update-not-found/add.
 The native success-find buffer is not zeroed, reconciliation addresses only the
-access-token service, and one timeout fixture depends on goroutine ordering.
+access-token service. Timeout fixtures distinguish held-write fences from cooldown
+after backend return and observed fence removal.
 None is declared repaired by this integration. The native sentinel has not run
 for this candidate. Actual ACL/partition/no-dialog/refusal behavior, stable
 signing requirement and N-to-N+1 item survival, existing-item rotation/rollback,

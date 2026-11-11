@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -207,14 +208,14 @@ func testKeychainProcessLifetime(t *testing.T, pipes string, cancelOnReady bool,
 // migrationStages numbers the backend operations of one migration, including
 // duplicate-create recovery; every operation is preceded by its own probe.
 var migrationStages = []struct {
-	name, mode string
-	stop       int
-	existing   bool
+	name, mode, mutation string
+	stop                 int
+	existing             bool
 }{
-	{"lookup", "", 1, false}, {"create", "", 2, false},
-	{"update", "", 2, true}, {"readback", "", 3, true},
-	{"relookup", "duplicate", 3, false}, {"duplicate-update", "duplicate", 4, false},
-	{"duplicate-readback", "duplicate", 5, false},
+	{"lookup", "", "", 1, false}, {"create", "", "add", 2, false},
+	{"update", "", "update", 2, true}, {"readback", "", "", 3, true},
+	{"relookup", "duplicate", "", 3, false}, {"duplicate-update", "duplicate", "update", 4, false},
+	{"duplicate-readback", "duplicate", "", 5, false},
 }
 
 // A failed probe pipe before any migration operation must not become
@@ -339,6 +340,7 @@ type stagedBackend struct {
 	stop  int32
 	fail  string
 	calls *atomic.Int32
+	gate  *keychainTimeoutWitnessGate
 }
 
 func (s stagedBackend) step(ctx context.Context) (bool, error) {
@@ -350,6 +352,10 @@ func (s stagedBackend) step(ctx context.Context) (bool, error) {
 		return true, errKeychainInteraction
 	case "timeout":
 		<-ctx.Done()
+		// Hold only the selected operation, never earlier duplicate preparation.
+		if s.gate != nil {
+			s.gate.hold()
+		}
 		return true, ctx.Err()
 	}
 	return true, fmt.Errorf("planted backend failure")
@@ -381,7 +387,9 @@ func (s stagedBackend) update(ctx context.Context, keychain, service, account st
 // duplicate, never reaches the next operation and never scrubs the recoverable
 // credential file. Interaction refusals and timeouts record the identity
 // cooldown, which then suppresses every backend call; any other error fails
-// without one.
+// without one. Timeout mutations explicitly distinguish the held-write fence
+// from cooldown after backend return and observed fence removal; this synthetic
+// fixture does not qualify native Keychain or directory-fsync completion.
 func TestKeychainBackendFailureMigrationStages(t *testing.T) {
 	for _, stage := range migrationStages {
 		for _, fail := range []string{"interaction", "timeout", "error"} {
@@ -397,10 +405,26 @@ func TestKeychainBackendFailureMigrationStages(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				calls := new(atomic.Int32)
+				originalStat, err := os.Lstat(e.paths().AgentFile("alice"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				calls, probes := new(atomic.Int32), new(atomic.Int32)
+				k := isolatedKeychainStore(keychainStore{paths: e.paths()})
+				var gate *keychainTimeoutWitnessGate
+				if fail == "timeout" {
+					gate = newKeychainTimeoutWitnessGate(t, k, uid)
+				}
+				matrixCalls := len(e.hs.Calls())
 				e.configure = func(a *App) {
 					a.keychain = func(p config.Paths) *keychainStore {
-						return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, backend: stagedBackend{fakeBackend{dir}, int32(stage.stop), fail, calls}, timeout: 300 * time.Millisecond})
+						return isolatedKeychainStore(keychainStore{paths: p,
+							probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+								probes.Add(1)
+								return unlockedProbe(ctx, args...)
+							},
+							backend: stagedBackend{fakeBackend: fakeBackend{dir}, stop: int32(stage.stop), fail: fail, calls: calls, gate: gate},
+							timeout: 300 * time.Millisecond})
 					}
 				}
 				fragment := "cooldown recorded"
@@ -415,7 +439,30 @@ func TestKeychainBackendFailureMigrationStages(t *testing.T) {
 				if err != nil || string(after) != string(original) {
 					t.Fatal("backend failure lost recoverable credentials", err)
 				}
-				k := isolatedKeychainStore(keychainStore{paths: e.paths()})
+				model, err := os.ReadFile(modelFile(dir))
+				if err != nil {
+					t.Fatal(err)
+				}
+				recordCount := len(records(t, dir))
+				assertPreserved := func() {
+					t.Helper()
+					after, err := os.ReadFile(e.paths().AgentFile("alice"))
+					if err != nil || string(after) != string(original) {
+						t.Fatal("retry lost recoverable credentials", err)
+					}
+					st, err := os.Lstat(e.paths().AgentFile("alice"))
+					if err != nil || !st.Mode().IsRegular() || st.Mode() != originalStat.Mode() {
+						t.Fatal("retry changed credential type/mode", err)
+					}
+					afterModel, err := os.ReadFile(modelFile(dir))
+					if err != nil || string(afterModel) != string(model) || len(records(t, dir)) != recordCount {
+						t.Fatal("retry changed fake backend state", err)
+					}
+					if calls.Load() != int32(stage.stop) || probes.Load() != int32(stage.stop) || len(e.hs.Calls()) != matrixCalls {
+						t.Fatal("refusal reached extra backend/probe/Matrix calls")
+					}
+				}
+				assertPreserved()
 				if fail == "error" {
 					if err := k.checkCooldown(uid); err != nil {
 						t.Fatal("ordinary failure manufactured cooldown", err)
@@ -424,7 +471,23 @@ func TestKeychainBackendFailureMigrationStages(t *testing.T) {
 					if err := k.checkCooldown(uid); err == nil {
 						t.Fatal("interaction or timeout omitted identity cooldown")
 					}
+					if gate != nil {
+						keychainWitnessSignal(t, gate.entered, "selected timed-out operation held before return")
+						if stage.mutation != "" {
+							fence, err := k.readFence(uid)
+							if err != nil || fence == nil || fence.Op != stage.mutation || fence.Digest != tokenDigest([]byte(e.tokens["alice"])) {
+								t.Fatal("held mutation omitted the intended fence", err)
+							}
+							if err := k.checkFence(context.Background(), uid); !errors.Is(err, errKeychainFenced) {
+								t.Fatal("held mutation did not report the outstanding fence", err)
+							}
+							e.as("alice", "creds", "migrate").failsWith(t, ExitError, "keychain write outstanding")
+							assertPreserved()
+						}
+						gate.finish(t, k, uid) // require return AND actual fence absence before cooldown
+					}
 					e.as("alice", "creds", "migrate").failsWith(t, ExitError, "cooldown active")
+					assertPreserved()
 					if calls.Load() != int32(stage.stop) {
 						t.Fatal("cooldown reached the keychain backend")
 					}
