@@ -41,6 +41,11 @@ v12's immutable infinite creator authority, including creators who have left.
 It performs no room or local-state changes and makes no safe-retirement claim.
 See [room power](docs/cli.md#a2a-room-power-room---json) for the versioned schema.
 
+`a2a product new NAME --private` creates only an invite-only, unlisted Space;
+it creates no default rooms. Add existing children and invite members explicitly.
+Existing aliases are reused only after current Space policy and the selected
+server's private directory visibility are verified. This does not enable encryption.
+
 Hook, native and terminal notifications share a fixed 30-second per-identity
 window in one selected connection/config namespace. Existing consumers deliver
 pending mail after the fixed due time; hook-only Stop keeps its existing fallback

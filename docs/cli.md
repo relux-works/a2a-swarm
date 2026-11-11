@@ -351,7 +351,7 @@ command. The emptiness check follows filtered empty pages until the history ends
 The check covers only history visible to the caller; run retirement as the room's creator or a member since creation so earlier messages
 are not hidden by joined/invited history visibility.
 
-### `a2a product new X [--keeper NAME] [--projector NAME]` / `product adopt X <room>` / `product list` / `product show X`
+### `a2a product new X [--private] [--keeper NAME] [--projector NAME]` / `product adopt X <room>` / `product list` / `product show X`
 
 Products are Matrix spaces named `#X`; `X` matches `[a-z0-9-]{1,40}`. `new` creates the space and its `#X-lobby`, `#X-broadcast`, and
 `#X-system` rooms when absent. It adds reciprocal `m.space.child` / `m.space.parent` links and invites the named keeper and projector.
@@ -359,6 +359,21 @@ The lobby follows `room new` policy. The broadcast room sets `events_default` to
 post; the creator keeps admin power). The system projection room sets `events_default` to 50 and gives the optional projector level 50. Re-running prints `already`
 and does not change existing rooms or links. The named keeper gets power 50 in the space itself (enough to link the product's rooms, never 100);
 on an existing space, a keeper below 50 is raised when the caller has the power, otherwise a note is printed.
+
+With `--private`, `new` creates only the Space: `private_chat`, private directory
+visibility, invite-only joining, forbidden guest access and joined history.
+It creates no default rooms, invitations, subscriptions or explicit power changes.
+Do not combine this mode with `--keeper` or `--projector`; use explicit invitations
+and `product adopt` afterwards. The ordinary mode above is unchanged.
+
+An existing alias, including a create-alias race, is reused only after a complete
+current-state response proves a Space with those policies and the selected caller
+joined, followed by an explicit private directory-visibility response from the same
+server. Public, missing, malformed, inaccessible or incomplete observations refuse
+without conversion or a second create. A directory 404 is not alias absence.
+An uncertain create reports failure without an automatic retry. The checks observe
+current state on the selected server; they do not establish encryption, every
+federated directory's visibility or a guarantee against later policy changes.
 
 `adopt` adds an existing room to X without creating or renaming it. It prints `already` for an existing child. A room given by alias whose
 state the caller cannot read (not a member) is still linked from the space, with a note; a bare `!roomid` that cannot be verified is refused. If the caller cannot send the
@@ -371,6 +386,8 @@ that content. A lookup failure does not trigger a join or create a product. The 
 write can remain when the parent write fails, and the output reports the completed child step and any parent refusal or error.
 ```bash
 a2a product new alpha --keeper mini_alpha_keeper --projector a2a-projector
+a2a product new quiet --private
+a2a product adopt quiet existing-room
 a2a product adopt alpha tooling-room
 a2a product adopt '!aliasless-space:example.org' tooling-room
 a2a room new tooling-room --product '!aliasless-space:example.org'
