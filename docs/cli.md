@@ -235,6 +235,56 @@ A refused, malformed or cancelled creation-state lookup stops the command withou
 If the space refuses the child link, the room exists but is NOT linked:
 the command exits 1 and names the space members who can link it, with the `a2a product adopt X <room>` command they would run.
 
+### `a2a room power <room> [--json]`
+
+Read one explicitly selected room on the caller's current connection (or
+`--profile NAME`). Resolve aliases once; full opaque/domainless room IDs are
+preserved without assuming a server suffix. One bounded original-endpoint
+`GET /rooms/{roomId}/state` supplies the complete current snapshot, including
+the caller's JOIN. This command never joins, invites, publishes state or
+account data, repairs subscriptions, changes identity, or writes delivery state.
+
+JSON is one object with `type: "room-power"`, `v: 1`, `server_name`, `room_id`,
+`caller`, `room_version`, `completeness: "complete-response"`,
+`observation: "current-state-response"`, `power_levels_present`, `creators`,
+`defaults`, `required`, and `users`. Creator rows contain `mxid` and `origin`
+(`legacy-create-content`, `create-sender`, or `additional-creator`). User rows
+contain `mxid`, nullable `membership`, nullable `explicit_level`, `effective`,
+and `origin`. Effective authority is exactly `{"kind":"finite","value":INTEGER}`
+or `{"kind":"creator-infinite","value":null}`. User origins are `explicit-user`,
+`users_default`, `initial-creator`, or `creator`. Creators and users are sorted
+by exact MXID. A historical creator label alone does not override finite levels.
+
+The user union includes joined/invited accounts, explicit power users, all
+creators and caller. A left creator or explicit user retains its observed
+membership; a user known only through creation/power has null membership.
+This is not an exhaustive list of everyone who could receive `users_default`.
+Defaults include `users_default`, `events_default` and `state_default`.
+Required thresholds include `ban`, `invite`, `kick`, `redact`, `power_levels`
+and `notifications_room`. An absent power event is distinct from an empty one:
+pre-v12 initial creator authority is100; v12 creator authority remains infinite.
+Other initial users receive0. Text output escapes identities and separately
+labels absent explicit entries, finite/default levels and creator authority.
+
+Known room versions1–12 are interpreted explicitly. Missing `room_version`
+means1. Versions1–10 use the create content's creator; version11 uses the
+create event sender; version12 adds `additional_creators`. Only versions1–9
+admit historical string power levels. Modern values must be exact signed
+64-bit integers, without float conversion or truncation. Unknown versions,
+malformed creator/level/member fields, duplicate JSON or `(type,state_key)`
+entries, ambiguous case variants, redacted/mismatched state, redirects,
+truncated/oversized responses and a nonjoined caller refuse without partial
+output. Fixed diagnostics distinguish access denied, incomplete observation
+and malformed/unsupported policy. There is no retry/fallback to another identity.
+
+Room v12 creator authority is immutable and remains after leave. A replacement
+user at100 therefore does not prove that a creator lost authority. No
+`sole_admin` or `safe_to_retire` conclusion is emitted. This is an observation
+from the selected server, not proof of server honesty or a lock against later
+state changes. See [room v12](https://spec.matrix.org/v1.16/rooms/v12/),
+[v10 integer rules](https://spec.matrix.org/v1.16/rooms/v10/), and
+[historical initial power](https://spec.matrix.org/v1.16/rooms/v1/).
+
 ### `a2a room members <room> [--membership join|invite|join,invite] [--json]`
 
 Read current joined/invited principals using the selected own identity and

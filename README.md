@@ -35,6 +35,12 @@ It returns only principals/membership after a complete validated response and
 refuses archived caller state; it does not export history or change the room.
 See [the command contract](docs/cli.md#commands) for completeness and error limits.
 
+`a2a room power ROOM --json` reads current room power and creation facts on the
+selected connection. It distinguishes explicit/default finite levels and room
+v12's immutable infinite creator authority, including creators who have left.
+It performs no room or local-state changes and makes no safe-retirement claim.
+See [room power](docs/cli.md#a2a-room-power-room---json) for the versioned schema.
+
 Hook, native and terminal notifications share a fixed 30-second per-identity
 window in one selected connection/config namespace. Existing consumers deliver
 pending mail after the fixed due time; hook-only Stop keeps its existing fallback
@@ -73,6 +79,7 @@ The optional per-identity [admission interface](docs/admission.md) gates mailbox
 
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
+| `a2a room power` | Read current room creator and explicit/default authority without changing state | `a2a room power ROOM --json` (or escaped text without `--json`) | Minimal versioned JSON/text on stdout; refusals on stderr, no partial rows |
 | Curator build checks (Go, Make) | Verify the dedicated build branch vendor closure and compile its command | `make verify-vendor BUILD_REPOSITORY="$REPOSITORY" BUILD_COMMIT="$FULL_BUILD_OID" MAIN_COMMIT="$FULL_MAIN_OID"`; `make curator-command BUILD_REPOSITORY="$BUILD_CHECKOUT" OUTPUT="$ARTIFACT"`; [branch rule and limits](docs/curator-build.md) | Named equality/refusal output; binary at the explicit output path |
 | Registry bundle qualifier (Go) | Compare complete selected registry functions and one level of resolved callees as inert bytes, with planted controls | [Command and limits](docs/registryqualifier.md) | JSON structural comparison; nonzero on differences, refusals or failed controls |
 | Local voice (Go, macOS Sherpa, ffmpeg) | Optional spoken copy after unchanged text | `go build -tags sherpa -o .temp/voice/a2a-voice ./cmd/a2a`; `voice status [--json]`; `voice install` then `voice config --enable`; `post ROOM --topic TOPIC --voice TEXT`; [contract](docs/voice.md) | Candidate binary `.temp/voice/`; config/cache `<config>/voice/`; private temporary audio deleted; text ID stdout, optional warning stderr |

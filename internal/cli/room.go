@@ -23,7 +23,7 @@ const (
 // Bound filtered history reads; reaching the cap leaves the room untouched.
 const roomRetireMaxPages = 100
 
-const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] [--private] | a2a room retire <alias> | a2a room members <room> [--membership join|invite|join,invite] [--json]"
+const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] [--private] | a2a room retire <alias> | a2a room members <room> [--membership join|invite|join,invite] [--json] | a2a room power <room> [--json]"
 
 // roomSpec is one room to create with the standard policy.
 type roomSpec struct {
@@ -35,6 +35,9 @@ type roomSpec struct {
 
 // cmdRoom: a2a room new <alias> [--name N] [--topic T] [--invite a,b]
 func cmdRoom(ctx context.Context, a *App, args []string) error {
+	if len(args) > 0 && args[0] == "power" {
+		return cmdRoomPower(ctx, a, args[1:])
+	}
 	if len(args) > 0 && args[0] == "members" {
 		return cmdRoomMembers(ctx, a, args[1:])
 	}
