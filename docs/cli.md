@@ -269,8 +269,12 @@ labels absent explicit entries, finite/default levels and creator authority.
 Known room versions1–12 are interpreted explicitly. Missing `room_version`
 means1. Versions1–10 use the create content's creator; version11 uses the
 create event sender; version12 adds `additional_creators`. Only versions1–9
-admit historical string power levels. Modern values must be exact signed
-64-bit integers, without float conversion or truncation. Unknown versions,
+admit historical string power levels. This reader supports exact integers
+in `[-(2^53)+1, (2^53)-1]`, including historical strings, without float
+conversion or truncation. This conservative product limit also applies to
+room versions1–5, whose historical events may exceed the Canonical JSON
+range: those observations are unsupported and refuse without clamping.
+Unknown versions,
 malformed creator/level/member fields, duplicate JSON or `(type,state_key)`
 entries, ambiguous case variants, redacted/mismatched state, redirects,
 truncated/oversized responses and a nonjoined caller refuse without partial

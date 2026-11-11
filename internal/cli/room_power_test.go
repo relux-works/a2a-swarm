@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -61,7 +62,7 @@ func TestRoomPowerReadOnlyCommand(t *testing.T) {
 // Proves boundary failures print no partial result and preserve all files.
 // Existing matrix strict-reader tests separately cover its complete wire matrix.
 func TestRoomPowerCommandRefusals(t *testing.T) {
-	for _, kind := range []string{"forbidden", "incomplete", "partial-status", "network", "duplicate-key", "duplicate-state", "redacted", "wrong-room", "unknown-version", "left-caller", "redirect", "canceled"} {
+	for _, kind := range []string{"forbidden", "incomplete", "partial-status", "network", "duplicate-key", "duplicate-state", "redacted", "wrong-room", "unknown-version", "left-caller", "invited-caller", "knocking-caller", "banned-caller", "range-upper", "range-lower", "redirect", "canceled"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newNamedFixture(t, true)
 			seedMemberState(t, f)
@@ -94,8 +95,13 @@ func TestRoomPowerCommandRefusals(t *testing.T) {
 				body = strings.Replace(body, `"content":`, `"room_id":"!other","content":`, 1)
 			case "unknown-version":
 				body = strings.Replace(body, `"12"`, `"13"`, 1)
-			case "left-caller":
-				body = strings.Replace(body, `"join"`, `"leave"`, 1)
+			case "left-caller", "invited-caller", "knocking-caller", "banned-caller":
+				membership := map[string]string{"left-caller": "leave", "invited-caller": "invite", "knocking-caller": "knock", "banned-caller": "ban"}[kind]
+				body = strings.Replace(body, `"join"`, `"`+membership+`"`, 1)
+			case "range-upper":
+				body = strings.TrimSuffix(body, "]") + `,{"type":"m.room.power_levels","state_key":"","content":{"kick":9007199254740992}}]`
+			case "range-lower":
+				body = strings.TrimSuffix(body, "]") + `,{"type":"m.room.power_levels","state_key":"","content":{"users":{"@other:fixture.invalid":-9007199254740992}}}]`
 			case "redirect":
 				status = 307
 				want = "incomplete observation"
@@ -199,7 +205,7 @@ func TestRoomPowerFiniteAndInitial(t *testing.T) {
 // Proves v12 implicit authority includes left additional creators and uses a
 // tagged null value, while finite defaults remain explicit for other accounts.
 func TestRoomPowerV12Creators(t *testing.T) {
-	events := powerFixture(t, "12", `{"users_default":-9,"users":{"@other:fixture.invalid":9223372036854775807},"kick":-1}`)
+	events := powerFixture(t, "12", `{"users_default":-9,"users":{"@other:fixture.invalid":9007199254740991},"kick":-1}`)
 	events[0].Content["additional_creators"] = []any{"@additional:fixture.invalid"}
 	events = append(events, matrix.RoomPolicyEvent{Type: "m.room.member", StateKey: "@additional:fixture.invalid", Content: map[string]any{"membership": "leave"}})
 	got, err := projectRoomPower(events, "fixture.invalid", "!opaque", "@caller:fixture.invalid")
@@ -220,7 +226,7 @@ func TestRoomPowerV12Creators(t *testing.T) {
 		if u.MXID == "@additional:fixture.invalid" && (u.Membership == nil || *u.Membership != "leave") {
 			t.Fatalf("lost left creator %+v", u)
 		}
-		if u.MXID == "@other:fixture.invalid" && (u.Effective.Value == nil || *u.Effective.Value != 9223372036854775807 || u.ExplicitLevel == nil || *u.ExplicitLevel != 9223372036854775807 || u.Membership != nil) {
+		if u.MXID == "@other:fixture.invalid" && (u.Effective.Value == nil || *u.Effective.Value != 9007199254740991 || u.ExplicitLevel == nil || *u.ExplicitLevel != 9007199254740991 || u.Membership != nil) {
 			t.Fatalf("lost exact boundary or absent membership %+v", u)
 		}
 	}
@@ -236,17 +242,17 @@ func TestRoomPowerV12Creators(t *testing.T) {
 	}
 }
 
-// Proves the default room version, minimum integer and tuple-key identity are
+// Proves the default room version, minimum supported integer and tuple-key identity are
 // preserved; delimiter-shaped extension keys must not produce false duplicates.
 func TestRoomPowerInitialAndTupleNeighbors(t *testing.T) {
-	e := powerFixture(t, "1", `{"users_default":-9223372036854775808}`)
+	e := powerFixture(t, "1", `{"users_default":-9007199254740991}`)
 	delete(e[0].Content, "room_version")
 	e = append(e, matrix.RoomPolicyEvent{Type: "custom|field", StateKey: "key"}, matrix.RoomPolicyEvent{Type: "custom", StateKey: "field|key"})
 	got, err := projectRoomPower(e, "fixture.invalid", "!opaque", "@caller:fixture.invalid")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.RoomVersion != "1" || got.Defaults["users_default"] != -9223372036854775808 {
+	if got.RoomVersion != "1" || got.Defaults["users_default"] != -9007199254740991 {
 		t.Fatalf("lost initial version/exact minimum %+v", got)
 	}
 }
@@ -254,7 +260,7 @@ func TestRoomPowerInitialAndTupleNeighbors(t *testing.T) {
 // Proves malformed/unsupported or incomplete policy returns no partial result;
 // the positive controls above exercise the same supported versions and fields.
 func TestRoomPowerPolicyRefusals(t *testing.T) {
-	for _, name := range []string{"version", "version-leading-zero", "version-type", "missing-create", "duplicate-create", "duplicate-state", "left-caller", "missing-caller", "bad-membership", "bad-member-id", "bad-creator", "additional-type", "additional-id", "duplicate-creator", "v12-explicit-creator", "v10-string", "fraction", "exponent", "overflow", "null-number", "null-users", "bad-user-id", "bad-event-value", "case-shadow"} {
+	for _, name := range []string{"version", "version-leading-zero", "version-type", "missing-create", "duplicate-create", "duplicate-state", "left-caller", "invited-caller", "knocking-caller", "banned-caller", "missing-caller", "bad-membership", "bad-member-id", "bad-creator", "additional-type", "additional-id", "duplicate-creator", "v12-explicit-creator", "v10-string", "fraction", "exponent", "overflow", "null-number", "null-users", "bad-user-id", "bad-event-value", "case-shadow"} {
 		t.Run(name, func(t *testing.T) {
 			e := powerFixture(t, "12", `{"users":{"@other:fixture.invalid":8}}`)
 			switch name {
@@ -270,8 +276,8 @@ func TestRoomPowerPolicyRefusals(t *testing.T) {
 				e = append(e, e[0])
 			case "duplicate-state":
 				e = append(e, matrix.RoomPolicyEvent{Type: "custom", StateKey: "x"}, matrix.RoomPolicyEvent{Type: "custom", StateKey: "x"})
-			case "left-caller":
-				e[1].Content["membership"] = "leave"
+			case "left-caller", "invited-caller", "knocking-caller", "banned-caller":
+				e[1].Content["membership"] = map[string]string{"left-caller": "leave", "invited-caller": "invite", "knocking-caller": "knock", "banned-caller": "ban"}[name]
 			case "missing-caller":
 				e = append(e[:1], e[2:]...)
 			case "bad-membership":
@@ -313,5 +319,41 @@ func TestRoomPowerPolicyRefusals(t *testing.T) {
 				t.Fatalf("expected policy refusal/no rows: got=%+v err=%v", got, err)
 			}
 		})
+	}
+}
+
+// The reader supports the Canonical JSON range in every supported room
+// version. Each parsed power field rejects adjacent overflow and int64 extremes;
+// legacy strings share the bounds and remain forbidden from v10.
+func TestRoomPowerNumericRange(t *testing.T) {
+	fields := []string{
+		`{"users":{"@other:fixture.invalid":%s}}`,
+		`{"users_default":%s}`, `{"events_default":%s}`, `{"state_default":%s}`,
+		`{"ban":%s}`, `{"invite":%s}`, `{"kick":%s}`, `{"redact":%s}`,
+		`{"events":{"m.room.power_levels":%s}}`,
+		`{"notifications":{"room":%s}}`,
+	}
+	for version := 1; version <= 12; version++ {
+		for field, format := range fields {
+			for _, value := range []string{"9007199254740991", "-9007199254740991", "9007199254740992", "-9007199254740992", "9223372036854775807", "-9223372036854775808"} {
+				for _, legacy := range []bool{false, true} {
+					t.Run(fmt.Sprintf("v%d/field%d/%s/string=%t", version, field, value, legacy), func(t *testing.T) {
+						encoded := value
+						if legacy {
+							encoded = `"` + value + `"`
+						}
+						valid := (value == "9007199254740991" || value == "-9007199254740991") && (!legacy || version < 10)
+						got, err := projectRoomPower(powerFixture(t, fmt.Sprint(version), fmt.Sprintf(format, encoded)), "fixture.invalid", "!opaque", "@caller:fixture.invalid")
+						if valid {
+							if err != nil || got == nil {
+								t.Fatalf("valid Matrix boundary refused: %v", err)
+							}
+						} else if !errors.Is(err, errRoomPowerPolicy) || got != nil {
+							t.Fatalf("outside Matrix range or forbidden string admitted: value=%s result=%+v err=%v", encoded, got, err)
+						}
+					})
+				}
+			}
+		}
 	}
 }

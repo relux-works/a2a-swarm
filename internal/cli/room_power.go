@@ -211,15 +211,18 @@ func projectRoomPower(events []matrix.RoomPolicyEvent, server, room, caller stri
 		}
 	}
 	sort.Slice(creators, func(i, j int) bool { return creators[i].MXID < creators[j].MXID })
+	// Use a conservative Canonical JSON range for every supported version,
+	// including legacy strings. Historical v1–5 events outside it are unsupported.
+	const maxPowerLevel int64 = 1<<53 - 1
 	number := func(v any) (int64, bool) {
 		switch v := v.(type) {
 		case json.Number:
 			i, e := v.Int64()
-			return i, e == nil
+			return i, e == nil && i >= -maxPowerLevel && i <= maxPowerLevel
 		case string:
 			if n < 10 {
 				i, e := strconv.ParseInt(v, 10, 64)
-				return i, e == nil
+				return i, e == nil && i >= -maxPowerLevel && i <= maxPowerLevel
 			}
 		}
 		return 0, false
