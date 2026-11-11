@@ -460,6 +460,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	}
 	var members map[string]bool
 	if mb, err := config.OpenMailbox(s.paths, s.name); err == nil {
+		s.agentMailboxView(mb)
 		members = s.verifySenders(ctx, itemsOf(mb.Pending(), s.server))
 	}
 	limited := false

@@ -199,6 +199,9 @@ func cmdJoin(ctx context.Context, a *App, args []string) error {
 		return fmt.Errorf("join %s: %w", label, err)
 	}
 	a.printf("joined %s %s\n", label, id)
+	if err := s.captureAgentJoinedRoom(ctx, id); err != nil {
+		return err
+	}
 	return s.subscribeRoom(ctx, a, id, label, a.Now())
 }
 

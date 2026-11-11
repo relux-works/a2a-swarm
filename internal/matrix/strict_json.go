@@ -9,9 +9,17 @@ import (
 	"unicode/utf8"
 )
 
-// strictJSON interprets exactly one Unicode-scalar RFC8259 value. It is used
-// only for server-generated controls. The returned tree is the consumed value;
-// no second semantic JSON decoder is permitted on this partition.
+// ParseStrictJSON returns one bounded Unicode-scalar JSON tree, rejecting
+// duplicate names and trailing data. It does not confer authority on input.
+func ParseStrictJSON(raw []byte) (any, error) {
+	if len(raw) > VerificationEntityLimit {
+		return nil, errWireJSON
+	}
+	return strictJSON(raw)
+}
+
+// strictJSON interprets exactly one Unicode-scalar RFC8259 value. Control
+// readers consume the returned tree without a second semantic JSON decoder.
 func strictJSON(raw []byte) (any, error) {
 	if !utf8.Valid(raw) {
 		return nil, errWireNotUTF8

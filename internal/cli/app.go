@@ -153,6 +153,7 @@ func commands() []command {
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
 		{"principal-dm", "principal-dm ensure|unset @user:server | status [@user:server] | say @user:server <text|@file|->   direct room with a host-pinned principal (default off)", cmdPrincipalDM},
+		{"agent-dm", "agent-dm ensure|status|say|unset|leave FULL_PEER   exact admitted agent pair (default off)", cmdAgentDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"availability", "availability <localpart|@localpart:server> [--json]   read selected-server registration availability (no existence guarantee)", cmdAvailability},
 		{"host", "host init <slug> [--force] | host show | host principals set|show|clear   this machine's host slug, the first part of every identity", cmdHost},
@@ -534,6 +535,7 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // session is an authenticated identity bound to one homeserver.
 type session struct {
+	agentDelivery    *agentDMDelivery
 	admission        *identityAdmission
 	app              *App
 	paths            config.Paths

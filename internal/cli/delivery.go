@@ -118,6 +118,8 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 
 // batch is what one sync response adds to the mailbox.
 type batch struct {
+	agentHeld    []agentDMHeld
+	agentStamp   string
 	entries      []config.MailEntry
 	redactions   []config.Redaction
 	learned      []string             // thread roots learned from my own events
@@ -183,11 +185,20 @@ func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, si
 }
 
 func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
-	subs, err := s.principalLiveSubscriptions(subs)
+	gate, err := s.refreshAgentGate(ctx)
 	if err != nil {
 		return batch{}, err
 	}
-	b := batch{muted: slices.Clone(st.Muted)}
+	s.agentDelivery = &gate
+	held, err := s.readAgentHeld()
+	if err != nil {
+		return batch{}, err
+	}
+	subs, err = s.principalLiveSubscriptions(subs)
+	if err != nil {
+		return batch{}, err
+	}
+	b := batch{muted: slices.Clone(st.Muted), agentStamp: gate.Stamp}
 	st.ThreadEvents = slices.Clone(st.ThreadEvents)
 	me := s.creds.UserID
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
@@ -204,12 +215,22 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 	seen := map[string]bool{}
 	firstPages := firstSyncMaxPages
 	// Iterate rooms in a stable order so output is deterministic.
-	for _, roomID := range sortedKeys(resp.Rooms.Join) {
+	roomIDs := map[string]bool{}
+	for room := range resp.Rooms.Join {
+		roomIDs[room] = true
+	}
+	for _, entry := range held.Entries {
+		roomIDs[entry.Room] = true
+	}
+	for _, roomID := range sortedKeys(roomIDs) {
 		if s.adminRoomExcluded(roomID) {
 			continue
 		}
 		jr := resp.Rooms.Join[roomID]
 		keep := func(ev matrix.Event) bool {
+			if gate.decision(ev, roomID, me, configured) != "allow" {
+				return true
+			}
 			if ev.Type == "m.room.redaction" || ev.IsRedacted() {
 				return true
 			}
@@ -243,7 +264,30 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 				Label: s.roomLabel(ctx, roomID, labels), From: gap.From, To: gap.To})
 		}
 		b.redactions = append(b.redactions, eventRedactions(roomID, events)...)
+		for _, entry := range held.Entries {
+			if entry.Room != roomID {
+				continue
+			}
+			var ev matrix.Event
+			if json.Unmarshal(entry.Event, &ev) == nil && ev.EventID == entry.ID && gate.decision(ev, roomID, me, configured) == "allow" {
+				events = append(events, ev)
+			}
+		}
 		for _, ev := range events {
+			decision := gate.decision(ev, roomID, me, configured)
+			if decision != "allow" {
+				if decision == "hold" && ev.Type == "m.room.message" && !ev.IsRedacted() {
+					raw, err := json.Marshal(ev)
+					if err != nil {
+						return b, err
+					}
+					if _, err := matrix.ParseStrictJSON(raw); err != nil {
+						continue
+					}
+					b.agentHeld = append(b.agentHeld, agentDMHeld{Room: roomID, ID: ev.EventID, Event: raw})
+				}
+				continue
+			}
 			if ev.Type == "m.room.message" && !ev.IsRedacted() {
 				root := deliveryTopicRoot(ev, roomID, st)
 				if root != "" {
@@ -321,6 +365,7 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 				return nil, errors.New("admin-room retained mailbox refused; private owner recovery required")
 			}
 		}
+		s.agentMailboxView(mb)
 		return fn(cur, mb)
 	}
 	if !withSubs {
@@ -365,6 +410,9 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 		if !slices.Equal(b.muted, cur.Muted) {
 			return nil, errDeliveryMutesChanged
 		}
+		if b.agentStamp != "" && b.agentStamp != s.agentGateStamp() {
+			return nil, errDeliveryMutesChanged
+		}
 		if err := migrateLegacyDelivery(cur, mb); err != nil {
 			return nil, err
 		}
@@ -379,6 +427,10 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 		if err := s.appendAdmitted(ctx, mb, b.entries); err != nil {
 			return nil, err
 		}
+		heldErr := s.persistAgentHeld(ctx, mb, b.agentHeld)
+		if heldErr != nil && !errors.Is(heldErr, errAgentHeldCapacity) {
+			return nil, heldErr
+		}
 		if a.afterAppend != nil {
 			if err := a.afterAppend(); err != nil {
 				return nil, err
@@ -390,7 +442,9 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 		for _, r := range b.learned {
 			cur.AddThread(r)
 		}
-		if cur.NextBatch == since {
+		// Capacity defers cursor advancement so held peer mail can be replayed,
+		// while already appended principal/ordinary mail remains deliverable.
+		if heldErr == nil && cur.NextBatch == since {
 			cur.NextBatch = next
 		}
 		return b.close, nil
@@ -548,9 +602,14 @@ const shownHint = "a2a: printed entries stay in the mailbox until received: run 
 // the state lock (so concurrent waits never print the same entry). It receipts
 // nothing. It returns how many it printed.
 func (a *App) showNew(ctx context.Context, s *session, f deliveryFilter, asJSON bool) (int, error) {
+	gate, err := s.refreshAgentGate(ctx)
+	if err != nil {
+		return 0, err
+	}
+	s.agentDelivery = &gate
 	f.predicates.principals = s.principals
 	printed := 0
-	_, err := s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+	_, err = s.lockedDeliver(ctx, time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
 		var items []waitItem
 		for _, e := range mb.Pending() {
 			if !e.Shown && f.shows(e) {

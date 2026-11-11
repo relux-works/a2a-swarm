@@ -82,6 +82,7 @@ type Redaction struct {
 
 // Mailbox is the loaded mailbox of one agent.
 type Mailbox struct {
+	pendingFilter         func(MailEntry) bool
 	path                  string
 	order                 []string // ids of entries in append order (received ones are skipped)
 	live                  map[string]*MailEntry
@@ -251,12 +252,16 @@ func (m *Mailbox) Received(id string) bool { return m.recv[id] }
 func (m *Mailbox) Pending() []MailEntry {
 	var out []MailEntry
 	for _, id := range m.order {
-		if e, ok := m.live[id]; ok {
+		if e, ok := m.live[id]; ok && (m.pendingFilter == nil || m.pendingFilter(*e)) {
 			out = append(out, *e)
 		}
 	}
 	return out
 }
+
+// SetPendingFilter restricts this in-memory delivery view only. Entries,
+// receipts, deduplication and durable history are preserved.
+func (m *Mailbox) SetPendingFilter(filter func(MailEntry) bool) { m.pendingFilter = filter }
 
 // Append adds the entries that are not in the mailbox yet (by id) and fsyncs
 // the file before it returns; it returns how many were added.

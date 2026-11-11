@@ -104,7 +104,7 @@ Onboards a new orchestrator in one command (owner requirement, 2026-09-29): it p
 summary. Every step is printed; nothing is a hidden default; a re-run changes nothing and says `already` / `unchanged`.
 
 **Current onboarding policy:** the owner authorizes the identity; missing rooms are provisioned through the meta-keeper, with the product
-keeper coordinating product scope. Continue only when the required rooms and membership are ready. The sole agent room-creation exception is an admitted, verified owner-channel `owner-dm bind`: it creates only the pinned owner’s unencrypted private room (see Owner DM S1 below). The host terminal, not the agent, may also run `principal-dm ensure` for a host-pinned non-owner principal (Principal DM S1 below). Do not use `identity ensure` to create
+keeper coordinating product scope. Continue only when the required rooms and membership are ready. An admitted, verified owner-channel `owner-dm bind` creates only the pinned owner’s unencrypted private room (see Owner DM S1 below). Separately, [agent pair DM S1](agent-dm.md) permits only the designated creator of an exact host-admitted keeper/orchestrator pair to ensure that pair's private room. The host terminal, not the agent, may also run `principal-dm ensure` for a host-pinned non-owner principal (Principal DM S1 below). Do not use `identity ensure` to create
 a missing room. The implementation still has that capability (step 2 below); it does not enforce keeper approval or a readiness gate.
 
 1. **Identity.**

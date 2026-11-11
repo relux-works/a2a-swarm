@@ -494,6 +494,13 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 				return a.runtimeOutcome(s, generation, "unavailable: accepted turn lifecycle")
 			}
 		}
+		// Explicit dispatch may use a fresh session without a preceding sync.
+		// Qualify retained pair mail before forming notification metadata.
+		gate, err := s.refreshAgentGate(probe)
+		if err != nil {
+			return err
+		}
+		s.agentDelivery = &gate
 		var items []waitItem
 		_, err = s.lockedDeliver(ctx, time.Now().Add(nativeRPCTimeout), false, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
 			for _, entry := range mb.Pending() {

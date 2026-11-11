@@ -80,6 +80,10 @@ without `ReceivedRawAtSize`, `raw_bounds/received` reports a named skip.
 
 The optional per-identity [admission interface](docs/admission.md) gates mailbox delivery and prepared message sends.
 
+The default-off [agent pair DM](docs/agent-dm.md) supports exact host-admitted
+keeper/orchestrator pairs with explicit peer join and sole-recipient delivery:
+`a2a agent-dm ensure|status|say|unset|leave FULL_PEER`.
+
 ## Tools
 
 | Tool | Purpose | How to run | Output |
