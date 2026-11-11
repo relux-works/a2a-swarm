@@ -205,3 +205,69 @@ func TestPrivateProductArgumentRefusals(t *testing.T) {
 		}
 	}
 }
+
+// Supplied conflicting flags refuse even when empty or reset by a later value,
+// before credential reads, requests, output or persistent source-file changes.
+func TestPrivateProductConflictingFlagPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"keeper-empty-equals", []string{"--keeper="}},
+		{"projector-empty-equals", []string{"--projector="}},
+		{"keeper-empty-separate", []string{"--keeper", ""}},
+		{"projector-empty-separate", []string{"--projector", ""}},
+		{"keeper-reset-equals", []string{"--keeper", "owner", "--keeper="}},
+		{"projector-reset-equals", []string{"--projector", "relay", "--projector="}},
+		{"keeper-reset-separate", []string{"--keeper=owner", "--keeper", ""}},
+		{"projector-reset-separate", []string{"--projector=relay", "--projector", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newNamedFixture(t, true)
+			before := memberFiles(t, f.root)
+			a := f.app()
+			calls, creates := 0, 0
+			a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method == "GET" && strings.Contains(r.URL.Path, "/directory/room/") {
+					return privateProductResponse(r, 404, `{"errcode":"M_NOT_FOUND"}`), nil
+				}
+				if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/createRoom") {
+					creates++
+					return privateProductResponse(r, 200, `{"room_id":"!quiet"}`), nil
+				}
+				return nil, errors.New("unexpected request")
+			})}
+			args := append([]string{"product", "new", "quiet", "--private"}, tc.args...)
+			code := a.Run(context.Background(), args)
+			if code != ExitUsage || !strings.Contains(f.err.String(), "do not combine it with --keeper or --projector") || calls != 0 || creates != 0 || len(f.store.reads) != 0 || len(f.store.creates) != 0 || f.out.Len() != 0 || !reflect.DeepEqual(before, memberFiles(t, f.root)) {
+				t.Fatalf("conflicting flag was not refused before effects: exit%d calls%d creates%d credentialReads%d stdout%q stderr%q", code, calls, creates, len(f.store.reads), f.out.String(), f.err.String())
+			}
+		})
+	}
+}
+
+// Empty optional flags retain ordinary four-room creation, including when
+// private mode is explicitly false; valid private creation is covered above.
+func TestPrivateProductOrdinaryEmptyFlags(t *testing.T) {
+	for _, explicitFalse := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ordinary", true: "explicit-false"}[explicitFalse], func(t *testing.T) {
+			e := newEnv(t)
+			e.agent("alice")
+			args := []string{"product", "new", "alpha", "--keeper=owner", "--keeper=", "--projector=relay", "--projector", ""}
+			if explicitFalse {
+				args = append(args, "--private=false")
+			}
+			out := e.as("alice", args...).ok(t).stdout
+			if len(e.hs.createdRooms()) != 4 || !strings.Contains(out, "created space #alpha") {
+				t.Fatalf("ordinary empty flags changed creation: rooms%d output%s", len(e.hs.createdRooms()), out)
+			}
+			e.hs.mu.Lock()
+			invites := len(e.hs.invites)
+			e.hs.mu.Unlock()
+			if invites != 0 {
+				t.Fatalf("cleared optional flags invited identities: %d", invites)
+			}
+		})
+	}
+}

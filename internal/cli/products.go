@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"regexp"
 	"sort"
@@ -36,8 +37,16 @@ func cmdProduct(ctx context.Context, a *App, args []string) error {
 		if !productNameRE.MatchString(pos[0]) {
 			return usagef("invalid product name %q: use [a-z0-9-]{1,40}", sanitizeLine(pos[0]))
 		}
-		if *private && (*keeper != "" || *projector != "") {
-			return usagef("--private requires explicit subsequent invitations; do not combine it with --keeper or --projector")
+		if *private {
+			conflicting := false
+			fs.Visit(func(f *flag.Flag) {
+				if f.Name == "keeper" || f.Name == "projector" {
+					conflicting = true
+				}
+			})
+			if conflicting {
+				return usagef("--private requires explicit subsequent invitations; do not combine it with --keeper or --projector")
+			}
 		}
 		for _, raw := range []string{*keeper, *projector} {
 			if raw != "" {
