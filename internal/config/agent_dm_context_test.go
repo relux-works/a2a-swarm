@@ -21,7 +21,7 @@ func TestAgentDMContextStateRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal("feature-only context fault bricked ordinary state", err)
 			}
-			if updated.NextBatch != "after" || updated.Writer == nil || updated.Writer.Seal == "" {
+			if updated.NextBatch != "after" || !validWriterSeal(updated) {
 				t.Fatal("ordinary state writer was bypassed")
 			}
 			read := readStateJSON(t, p)
