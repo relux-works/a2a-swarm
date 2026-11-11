@@ -91,6 +91,11 @@ func TestKeychainReconcileSelection(t *testing.T) {
 					t.Fatal("fixture target unavailable")
 				}
 				migrationTarget = filepath.Join(targetRoot, "daemon")
+				// Keep the validated target private under both 0022 and 0077 umasks,
+				// rather than relying on the temporary parent's inherited mode.
+				if err := os.Mkdir(migrationTarget, 0700); err != nil {
+					t.Fatal("fixture private target creation failed")
+				}
 				binding, err := f.r.Profiles["alpha"].Binding("alice", false)
 				if err != nil {
 					t.Fatal("fixture binding unavailable")
