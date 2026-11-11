@@ -389,6 +389,10 @@ type State struct {
 	NextBatch string `json:"next_batch,omitempty"`
 	// LastInbox names the last explicitly saved inbox frame; it grants no delivery authority.
 	LastInbox string `json:"last_inbox,omitempty"`
+	// AgentDMContexts is conservative room classification, never authority.
+	// Keep its JSON opaque here: a feature-local shape fault must not prevent
+	// otherwise valid principal delivery or erase the original recovery input.
+	AgentDMContexts json.RawMessage `json:"agent_dm_contexts,omitempty"`
 	// LegacyPending is the pre-mailbox pending wait batch. It is dropped at the
 	// first sync: the cursor never moved past it, so its events are synced
 	// into the mailbox again.

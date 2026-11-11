@@ -138,9 +138,6 @@ func cmdAgentDM(ctx context.Context, a *App, args []string) error {
 		if !known || !d.Enabled || !d.Qualified || d.Room == nil || d.LeaveAttempt != "" {
 			return errors.New("agent-dm: no active qualified pair binding")
 		}
-		if len(d.SendAttempts) >= 256 {
-			return errors.New("agent-dm: send evidence bound reached")
-		}
 		for _, attempt := range d.SendAttempts {
 			if attempt.State == "started" {
 				return errors.New("agent-dm: uncertain send retained; no automatic resend")
@@ -168,6 +165,11 @@ func cmdAgentDM(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		txn := "a2a-adm-" + matrix.NewTxnID()
+		// Only acknowledged history expires. The uncertain-attempt check above
+		// precedes compaction, so a retained fence is never evicted or resent.
+		if len(d.SendAttempts) >= 256 {
+			d.SendAttempts = append([]agentDMSend(nil), d.SendAttempts[len(d.SendAttempts)-255:]...)
+		}
 		d.SendAttempts = append(d.SendAttempts, agentDMSend{Transaction: txn, State: "started"})
 		if err = save(); err != nil {
 			return err
@@ -213,6 +215,9 @@ func cmdAgentDM(ctx context.Context, a *App, args []string) error {
 		} else {
 			if d.CreateAttempt != "" {
 				return errors.New("agent-dm: unknown; create recovery fence forbids replacement creation")
+			}
+			if err = s.checkAgentContextCapacity(); err != nil {
+				return err
 			}
 			if _, err = s.agentAdmitted(peer); err != nil {
 				return err

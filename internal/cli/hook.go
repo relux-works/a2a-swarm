@@ -460,6 +460,13 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	}
 	var members map[string]bool
 	if mb, err := config.OpenMailbox(s.paths, s.name); err == nil {
+		// First-sync positioning may not collect a batch. Sender metadata must
+		// apply the same fresh pair policy as the later notification selection.
+		gate, err := s.refreshAgentGate(ctx)
+		if err != nil {
+			return err
+		}
+		s.agentDelivery = &gate
 		s.agentMailboxView(mb)
 		members = s.verifySenders(ctx, itemsOf(mb.Pending(), s.server))
 	}

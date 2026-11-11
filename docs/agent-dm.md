@@ -127,8 +127,9 @@ reported as absent rooms, zero members or permission.
 
 ## Delivery and recovery
 
-Pair context comes from connection/caller/peer-bound local records, never a
-forged marker or message in an ordinary group room. Before subscriptions,
+Pair context comes from connection/caller/peer-bound local records and retained
+local room classification, never a forged marker or message in an ordinary
+group room. Before subscriptions,
 threads, mentions, `--all`, mailbox admission or wake counts, pair mail must be
 from the actual peer, with a strict v1 `message` header whose `from` is that full
 sender, exactly `to: [FULL_CALLER]`, an explicit kind/time and exactly one Matrix
@@ -149,12 +150,31 @@ server acknowledged the message, not peer consumption or agreement.
 pair key, retain nullable room mapping and create/invite/send/leave attempt
 evidence. The operation lock serializes pair commands; the existing mailbox
 state lock owns held-mail writes. One live session per identity is still required.
-At most 64 peers, 512 held messages and 256 retained send attempts are supported;
+At most 64 peers, 64 retained pair-room contexts, 512 held messages and 256
+retained send attempts are supported;
 each private JSON file is bounded to 1 MiB. Held-mail capacity keeps the sync
 cursor unchanged for replay while already appended principal/ordinary mail
-remains deliverable; qualifying the pair lets its held mail drain. Other evidence
-bounds refuse without discarding unread mail. Corrupt local mapping state closes ordinary delivery
-until repaired; real host-principal messages retain their delivery exception.
+remains deliverable; qualifying the pair lets its held mail drain. A failed held
+write also retains the cursor and corrupt input. Polling consumers pause for
+five seconds before replay, bounded by their existing deadline and cancellation.
+
+The existing delivery state retains `agent_dm_contexts`, a strict versioned
+caller/connection-bound set of known pair-room IDs. It supplies only conservative
+classification, never admission, active policy or send authority. Supported
+mapping writes and pair JOINs retain the context first; capacity or persistence
+failure refuses the dependent effect without evicting earlier contexts. Unset
+and leave keep this set. An absent field preserves legacy delivery; malformed
+feature-local JSON values remain recovery data without blocking unrelated
+principal delivery.
+
+When pair records are unreadable, named retained rooms hold nonprincipal mail;
+ordinary unbound groups and real host-principal messages remain deliverable.
+Valid records also supply room classification. The CLI reports unknown storage
+without exposing held message bodies. Delivery distinguishes an actually absent
+file from a private-mode failure; existing pair files and all pair commands
+retain the owned 0700/0600 and no-symlink checks. Every mailbox selection,
+including `ack all-shown`, notices and binding wakes, refreshes current pair
+policy; stale snapshots do not admit or silently receipt pair mail.
 
 Repeated `ensure` reuses the mapping. Alias uniqueness is not an exactly-once
 create transaction. An attempted create with an unknown ACK leaves a fence;
@@ -163,6 +183,9 @@ or repairs an incompatible room. Unknown invitation ACKs do not repeat invitatio
 An uncertain send retains its transaction and blocks automatic resend; status
 does not clear evidence or retry effects. Readback and cancellation failures
 preserve acknowledged and uncertain partial effects honestly.
+Confirmed send history is a bounded recent ring, rather than a lifetime send
+limit. Only confirmed entries expire; an uncertain attempt at any position
+prevents compaction and further sends.
 
 `unset` disables only this local binding, preserving the room, mapping, fences,
 unread history and peer record. This feature creates no account-data subscription

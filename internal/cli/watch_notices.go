@@ -151,6 +151,9 @@ func (a *App) noticeLoop(ctx context.Context, s *session, g *config.MonitorGener
 		if !window.due.IsZero() && !st.HooksPaused {
 			poll = min(poll, max(time.Millisecond, time.Until(window.due)))
 		}
+		if err := s.pauseAgentReplay(ctx, time.Time{}); err != nil {
+			return err
+		}
 		pollCtx, cancel := context.WithTimeout(ctx, poll)
 		resp, err := s.waitSync(pollCtx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch))
 		cancel()

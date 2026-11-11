@@ -192,7 +192,10 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 	s.agentDelivery = &gate
 	held, err := s.readAgentHeld()
 	if err != nil {
-		return batch{}, err
+		// Existing held bytes stay untouched. The cursor is retained if the
+		// later persistence retry still fails; other rooms remain deliverable.
+		s.warnAgentDelivery()
+		held = agentDMHeldStore{}
 	}
 	subs, err = s.principalLiveSubscriptions(subs)
 	if err != nil {
@@ -352,6 +355,14 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 	if err := s.checkConnection(); err != nil {
 		return config.State{}, err
 	}
+	// Every Pending consumer enters here, including ack, notices and binding
+	// wakes without a preceding sync. Revalidate remote policy even when the
+	// local admission stamp did not change; stale snapshots grant no authority.
+	gate, err := s.refreshAgentGate(ctx)
+	if err != nil {
+		return config.State{}, err
+	}
+	s.agentDelivery = &gate
 	run := func(cur *config.State) ([]string, error) {
 		if err := s.checkConnection(); err != nil {
 			return nil, err
@@ -428,8 +439,12 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 			return nil, err
 		}
 		heldErr := s.persistAgentHeld(ctx, mb, b.agentHeld)
-		if heldErr != nil && !errors.Is(heldErr, errAgentHeldCapacity) {
-			return nil, heldErr
+		if heldErr != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		s.agentReplayDeferred = heldErr != nil
+		if heldErr != nil {
+			s.warnAgentDelivery()
 		}
 		if a.afterAppend != nil {
 			if err := a.afterAppend(); err != nil {
@@ -802,6 +817,12 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 				poll = remaining
 			}
 		}
+		if err := s.pauseAgentReplay(ctx, deadline); err != nil {
+			if errors.Is(err, errWaitTimeout) {
+				return printTimeout()
+			}
+			return err
+		}
 		resp, err := waitRetry(ctx, s, deadline, func() (matrix.SyncResponse, error) {
 			return s.waitSyncUntil(ctx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch), deadline)
 		})
@@ -948,6 +969,9 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 		if err := a.acquireLease(s, "", time.Time{}); err != nil {
+			return stopped(err)
+		}
+		if err := s.pauseAgentReplay(ctx, time.Time{}); err != nil {
 			return stopped(err)
 		}
 		resp, err := waitRetry(ctx, s, time.Time{}, func() (matrix.SyncResponse, error) {

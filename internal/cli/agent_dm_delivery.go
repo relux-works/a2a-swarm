@@ -117,7 +117,7 @@ func (s *session) captureAgentJoinedRoom(ctx context.Context, room string) error
 		if d.Room == nil || *d.Room != room {
 			return errors.New("agent-dm: joined room conflicts with retained pair mapping")
 		}
-		return nil
+		return s.retainAgentContexts(ctx, []string{room})
 	}
 	r, _ := agentPair(s.creds.UserID, matched)
 	st.Pairs[matched] = agentDMRecord{Contract: agentDMVersion, Caller: s.creds.UserID, Connection: connection, Peer: matched, PairKey: r.PairKey, Room: &room, Enabled: true, SendAttempts: []agentDMSend{}}
@@ -128,11 +128,10 @@ func (s *session) captureAgentJoinedRoom(ctx context.Context, room string) error
 // not create it. Admission/qualification failure closes its ordinary mail gate.
 func (s *session) refreshAgentGate(ctx context.Context) (agentDMDelivery, error) {
 	stamp := s.agentGateStamp()
-	st, _, err := s.agentRecords()
-	out := agentDMDelivery{Rooms: map[string]agentDMGate{}, Unknown: err != nil}
+	out, st, err := s.agentLocalGate()
 	out.Stamp = stamp
 	if err != nil {
-		return out, nil
+		return out, err
 	}
 	var whoErr error
 	if len(st.Pairs) > 0 {
@@ -164,6 +163,12 @@ func (s *session) refreshAgentGate(ctx context.Context) (agentDMDelivery, error)
 }
 func (s *session) agentGateStamp() string {
 	h := sha256.New()
+	if st, err := config.LoadState(s.paths, s.name); err == nil {
+		h.Write(st.AgentDMContexts)
+	} else {
+		h.Write([]byte("state-unreadable"))
+	}
+	h.Write([]byte{0})
 	for _, item := range []struct{ dir, name string }{
 		{agentDMDir(s.paths, s.name), "records.json"},
 		{agentDMDir(s.paths, s.name), "admission.json"},
@@ -272,13 +277,13 @@ func (g agentDMDelivery) decision(ev matrix.Event, room, me string, principals [
 	}
 	pair, known := g.Rooms[room]
 	if !known {
-		if g.Unknown && ev.Type == "m.room.message" {
-			return "hold"
-		}
 		return "allow"
 	}
 	if ev.Type != "m.room.message" {
 		return "allow"
+	}
+	if pair.Peer == "" {
+		return "hold"
 	}
 	if !agentAddressed(ev, me, pair.Peer) {
 		return "drop"
@@ -291,7 +296,7 @@ func (g agentDMDelivery) decision(ev matrix.Event, room, me string, principals [
 
 func (s *session) readAgentHeld() (agentDMHeldStore, error) {
 	out := agentDMHeldStore{Contract: agentDMVersion, Entries: []agentDMHeld{}}
-	raw, err := agentRead(agentDMDir(s.paths, s.name), "held.json")
+	raw, err := agentDeliveryRead(agentDMDir(s.paths, s.name), "held.json")
 	if errors.Is(err, os.ErrNotExist) {
 		return out, nil
 	}
@@ -346,13 +351,7 @@ func (s *session) persistAgentHeld(ctx context.Context, mb *config.Mailbox, add 
 func (s *session) agentMailboxView(mb *config.Mailbox) {
 	g := s.agentDelivery
 	if g == nil || g.Stamp != s.agentGateStamp() {
-		local, _, err := s.agentRecords()
-		snap := agentDMDelivery{Rooms: map[string]agentDMGate{}, Unknown: err != nil}
-		for peer, d := range local.Pairs {
-			if d.Room != nil {
-				snap.Rooms[*d.Room] = agentDMGate{Peer: peer}
-			}
-		}
+		snap, _, _ := s.agentLocalGate()
 		g = &snap
 	}
 	principals := s.principals

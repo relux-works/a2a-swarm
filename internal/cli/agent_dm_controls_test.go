@@ -22,8 +22,22 @@ func TestAgentDMRecipientGateBypassControl(t *testing.T) {
 }
 
 func TestAgentDMHeldCapacityRegressionControl(t *testing.T) {
-	anchor := "if heldErr != nil && !errors.Is(heldErr, errAgentHeldCapacity) {"
-	agentDMOverlayControl(t, "delivery.go", anchor, "if heldErr != nil {", "TestAgentDMHeldCapacityPreservesPrincipalWake", "principal capacity wake assertion:")
+	anchor := "if heldErr != nil {\n\t\t\ts.warnAgentDelivery()"
+	agentDMOverlayControl(t, "delivery.go", anchor, "if heldErr != nil {\n return nil, heldErr", "TestAgentDMHeldCapacityPreservesPrincipalWake", "principal capacity wake assertion:")
+}
+
+// Removing only the independent conservative guards must expose the known
+// corrupted pair through broad selection, while unbound controls still pass.
+func TestAgentDMRetainedContextControl(t *testing.T) {
+	anchor := "out.Rooms[room] = agentDMGate{}"
+	agentDMOverlayControl(t, "agent_dm_context.go", anchor, "_ = room // planted missing context", "TestAgentDMDeliveryStorageIsolation", "storage isolation assertion: unknown known-pair mail reached mailbox")
+}
+
+// Removing the shared refresh must fail fresh-process all-shown, independently
+// of the explicit-ID positive control and the sender notification transport.
+func TestAgentDMPendingRefreshControl(t *testing.T) {
+	anchor := "// Every Pending consumer enters here, including ack, notices and binding\n\t// wakes without a preceding sync. Revalidate remote policy even when the\n\t// local admission stamp did not change; stale snapshots grant no authority.\n\tgate, err := s.refreshAgentGate(ctx)\n\tif err != nil {\n\t\treturn config.State{}, err\n\t}\n\ts.agentDelivery = &gate"
+	agentDMOverlayControl(t, "delivery.go", anchor, "// planted stale Pending policy", "TestAgentDMAckShownCurrentPolicy", "shown ack policy assertion:")
 }
 
 func agentDMOverlayControl(t *testing.T, source, anchor, replacementText, testName, assertion string) {

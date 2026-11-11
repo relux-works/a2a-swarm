@@ -235,8 +235,12 @@ func agentJSONShape(v any, t reflect.Type) error {
 }
 
 func (s *session) agentRecords() (agentDMRecords, []byte, error) {
+	return s.agentRecordsWithReader(agentRead)
+}
+
+func (s *session) agentRecordsWithReader(read func(string, string) ([]byte, error)) (agentDMRecords, []byte, error) {
 	out := agentDMRecords{Contract: agentDMVersion, Caller: s.creds.UserID, Pairs: map[string]agentDMRecord{}}
-	raw, err := agentRead(agentDMDir(s.paths, s.name), "records.json")
+	raw, err := read(agentDMDir(s.paths, s.name), "records.json")
 	// Pure ordinary-delivery fixtures need no connection resolver when this
 	// feature has never been configured. Actual pair records always require it.
 	if s.app == nil || s.app.Getenv == nil || s.client == nil {
@@ -291,6 +295,15 @@ func (s *session) agentRecords() (agentDMRecords, []byte, error) {
 	return out, raw, nil
 }
 func (s *session) saveAgentRecords(ctx context.Context, st agentDMRecords) error {
+	rooms := []string{}
+	for _, pair := range st.Pairs {
+		if pair.Room != nil {
+			rooms = append(rooms, *pair.Room)
+		}
+	}
+	if err := s.retainAgentContexts(ctx, rooms); err != nil {
+		return err
+	}
 	return agentWrite(ctx, agentDMDir(s.paths, s.name), "records.json", st)
 }
 

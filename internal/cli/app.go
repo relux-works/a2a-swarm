@@ -535,19 +535,21 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // session is an authenticated identity bound to one homeserver.
 type session struct {
-	agentDelivery    *agentDMDelivery
-	admission        *identityAdmission
-	app              *App
-	paths            config.Paths
-	mx               config.Matrix
-	name             string
-	creds            config.Credentials
-	client           *matrix.Client
-	server           string
-	checkBinding     func() error // Immutable operational snapshot; nil for legacy sessions.
-	principals       []string     // Local snapshot for this delivery cycle; no lock spans I/O.
-	principalWarning bool         // Emit malformed/unreadable metadata warning once per session.
-	longConsumer     bool         // Process-owned watch/unbounded wait; ignore ambient runtime session IDs.
+	agentDelivery       *agentDMDelivery
+	agentDeliveryWarned bool
+	agentReplayDeferred bool
+	admission           *identityAdmission
+	app                 *App
+	paths               config.Paths
+	mx                  config.Matrix
+	name                string
+	creds               config.Credentials
+	client              *matrix.Client
+	server              string
+	checkBinding        func() error // Immutable operational snapshot; nil for legacy sessions.
+	principals          []string     // Local snapshot for this delivery cycle; no lock spans I/O.
+	principalWarning    bool         // Emit malformed/unreadable metadata warning once per session.
+	longConsumer        bool         // Process-owned watch/unbounded wait; ignore ambient runtime session IDs.
 }
 
 func (a *App) paths() (config.Paths, error) {
