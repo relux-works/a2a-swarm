@@ -126,7 +126,9 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		// not compilation/setup. No native operation is injected by a plant.
 		{"file-reconcile-admitted", "credentials.go", `if store != "keychain" {
 		return fmt.Errorf("creds reconcile requires the selected Keychain backend")
-	}`, ``, "TestKeychainReconcileSelection/file"},
+	}`, `if false && store != "keychain" {
+		return fmt.Errorf("creds reconcile requires the selected Keychain backend")
+	}`, "TestKeychainReconcileSelection/file"},
 		{"locked-human-create-admitted", "connection_registration.go", `func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
 	if a.human {
 		return errHumanKeychain
