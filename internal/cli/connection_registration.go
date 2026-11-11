@@ -22,6 +22,9 @@ type connectionSecretStore interface {
 }
 
 func (a *App) readConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference) (string, error) {
+	if a.human {
+		return "", errHumanKeychain
+	}
 	if store, e := a.selectedStore(); e != nil {
 		return "", e
 	} else if store != "keychain" {
@@ -37,6 +40,9 @@ func (a *App) readConnectionSecret(ctx context.Context, p config.Paths, r config
 	return result, err
 }
 func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if a.human {
+		return errHumanKeychain
+	}
 	if store, e := a.selectedStore(); e != nil {
 		return e
 	} else if store != "keychain" {
@@ -57,6 +63,9 @@ func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r conf
 // The named registration transaction already owns the credential guard over
 // both password/token writes, journal effects and metadata publication.
 func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if a.human {
+		return errHumanKeychain
+	}
 	if store, e := a.selectedStore(); e != nil {
 		return e
 	} else if store != "keychain" {

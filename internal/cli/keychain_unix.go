@@ -3,10 +3,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -153,5 +157,62 @@ func keychainLock(path string, deadline time.Time) (func(), error) {
 			return nil, errors.New("keychain lock timeout")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// processIdentity returns a pid's start time and owning uid as /bin/ps prints
+// them. The query uses a pinned absolute path, a fixed environment and a
+// deadline, so the caller's PATH cannot change it.
+func processIdentity(ctx context.Context, pid int) (string, error) {
+	if pid <= 0 {
+		return "", errors.New("invalid process")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/ps", "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "uid=")
+	// TZ is pinned too: lstart is printed in local time, and a timezone
+	// change must not alter a live process's identity.
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "TZ=UTC"}
+	out, err := cmd.Output()
+	f := strings.Fields(string(out))
+	if err != nil {
+		return "", fmt.Errorf("process identity unavailable: %w", err)
+	}
+	if len(f) != 6 {
+		return "", errors.New("process identity unavailable: unexpected ps output")
+	}
+	return strings.Join(f, " "), nil
+}
+
+// processLiveness classifies a fence's recording process. Only a pid that no
+// longer exists (ESRCH) or that now belongs to a process with another
+// identity proves the recorder gone. Every inspection failure is unknown.
+func processLiveness(ctx context.Context, pid int, identity string) ownerState {
+	if pid <= 0 {
+		return ownerUnknown
+	}
+	killErr := syscall.Kill(pid, 0)
+	if errors.Is(killErr, syscall.ESRCH) {
+		return ownerGone
+	}
+	current, idErr := processIdentity(ctx, pid)
+	return classifyLiveness(killErr, current, idErr, identity)
+}
+
+// classifyLiveness is processLiveness's decision, kept pure for tests: ESRCH
+// is gone; a probe error other than EPERM, or any identity error, is
+// unknown; a different identity is a replaced pid, so the recorder is gone.
+func classifyLiveness(killErr error, current string, idErr error, recorded string) ownerState {
+	switch {
+	case errors.Is(killErr, syscall.ESRCH):
+		return ownerGone
+	case killErr != nil && !errors.Is(killErr, syscall.EPERM):
+		return ownerUnknown
+	case idErr != nil || current == "":
+		return ownerUnknown
+	case current == recorded:
+		return ownerAlive
+	default:
+		return ownerGone
 	}
 }

@@ -39,7 +39,7 @@ func startupFixture(t *testing.T) (*App, *session, *env, string, *time.Time, *ke
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	a.Now = func() time.Time { return now }
 	dir := fakeKeychain(e, map[string]string{s.creds.UserID: e.tokens["alice"]}, "")
-	k := isolatedKeychainStore(keychainStore{paths: s.paths, probeCommand: unlockedProbe, command: securityCommand(dir), now: a.Now, cooldown: 11 * time.Second})
+	k := isolatedKeychainStore(keychainStore{paths: s.paths, probeCommand: unlockedProbe, backend: fakeBackend{dir}, now: a.Now, cooldown: 11 * time.Second})
 	a.keychain = func(config.Paths) *keychainStore { return k }
 	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
 		st.Terminal.RetryMax = 4 * time.Second

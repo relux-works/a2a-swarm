@@ -137,6 +137,9 @@ func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) 
 		return config.Credentials{}, err
 	}
 	if store == "keychain" {
+		if a.human {
+			return config.Credentials{}, errHumanKeychain
+		}
 		c.AccessToken = "" // A file token is never a fallback, even on lookup failure.
 		c.Password = ""
 		c.AccessToken, err = a.keychainStore(p).read(ctx, c.UserID)
@@ -149,6 +152,64 @@ func (a *App) loadCredentials(ctx context.Context, p config.Paths, name string) 
 	}
 	c.Password = ""
 	return c, nil
+}
+
+// reconcileCredentials clears the selected identity's Keychain write fence
+// after its writer died, once the keychain answers (keychain_fence.go). It
+// works for legacy and named profiles and prints no secret.
+func (a *App) reconcileCredentials(ctx context.Context, args []string) error {
+	if len(args) != 0 {
+		return usagef("usage: a2a --as <identity> creds reconcile")
+	}
+	if a.human {
+		return errHumanKeychain
+	}
+	name, err := a.identity()
+	if err != nil {
+		return err
+	}
+	store, err := a.selectedStore()
+	if err != nil {
+		return err
+	}
+	if store != "keychain" {
+		return fmt.Errorf("creds reconcile requires the selected Keychain backend")
+	}
+	p, err := a.paths()
+	if err != nil {
+		return err
+	}
+	if err := config.CheckIdentityMigration(p, name); err != nil {
+		return err
+	}
+	var uid, service string
+	if c, e := a.selectedConnection(); e != nil {
+		return e
+	} else if c != nil {
+		creds, e := a.namedMetadata(p, name)
+		if e != nil {
+			return e
+		}
+		service, uid = c.Store.AccessTokenService, creds.UserID
+	} else {
+		c, err := config.LoadCredentialMetadata(p, name, false)
+		if err != nil {
+			return err
+		}
+		a.secrets.Add(c.AccessToken, c.Password)
+		if err := validateCredentialIdentity(c, name); err != nil {
+			return err
+		}
+		uid = c.UserID
+	}
+	k := a.keychainStore(p)
+	k.service = service
+	outcome, err := k.reconcile(ctx, uid)
+	if err != nil {
+		return err
+	}
+	a.printf("reconciled %s: %s\n", name, outcome)
+	return nil
 }
 
 func (a *App) migrateCredentials(ctx context.Context, args []string) error {
@@ -170,6 +231,9 @@ func (a *App) migrateCredentials(ctx context.Context, args []string) error {
 	}
 	if store != "keychain" {
 		return fmt.Errorf("creds migrate requires A2A_SECRET_STORE=keychain")
+	}
+	if a.human {
+		return errHumanKeychain
 	}
 	p, err := a.paths()
 	if err != nil {

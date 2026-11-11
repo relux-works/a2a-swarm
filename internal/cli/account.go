@@ -55,6 +55,9 @@ func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matri
 	if err != nil {
 		return config.Credentials{}, "", err
 	}
+	if store == "keychain" && a.human {
+		return config.Credentials{}, "", errHumanKeychain
+	}
 	if mx.URL == "" {
 		return config.Credentials{}, "", fmt.Errorf("no homeserver URL: set %s in %s", config.EnvMatrixURL, p.EnvFile())
 	}
@@ -273,6 +276,9 @@ func cmdLeave(ctx context.Context, a *App, args []string) error {
 
 // cmdCreds: a2a creds move-human <name>
 func cmdCreds(ctx context.Context, a *App, args []string) error {
+	if len(args) > 0 && args[0] == "reconcile" {
+		return a.reconcileCredentials(ctx, args[1:])
+	}
 	if c, e := a.selectedConnection(); e != nil {
 		return e
 	} else if c != nil {

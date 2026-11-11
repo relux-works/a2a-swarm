@@ -7,15 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -29,9 +25,11 @@ type securityModel struct {
 	Reads  int
 	Writes int
 }
-type boundaryRecord struct {
-	Args, Env []string
-	Input     string
+
+// opRecord is one backend operation as the fake saw it. The secret is never
+// recorded, so a record can never leak it.
+type opRecord struct {
+	Op, Keychain, Service, Account string
 }
 
 func modelFile(dir string) string { return filepath.Join(dir, "model.json") }
@@ -54,18 +52,18 @@ func readModel(t *testing.T, dir string) securityModel {
 	}
 	return m
 }
-func records(t *testing.T, dir string) []boundaryRecord {
+func records(t *testing.T, dir string) []opRecord {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, "boundary.jsonl"))
+	data, err := os.ReadFile(filepath.Join(dir, "ops.jsonl"))
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	var records []boundaryRecord
+	var records []opRecord
 	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
-		var r boundaryRecord
+		var r opRecord
 		if err := json.Unmarshal(line, &r); err != nil {
 			t.Fatal(err)
 		}
@@ -73,11 +71,121 @@ func records(t *testing.T, dir string) []boundaryRecord {
 	}
 	return records
 }
-func securityCommand(dir string) func(context.Context, ...string) *exec.Cmd {
-	return func(ctx context.Context, args ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, "/usr/bin/env", append([]string{"GORACE=atexit_sleep_ms=0", os.Args[0], "-test.run=^TestSecurityProcess$", "--", "--model-dir=" + dir}, args...)...)
-		return cmd
+
+// fakeBackend models the Keychain over a JSON file, so independent CLI test
+// processes share it. It NEVER touches a real keychain. Its modes plant the
+// failures the store must handle: interaction refusals, timeouts, duplicates,
+// readback mismatches and error text carrying the secret.
+type fakeBackend struct{ dir string }
+
+func (f fakeBackend) load() (securityModel, error) {
+	var m securityModel
+	data, err := os.ReadFile(modelFile(f.dir))
+	if err == nil {
+		err = json.Unmarshal(data, &m)
 	}
+	if m.Items == nil {
+		m.Items = map[string]string{}
+	}
+	return m, err
+}
+
+func (f fakeBackend) save(m securityModel) error {
+	data, _ := json.Marshal(m)
+	return os.WriteFile(modelFile(f.dir), data, 0o600)
+}
+
+func (f fakeBackend) record(op, keychain, service, account string) error {
+	file, err := os.OpenFile(filepath.Join(f.dir, "ops.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return json.NewEncoder(file).Encode(opRecord{op, keychain, service, account})
+}
+
+func (f fakeBackend) find(ctx context.Context, keychain, service, account string) ([]byte, error) {
+	if err := f.record("find", keychain, service, account); err != nil {
+		return nil, err
+	}
+	m, err := f.load()
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case m.Mode == "denied" || m.Mode == "locked":
+		return nil, errKeychainInteraction
+	case m.Mode == "echo-error":
+		return nil, fmt.Errorf("planted backend text %s", m.Items[account])
+	case m.Mode == "timeout" || m.Mode == "timeout-readback" && m.Writes > 0:
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	m.Reads++
+	if err := f.save(m); err != nil {
+		return nil, err
+	}
+	if m.Mode == "empty" {
+		return []byte{}, nil
+	}
+	token, ok := m.Items[account]
+	if !ok {
+		return nil, errKeychainMissing
+	}
+	if m.Mode == "mismatch" && m.Writes > 0 {
+		token = "mismatching-sentinel"
+	}
+	if m.Mode == "interrupt" && m.Writes > 0 {
+		return nil, fmt.Errorf("planted interrupted read")
+	}
+	return []byte(token), nil
+}
+
+func (f fakeBackend) add(ctx context.Context, keychain, service, account string, secret []byte) error {
+	return f.put(ctx, "add", keychain, service, account, secret)
+}
+
+func (f fakeBackend) update(ctx context.Context, keychain, service, account string, secret []byte) error {
+	return f.put(ctx, "update", keychain, service, account, secret)
+}
+
+func (f fakeBackend) put(ctx context.Context, op, keychain, service, account string, secret []byte) error {
+	if err := f.record(op, keychain, service, account); err != nil {
+		return err
+	}
+	m, err := f.load()
+	if err != nil {
+		return err
+	}
+	switch m.Mode {
+	case "denied", "locked":
+		return errKeychainInteraction
+	case "echo-error", "write-echo-error":
+		return fmt.Errorf("planted backend text %s", secret)
+	case "timeout", "timeout-write":
+		<-ctx.Done()
+		return ctx.Err()
+	case "fail-write":
+		return fmt.Errorf("planted write failure")
+	}
+	if (m.Mode == "duplicate" && m.Writes == 0) || (m.Mode == "duplicate-twice" && m.Writes < 2) {
+		m.Writes++
+		m.Items[account] = "external-token"
+		if err := f.save(m); err != nil {
+			return err
+		}
+		return errKeychainDuplicate
+	}
+	if _, exists := m.Items[account]; exists && op == "add" {
+		return errKeychainDuplicate
+	}
+	// update is an upsert: a deletion between lookup and update recreates it.
+	if m.Mode == "delete-before-update" {
+		delete(m.Items, account)
+	}
+	m.Items[account] = string(secret)
+	m.Writes++
+	return f.save(m)
 }
 
 // isolatedKeychainStore keeps every synthetic gate in the test config namespace
@@ -100,203 +208,22 @@ func fakeKeychain(e *env, items map[string]string, mode string) string {
 	e.extra[envSecretStore] = "keychain"
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: time.Second})
+			return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, backend: fakeBackend{dir}, timeout: time.Second})
 		}
 	}
 	return dir
 }
 
-// This parser intentionally models security(1)'s split_line, not a shell: quoted
-// arguments and backslash escape one following byte, no substitutions.
-func parseSecurityLine(s string) []string {
-	var args []string
-	var b strings.Builder
-	quote := byte(0)
-	escaped, active := false, false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if escaped {
-			b.WriteByte(c)
-			escaped = false
-			continue
-		}
-		if c == '\\' {
-			escaped = true
-			active = true
-			continue
-		}
-		if quote != 0 {
-			if c == quote {
-				quote = 0
-			} else {
-				b.WriteByte(c)
+func countOps(recs []opRecord, ops ...string) int {
+	n := 0
+	for _, r := range recs {
+		for _, op := range ops {
+			if r.Op == op {
+				n++
 			}
-			continue
-		}
-		if c == '"' || c == '\'' {
-			quote = c
-			active = true
-			continue
-		}
-		if c == ' ' || c == '\n' || c == '\t' {
-			if active {
-				args = append(args, b.String())
-				b.Reset()
-				active = false
-			}
-			continue
-		}
-		active = true
-		b.WriteByte(c)
-	}
-	if active {
-		args = append(args, b.String())
-	}
-	return args
-}
-func argValue(args []string, key string) string {
-	for i, a := range args {
-		if a == key && i+1 < len(args) {
-			return args[i+1]
 		}
 	}
-	return ""
-}
-func hasArg(args []string, key string) bool {
-	for _, a := range args {
-		if a == key {
-			return true
-		}
-	}
-	return false
-}
-
-// Isolated synthetic subprocess; NEVER invokes macOS security. Its stdout/error
-// plants test the production runner's pipes and sanitization, not macOS UI.
-func TestSecurityProcess(t *testing.T) {
-	args := os.Args
-	for i, a := range args {
-		if a == "--" {
-			args = args[i+1:]
-			break
-		}
-	}
-	if len(args) == 0 || !strings.HasPrefix(args[0], "--model-dir=") {
-		return
-	}
-	dir := strings.TrimPrefix(args[0], "--model-dir=")
-	args = args[1:]
-	input, _ := io.ReadAll(os.Stdin)
-	record := boundaryRecord{Args: args, Env: os.Environ(), Input: string(input)}
-	f, err := os.OpenFile(filepath.Join(dir, "boundary.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		os.Exit(90)
-	}
-	_ = json.NewEncoder(f).Encode(record)
-	_ = f.Close()
-	data, err := os.ReadFile(modelFile(dir))
-	if err != nil {
-		os.Exit(90)
-	}
-	var m securityModel
-	if json.Unmarshal(data, &m) != nil {
-		os.Exit(90)
-	}
-	write := len(args) > 0 && args[0] == "-i"
-	if write {
-		args = parseSecurityLine(string(input))
-	}
-	uid := argValue(args, "-a")
-	if uid == "" || argValue(args, "-s") != keychainService {
-		os.Exit(91)
-	}
-	persist := func() {
-		data, _ := json.Marshal(m)
-		if os.WriteFile(modelFile(dir), data, 0o600) != nil {
-			os.Exit(92)
-		}
-	}
-	if m.Mode == "denied" {
-		fmt.Fprint(os.Stderr, "planted-helper-secret")
-		os.Exit(51)
-	}
-	if m.Mode == "locked" {
-		os.Exit(36)
-	}
-	if m.Mode == "echo-error" || (m.Mode == "write-echo-error" && write) {
-		fmt.Fprint(os.Stderr, string(input))
-		fmt.Fprint(os.Stdout, string(input))
-		os.Exit(7)
-	}
-	if m.Mode == "timeout" || m.Mode == "grandchild" || (m.Mode == "timeout-write" && write) || (m.Mode == "timeout-readback" && m.Writes > 0) {
-		if m.Mode == "grandchild" {
-			cmd := exec.Command(os.Args[0], "-test.run=^TestSecurityGrandchild$")
-			cmd.Env = []string{"A2A_TEST_GRANDCHILD=" + dir}
-			if cmd.Start() != nil {
-				os.Exit(93)
-			}
-			_ = os.WriteFile(filepath.Join(dir, "child.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
-		}
-		for {
-			time.Sleep(time.Second)
-		}
-	}
-	if write {
-		if m.Mode == "fail-write" {
-			os.Exit(7)
-		}
-		token := argValue(args, "-w")
-		_, exists := m.Items[uid]
-		if (m.Mode == "duplicate" && m.Writes == 0) || (m.Mode == "duplicate-twice" && m.Writes < 2) {
-			m.Writes++
-			m.Items[uid] = "external-token"
-			persist()
-			os.Exit(45)
-		}
-		if exists && !hasArg(args, "-U") {
-			os.Exit(45)
-		}
-		// Actual -U is an upsert: deletion between lookup and update recreates it.
-		if m.Mode == "delete-before-update" {
-			delete(m.Items, uid)
-		}
-		m.Items[uid] = token
-		m.Writes++
-		persist()
-		if m.Mode == "echo-success" {
-			fmt.Fprint(os.Stdout, string(input))
-			fmt.Fprint(os.Stderr, string(input))
-		}
-		os.Exit(0)
-	}
-	m.Reads++
-	persist()
-	if m.Mode == "empty" {
-		fmt.Println()
-		os.Exit(0)
-	}
-	token, exists := m.Items[uid]
-	if !exists {
-		os.Exit(44)
-	}
-	if m.Mode == "mismatch" && m.Writes > 0 {
-		token = "mismatching-sentinel"
-	}
-	if m.Mode == "interrupt" && m.Writes > 0 {
-		os.Exit(7)
-	}
-	fmt.Println(token)
-	os.Exit(0)
-}
-func TestSecurityGrandchild(t *testing.T) {
-	dir := os.Getenv("A2A_TEST_GRANDCHILD")
-	if dir == "" {
-		return
-	}
-	for {
-		_ = os.WriteFile(filepath.Join(dir, "heartbeat"), []byte(time.Now().String()), 0o600)
-		time.Sleep(10 * time.Millisecond)
-	}
+	return n
 }
 
 func TestKeychainCredentialSelection(t *testing.T) {
@@ -336,11 +263,11 @@ func TestKeychainCredentialSelection(t *testing.T) {
 				tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, routeLogin)
 			}
 			if mode == "unknown" && len(records(t, dir)) != 0 {
-				t.Fatal("unknown store invoked security")
+				t.Fatal("unknown store reached the keychain backend")
 			}
 			for _, r := range records(t, dir) {
-				if argValue(r.Args, "-a") != uid {
-					t.Fatal("lookup not bound to full Matrix ID")
+				if r.Account != uid || r.Service != keychainService {
+					t.Fatal("lookup not bound to the service and full Matrix ID")
 				}
 			}
 		})
@@ -361,18 +288,37 @@ func TestKeychainAuthorizationBoundaries(t *testing.T) {
 	e.run("--human", "--as", "alice", "whoami").failsWith(t, ExitUsage, "interactive terminal")
 	e.run("register", "alice").failsWith(t, ExitError, "human's identity")
 	if len(records(t, dir)) != 0 {
-		t.Fatal("authorization refusal launched security")
+		t.Fatal("authorization refusal reached the keychain backend")
 	}
+	// Human credential boundary: even the interactive human path never reads a2a's
+	// Keychain, and migration refuses before touching the human file. An
+	// agent beside it still reads its own item (positive control).
 	prior := e.configure
 	e.configure = func(a *App) { prior(a); a.stdinTTY = func() bool { return true } }
-	e.run("--human", "--as", "alice", "whoami").ok(t)
-	if len(records(t, dir)) != 1 {
-		t.Fatal("valid human path not exercised")
+	before, err := os.ReadFile(e.paths().HumanFile("alice"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	e.run("--human", "--as", "alice", "whoami").failsWith(t, ExitError, "human tokens are never kept")
+	e.run("--human", "--as", "alice", "creds", "migrate").failsWith(t, ExitError, "human tokens are never kept")
+	e.run("--human", "--as", "alice", "creds", "reconcile").failsWith(t, ExitError, "human tokens are never kept")
+	if after, err := os.ReadFile(e.paths().HumanFile("alice")); err != nil || string(after) != string(before) {
+		t.Fatal("refused human migration changed the human file", err)
+	}
+	if len(records(t, dir)) != 0 {
+		t.Fatal("human path reached the keychain backend")
+	}
+	bob := e.agent("bob")
+	saveModel(t, dir, securityModel{Items: map[string]string{bob: e.tokens["bob"]}})
+	e.as("bob", "whoami").ok(t)
+	if len(records(t, dir)) != 1 {
+		t.Fatal("agent control not exercised")
+	}
+	tuitestkit.AssertCalledN(t, &e.hs.MockCallRecorder, routeWhoami, 1)
 }
 
 func TestKeychainRegistrationAndUpsert(t *testing.T) {
-	for _, mode := range []string{"create", "existing", "duplicate", "delete-before-update", "echo-success"} {
+	for _, mode := range []string{"create", "existing", "duplicate", "delete-before-update"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newEnv(t)
 			items := map[string]string{}
@@ -396,18 +342,16 @@ func TestKeychainRegistrationAndUpsert(t *testing.T) {
 			if len(recs) < 3 {
 				t.Fatal("missing lookup/write/readback")
 			}
+			// The backend takes no ACL argument: a new item gets the Keychain
+			// default, trusting only the creating binary (phase 2, #138).
+			// Existing items are updated in place; creation happens only when the
+			// lookup found nothing or the bounded duplicate recovery applies.
 			writes := 0
 			for _, r := range recs {
-				if reflect.DeepEqual(r.Args, []string{"-i"}) {
-					args := parseSecurityLine(r.Input)
-					update := hasArg(args, "-U")
-					trust := argValue(args, "-T")
-					if hasArg(args, "-A") {
-						t.Fatal("allow-all ACL")
-					}
+				if r.Op == "add" || r.Op == "update" {
 					wantUpdate := mode == "existing" || mode == "delete-before-update" || (mode == "duplicate" && writes == 1)
-					if update != wantUpdate || (update && hasArg(args, "-T")) || (!update && trust != "/usr/bin/security") {
-						t.Fatal("wrong create/update ACL command")
+					if (r.Op == "update") != wantUpdate {
+						t.Fatalf("write %d is %s, want update=%v", writes, r.Op, wantUpdate)
 					}
 					writes++
 				}
@@ -419,8 +363,8 @@ func TestKeychainRegistrationAndUpsert(t *testing.T) {
 			if writes != expectedWrites {
 				t.Fatal("unbounded or missing write")
 			}
-			if !hasArg(recs[len(recs)-1].Args, "-w") {
-				t.Fatal("last invocation is not readback")
+			if recs[len(recs)-1].Op != "find" {
+				t.Fatal("last operation is not readback")
 			}
 			e.as("newbie", "whoami").ok(t)
 		})
@@ -489,7 +433,7 @@ func TestKeychainMigrationScopeAndFileGuards(t *testing.T) {
 	e.run("creds", "migrate").failsWith(t, ExitUsage, "no identity")
 	e.as("alice", "creds", "migrate", "bob").failsWith(t, ExitUsage, "explicit selected identity")
 	if len(records(t, dir)) != 0 {
-		t.Fatal("unselected migration invoked security")
+		t.Fatal("unselected migration reached the keychain backend")
 	}
 	e.as("alice", "creds", "migrate").ok(t)
 	after, err := os.ReadFile(e.paths().AgentFile("bob"))
@@ -514,47 +458,36 @@ func TestKeychainMigrationScopeAndFileGuards(t *testing.T) {
 	e.as("alice", "creds", "migrate").failsWith(t, ExitError, "regular file")
 }
 
-func TestKeychainProcessBoundaryLeaks(t *testing.T) {
-	e := newEnv(t)
-	uid := e.agent("alice")
-	token := e.tokens["alice"]
-	t.Setenv("A2A_PLANTED_PROCESS_SECRET", token)
-	dir := fakeKeychain(e, map[string]string{uid: token}, "write-echo-error")
-	// The write helper echoes its stdin on both outputs and fails. Nothing from
-	// either stream may escape to CLI output/error or the file.
-	e.as("alice", "creds", "migrate").failsWith(t, ExitError, "keychain operation failed")
-	// A successful helper may echo stdin too; its output is also private.
-	saveModel(t, dir, securityModel{Items: map[string]string{uid: token}, Mode: "echo-success"})
-	e.as("alice", "creds", "migrate").ok(t)
-	for _, r := range records(t, dir) {
-		if leaksBoundary(token, r.Args, r.Env, "", "") {
-			t.Fatal("secret crossed argv/env boundary")
-		}
+// Backend errors may carry anything, including the token (planted here for
+// reads and writes). The store reports only a fixed message: nothing from the
+// backend error escapes into CLI output or error, and the harness leak check
+// runs on every command. Records never contain the secret by construction.
+func TestKeychainBackendTextNeverEscapes(t *testing.T) {
+	for _, mode := range []string{"echo-error", "write-echo-error"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			uid := e.agent("alice")
+			token := e.tokens["alice"]
+			// An older token, so the write path runs and its error text is planted too.
+			fakeKeychain(e, map[string]string{uid: "stale-" + token}, mode)
+			r := e.as("alice", "creds", "migrate").failsWith(t, ExitError, "keychain operation failed")
+			if strings.Contains(r.stdout+r.stderr, "planted backend text") {
+				t.Fatal("backend error text escaped")
+			}
+		})
 	}
-	// Detector controls are bounded planted leaks, not crashes/setup failures.
-	for _, plant := range []boundaryRecord{{Args: []string{"-w", token}}, {Env: []string{"TOKEN=" + token}}} {
-		if !leaksBoundary(token, plant.Args, plant.Env, "", "") {
-			t.Fatal("leak detector missed plant")
-		}
-	}
-	if !leaksBoundary(token, nil, nil, token, "") || !leaksBoundary(token, nil, nil, "", token) {
-		t.Fatal("output/error detector missed plant")
-	}
-	if leaksBoundary(token, []string{"-i"}, []string{"PATH=/usr/bin"}, "safe", "safe") {
-		t.Fatal("leak detector false positive")
-	}
-}
-func leaksBoundary(secret string, args, env []string, out, err string) bool {
-	return strings.Contains(strings.Join(args, "\x00"), secret) || strings.Contains(strings.Join(env, "\x00"), secret) || strings.Contains(out, secret) || strings.Contains(err, secret)
 }
 
-func TestKeychainDeadlineKillsProcessGroup(t *testing.T) {
+// An operation that never returns (a blocked backend call) is bounded by the
+// hard deadline: the command fails with a recorded cooldown, and the active
+// cooldown then refuses further calls without reaching the backend.
+func TestKeychainDeadlineBoundsOperation(t *testing.T) {
 	e := newEnv(t)
 	uid := e.agent("alice")
-	dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "grandchild")
+	dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "timeout")
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 400 * time.Millisecond})
+			return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, backend: fakeBackend{dir}, timeout: 400 * time.Millisecond})
 		}
 	}
 	start := time.Now()
@@ -562,41 +495,16 @@ func TestKeychainDeadlineKillsProcessGroup(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("deadline not hard")
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "child.pid"))
-	if err != nil {
-		t.Fatal("grandchild witness missing", err)
-	}
-	pid, err := strconv.Atoi(string(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := os.ReadFile(filepath.Join(dir, "heartbeat"))
-	if err != nil {
-		t.Fatal("grandchild never ran", err)
-	}
-	time.Sleep(80 * time.Millisecond)
-	second, err := os.ReadFile(filepath.Join(dir, "heartbeat"))
-	if err != nil || !bytes.Equal(first, second) {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		t.Fatal("grandchild survived group kill")
-	}
-	// On systems with asynchronous orphan reaping a zombie may still have a PID;
-	// ps state must be absent or Z, never a live/sleeping descendant.
-	out, err := exec.Command("/bin/ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	if err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z") && len(bytes.TrimSpace(out)) != 0 {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		t.Fatal("descendant still live")
-	}
 	count := len(records(t, dir))
 	e.as("alice", "whoami").failsWith(t, ExitError, "cooldown active")
 	if len(records(t, dir)) != count {
-		t.Fatal("cooldown launched security")
+		t.Fatal("cooldown reached the keychain backend")
 	}
 	tuitestkit.AssertNotCalled(t, &e.hs.MockCallRecorder, routeWhoami)
 }
 
 // Independent CLI processes call App.Run with the same on-disk cooldown and
-// isolated security executable. No environment contains any credential.
+// the same file-backed fake backend. No environment contains any credential.
 func TestKeychainCLIProcess(t *testing.T) {
 	dir := os.Getenv("A2A_TEST_CLI_DIR")
 	if dir == "" {
@@ -620,7 +528,7 @@ func TestKeychainCLIProcess(t *testing.T) {
 				return exec.CommandContext(ctx, "/bin/sh", append([]string{path}, args...)...)
 			}
 		}
-		return isolatedKeychainStore(keychainStore{paths: p, hostID: os.Getenv("A2A_TEST_HOST"), probeCommand: probe, command: securityCommand(modelDir), timeout: 2 * time.Second, cooldown: time.Second})
+		return isolatedKeychainStore(keychainStore{paths: p, hostID: os.Getenv("A2A_TEST_HOST"), probeCommand: probe, backend: fakeBackend{modelDir}, timeout: 2 * time.Second, cooldown: time.Second})
 	}
 	args := []string{"--as", os.Getenv("A2A_TEST_CLI_IDENTITY"), "creds", "migrate"}
 	os.Exit(a.Run(context.Background(), args))
@@ -674,7 +582,7 @@ func TestKeychainInteractionCooldownAllCalls(t *testing.T) {
 	uid := e.agent("alice")
 	dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "denied")
 	e.as("alice", "whoami").failsWith(t, ExitError, "cooldown recorded")
-	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir)})
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: fakeBackend{dir}})
 	data, err := os.ReadFile(k.identityPath(uid) + ".cooldown")
 	if err != nil {
 		t.Fatal(err)
@@ -702,7 +610,7 @@ func TestKeychainWriterSerialization(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 2 * time.Second})
+			k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: fakeBackend{dir}, timeout: 2 * time.Second})
 			if err := k.write(context.Background(), uid, fmt.Sprintf("synthetic-token-%d", i)); err != nil {
 				t.Error(err)
 			}
@@ -714,7 +622,7 @@ func TestKeychainWriterSerialization(t *testing.T) {
 		t.Fatalf("calls=%d want 12", len(recs))
 	}
 	for i := 0; i < len(recs); i += 3 {
-		if recs[i].Args[0] != "find-generic-password" || recs[i+1].Args[0] != "-i" || recs[i+2].Args[0] != "find-generic-password" {
+		if recs[i].Op != "find" || (recs[i+1].Op != "add" && recs[i+1].Op != "update") || recs[i+2].Op != "find" {
 			t.Fatal("writers interleaved")
 		}
 	}
@@ -730,7 +638,7 @@ func TestKeychainMigrationInterruptedAndAtomicFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "")
+			dir := fakeKeychain(e, map[string]string{uid: "stale-" + e.tokens["alice"]}, "")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			old := e.configure
@@ -784,25 +692,41 @@ func TestKeychainMigrationInterruptedAndAtomicFailure(t *testing.T) {
 	}
 }
 
-func TestKeychainCommandGrammarAndLimits(t *testing.T) {
+// Tokens reach the backend as bytes, with no command line: quotes, backslashes
+// and shell syntax are stored exactly, and a long token has no command-length
+// limit. Both tokens go through both the create and the update path. Empty
+// tokens and tokens with control bytes are refused before any write reaches
+// the backend.
+func TestKeychainTokenBytesAndRefusals(t *testing.T) {
 	e := newEnv(t)
-	uid := e.agent("alice")
+	alice, bob := e.agent("alice"), e.agent("bob")
 	dir := fakeKeychain(e, map[string]string{}, "")
-	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, command: securityCommand(dir)})
-	token := `sentinel ' " \ ; $(not-a-shell) token`
-	if err := k.write(context.Background(), uid, token); err != nil {
-		t.Fatal(err)
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: fakeBackend{dir}})
+	quoted, long := `sentinel ' " \ ; $(not-a-shell) token`, strings.Repeat("x", 8192)
+	steps := []struct{ uid, token, op string }{
+		{alice, long, "add"}, {alice, quoted, "update"},
+		{bob, quoted, "add"}, {bob, long, "update"},
 	}
-	if got := readModel(t, dir).Items[uid]; got != token {
-		t.Fatal("stdin quoting changed bytes")
+	for _, step := range steps {
+		if err := k.write(context.Background(), step.uid, step.token); err != nil {
+			t.Fatal(err)
+		}
+		if got := readModel(t, dir).Items[step.uid]; got != step.token {
+			t.Fatalf("token bytes changed on %s", step.op)
+		}
+		recs := records(t, dir)
+		if recs[len(recs)-2].Op != step.op {
+			t.Fatalf("write took %s, want %s", recs[len(recs)-2].Op, step.op)
+		}
 	}
-	for _, bad := range []string{"", "a\nb", "a\x00b", strings.Repeat("x", 4096)} {
+	uid := alice
+	for _, bad := range []string{"", "a\nb", "a\x00b", "a\x7fb"} {
 		writes := readModel(t, dir).Writes
 		if err := k.write(context.Background(), uid, bad); err == nil {
-			t.Fatal("unsafe command value accepted")
+			t.Fatal("unsafe token accepted")
 		}
 		if readModel(t, dir).Writes != writes {
-			t.Fatal("unsafe command reached writer")
+			t.Fatal("unsafe token reached the writer")
 		}
 	}
 }
@@ -812,10 +736,10 @@ func TestKeychainWriteTimeoutsSuppressEveryCall(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			e := newEnv(t)
 			uid := e.agent("alice")
-			dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, mode)
+			dir := fakeKeychain(e, map[string]string{uid: "stale-" + e.tokens["alice"]}, mode)
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, command: securityCommand(dir), timeout: 300 * time.Millisecond})
+					return isolatedKeychainStore(keychainStore{paths: p, probeCommand: unlockedProbe, backend: fakeBackend{dir}, timeout: 300 * time.Millisecond})
 				}
 			}
 			e.as("alice", "creds", "migrate").failsWith(t, ExitError, "cooldown recorded")
@@ -893,7 +817,7 @@ func TestKeychainCooldownStateFailClosed(t *testing.T) {
 			}
 			e.as("alice", "whoami").failsWith(t, ExitError, wantError)
 			if len(records(t, dir)) != count {
-				t.Fatal("unsafe state launched security")
+				t.Fatal("unsafe state reached the keychain backend")
 			}
 		})
 	}
@@ -909,7 +833,7 @@ func TestKeychainMetadataIdentityMismatch(t *testing.T) {
 	count := len(records(t, dir))
 	e.as("alice", "whoami").failsWith(t, ExitError, "does not match")
 	if len(records(t, dir)) != count {
-		t.Fatal("forged metadata reached security")
+		t.Fatal("forged metadata reached the keychain backend")
 	}
 }
 
@@ -927,32 +851,4 @@ func TestKeychainDuplicateRetryBound(t *testing.T) {
 	if _, err := os.Stat(e.paths().AgentFile("newbie")); !os.IsNotExist(err) {
 		t.Fatal("failed registration retained file")
 	}
-}
-
-func FuzzSecurityQuoteRoundTrip(f *testing.F) {
-	for _, s := range []string{"token", "quote\"slash\\value", "$() ; ' spaces", "", "line\nbreak", "\x00"} {
-		f.Add(s)
-	}
-	f.Fuzz(func(t *testing.T, s string) {
-		q, err := securityQuote(s)
-		invalid := false
-		for _, r := range s {
-			if r < 32 || r == 127 {
-				invalid = true
-			}
-		}
-		if invalid {
-			if err == nil {
-				t.Fatal("control character admitted")
-			}
-			return
-		}
-		if err != nil {
-			t.Fatal("safe token refused")
-		}
-		args := parseSecurityLine("command -w " + q + "\n")
-		if len(args) != 3 || args[2] != s {
-			t.Fatal("security tokenizer roundtrip differs")
-		}
-	})
 }

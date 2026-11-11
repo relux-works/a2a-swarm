@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
+
+// No current native deletion/recovery contract is available to the CLI. This
+// fixed preflight refusal also covers already-pending resume and rollback.
+var errDaemonKeychainMigrationDeferred = fmt.Errorf("%w: keychain_daemon_migration_deferred; initial, resume and rollback require the separate native deletion design in #460", config.ErrDaemonMigration)
 
 // cmdDaemonMigrate handles migration arguments after the Daemon dispatcher.
 func cmdDaemonMigrate(ctx context.Context, a *App, args []string) error {
@@ -29,12 +33,9 @@ func cmdDaemonMigrate(ctx context.Context, a *App, args []string) error {
 	if err != nil {
 		return config.ErrDaemonMigration
 	}
-	store, err := a.selectedStore()
-	if err != nil {
-		return config.ErrDaemonMigration
-	}
 	var binding *config.ConnectionBinding
-	if c, e := a.selectedConnection(); e != nil {
+	c, e := a.selectedConnection()
+	if e != nil {
 		return config.ErrDaemonMigration
 	} else if c != nil {
 		b, e := c.Binding(name, false)
@@ -43,25 +44,20 @@ func cmdDaemonMigrate(ctx context.Context, a *App, args []string) error {
 		}
 		binding = &b
 	}
-	var secrets config.DaemonSecretStore
-	if store == "keychain" {
-		if a.daemonSecrets != nil {
-			secrets = a.daemonSecrets
-		} else {
-			k := a.keychainStore(p)
-			if c, e := a.selectedConnection(); e != nil {
-				return config.ErrDaemonMigration
-			} else if c != nil {
-				k.service = c.Store.AccessTokenService
-			}
-			secrets = daemonKeychainStore{k: k}
-		}
+	// Selection is already validated by pathsFor/selectedConnection. Refuse
+	// Keychain before platform availability, constructors, injected stores or
+	// the migration transaction: pending native deletion is not a file fallback.
+	if c != nil && c.Store.Backend == "keychain" || c == nil && a.Getenv(envSecretStore) == "keychain" {
+		return errDaemonKeychainMigrationDeferred
+	}
+	if _, err := a.selectedStore(); err != nil {
+		return config.ErrDaemonMigration
 	}
 	now := time.Now()
 	if a.Now != nil {
 		now = a.Now()
 	}
-	err = config.MigrateDaemon(ctx, p, name, config.DaemonMigrationOptions{Binding: binding, To: *to, Resume: *resume, Rollback: *rollback, Keychain: store == "keychain", Secrets: secrets, Now: now})
+	err = config.MigrateDaemon(ctx, p, name, config.DaemonMigrationOptions{Binding: binding, To: *to, Resume: *resume, Rollback: *rollback, Now: now})
 	if err != nil {
 		return err
 	}
@@ -69,64 +65,6 @@ func cmdDaemonMigrate(ctx context.Context, a *App, args []string) error {
 		a.printf("daemon migration rollback verified\n")
 	} else {
 		a.printf("daemon migration verified; source identity fenced\n")
-	}
-	return nil
-}
-
-type daemonKeychainStore struct{ k *keychainStore }
-
-func (s daemonKeychainStore) Read(ctx context.Context, c config.Credentials) (config.Credentials, error) {
-	token, e := s.k.read(ctx, c.UserID)
-	if e != nil {
-		return config.Credentials{}, config.ErrDaemonMigration
-	}
-	c.AccessToken = token
-	c.Password = ""
-	return c, nil
-}
-func (s daemonKeychainStore) Delete(ctx context.Context, c config.Credentials) error {
-	return s.k.locked(c.UserID, func() error {
-		// Never delete a changed/replaced item. An interrupted successful deletion
-		// resumes idempotently using the already verified Daemon file.
-		got, e := s.k.lookup(ctx, c.UserID)
-		if errors.Is(e, errKeychainMissing) {
-			return nil
-		}
-		if e != nil || got != c.AccessToken {
-			return config.ErrDaemonMigration
-		}
-		target, e := s.k.targetPath()
-		if e != nil {
-			return config.ErrDaemonMigration
-		}
-		_, e = s.k.invoke(ctx, c.UserID, "", "delete-generic-password", "-s", s.k.selectedService(), "-a", c.UserID, target)
-		if e != nil {
-			return config.ErrDaemonMigration
-		}
-		_, e = s.k.lookup(ctx, c.UserID)
-		if !errors.Is(e, errKeychainMissing) {
-			return config.ErrDaemonMigration
-		}
-		return nil
-	})
-}
-func (s daemonKeychainStore) Restore(ctx context.Context, c config.Credentials) error {
-	// A pre-existing different value is never overwritten by rollback.
-	got, e := s.k.read(ctx, c.UserID)
-	if e == nil {
-		if got != c.AccessToken {
-			return config.ErrDaemonMigration
-		}
-		return nil
-	}
-	k := *s.k
-	k.createOnly = true
-	if e = k.writeLocked(ctx, c.UserID, c.AccessToken); e != nil {
-		return config.ErrDaemonMigration
-	}
-	got, e = k.read(ctx, c.UserID)
-	if e != nil || got != c.AccessToken {
-		return config.ErrDaemonMigration
 	}
 	return nil
 }

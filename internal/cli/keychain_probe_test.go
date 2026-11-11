@@ -78,20 +78,20 @@ func TestKeychainProbeRefusals(t *testing.T) {
 			probe := probeFixture(t, mode, dir)
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: probe, timeout: 2 * time.Second})
+					return isolatedKeychainStore(keychainStore{paths: p, backend: fakeBackend{dir}, probeCommand: probe, timeout: 2 * time.Second})
 				}
 			}
 			r := e.as("alice", "whoami")
 			if mode == "unlocked" {
 				r.ok(t)
 				if len(records(t, dir)) != 1 {
-					t.Fatal("positive needs one security read")
+					t.Fatal("positive needs one backend read")
 				}
 				return
 			}
 			r.failsWith(t, ExitError, "preflight failed")
 			if len(records(t, dir)) != 0 {
-				t.Fatal("refused probe invoked security")
+				t.Fatal("refused probe reached the keychain backend")
 			}
 			if mode == "missing" || mode == "nonexec" {
 				k := isolatedKeychainStore(keychainStore{paths: e.paths()})
@@ -135,13 +135,13 @@ func TestKeychainProbeEveryWriteStage(t *testing.T) {
 			uid := e.agent("alice")
 			items := map[string]string{}
 			if mode == "update" {
-				items[uid] = e.tokens["alice"]
+				items[uid] = "stale-" + e.tokens["alice"] // an older token, so the update path runs
 			}
 			dir := fakeKeychain(e, items, "")
 			calls := 0
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+					return isolatedKeychainStore(keychainStore{paths: p, backend: fakeBackend{dir}, probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
 						calls++
 						stop := 2
 						if mode == "readback" {
@@ -183,7 +183,7 @@ func TestKeychainHostCooldown(t *testing.T) {
 	host := "host-one"
 	probe := probeFixture(t, "locked", dir)
 	store := func(p config.Paths) *keychainStore {
-		return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: probe, hostID: host, now: func() time.Time { return now }})
+		return isolatedKeychainStore(keychainStore{paths: p, backend: fakeBackend{dir}, probeCommand: probe, hostID: host, now: func() time.Time { return now }})
 	}
 	e.configure = func(a *App) { a.keychain = store }
 	e.as("alice", "whoami").failsWith(t, ExitError, "preflight failed")
@@ -252,12 +252,12 @@ func TestKeychainProbeProductionMissing(t *testing.T) {
 	dir := fakeKeychain(e, map[string]string{uid: e.tokens["alice"]}, "")
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir)})
+			return isolatedKeychainStore(keychainStore{paths: p, backend: fakeBackend{dir}})
 		}
 	}
 	e.as("alice", "whoami").failsWith(t, ExitError, "preflight failed")
 	if len(records(t, dir)) != 0 {
-		t.Fatal("missing production companion invoked security")
+		t.Fatal("missing production companion reached the keychain backend")
 	}
 }
 
@@ -268,7 +268,7 @@ func TestKeychainProbeTargetPair(t *testing.T) {
 	fixture := filepath.Join(dir, "fixture.keychain-db")
 	e.configure = func(a *App) {
 		a.keychain = func(p config.Paths) *keychainStore {
-			return isolatedKeychainStore(keychainStore{paths: p, fixture: fixture, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+			return isolatedKeychainStore(keychainStore{paths: p, fixture: fixture, backend: fakeBackend{dir}, probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
 				if fmt.Sprint(args) != fmt.Sprint([]string{"--fixture", fixture}) {
 					t.Error("probe targeted different keychain")
 				}
@@ -278,8 +278,8 @@ func TestKeychainProbeTargetPair(t *testing.T) {
 	}
 	e.as("alice", "whoami").ok(t)
 	recs := records(t, dir)
-	if len(recs) != 1 || recs[0].Args[len(recs[0].Args)-1] != fixture {
-		t.Fatal("security target differs from probe")
+	if len(recs) != 1 || recs[0].Keychain != fixture {
+		t.Fatal("backend target differs from probe")
 	}
 }
 
@@ -379,7 +379,7 @@ func TestKeychainHostMarkerFailClosed(t *testing.T) {
 			calls := 0
 			e.configure = func(a *App) {
 				a.keychain = func(p config.Paths) *keychainStore {
-					return isolatedKeychainStore(keychainStore{paths: p, command: securityCommand(dir), probeCommand: func(ctx context.Context, args ...string) *exec.Cmd { calls++; return unlockedProbe(ctx, args...) }})
+					return isolatedKeychainStore(keychainStore{paths: p, backend: fakeBackend{dir}, probeCommand: func(ctx context.Context, args ...string) *exec.Cmd { calls++; return unlockedProbe(ctx, args...) }})
 				}
 			}
 			// The private expired marker must permit both probe and fake backend.
@@ -415,7 +415,7 @@ func TestKeychainCooldownFailureScope(t *testing.T) {
 			now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 			makeImage := func(probeMode string) *keychainStore {
 				location := t.TempDir()
-				return isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: probeFixture(t, probeMode, location), command: securityCommand(dir), now: func() time.Time { return now }})
+				return isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: probeFixture(t, probeMode, location), backend: fakeBackend{dir}, now: func() time.Time { return now }})
 			}
 			probeMode := mode
 			if mode == "security-interaction" {

@@ -58,13 +58,13 @@ type App struct {
 	beforeNamedPublish    func() error
 	beforeMemberRegistry  func() error // In-process publication interruption seam.
 	connectionSecretStore connectionSecretStore
-	daemonSecrets         config.DaemonSecretStore // package-test-only; no external fake selection
+	daemonSecrets         config.DaemonSecretStore // retained test input; CLI migration never consults it
 	// human selects a human operator's own account (humans/<name>.json); never
 	// set by agents. It needs --as and ignores A2A_AGENT.
 	human   bool
 	secrets redact.Set
 
-	// keychain is a package-test-only factory. Production stays pinned to security.
+	// keychain is a package-test-only factory. Production uses the in-process Security framework.
 	keychain              func(config.Paths) *keychainStore
 	bindStartupWait       func(context.Context, time.Duration) error // deterministic startup retry seam
 	beforeCredentialScrub func() error
@@ -147,7 +147,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"daemon", "daemon serve|register-station|unregister-station|enroll|status | migrate <identity> --to <daemon-base> [--resume|--rollback]   local a2a daemon (a2ad), station enrollment and quiesced identity migration", cmdDaemon},
+		{"daemon", "daemon serve|register-station|unregister-station|enroll|status | migrate <identity> --to <daemon-base> [--resume|--rollback]   local a2a daemon (a2ad), station enrollment and file-backed identity migration (Keychain deferred; #460)", cmdDaemon},
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room [--into /fresh/member-root]   named Matrix routing", cmdConnection},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
@@ -192,7 +192,7 @@ func commands() []command {
 		{"sub-accept", "sub-accept <room> <$event>           accept a subscription request addressed to me", cmdSubAccept},
 		{"project", "project --system R --source R [--source R...] [--kind k1,k2] [--once]   project allowed sources to one explicit target", cmdProject},
 		{"skill", "skill install [--force] | skill print   install the a2a agent skill into ~/.agents, ~/.claude, ~/.codex", cmdSkill},
-		{"creds", "creds migrate | move-human <name>   migrate selected credentials to Keychain, or move HUMAN metadata into humans/", cmdCreds},
+		{"creds", "creds migrate | reconcile | move-human <name>   migrate selected credentials to Keychain, or move HUMAN metadata into humans/", cmdCreds},
 		{"card", "card set --file card.md | card get <name> | card room init [--room R]   configured card store", cmdCard},
 		{"status", "status init | set STATE TEXT --heartbeat DUR --runtime R --hooks H --doorbell D [--product X] | get [name] (legacy presence)", cmdStatus},
 		{"who", "who --stale-after DUR [--product X] [--json]   read self-written agent liveness", cmdWho},

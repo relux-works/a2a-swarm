@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -335,9 +336,14 @@ func TestDaemonMuseHookStateRefusals(t *testing.T) {
 	}
 }
 
-type daemonCLISecretFixture struct{ present bool }
+type daemonCLISecretFixture struct {
+	present                  bool
+	failDelete               bool
+	reads, deletes, restores int
+}
 
 func (s *daemonCLISecretFixture) Read(_ context.Context, c config.Credentials) (config.Credentials, error) {
+	s.reads++
 	if !s.present {
 		return c, errors.New("fixture missing")
 	}
@@ -345,27 +351,32 @@ func (s *daemonCLISecretFixture) Read(_ context.Context, c config.Credentials) (
 	return c, nil
 }
 func (s *daemonCLISecretFixture) Delete(context.Context, config.Credentials) error {
+	s.deletes++
+	if s.failDelete {
+		return errors.New("synthetic deletion interrupted")
+	}
 	s.present = false
 	return nil
 }
 func (s *daemonCLISecretFixture) Restore(_ context.Context, c config.Credentials) error {
+	s.restores++
 	if c.AccessToken != "inert-materialized-fixture" {
 		return errors.New("fixture mismatch")
 	}
 	s.present = true
 	return nil
 }
+
+// The named FILE CLI still migrates and restores the selected roots. The old
+// injected Keychain-success row is deliberately replaced by the six-route
+// preflight refusals in TestDaemonKeychainMigrationDeferred; it is not support
+// for native CLI migration through a fake provider.
 func TestDaemonNamedResolverRoundTrip(t *testing.T) {
-	for _, backend := range []string{"file", "keychain"} {
+	for _, backend := range []string{"file"} {
 		t.Run(backend, func(t *testing.T) {
 			a, root, to := daemonCLIFixture(t)
 			connection := config.Connection{ID: "fixture-id", URL: "https://example.invalid", ServerName: "example.invalid", Store: config.CredentialStore{Backend: backend}}
-			if backend == "keychain" {
-				connection.Store.AccessTokenService = "fixture.token"
-				connection.Store.PasswordService = "fixture.password"
-				a.daemonSecrets = &daemonCLISecretFixture{present: true}
-				a.keychain = func(config.Paths) *keychainStore { t.Fatal("real Keychain adapter used"); return nil }
-			}
+
 			registry := config.ConnectionRegistry{SchemaVersion: 1, Current: "fixture", Profiles: map[string]config.Connection{"fixture": connection}}
 			encoded, e := json.Marshal(registry)
 			if e != nil {
@@ -492,5 +503,345 @@ func TestDaemonDispatch(t *testing.T) {
 	stderr.Reset()
 	if code := a.Run(ctx, []string{"daemon", "unknown-subcommand"}); code != ExitUsage || stdout.Len() != 0 || stderr.Len() == 0 {
 		t.Fatalf("unknown subcommand: code=%d stdout=%q stderr=%q", code, &stdout, &stderr)
+	}
+}
+
+type daemonMigrationSnapshotEntry struct {
+	mode os.FileMode
+	data []byte
+	info os.FileInfo
+}
+
+// Capture the entire owned fixture tree, including directories and lock files;
+// no filtered baseline can hide a new staging/journal/credential namespace.
+func daemonMigrationSnapshot(t *testing.T, root string) map[string]daemonMigrationSnapshotEntry {
+	t.Helper()
+	entries := map[string]daemonMigrationSnapshotEntry{}
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		var data []byte
+		if !d.IsDir() {
+			if !info.Mode().IsRegular() {
+				return errors.New("unexpected fixture entry")
+			}
+			data, err = os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+		}
+		rel, err := filepath.Rel(root, path)
+		if err == nil {
+			entries[rel] = daemonMigrationSnapshotEntry{info.Mode(), data, info}
+		}
+		return err
+	}); err != nil {
+		t.Fatal("fixture inventory unavailable")
+	}
+	return entries
+}
+
+func assertDaemonMigrationSnapshot(t *testing.T, root string, before map[string]daemonMigrationSnapshotEntry) {
+	t.Helper()
+	after := daemonMigrationSnapshot(t, root)
+	if len(before) != len(after) {
+		t.Fatal("deferred migration changed fixture inventory")
+	}
+	for name, old := range before {
+		fresh, ok := after[name]
+		if !ok || old.mode != fresh.mode || !bytes.Equal(old.data, fresh.data) || !os.SameFile(old.info, fresh.info) || !old.info.ModTime().Equal(fresh.info.ModTime()) {
+			t.Fatal("deferred migration changed fixture bytes, modes or identity")
+		}
+	}
+}
+
+type daemonSelectedMigrationFixture struct {
+	app           *App
+	root, paths   config.Paths
+	to            string
+	binding       *config.ConnectionBinding
+	named         bool
+	store         *daemonCLISecretFixture
+	constructors  int
+	items, probes int
+	clockCalls    int
+	out, stderr   bytes.Buffer
+}
+
+// This fixture selects one backend independently of the registry's current
+// profile. Every possible native/provider boundary is synthetic and counted;
+// even the deliberate constructor-before-refusal plant cannot touch Keychain.
+func daemonSelectedMigration(t *testing.T, routing, backend string) *daemonSelectedMigrationFixture {
+	t.Helper()
+	a, root, to := daemonCLIFixture(t)
+	f := &daemonSelectedMigrationFixture{app: a, root: root, paths: root, to: to, named: routing == "named", store: &daemonCLISecretFixture{present: true}}
+	if f.named {
+		c := config.Connection{ID: "selected-id", URL: "https://example.invalid", ServerName: "example.invalid", Store: config.CredentialStore{Backend: backend}}
+		if backend == "keychain" {
+			c.Store.AccessTokenService, c.Store.PasswordService = "fixture.token", "fixture.password"
+		}
+		other := config.Connection{ID: "other-id", URL: c.URL, ServerName: c.ServerName, Store: config.CredentialStore{Backend: "file"}}
+		if backend == "file" {
+			other.Store = config.CredentialStore{Backend: "keychain", AccessTokenService: "other.token", PasswordService: "other.password"}
+		}
+		registry := config.ConnectionRegistry{SchemaVersion: 1, Current: "other", Profiles: map[string]config.Connection{"selected": c, "other": other}}
+		data, err := json.Marshal(registry)
+		if err != nil || os.WriteFile(root.ConnectionsFile(), data, 0600) != nil {
+			t.Fatal("selected fixture registry unavailable")
+		}
+		p, err := c.Paths(root, "fixture", false)
+		if err != nil {
+			t.Fatal("selected fixture paths unavailable")
+		}
+		b, err := c.Binding("fixture", false)
+		if err != nil {
+			t.Fatal("selected fixture binding unavailable")
+		}
+		creds := config.Credentials{UserID: b.UserID, Homeserver: c.URL, ConnectionBinding: &b}
+		if backend == "file" {
+			creds.AccessToken = "inert-named-fixture"
+		}
+		if config.PublishBoundCredentials(p, "fixture", false, creds) != nil || config.SaveState(p, "fixture", config.State{NextBatch: "named-fixture"}) != nil {
+			t.Fatal("selected fixture publication failed")
+		}
+		f.paths, f.binding = p, &b
+	} else if backend == "keychain" {
+		data, err := json.Marshal(config.Credentials{UserID: "@fixture:example.invalid", Homeserver: "https://example.invalid"})
+		if err != nil || os.WriteFile(root.AgentFile("fixture"), data, 0600) != nil {
+			t.Fatal("legacy fixture metadata unavailable")
+		}
+	}
+	getenv := a.Getenv
+	a.Getenv = func(key string) string {
+		if key == envSecretStore && !f.named {
+			return backend
+		}
+		return getenv(key)
+	}
+	a.Stdout, a.Stderr = &f.out, &f.stderr
+	a.Now = func() time.Time { f.clockCalls++; return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
+	a.keychain = func(p config.Paths) *keychainStore {
+		f.constructors++
+		return isolatedKeychainStore(keychainStore{paths: p, backend: daemonMigrationCountingBackend{calls: &f.items}, probeCommand: func(ctx context.Context, args ...string) *exec.Cmd {
+			f.probes++
+			return unlockedProbe(ctx, args...)
+		}})
+	}
+	return f
+}
+
+type daemonMigrationCountingBackend struct{ calls *int }
+
+func (b daemonMigrationCountingBackend) find(context.Context, string, string, string) ([]byte, error) {
+	*b.calls++
+	return []byte("inert-materialized-fixture"), nil
+}
+func (b daemonMigrationCountingBackend) add(context.Context, string, string, string, []byte) error {
+	*b.calls++
+	return nil
+}
+func (b daemonMigrationCountingBackend) update(context.Context, string, string, string, []byte) error {
+	*b.calls++
+	return nil
+}
+
+func (f *daemonSelectedMigrationFixture) args(operation string) []string {
+	args := []string{}
+	if f.named {
+		args = append(args, "--profile", "selected")
+	}
+	args = append(args, "daemon", "migrate", "fixture", "--to", f.to)
+	if operation != "initial" {
+		args = append(args, "--"+operation)
+	}
+	return args
+}
+
+// Prepare a genuine lower-level ABSTRACT transaction stopped at its synthetic
+// Delete after private copies/journal verification. This is not CLI/native
+// migration support. Its source item and pending recovery bytes must survive B.
+func (f *daemonSelectedMigrationFixture) pending(t *testing.T) {
+	t.Helper()
+	f.store.failDelete = true
+	err := config.MigrateDaemon(context.Background(), f.paths, "fixture", config.DaemonMigrationOptions{Binding: f.binding, To: f.to, Keychain: true, Secrets: f.store, Now: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)})
+	state, stateErr := config.LoadState(f.paths, "fixture")
+	if !errors.Is(err, config.ErrDaemonMigration) || stateErr != nil || state.Migration == nil || state.Migration.Phase != "in_progress" || !state.Migration.CutoverStarted || f.store.deletes != 1 || !f.store.present {
+		t.Fatal("abstract pending fixture did not stop at synthetic Delete")
+	}
+	for _, name := range []string{"migration.json", "rollback/credential.json", "rollback/source-credential.json"} {
+		info, err := os.Stat(filepath.Join(f.to, "identities", "fixture", name))
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() == 0 {
+			t.Fatal("abstract pending recovery evidence unavailable")
+		}
+	}
+	f.store.failDelete = false // This injected provider would otherwise succeed.
+	f.store.reads, f.store.deletes, f.store.restores = 0, 0, 0
+}
+
+// Actual CLI dispatch refuses all six selected-backend routes before any native
+// constructor/item/probe, provider, migration clock or filesystem effect. Both
+// fresh and real abstract pending fixtures retain all bytes/modes/inodes/items;
+// a successful injected store cannot reopen the CLI. No native call is real.
+func TestDaemonKeychainMigrationDeferred(t *testing.T) {
+	for _, routing := range []string{"legacy", "named"} {
+		t.Run(routing, func(t *testing.T) {
+			for _, operation := range []string{"initial", "resume", "rollback"} {
+				t.Run(operation, func(t *testing.T) {
+					for _, state := range []string{"fresh", "pending"} {
+						t.Run(state, func(t *testing.T) {
+							for _, seam := range []string{"no-secret-store", "injected"} {
+								t.Run(seam, func(t *testing.T) {
+									f := daemonSelectedMigration(t, routing, "keychain")
+									if state == "pending" {
+										f.pending(t)
+									}
+									if seam == "injected" {
+										f.app.daemonSecrets = f.store
+									}
+									source := daemonMigrationSnapshot(t, f.root.Base)
+									target := daemonMigrationSnapshot(t, filepath.Dir(f.to))
+									code := f.app.Run(context.Background(), f.args(operation))
+									if code != ExitError || f.out.Len() != 0 || f.stderr.String() != "a2a: "+errDaemonKeychainMigrationDeferred.Error()+"\n" {
+										t.Fatal("selected Keychain migration did not give the exact preflight deferral")
+									}
+									if f.constructors != 0 {
+										t.Fatal("deferred migration reached native constructor")
+									}
+									if f.items != 0 || f.probes != 0 || f.clockCalls != 0 || f.store.reads != 0 || f.store.deletes != 0 || f.store.restores != 0 || !f.store.present {
+										t.Fatal("deferred migration performed native/provider/transaction work")
+									}
+									assertDaemonMigrationSnapshot(t, f.root.Base, source)
+									assertDaemonMigrationSnapshot(t, filepath.Dir(f.to), target)
+								})
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+// File CLI initial/resume/rollback remains real on both selected paths, even
+// when registry current points at Keychain. A cancelled initial call supplies
+// genuine pending-journal recovery beside an ordinary successful initial call.
+// These are owned directory fixtures, not native or cross-user qualification.
+func TestDaemonFileMigrationRecoveryCLI(t *testing.T) {
+	for _, routing := range []string{"legacy", "named"} {
+		for _, start := range []string{"clean", "interrupted"} {
+			t.Run(routing+"/"+start, func(t *testing.T) {
+				f := daemonSelectedMigration(t, routing, "file")
+				original, err := os.ReadFile(f.paths.AgentFile("fixture"))
+				if err != nil {
+					t.Fatal("file source credential unavailable")
+				}
+				ctx := context.Background()
+				if start == "interrupted" {
+					cancelled, cancel := context.WithCancel(ctx)
+					cancel()
+					ctx = cancelled
+				}
+				code := f.app.Run(ctx, f.args("initial"))
+				state, err := config.LoadState(f.paths, "fixture")
+				want := "done"
+				if start == "interrupted" {
+					want = "in_progress"
+				}
+				if err != nil || state.Migration == nil || state.Migration.Phase != want || (code == ExitOK) != (start == "clean") {
+					t.Fatal("file initial control did not reach its intended phase")
+				}
+				if _, err := os.Stat(filepath.Join(f.to, "identities", "fixture", "migration.json")); err != nil {
+					t.Fatal("file initial control lacks target journal")
+				}
+				if _, err := config.LoadCredentials(f.paths, "fixture"); !errors.Is(err, config.ErrIdentityMigrated) {
+					t.Fatal("file source admission was not fenced")
+				}
+				locks := map[string]os.FileInfo{}
+				for _, name := range []string{filepath.Join(f.paths.Base, "state", "fixture.runtime-consumer.lock"), filepath.Join(filepath.Dir(f.paths.AgentFile("fixture")), ".fixture.lock")} {
+					info, err := os.Stat(name)
+					if err != nil {
+						t.Fatal("file migration lock unavailable")
+					}
+					locks[name] = info
+				}
+				f.out.Reset()
+				f.stderr.Reset()
+				if f.app.Run(context.Background(), f.args("resume")) != ExitOK {
+					t.Fatal("file resume control refused")
+				}
+				state, err = config.LoadState(f.paths, "fixture")
+				if err != nil || state.Migration == nil || state.Migration.Phase != "done" {
+					t.Fatal("file resume lost the done fence")
+				}
+				if f.app.Run(context.Background(), f.args("rollback")) != ExitOK {
+					t.Fatal("file rollback control refused")
+				}
+				restored, err := os.ReadFile(f.paths.AgentFile("fixture"))
+				info, statErr := os.Stat(f.paths.AgentFile("fixture"))
+				if err != nil || statErr != nil || !bytes.Equal(original, restored) || info.Mode().Perm() != 0600 || config.CheckIdentityMigration(f.paths, "fixture") != nil {
+					t.Fatal("file rollback did not restore exact admitted source")
+				}
+				for name, old := range locks {
+					info, err := os.Stat(name)
+					if err != nil || !os.SameFile(old, info) {
+						t.Fatal("file recovery changed lock identity")
+					}
+				}
+				if f.constructors != 0 || f.items != 0 || f.probes != 0 || f.store.reads != 0 || f.store.deletes != 0 || f.store.restores != 0 {
+					t.Fatal("file recovery touched a native provider")
+				}
+			})
+		}
+	}
+}
+
+// B does not admit malformed arguments, conflicting backend selection or a
+// changed named binding. These ordinary guards still refuse without effects;
+// the valid selected-Keychain deferral control is the six-route table above.
+func TestDaemonMigrationDeferralValidation(t *testing.T) {
+	for _, mode := range []string{"conflicting-flags", "named-binding", "unknown-backend", "human"} {
+		t.Run(mode, func(t *testing.T) {
+			routing := "legacy"
+			if mode == "named-binding" {
+				routing = "named"
+			}
+			f := daemonSelectedMigration(t, routing, "keychain")
+			args := f.args("initial")
+			want := ExitError
+			switch mode {
+			case "conflicting-flags":
+				args = append(args, "--resume", "--rollback")
+				want = ExitUsage
+			case "named-binding":
+				args = append(args, "--connection-fingerprint", strings.Repeat("0", 64))
+			case "unknown-backend":
+				getenv := f.app.Getenv
+				f.app.Getenv = func(key string) string {
+					if key == envSecretStore {
+						return "unknown"
+					}
+					return getenv(key)
+				}
+			case "human":
+				f.app.stdinTTY = func() bool { return true }
+				args = append(args, "--human", "--as", "fixture")
+				want = ExitUsage
+			}
+			source := daemonMigrationSnapshot(t, f.root.Base)
+			target := daemonMigrationSnapshot(t, filepath.Dir(f.to))
+			if code := f.app.Run(context.Background(), args); code != want || f.out.Len() != 0 || f.stderr.Len() == 0 || strings.Contains(f.stderr.String(), "keychain_daemon_migration_deferred") {
+				t.Fatal("ordinary migration validation was bypassed or reclassified")
+			}
+			if f.constructors != 0 || f.items != 0 || f.probes != 0 || f.clockCalls != 0 {
+				t.Fatal("invalid migration selection performed work")
+			}
+			assertDaemonMigrationSnapshot(t, f.root.Base, source)
+			assertDaemonMigrationSnapshot(t, filepath.Dir(f.to), target)
+		})
 	}
 }

@@ -20,14 +20,10 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 	}
 	type mutant struct{ name, file, old, next, test string }
 	mutants := []mutant{
-		{"nonzero-pipe-failure-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletion/security/inherited/exit44"},
-		{"nonzero-pipe-duplicate-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletionMigrationStages/security/create/exit45"},
-		{"nonzero-pipe-generic-masked", "keychain_unix.go", `if pipeErr != nil {`, `if pipeErr != nil && waitErr == nil {`, "TestKeychainPipeCompletion/security/inherited/exit1"},
-		{"early-leader-security-inherited-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/security/inherited"},
-		{"early-leader-security-closed-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/security/closed"},
-		{"early-leader-probe-inherited-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/probe/inherited"},
-		{"early-leader-probe-closed-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/probe/closed"},
-		{"pipe-wait-only-no-cooldown", "keychain.go", `errors.Is(err, exec.ErrWaitDelay) ||`, `errors.Is(err, exec.ErrWaitDelay) && false ||`, "TestKeychainEarlyLeaderExit/security/inherited"},
+		// Status probe runner, the only helper process left after phase 2 (#138).
+		{"early-leader-probe-inherited-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/inherited"},
+		{"early-leader-probe-closed-no-cleanup", "keychain_unix.go", `cleanupErr := killSecurityGroup(cmd)`, `var cleanupErr error; if cmd.ProcessState==nil { cleanupErr=killSecurityGroup(cmd) }`, "TestKeychainEarlyLeaderExit/closed"},
+		{"probe-only-leader-killed", "keychain_unix.go", `syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)`, `syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)`, "TestKeychainProbeRefusals/timeout"},
 		{"sentinel-stale-release-admitted", "keychain_observer_test.go", `release.Run == current &&`, `(release.Run == current || release.Run=="RUN-261018-123abc") &&`, "TestKeychainSentinelRunGuard/stale-release"},
 		{"sentinel-agent-minted-release-admitted", "keychain_observer_test.go", `d.Actor.Kind != "operator"`, `(d.Actor.Kind != "operator" && d.Actor.Kind!="agent")`, "TestKeychainSentinelRunGuard/self-minted"},
 		{"sentinel-missing-keeper-admitted", "keychain_observer_test.go", `event.MatchString(release.Keeper)`, `(event.MatchString(release.Keeper) || release.Keeper=="")`, "TestKeychainSentinelRunGuard/missing-keeper"},
@@ -38,26 +34,124 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		{"probe-one-garbage-suffix-admitted", "keychain_probe.go", `out.String() != "unlocked\n"`, `(out.String() != "unlocked\n" && out.String()!="unlocked\ngarbage\n")`, "TestKeychainProbeRefusals/garbage"},
 		{"probe-missing-only-admitted", "keychain_probe.go", `if cmd.Process == nil {`, `if errors.Is(err,os.ErrNotExist) { return nil }; if cmd.Process == nil {`, "TestKeychainProbeRefusals/missing"},
 		{"probe-stderr-danger-admitted", "keychain_probe.go", `stderr.Len() != 0`, `(stderr.Len()!=0 && stderr.String()!="danger")`, "TestKeychainProbeRefusals/stderr"},
-		{"host-marker-bob-exemption", "keychain.go", `if k.clock().UnixNano() < until {`, `if k.clock().UnixNano() < until && !(uid=="@bob:test.local" && strings.HasPrefix(filepath.Base(path),"host-")) {`, "TestKeychainHostCooldown"},
-		{"probe-only-leader-killed", "keychain_unix.go", `syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)`, `syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)`, "TestKeychainProbeRefusals/timeout"},
 		{"probe-resolves-launcher-instead", "keychain_probe.go", `filepath.Dir(real)`, `filepath.Dir(func()string{_ = real; return executable}())`, "TestKeychainProbeResolvedExecutable"},
 		{"fixture-probe-other-target", "keychain_probe.go", `args = []string{"--fixture", k.fixture}`, `args = []string{"--fixture", k.fixture+".other"}`, "TestKeychainProbeTargetPair"},
-		{"write-only-preflight-bypass", "keychain.go", `if err := k.preflight(ctx); err != nil {`, `if err := k.preflight(ctx); err != nil && input!="" {`, "TestKeychainProbeRefusals/locked"},
-		{"stdin-nul-control-admitted", "keychain.go", `if r < 32 || r == 127 {`, `if (r < 32 || r == 127) && r!=0 {`, "TestKeychainCommandGrammarAndLimits"},
-		{"one-overlength-command-admitted", "keychain.go", `if len(line)+1 >= 4096 {`, `if len(line)+1 >= 4096 && len(token)!=4096 {`, "TestKeychainCommandGrammarAndLimits"},
+		{"host-marker-bob-exemption", "keychain.go", `if k.clock().UnixNano() < until {`, `if k.clock().UnixNano() < until && !(uid=="@bob:test.local" && strings.HasPrefix(filepath.Base(path),"host-")) {`, "TestKeychainHostCooldown"},
+		{"preflight-bypassed", "keychain.go", `if err := k.preflight(ctx); err != nil {`, `if err := k.preflight(ctx); err != nil && false {`, "TestKeychainProbeRefusals/locked"},
 
+		// In-process backend boundary (phase 2).
+		{"backend-target-not-fixture", "keychain.go", `return b.find(ctx, target, k.selectedService(), uid)`, `return b.find(ctx, target+".other", k.selectedService(), uid)`, "TestKeychainProbeTargetPair"},
+		{"backend-service-not-selected", "keychain.go", `return b.find(ctx, target, k.selectedService(), uid)`, `return b.find(ctx, target, keychainService, uid)`, "TestNamedKeychainAdapterRouting"},
+		{"backend-error-text-escapes", "keychain.go", `return nil, fmt.Errorf("keychain operation failed for %s", uid)`, `return nil, fmt.Errorf("keychain operation failed for %s: %v", uid, r.err)`, "TestKeychainBackendTextNeverEscapes"},
+		{"backend-failure-as-absence", "keychain.go", `return nil, fmt.Errorf("keychain operation failed for %s", uid)`, `return nil, errKeychainMissing`, "TestKeychainBackendFailureMigrationStages/lookup/error"},
+		{"interaction-no-cooldown", "keychain.go", `if ctx.Err() != nil || errors.Is(r.err, errKeychainInteraction) {`, `if ctx.Err() != nil {`, "TestKeychainBackendFailureMigrationStages/lookup/interaction"},
+		{"deadline-not-enforced", "keychain.go", `ctx, cancel := context.WithTimeout(ctx, k.timeoutDuration())`, `ctx, cancel := context.WithTimeout(ctx, 10*k.timeoutDuration())`, "TestKeychainDeadlineBoundsOperation"},
+		{"control-nul-admitted", "keychain.go", `if r < 32 || r == 127 {`, `if (r < 32 || r == 127) && r!=0 {`, "TestKeychainTokenBytesAndRefusals"},
+		{"long-token-truncated-update", "keychain.go", `return nil, b.update(ctx, target, k.selectedService(), uid, []byte(token))`, `return nil, b.update(ctx, target, k.selectedService(), uid, []byte(token)[:min(len(token), 4095)])`, "TestKeychainTokenBytesAndRefusals"},
+		{"long-token-truncated", "keychain.go", `return nil, b.add(ctx, target, k.selectedService(), uid, []byte(token))`, `return nil, b.add(ctx, target, k.selectedService(), uid, []byte(token)[:min(len(token), 4095)])`, "TestKeychainTokenBytesAndRefusals"},
+		{"create-uses-update", "keychain.go", `err = put(existing)`, `err = put(true)`, "TestKeychainRegistrationAndUpsert/create"},
+		{"existing-uses-add", "keychain.go", `err = put(existing)`, `err = put(false)`, "TestKeychainRegistrationAndUpsert/existing"},
+		{"duplicate-second-retry", "keychain.go", `err = put(true)`, `err = put(true); if errors.Is(err,errKeychainDuplicate) { err=put(true) }`, "TestKeychainDuplicateRetryBound"},
+		{"production-names-security-tool", "keychain_backend.go", `var errKeychainInteraction = errors.New("keychain interaction not allowed")`, `var errKeychainInteraction = errors.New("keychain interaction not allowed"); var plantedHelper = "/usr/bin/security"`, "TestKeychainProductionNeverNamesSecurityTool"},
+
+		// Abandoned-write fence and reconcile (#138 review, finding 1).
+		{"fence-check-skipped", "keychain.go", `if !k.reconciling {`, `if false {`, "TestKeychainAbandonedWriteStaysFenced"},
+		{"fence-not-written", "keychain.go", `if mutation != "" {`, `if mutation == "never" {`, "TestKeychainAbandonedWriteStaysFenced"},
+		{"fence-cleared-on-timeout", "keychain.go", `r.err = ctx.Err()`, `r.err = ctx.Err(); if fence != nil { _ = k.clearFence(uid, fence) }`, "TestKeychainAbandonedWriteStaysFenced"},
+		{"dead-owner-fence-expires", "keychain_fence.go", "return fmt.Errorf(\"%w for %s: pid %d ended before its write completed; run `a2a creds reconcile`\", errKeychainFenced, uid, fence.PID)", `return nil`, "TestKeychainFenceReconcile/gone-observed"},
+		{"reconcile-live-owner", "keychain_fence.go", "case ownerAlive:\n\t\t\treturn fmt.Errorf(\"%w for %s in pid %d; not reconciled\", errKeychainFenced, uid, fence.PID)", "case ownerAlive:", "TestKeychainFenceReconcile/live-owner"},
+		{"reconcile-unanswered", "keychain_fence.go", "\t\tdefault:\n\t\t\treturn fmt.Errorf(\"keychain did not answer for %s; fence kept: %w\", uid, err)", "\t\tdefault:\n\t\t\toutcome = \"unanswered\"\n\t\t\treturn k.removeFence(uid)", "TestKeychainFenceReconcile/gone-silent"},
+
+		// Round 3: liveness, completion evidence, value skip, recorded fence, ACL requirements.
+		{"liveness-inspection-error-gone", "keychain_unix.go", "case idErr != nil || current == \"\":\n\t\treturn ownerUnknown", "case idErr != nil || current == \"\":\n\t\treturn ownerGone", "TestKeychainLivenessClassification/ps-unavailable"},
+		{"liveness-probe-error-gone", "keychain_unix.go", "case killErr != nil && !errors.Is(killErr, syscall.EPERM):\n\t\treturn ownerUnknown", "case killErr != nil && !errors.Is(killErr, syscall.EPERM):\n\t\treturn ownerGone", "TestKeychainLivenessClassification/probe-error"},
+		{"reconcile-unknown-proceeds", "keychain_fence.go", "\t\tcase ownerUnknown:\n\t\t\treturn fmt.Errorf(\"%w for %s: the state of pid %d is unknown; fence kept\", errKeychainFenced, uid, fence.PID)\n", "", "TestKeychainUnknownOwnerKeepsFence"},
+		{"check-unknown-admits", "keychain_fence.go", "return fmt.Errorf(\"%w for %s: the state of pid %d is unknown; refusing\", errKeychainFenced, uid, fence.PID)", "return nil", "TestKeychainUnknownOwnerKeepsFence"},
+		{"reconcile-any-answer-clears", "keychain_fence.go", "case err == nil && tokenDigest([]byte(token)) == fence.Digest:", "case err == nil && (tokenDigest([]byte(token)) == fence.Digest || true):", "TestKeychainDeadWriterQueuedRequest"},
+		{"reconcile-boot-always-quiescent", "keychain_fence.go", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && fence.Boot != \"\" && boot != fence.Boot {", "if boot, err := k.bootSession(); err == nil || boot != fence.Boot {", "TestKeychainDeadWriterQueuedRequest"},
+		{"boot-unavailable-counts-as-restart", "keychain_fence.go", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && fence.Boot != \"\" && boot != fence.Boot {", "if boot, err := k.bootSession(); err != nil || fence.Boot != \"\" && boot != fence.Boot {", "TestKeychainFenceReconcile/gone-boot-unavailable"},
+		{"recorded-boot-unvalidated", "keychain_fence.go", " || (fence.Boot != \"\" && !validBootSession(fence.Boot))", "", "TestKeychainFenceReconcile/gone-malformed-recorded-boot"},
+		{"current-boot-unvalidated", "keychain_fence.go", "err == nil && validBootSession(boot) && fence.Boot != \"\" && boot != fence.Boot", "err == nil && fence.Boot != \"\" && boot != fence.Boot", "TestKeychainFenceReconcile/gone-invalid-current-boot"},
+		{"write-boot-unnormalized", "keychain_fence.go", "if err != nil || !validBootSession(boot) {", "if err != nil {", "TestKeychainFenceRecordsNoInvalidBoot"},
+		{"fence-without-boot-counts", "keychain_fence.go", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && fence.Boot != \"\" && boot != fence.Boot {", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && boot != fence.Boot {", "TestKeychainFenceReconcile/gone-fence-without-boot"},
+		{"write-rewrites-present-value", "keychain.go", "\t\tif existing && prior == token {\n\t\t\treturn nil\n\t\t}\n", "\t\t_ = prior\n", "TestKeychainWriteSkipsPresentValue/existing-equal"},
+		{"fence-digest-not-recorded", "keychain_fence.go", "Digest: tokenDigest(intended)}", "Digest: tokenDigest(nil)}", "TestKeychainAbandonedWriteStaysFenced"},
+		{"acl-requirement-ignored", "keychain_acl_test.go", "if app.requirement != requirement {", "if false && app.requirement != requirement {", "TestKeychainACLCreatorOnly/broadened-requirement.txt"},
+		{"acl-status-ignored", "keychain_acl_test.go", "if app.status != \"OK\" {", "if false {", "TestKeychainACLCreatorOnly/status-not-ok.txt"},
+		{"acl-unknown-auth-admitted", "keychain_acl_test.go", "if !aclAuthorizations[a] {", "if false && !aclAuthorizations[a] {", "TestKeychainACLCreatorOnly/unknown-auth.txt"},
+
+		// Native lengths (finding 4), sentinel tool bounding (finding 2), ACL rules (finding 3).
+		{"input-length-unbounded", "keychain_backend.go", `return n >= 0 && uint64(n) <= math.MaxUint32`, `return n >= 0 && uint64(n) <= math.MaxUint64`, "TestKeychainNativeLengthBounds"},
+		{"output-length-uint32", "keychain_backend.go", `return n <= math.MaxInt32`, `return n <= math.MaxUint32`, "TestKeychainNativeLengthBounds"},
+		{"sentinel-tool-unbounded", "keychain_p2_sentinel_darwin_test.go", `	if err := boundSecurityProcess(cmd); err != nil {
+		return "", -1
+	}
+	if err := runBoundSecurityProcess(cmd); err != nil {`, `	if err := runBoundSecurityProcess(cmd); err != nil {`, "TestSentinelToolBoundProcess"},
+		{"acl-decrypt-only", "keychain_acl_test.go", `case "decrypt", "export_clear", "export_wrapped", "any":`, `case "decrypt":`, "TestKeychainACLCreatorOnly/allow-all-export.txt"},
+		{"acl-any-app-admitted", "keychain_acl_test.go", `if e.anyApp {`, `if false && e.anyApp {`, "TestKeychainACLCreatorOnly/allow-all-export.txt"},
+		{"acl-unknown-line-skipped", "keychain_acl_test.go", `		default:
+			return nil, fmt.Errorf("unknown ACL line: %q", line)`, `		default:`, "TestKeychainACLCreatorOnly/unknown-line.txt"},
+
+		// Human credential boundary: no human token in a2a Keychain items.
+		{"human-legacy-read-admitted", "credentials.go", `if a.human {
+			return config.Credentials{}, errHumanKeychain
+		}`, ``, "TestKeychainAuthorizationBoundaries"},
+		{"human-migrate-admitted", "credentials.go", `if a.human {
+		return errHumanKeychain
+	}
+	p, err := a.paths()`, `p, err := a.paths()`, "TestKeychainAuthorizationBoundaries"},
+		{"human-reconcile-admitted", "credentials.go", `if a.human {
+		return errHumanKeychain
+	}
+	name, err := a.identity()`, `name, err := a.identity()`, "TestKeychainAuthorizationBoundaries"},
+		{"human-named-read-admitted", "connection_registration.go", `if a.human {
+		return "", errHumanKeychain
+	}`, ``, "TestNamedHumanClassBoundary"},
+		{"human-named-create-admitted", "connection_registration.go", `func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if a.human {
+		return errHumanKeychain
+	}`, `func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {`, "TestNamedHumanSecretCreateRefused"},
+
+		{"human-legacy-register-admitted", "account.go", `if store == "keychain" && a.human {
+		return config.Credentials{}, "", errHumanKeychain
+	}`, ``, "TestKeychainHumanLegacyRegistrationRefused/human"},
+
+		// Retaining the refusal while constructing first must fail the zero-call
+		// assertion, not get hidden behind a later unrelated migration refusal.
+		{"daemon-native-before-deferral", "daemon_migrate.go", `if c != nil && c.Store.Backend == "keychain" || c == nil && a.Getenv(envSecretStore) == "keychain" {`, `_ = a.keychainStore(p)
+	if c != nil && c.Store.Backend == "keychain" || c == nil && a.Getenv(envSecretStore) == "keychain" {`, "TestDaemonKeychainMigrationDeferred/legacy/initial/fresh/injected"},
+
+		// Current-profile integration: these plants must fail the named assertion,
+		// not compilation/setup. No native operation is injected by a plant.
+		{"file-reconcile-admitted", "credentials.go", `if store != "keychain" {
+		return fmt.Errorf("creds reconcile requires the selected Keychain backend")
+	}`, ``, "TestKeychainReconcileSelection/file"},
+		{"locked-human-create-admitted", "connection_registration.go", `func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if a.human {
+		return errHumanKeychain
+	}`, `func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {`, "TestNamedHumanLockedSecretCreateRefused"},
+		{"reconcile-migration-fence-skipped", "credentials.go", `if err := config.CheckIdentityMigration(p, name); err != nil {
+		return err
+	}
+	var uid, service string`, `var uid, service string`, "TestKeychainReconcileSelection/migration"},
+		{"reconcile-service-unselected", "credentials.go", `k.service = service
+	outcome, err := k.reconcile(ctx, uid)`, `k.service = keychainService; _ = service
+	outcome, err := k.reconcile(ctx, uid)`, "TestNamedKeychainFenceReconcile/observed"},
+
+		// Store logic unchanged by phase 2.
 		{"alice-identity-env-bypass", "app.go", `if name != "" && env != "" && name != env {`, `if name != "" && env != "" && name != env && name!="alice" {`, "TestKeychainAuthorizationBoundaries"},
 		{"public-alice-file-admitted", "../config/config.go", `if perm := st.Mode().Perm(); perm != SecretFileMode {`, `if perm := st.Mode().Perm(); perm != SecretFileMode && !(perm==0o644 && filepath.Base(path)=="alice.json") {`, "TestKeychainMigrationScopeAndFileGuards"},
-		{"alice-password-login-reintroduced", "app.go", `return a.fail(c.run(ctx, a, rest[1:]))`, `err:=c.run(ctx,a,rest[1:]); if errors.Is(err,matrix.ErrAuth) && a.as=="alice" { if p,e:=a.paths(); e==nil { if cr,e:=config.LoadCredentials(p,"alice");e==nil { mc:=matrix.New(cr.Homeserver,"");mc.HTTP=a.HTTP;_,_=mc.Login(ctx,cr.UserID,cr.Password,cr.DeviceID) } } }; return a.fail(err)`, "TestReloginWhoami"},
-		{"stdin-leaked-to-argv", "keychain.go", `cmd.Stdin = strings.NewReader(input)`, `cmd.Stdin = strings.NewReader(input); if input!="" { cmd.Args=append(cmd.Args,input) }`, "TestKeychainProcessBoundaryLeaks"},
+		{"alice-password-login-reintroduced", "app.go", `return a.fail(c.run(ctx, a, rest[1:]))
+		}
+	}
+	return a.fail`, `err:=c.run(ctx,a,rest[1:]); if errors.Is(err,matrix.ErrAuth) && a.as=="alice" { if p,e:=a.paths(); e==nil { if cr,e:=config.LoadCredentials(p,"alice");e==nil { mc:=matrix.New(cr.Homeserver,"");mc.HTTP=a.HTTP;_,_=mc.Login(ctx,cr.UserID,cr.Password,cr.DeviceID) } } }; return a.fail(err)
+		}
+	}
+	return a.fail`, "TestReloginWhoami"},
 		{"unknown-typo-admitted", "credentials.go", `case "keychain":`, `case "keychain", "typo":`, "TestKeychainCredentialSelection/unknown"},
 		{"missing-only-file-fallback", "credentials.go", `c.AccessToken = "" // A file token`, `fileToken := c.AccessToken; c.AccessToken = "" // A file token`, "TestKeychainCredentialSelection/missing"},
 		{"metadata-bob-alias", "credentials.go", `prefix := "@" + name + ":"`, `if name=="alice" && c.UserID=="@bob:test.local" { return nil }; prefix := "@" + name + ":"`, "TestKeychainMetadataIdentityMismatch"},
 		{"empty-only-admitted", "keychain.go", `strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\x00\r\n")`, `strings.ContainsAny(token, "\x00\r\n")`, "TestKeychainCredentialSelection/empty"},
-		{"create-newbie-no-trust", "keychain.go", `line += " -T /usr/bin/security"`, `if uid!="@newbie:test.local" { line += " -T /usr/bin/security" }`, "TestKeychainRegistrationAndUpsert/create"},
-		{"existing-update-rewrites-trust", "keychain.go", `line += " -U"`, `line += " -U -T /usr/bin/security"`, "TestKeychainRegistrationAndUpsert/existing"},
-		{"duplicate-second-retry", "keychain.go", `err = write(true)`, `err = write(true); if errors.Is(err,errKeychainDuplicate) { err=write(true) }`, "TestKeychainDuplicateRetryBound"},
-		{"leader-only-deadline", "keychain_unix.go", `syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)`, `syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)`, "TestKeychainDeadlineKillsProcessGroup"},
 		{"alice-cooldown-exemption", "keychain.go", `if k.clock().UnixNano() < until {`, `if k.clock().UnixNano() < until && uid!="@alice:test.local" {`, "TestKeychainInteractionCooldownAllCalls"},
 		{"corrupt-marker-treated-expired", "keychain.go", `if err != nil {
 		return fmt.Errorf("keychain cooldown state invalid for %s", uid)
@@ -67,7 +161,6 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		{"one-readback-mismatch-admitted", "keychain.go", `if got != token {`, `if got != token && got!="mismatching-sentinel" {`, "TestKeychainMigrationRecoverability/mismatch"},
 		{"cancel-before-scrub-admitted", "credentials.go", `if err := ctx.Err(); err != nil {`, `if err := ctx.Err(); err != nil && err!=context.Canceled {`, "TestKeychainMigrationInterruptedAndAtomicFailure/cancel"},
 		{"newbie-password-persisted", "account.go", `fileCreds := creds`, `fileCreds := creds; if name=="newbie" { fileCreds.Password=password }`, "TestRegister"},
-		{"stdin-leaked-to-environment", "keychain.go", `cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C"}`, `cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C"}; if input!="" {cmd.Env=append(cmd.Env,"PLANTED_LEAK="+input)}`, "TestKeychainProcessBoundaryLeaks"},
 	}
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -111,6 +204,19 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 			next := strings.Replace(string(data), m.old, m.next, 1)
 			// Coordinated weakening across the same gate: keep all other error classes
 			// refusing, but admit exactly missing-file fallback / empty-token outcomes.
+			// The current named transaction has an additional locked-entry guard.
+			// Plant the same human violation across both layers so the original
+			// public-entry control remains behavioral rather than a survivor.
+			if m.name == "human-named-create-admitted" {
+				locked := `func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {
+	if a.human {
+		return errHumanKeychain
+	}`
+				if strings.Count(next, locked) != 1 {
+					t.Fatal("locked human guard plant must apply exactly once")
+				}
+				next = strings.Replace(next, locked, `func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {`, 1)
+			}
 			if m.name == "missing-only-file-fallback" {
 				next = strings.Replace(next, `c.AccessToken, err = a.keychainStore(p).read(ctx, c.UserID)`, `c.AccessToken, err = a.keychainStore(p).read(ctx, c.UserID); if err!=nil && strings.Contains(err.Error(),"item missing") { c.AccessToken=fileToken; err=nil }`, 1)
 			}
@@ -142,7 +248,7 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 			mask := "^" + strings.ReplaceAll(m.test, "/", "$/^") + "$"
 			cmd := exec.Command("go", "test", "-count=1", "./internal/cli", "-run", mask)
 			cmd.Dir = copyRoot
-			cmd.Env = append(os.Environ(), "A2A_RUN_KEYCHAIN_MUTANTS=", "A2A_PHASE1_SENTINEL_RUN=", "A2A_MATRIX_IT=")
+			cmd.Env = append(os.Environ(), "A2A_RUN_KEYCHAIN_MUTANTS=", "A2A_P2_SENTINEL_ALLOWANCE=", "A2A_ALITE_SENTINEL_RUN=", "A2A_OBSERVER_DRY_RUN=", "A2A_MATRIX_IT=")
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("SURVIVOR %s: bound remains unproved; test %s passed", m.name, m.test)

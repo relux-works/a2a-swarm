@@ -15,7 +15,7 @@ import (
 )
 
 func cmdDaemon(ctx context.Context, a *App, args []string) error {
-	const help = "usage: a2a daemon serve|register-station|unregister-station|enroll|migrate|status|service|prepare-run-dir|sweep|rescue|soak; service install|uninstall|status --plan FILE; migrate <identity> --to <daemon-base> [--resume|--rollback]; enroll --dir HOME/.a2a --from - [--rotate]; serve --home ABS --owner-pin FILE --owner-pin-sha256 HASH --image-sha256 HASH --service-gid GID; register-station|unregister-station --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]; register-station --station S --identity I --uid U --emit - [--rotate]; unregister-station --station S"
+	const help = "usage: a2a daemon serve|register-station|unregister-station|enroll|migrate|status|service|prepare-run-dir|sweep|rescue|soak; service install|uninstall|status --plan FILE; migrate <identity> --to <daemon-base> [--resume|--rollback] (file backend only; Keychain initial/resume/rollback deferred, #460); enroll --dir HOME/.a2a --from - [--rotate]; serve --home ABS --owner-pin FILE --owner-pin-sha256 HASH --image-sha256 HASH --service-gid GID; register-station|unregister-station --home ABSOLUTE_PRIVATE_HOME [--socket ABSOLUTE_PATH]; register-station --station S --identity I --uid U --emit - [--rotate]; unregister-station --station S"
 	if len(args) == 0 {
 		return usagef("%s", help)
 	}

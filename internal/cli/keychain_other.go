@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,3 +16,9 @@ func openKeychainState(string) (*os.File, error) { return nil, errors.New("keych
 func keychainLock(string, time.Time) (func(), error) {
 	return nil, errors.New("keychain requires macOS")
 }
+
+func processIdentity(context.Context, int) (string, error) {
+	return "", errors.New("keychain requires macOS")
+}
+
+func processLiveness(context.Context, int, string) ownerState { return ownerUnknown }

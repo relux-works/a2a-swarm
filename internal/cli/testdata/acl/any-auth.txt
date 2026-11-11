@@ -1,0 +1,58 @@
+keychain: "/tmp/fixture.keychain-db"
+version: 256
+class: "genp"
+attributes:
+    0x00000007 <blob>="works.relux.a2a.sentinel"
+    0x00000008 <blob>=<NULL>
+    "acct"<blob>="@foreign:sentinel.invalid"
+    "cdat"<timedate>=0x32303236313032393039333331395A00  "20261029093319Z\000"
+    "svce"<blob>="works.relux.a2a.sentinel"
+    "type"<uint32>=<NULL>
+access: 3 entries
+    entry 0:
+        authorizations (1): encrypt
+        don't-require-password
+        description: works.relux.a2a.sentinel
+        applications: <null>
+    entry 1:
+        authorizations (6): decrypt derive export_clear export_wrapped mac sign
+        don't-require-password
+        description: works.relux.a2a.sentinel
+        applications (1):
+            0: /usr/bin/security (OK)
+                requirement: identifier "com.apple.security" and anchor apple
+    entry 2:
+        authorizations (1): change_acl
+        don't-require-password
+        description: works.relux.a2a.sentinel
+        applications (0):
+keychain: "/tmp/fixture.keychain-db"
+version: 256
+class: "genp"
+attributes:
+    0x00000007 <blob>="works.relux.a2a.sentinel"
+    0x00000008 <blob>=<NULL>
+    "acct"<blob>="@sentinel:sentinel.invalid"
+    "cdat"<timedate>=0x32303236313032393039333331395A00  "20261029093319Z\000"
+    "svce"<blob>="works.relux.a2a.sentinel"
+    "type"<uint32>=<NULL>
+access: 3 entries
+    entry 0:
+        authorizations (6): decrypt derive export_clear export_wrapped mac sign
+        don't-require-password
+        description: works.relux.a2a.sentinel
+        applications (1):
+            0: /private/tmp/go-build123/b001/cli.test (OK)
+                requirement: cdhash H"0123456789abcdef0123456789abcdef01234567"
+    entry 1:
+        authorizations (1): any
+        don't-require-password
+        description: works.relux.a2a.sentinel
+        applications (1):
+            0: /bin/zsh (OK)
+                requirement: identifier "com.apple.zsh" and anchor apple
+    entry 2:
+        authorizations (1): change_acl
+        don't-require-password
+        description: works.relux.a2a.sentinel
+        applications (0):

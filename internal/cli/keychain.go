@@ -33,12 +33,16 @@ type keychainStore struct {
 	service           string
 	createOnly        bool
 	paths             config.Paths
-	command           func(context.Context, ...string) *exec.Cmd
+	backend           keychainBackend
 	probeCommand      func(context.Context, ...string) *exec.Cmd
 	hostID            string
 	fixture           string
 	timeout, cooldown time.Duration
 	now               func() time.Time
+	birth             func(context.Context, int) (string, error)
+	liveness          func(context.Context, int, string) ownerState
+	boot              func() (string, error)
+	reconciling       bool // set only by reconcile, for its own lookup
 }
 
 func (k *keychainStore) selectedService() string {
@@ -214,128 +218,125 @@ func (b *limitedSecretBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (k *keychainStore) invoke(ctx context.Context, uid, input string, args ...string) (string, error) {
-	// This applies to EVERY invocation, including write lookup/relookup/readback.
+// run applies the write fence, identity cooldown, host lock, host cooldown and
+// status preflight to EVERY Keychain operation, including write lookup,
+// relookup and readback, then runs op in this process under the hard deadline.
+// A timeout or an interaction refusal records the identity cooldown. A
+// mutation ("add" or "update") is fenced until its native call returns, even
+// when the deadline abandons it (keychain_fence.go). Backend error text never
+// escapes into CLI errors.
+func (k *keychainStore) run(ctx context.Context, uid, mutation string, intended []byte, op func(context.Context, keychainBackend, string) ([]byte, error)) ([]byte, error) {
+	if !k.reconciling {
+		if err := k.checkFence(ctx, uid); err != nil {
+			return nil, err
+		}
+	}
 	if err := k.checkCooldown(uid); err != nil {
-		return "", err
+		return nil, err
 	}
 	if ctx.Err() != nil {
-		return "", fmt.Errorf("keychain operation interrupted for %s", uid)
+		return nil, fmt.Errorf("keychain operation interrupted for %s", uid)
 	}
 	host, err := k.hostPath()
 	if err != nil {
-		return "", fmt.Errorf("keychain host binding unavailable for %s", uid)
+		return nil, fmt.Errorf("keychain host binding unavailable for %s", uid)
 	}
 	unlock, err := keychainLock(host+".lock", time.Now().Add(k.timeoutDuration()))
 	if err != nil {
-		return "", fmt.Errorf("keychain host lock unavailable for %s", uid)
+		return nil, fmt.Errorf("keychain host lock unavailable for %s", uid)
 	}
 	defer unlock()
 	if err := k.checkMarker(host+".cooldown", uid); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := k.preflight(ctx); err != nil {
 		var refusal *keychainPreflightError
 		if !errors.As(err, &refusal) {
-			return "", err
+			return nil, err
 		}
 		if refusal.local {
 			// Installation/launch failures say nothing about this identity's Keychain.
-			return "", &transientCredentialError{reason: "companion_unavailable", message: fmt.Sprintf("keychain preflight failed for %s; companion unavailable; no cooldown recorded", uid)}
+			return nil, &transientCredentialError{reason: "companion_unavailable", message: fmt.Sprintf("keychain preflight failed for %s; companion unavailable; no cooldown recorded", uid)}
 		}
 		// Persist host first: other identities must not probe a known locked host.
 		until := k.clock().Add(k.cooldownDuration())
 		herr := writeKeychainCooldown(host+".cooldown", refusal.cause, until)
 		ierr := writeKeychainCooldown(k.identityPath(uid)+".cooldown", refusal.cause, until)
 		if herr != nil || ierr != nil {
-			return "", fmt.Errorf("keychain preflight failed for %s; cannot persist cooldown; repair private state", uid)
+			return nil, fmt.Errorf("keychain preflight failed for %s; cannot persist cooldown; repair private state", uid)
 		}
 		reason := "keychain_unavailable"
 		if refusal.cause == "preflight_locked" {
 			reason = "keychain_locked"
 		}
-		return "", &transientCredentialError{reason: reason, message: fmt.Sprintf("keychain preflight failed for %s; cooldown recorded; cause=%s; retry after %s", uid, refusal.cause, until.UTC().Format(time.RFC3339))}
+		return nil, &transientCredentialError{reason: reason, message: fmt.Sprintf("keychain preflight failed for %s; cooldown recorded; cause=%s; retry after %s", uid, refusal.cause, until.UTC().Format(time.RFC3339))}
+	}
+	target, err := k.targetPath()
+	if err != nil {
+		return nil, fmt.Errorf("keychain target unavailable for %s", uid)
 	}
 	ctx, cancel := context.WithTimeout(ctx, k.timeoutDuration())
 	defer cancel()
-	var cmd *exec.Cmd
-	if k.command != nil {
-		cmd = k.command(ctx, args...)
-	} else {
-		cmd = exec.CommandContext(ctx, "/usr/bin/security", args...)
+	type result struct {
+		data []byte
+		err  error
 	}
-	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C"}
-	cmd.Stdin = strings.NewReader(input)
-	var out, errout limitedSecretBuffer
-	cmd.Stdout, cmd.Stderr = &out, &errout
-	if err := boundSecurityProcess(cmd); err != nil {
-		return "", fmt.Errorf("keychain process unavailable for %s", uid)
+	var fence *keychainFence
+	if mutation != "" {
+		if fence, err = k.writeFence(ctx, uid, mutation, intended); err != nil {
+			return nil, fmt.Errorf("keychain write fence unavailable for %s", uid)
+		}
 	}
-	err = runBoundSecurityProcess(cmd)
-	if ctx.Err() != nil || interactionFailure(err) {
+	done := make(chan result, 1)
+	backend := k.keychainBackend()
+	go func() {
+		data, err := op(ctx, backend, target)
+		if fence != nil {
+			// Cleared only here, after the native call returned. If clearing
+			// fails the fence stays and later operations refuse.
+			_ = k.clearFence(uid, fence)
+		}
+		done <- result{data, err}
+	}()
+	var r result
+	select {
+	case r = <-done:
+	case <-ctx.Done():
+		// An in-process Security.framework call cannot be killed. Its late
+		// result is discarded and the attempt counts as a timeout; a late
+		// mutation stays fenced until the call returns.
+		r.err = ctx.Err()
+	}
+	if ctx.Err() != nil || errors.Is(r.err, errKeychainInteraction) {
 		cause := "security_interaction"
-		switch {
-		case ctx.Err() != nil:
+		if ctx.Err() != nil {
 			cause = "security_timeout"
-		case errors.Is(err, exec.ErrWaitDelay), errors.Is(err, errSecurityProcessIO), errors.Is(err, errSecurityProcessCleanup):
-			cause = "security_io"
 		}
 		until := k.clock().Add(k.cooldownDuration())
 		if e := writeKeychainCooldown(k.identityPath(uid)+".cooldown", cause, until); e != nil {
-			return "", fmt.Errorf("keychain interaction failed for %s; cannot persist cooldown; stop and repair private state", uid)
+			return nil, fmt.Errorf("keychain interaction failed for %s; cannot persist cooldown; stop and repair private state", uid)
 		}
-		return "", &transientCredentialError{reason: "keychain_unavailable", message: fmt.Sprintf("keychain interaction failed or timed out for %s; cooldown recorded; cause=%s; retry after %s", uid, cause, until.UTC().Format(time.RFC3339))}
+		return nil, &transientCredentialError{reason: "keychain_unavailable", message: fmt.Sprintf("keychain interaction failed or timed out for %s; cooldown recorded; cause=%s; retry after %s", uid, cause, until.UTC().Format(time.RFC3339))}
 	}
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			// errSecItemNotFound=-25300; errSecDuplicateItem=-25299. security
-			// preserves their low byte as the process exit status.
-			switch ee.ExitCode() {
-			case 44:
-				return "", errKeychainMissing
-			case 45:
-				return "", errKeychainDuplicate
-			}
-		}
-		return "", fmt.Errorf("keychain operation failed for %s", uid)
+	switch {
+	case r.err == nil:
+		return r.data, nil
+	case errors.Is(r.err, errKeychainMissing):
+		return nil, errKeychainMissing
+	case errors.Is(r.err, errKeychainDuplicate):
+		return nil, errKeychainDuplicate
 	}
-	if out.overflow || errout.overflow {
-		return "", fmt.Errorf("keychain output limit exceeded for %s", uid)
-	}
-	return out.String(), nil
-}
-
-func interactionFailure(err error) bool {
-	if errors.Is(err, exec.ErrWaitDelay) || errors.Is(err, errSecurityProcessIO) || errors.Is(err, errSecurityProcessCleanup) {
-		return true
-	}
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
-		return false
-	}
-	// errSecAuthFailed, errSecInteractionNotAllowed, errSecUserCanceled,
-	// errSecInteractionRequired. Fail closed on other statuses as well.
-	switch ee.ExitCode() {
-	case 51, 36, 128, 29, 53:
-		return true
-	}
-	return false
+	return nil, fmt.Errorf("keychain operation failed for %s", uid)
 }
 
 func (k *keychainStore) lookup(ctx context.Context, uid string) (string, error) {
-	args := []string{"find-generic-password", "-s", k.selectedService(), "-a", uid, "-w"}
-	target, err := k.targetPath()
-	if err != nil {
-		return "", fmt.Errorf("keychain target unavailable for %s", uid)
-	}
-	args = append(args, target)
-	out, err := k.invoke(ctx, uid, "", args...)
+	data, err := k.run(ctx, uid, "", nil, func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
+		return b.find(ctx, target, k.selectedService(), uid)
+	})
 	if err != nil {
 		return "", err
 	}
-	// security adds one record terminator; do not normalize token bytes.
-	token := strings.TrimSuffix(out, "\n")
+	token := string(data)
 	if strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\x00\r\n") {
 		return "", fmt.Errorf("keychain returned an invalid or empty token for %s", uid)
 	}
@@ -351,15 +352,15 @@ func (k *keychainStore) read(ctx context.Context, uid string) (string, error) {
 	return token, err
 }
 
-// security's interactive tokenizer supports double-quoted strings with
-// backslash escaping. Reject command separators/control bytes, never a shell.
-func securityQuote(s string) (string, error) {
+// controlBytes reports a C0 control byte or DEL, which no identity or token
+// contains.
+func controlBytes(s string) bool {
 	for _, r := range s {
 		if r < 32 || r == 127 {
-			return "", errors.New("invalid keychain value")
+			return true
 		}
 	}
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`, nil
+	return false
 }
 
 func (k *keychainStore) write(ctx context.Context, uid, token string) error {
@@ -375,23 +376,21 @@ func (k *keychainStore) write(ctx context.Context, uid, token string) error {
 	return k.writeLocked(ctx, uid, token)
 }
 
-// writeLocked is called only under a credential reservation/guard, or by the
-// explicit Daemon rollback while migration owns its credential lock and fence.
-// It nests the provider lock inside the credential lock, never in reverse order.
+// writeLocked is called only while the caller owns a credential reservation
+// or mutation guard. It nests the provider lock inside that credential lock,
+// never in reverse order.
 func (k *keychainStore) writeLocked(ctx context.Context, uid, token string) error {
 	if token == "" {
 		return fmt.Errorf("refusing empty token for %s", uid)
 	}
-	account, err := securityQuote(uid)
-	if err != nil {
+	if controlBytes(uid) {
 		return fmt.Errorf("invalid keychain identity")
 	}
-	secret, err := securityQuote(token)
-	if err != nil {
+	if controlBytes(token) {
 		return fmt.Errorf("invalid keychain token for %s", uid)
 	}
 	return k.locked(uid, func() error {
-		_, err := k.lookup(ctx, uid)
+		prior, err := k.lookup(ctx, uid)
 		existing := err == nil
 		if existing && k.createOnly {
 			return errKeychainDuplicate
@@ -399,41 +398,37 @@ func (k *keychainStore) writeLocked(ctx context.Context, uid, token string) erro
 		if err != nil && !errors.Is(err, errKeychainMissing) {
 			return err
 		}
-		write := func(update bool) error {
-			service, e := securityQuote(k.selectedService())
-			if e != nil {
-				return e
-			}
-			line := "add-generic-password -s " + service + " -a " + account + " -w " + secret
+		// A value already present is never written again, so an abandoned
+		// write's intended value can only appear through that write and
+		// observing it is decisive for reconcile (keychain_fence.go). The
+		// lookup itself is the exact readback.
+		if existing && prior == token {
+			return nil
+		}
+		put := func(update bool) error {
+			op := "add"
 			if update {
-				line += " -U"
-			} else {
-				line += " -T /usr/bin/security"
+				op = "update"
 			}
-			{
-				target, e := k.targetPath()
-				if e != nil {
-					return fmt.Errorf("keychain target unavailable for %s", uid)
+			_, err := k.run(ctx, uid, op, []byte(token), func(ctx context.Context, b keychainBackend, target string) ([]byte, error) {
+				if update {
+					return nil, b.update(ctx, target, k.selectedService(), uid, []byte(token))
 				}
-				q, e := securityQuote(target)
-				if e != nil {
-					return e
-				}
-				line += " " + q
-			}
-			if len(line)+1 >= 4096 {
-				return fmt.Errorf("keychain command exceeds security input limit for %s", uid)
-			}
-			_, err := k.invoke(ctx, uid, line+"\n", "-i")
+				return nil, b.add(ctx, target, k.selectedService(), uid, []byte(token))
+			})
 			return err
 		}
-		err = write(existing)
+		err = put(existing)
 		if !existing && errors.Is(err, errKeychainDuplicate) && !k.createOnly {
 			// One bounded recovery, no retry loop. A denied lookup is not absence.
-			if _, err = k.lookup(ctx, uid); err != nil {
-				return err
+			current, lerr := k.lookup(ctx, uid)
+			if lerr != nil {
+				return lerr
 			}
-			err = write(true)
+			if current == token {
+				return nil
+			}
+			err = put(true)
 		}
 		if err != nil {
 			return err
