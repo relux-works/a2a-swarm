@@ -125,6 +125,32 @@ func (a *App) registerNamedAgent(ctx context.Context, name string) (config.Crede
 }
 
 func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *session) (config.Credentials, string, error) {
+	return a.registerNamedAgentDestination(ctx, name, admin, nil)
+}
+
+// A fresh-root registration is not a migration/export of an existing source
+// identity. Keep the old local identity/migration/pending guards without taking
+// a child credential lock or creating any child state in the source root.
+func (a *App) checkMemberSource(name string) error {
+	p, err := a.pathsFor(name)
+	if err != nil || config.CheckIdentityMigration(p, name) != nil {
+		return adminRegistrationError("destination", nil)
+	}
+	for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			return adminRegistrationError("destination", nil)
+		}
+	}
+	entries, err := os.ReadDir(p.Base)
+	if err == nil && len(entries) != 0 || err != nil && !errors.Is(err, os.ErrNotExist) {
+		return adminRegistrationError("destination", nil)
+	}
+	return nil
+}
+
+// The optional destination changes storage only. Source admission and every
+// registration request retain the original administrator session and policy.
+func (a *App) registerNamedAgentDestination(ctx context.Context, name string, admin *session, destination *config.MemberRoot) (config.Credentials, string, error) {
 	empty := config.Credentials{}
 	c, e := a.selectedConnection()
 	if e != nil {
@@ -154,36 +180,61 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	if e != nil {
 		return empty, "", e
 	}
+	if destination != nil {
+		if admin == nil || destination.Validate() != nil {
+			return empty, "", adminRegistrationError("destination", nil)
+		}
+		c, p, b, store = &destination.Connection, destination.Paths, destination.Binding, "file"
+	}
 	if admin == nil && store == "file" {
 		return empty, "", errors.New("file connections require connection register --via-admin-room; registration_token_ref is Keychain-only")
 	}
 	if admin == nil && c.RegistrationTokenRef == nil {
 		return empty, "", errors.New("selected profile has no registration_token_ref")
 	}
-	guard, e := config.LockCredentialMutation(p, name, false)
-	if e != nil {
-		return empty, "", e
-	}
-	defer guard.Close()
-	for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {
-		if _, e = os.Lstat(path); !errors.Is(e, os.ErrNotExist) {
-			return empty, "", errors.New("destination identity metadata exists or cannot be inspected")
+	var guard *config.CredentialGuard
+	if destination != nil {
+		guard = destination.Guard()
+	} else {
+		guard, e = config.LockCredentialMutation(p, name, false)
+		if e != nil {
+			return empty, "", e
 		}
 	}
-	if entries, e := os.ReadDir(p.Base); e == nil && len(entries) > 0 || e != nil && !errors.Is(e, os.ErrNotExist) {
-		return empty, "", errors.New("destination state or pending registration exists; owner recovery required")
-	}
-	if e = os.MkdirAll(p.Base, 0700); e != nil {
-		return empty, "", e
+	defer guard.Close()
+	if destination == nil {
+		for _, path := range []string{p.AgentFile(name), p.HumanFile(name)} {
+			if _, e = os.Lstat(path); !errors.Is(e, os.ErrNotExist) {
+				return empty, "", errors.New("destination identity metadata exists or cannot be inspected")
+			}
+		}
+		if entries, e := os.ReadDir(p.Base); e == nil && len(entries) > 0 || e != nil && !errors.Is(e, os.ErrNotExist) {
+			return empty, "", errors.New("destination state or pending registration exists; owner recovery required")
+		}
+		if e = os.MkdirAll(p.Base, 0700); e != nil {
+			return empty, "", e
+		}
 	}
 	journal := filepath.Join(p.Base, "registration.pending.json")
-	f, e := os.OpenFile(journal, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if e != nil {
-		return empty, "", errors.New("registration already pending; owner recovery required")
+	if destination == nil {
+		f, e := os.OpenFile(journal, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if e != nil {
+			return empty, "", errors.New("registration already pending; owner recovery required")
+		}
+		f.Close()
 	}
-	f.Close()
+	saveJournal := func(j registrationJournal) error {
+		if destination == nil {
+			return updateRegistrationJournal(journal, j)
+		}
+		data, err := json.Marshal(j)
+		if err != nil {
+			return err
+		}
+		return destination.WriteJournal(data)
+	}
 	stage := func(s string) error {
-		return updateRegistrationJournal(journal, registrationJournal{Binding: b, Stage: s})
+		return saveJournal(registrationJournal{Binding: b, Stage: s})
 	}
 	if e = stage("preflight"); e != nil {
 		return empty, "", e
@@ -231,6 +282,14 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	}
 	if admin != nil {
 		cleanup := &adminRegistrationCleanup{session: admin}
+		if destination != nil {
+			cleanup.beforeIssue = func() error {
+				if a.checkMemberSource(name) != nil || destination.Validate() != nil {
+					return adminRegistrationError("destination", nil)
+				}
+				return nil
+			}
+		}
 		defer cleanup.finish()
 		bootstrap, e = a.issueAdminRegistrationToken(ctx, admin, cleanup)
 		if e != nil {
@@ -243,6 +302,17 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 	if admin != nil {
 		client = client.ForAdminRegistration()
 		client.BeforeRequest = admin.checkConnection
+		if destination != nil {
+			client.BeforeRequest = func() error {
+				if err := admin.checkConnection(); err != nil {
+					return err
+				}
+				if a.checkMemberSource(name) != nil || destination.Validate() != nil {
+					return adminRegistrationError("destination", nil)
+				}
+				return nil
+			}
+		}
 	}
 	resp, e := client.Register(ctx, name, password, bootstrap, "a2a "+name)
 	if e != nil {
@@ -253,7 +323,7 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 			j.HTTPStatus = me.Status
 			j.ErrCode = registrationRejectionCode(me.ErrCode)
 		}
-		if se := updateRegistrationJournal(journal, j); se != nil {
+		if se := saveJournal(j); se != nil {
 			return empty, "", errors.New("registration outcome pending; recovery journal update failed")
 		}
 		if admin != nil {
@@ -297,6 +367,9 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 		creds.AccessToken = resp.AccessToken
 	}
 	publicationError := func(message string) error {
+		if destination != nil {
+			return fmt.Errorf("%w; remote account created; member publication incomplete; no recovery password retained; owner recovery required", adminRegistrationError("member-publication", nil))
+		}
 		if store == "file" {
 			return errors.New("remote account created; file credential publication incomplete; no recovery password retained; owner recovery required (no automatic retry)")
 		}
@@ -310,11 +383,38 @@ func (a *App) registerNamedAgentUsing(ctx context.Context, name string, admin *s
 			return empty, "", publicationError("remote account and token stored; publication interrupted; owner recovery required")
 		}
 	}
+	if destination != nil {
+		if ctx.Err() != nil || admin.checkConnection() != nil || a.checkMemberSource(name) != nil || destination.Validate() != nil {
+			return empty, "", publicationError("member publication interrupted or binding changed")
+		}
+	}
 	if e = guard.PublishBoundCredentials(creds); e != nil {
 		return empty, "", publicationError("remote account and token stored; metadata publication pending; owner recovery required")
 	}
+	if destination != nil {
+		if e = stage("remote-created-registry-publication-pending"); e != nil {
+			return empty, "", publicationError("member publication pending")
+		}
+		if a.beforeMemberRegistry != nil {
+			if e = a.beforeMemberRegistry(); e != nil {
+				return empty, "", publicationError("member registry publication interrupted")
+			}
+		}
+		if ctx.Err() != nil || admin.checkConnection() != nil || a.checkMemberSource(name) != nil || destination.Validate() != nil {
+			return empty, "", publicationError("member registry publication interrupted or binding changed")
+		}
+		if e = destination.PublishRegistry(); e != nil {
+			return empty, "", publicationError("member publication pending")
+		}
+		if e = destination.Verify(); e != nil {
+			return empty, "", publicationError("member binding verification failed")
+		}
+	}
 	if e = stage("complete"); e != nil {
 		return empty, "", errors.New("credentials published; recovery journal completion pending")
+	}
+	if destination != nil && destination.Verify() != nil {
+		return empty, "", publicationError("member root changed before completion")
 	}
 	// Keep complete evidence: existing metadata makes subsequent ensure reuse,
 	// never re-register. A failed journal unlink cannot invite a duplicate attempt.

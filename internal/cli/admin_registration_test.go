@@ -167,7 +167,7 @@ func (f *admin198Fixture) assertSubscriptionsUnchanged(before []byte) {
 func (f *admin198Fixture) reply() matrix.Event {
 	body := fmt.Sprintf("New registration token issued: `%s` - Token used 0 times. Expires after 1 uses or in 4.98 minutes (%s).", admin198Secret, f.now.Add(5*time.Minute).Truncate(time.Second).Format("2006-01-02 15:04:05"))
 	content := map[string]any{"msgtype": "m.notice", "body": body, "m.relates_to": map[string]any{"m.in_reply_to": map[string]any{"event_id": "$command"}}}
-	e := matrix.Event{EventID: "$reply", Type: "m.room.message", RoomID: admin198Room, Sender: admin198Bot, OriginServerTS: f.now.UnixMilli()}
+	e := matrix.Event{EventID: "$reply", Type: "m.room.message", RoomID: admin198Room, Sender: f.c.AdminRegistration.ServerBotUserID, OriginServerTS: f.now.UnixMilli()}
 	switch f.mode {
 	case "unparsable":
 		content["body"] = "Unexpected token response " + admin198Secret
@@ -223,8 +223,9 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(path, "/state"):
 		empty := ""
 		create, _ := json.Marshal(map[string]any{"m.federate": f.mode == "federated", "room_version": "11"})
-		events := []matrix.Event{{Type: "m.room.create", RoomID: admin198Room, Sender: admin198Bot, StateKey: &empty, Content: create}}
-		members := []string{admin198User, admin198Bot}
+		bot := f.c.AdminRegistration.ServerBotUserID
+		events := []matrix.Event{{Type: "m.room.create", RoomID: admin198Room, Sender: bot, StateKey: &empty, Content: create}}
+		members := []string{admin198User, bot}
 		if f.mode == "extra-member" {
 			members = append(members, "@extra:test.invalid")
 		}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -47,12 +48,34 @@ func adminRegistrationError(stage string, err error) error {
 func cmdAdminRoomRegister(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("connection register")
 	via := fs.Bool("via-admin-room", false, "use explicitly configured admin-room admission")
+	var into string
+	intoCount := 0
+	fs.Func("into", "fresh absolute member config root (file-backed)", func(value string) error {
+		intoCount++
+		if intoCount != 1 || value == "" {
+			return adminRegistrationError("destination", nil)
+		}
+		into = value
+		return nil
+	})
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
+		intoSeen := intoCount != 0
+		for _, arg := range args {
+			if arg == "--" {
+				break
+			}
+			if arg == "--into" || arg == "-into" || strings.HasPrefix(arg, "--into=") || strings.HasPrefix(arg, "-into=") {
+				intoSeen = true
+			}
+		}
+		if intoSeen {
+			return adminRegistrationError("destination", nil)
+		}
 		return err
 	}
 	if len(pos) != 1 || !*via {
-		return usagef("usage: a2a --as ADMIN connection register NAME --via-admin-room")
+		return usagef("usage: a2a --as ADMIN connection register NAME --via-admin-room [--into /fresh/member-root]")
 	}
 	if err = config.ValidateName(pos[0]); err != nil {
 		return adminRegistrationError("destination", err)
@@ -83,8 +106,26 @@ func cmdAdminRoomRegister(ctx context.Context, a *App, args []string) error {
 	if err = a.checkAdminRegistrationRoom(ctx, s); err != nil {
 		return err
 	}
-	_, path, err := a.registerNamedAgentUsing(ctx, pos[0], s)
+	var destination *config.MemberRoot
+	if intoCount != 0 {
+		if a.checkMemberSource(pos[0]) != nil {
+			return adminRegistrationError("destination", nil)
+		}
+		source, err := config.ResolvePaths(a.Getenv)
+		if err != nil {
+			return adminRegistrationError("destination", nil)
+		}
+		destination, err = config.ReserveMemberRoot(ctx, into, source.ConfigRoot(), a.profile, pos[0], *c)
+		if err != nil {
+			return fmt.Errorf("%w; fresh root required; retained reservations require owner recovery", adminRegistrationError("destination", nil))
+		}
+		defer destination.Close()
+	}
+	_, path, err := a.registerNamedAgentDestination(ctx, pos[0], s, destination)
 	if err != nil {
+		if destination != nil && !strings.Contains(err.Error(), "admin registration stage=") {
+			return fmt.Errorf("%w; member transaction incomplete; inspect retained recovery evidence; owner recovery required", adminRegistrationError("member-registration", nil))
+		}
 		return err
 	}
 	a.printf("registered %s; credentials: %s\n", pos[0], path)
@@ -197,6 +238,7 @@ func (a *App) checkAdminRegistrationRoom(ctx context.Context, s *session) error 
 }
 
 type adminRegistrationCleanup struct {
+	beforeIssue    func() error // Destination check only; cleanup remains source-authorized.
 	session        *session
 	command, reply string
 	attempted      bool
@@ -262,6 +304,14 @@ func (a *App) issueAdminRegistrationToken(parent context.Context, s *session, cl
 		return "", adminRegistrationError("reply-position", nil)
 	}
 	start := a.Now()
+	if err := ctx.Err(); err != nil {
+		return "", adminRegistrationError("issue", err)
+	}
+	if cleanup.beforeIssue != nil {
+		if err := cleanup.beforeIssue(); err != nil {
+			return "", err
+		}
+	}
 	cleanup.attempted = true
 	cleanup.command, err = s.client.SendMessage(ctx, r.RoomID, map[string]any{"msgtype": "m.text", "body": adminIssueCommand})
 	if err != nil {

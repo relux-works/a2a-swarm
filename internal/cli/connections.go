@@ -103,6 +103,9 @@ func (a *App) namedMetadata(p config.Paths, name string) (config.Credentials, er
 	if e != nil {
 		return config.Credentials{}, e
 	}
+	if e = config.CheckMemberRegistration(p, b); e != nil {
+		return config.Credentials{}, e
+	}
 	if !a.human {
 		if _, err := os.Lstat(p.HumanFile(name)); err == nil || !errors.Is(err, os.ErrNotExist) {
 			return config.Credentials{}, errors.New("selected name is a human identity or cannot be inspected; agent use refused")
@@ -168,7 +171,7 @@ func (a *App) pinnedArgs(name string) ([]string, error) {
 }
 func cmdConnection(ctx context.Context, a *App, args []string) error {
 	if len(args) == 0 {
-		return usagef("usage: a2a connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room")
+		return usagef("usage: a2a connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room [--into /fresh/member-root]")
 	}
 	p, e := config.ResolvePaths(a.Getenv)
 	if e != nil {

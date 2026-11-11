@@ -3815,10 +3815,10 @@ configure or inspect this feature.
 
 ### Admin-room account registration
 
-`a2a --as ADMIN connection register NAME --via-admin-room` creates one new
+`a2a --as ADMIN connection register NAME --via-admin-room [--into /fresh/member-root]` creates one new
 agent account on the selected named connection using that connection's explicitly
 configured administrator session. `--as` is required and must agree with the
-session's `A2A_AGENT`, when set. The selected backend handles the new account's
+session's `A2A_AGENT`, when set. Without `--into`, the selected backend handles the new account's
 access token. Keychain retains the generated recovery password in its selected
 password service as before. With `credential_store.backend: "file"`, the password
 stays only in memory: nothing replaces the Keychain recovery-password store.
@@ -3832,7 +3832,59 @@ registration token stays in process memory: it is never written to
 never included in the posted command. Existing owner-issued-token registration
 continues to use its existing route.
 
-The public connection entry must contain all of these prerequisites, for example:
+`--into` explicitly selects a fresh member configuration root. Without it, the
+existing administrator-root registration/storage behavior is unchanged. The
+administrator may use either supported backend; the destination always uses
+the file backend. Only the destination receives the child access token and
+credential metadata: no child Keychain password/token or child credential copy
+is created in the administrator root. The password and single-use admission
+token remain in memory. Global `--profile` still selects the source administrator
+connection; its label is retained as the destination's sole/current profile.
+
+The destination `connections.json` contains only the selected connection's ID,
+homeserver URL, identity server, existing public card-room setting (needed by
+ordinary card operations), and `credential_store: {"backend":"file"}`. It omits
+admin admission policy, registration-token references, source Keychain services
+and every other profile. No administrator credentials, `matrix.env`, subscriptions,
+mutes, owner-DM pins, hooks, host files or state are copied. The member can use
+ordinary commands with its own `A2A_CONFIG_DIR` and `A2A_AGENT=NAME`, independently
+of the administrator root.
+
+On Linux and macOS, the destination must be a clean absolute path naming a
+nonexistent leaf under an existing trusted parent. Existing roots (even empty),
+symlink leaves/ancestors, path aliases, unsafe writable ancestors and overlap
+in either direction with the administrator root refuse before issue/registration.
+Use the canonical physical path, including on systems where `/tmp` or `/var`
+is a symlink. Other platforms refuse this opt-in route before creation. Root
+reservation uses exclusive directory creation, a credential lock and an exclusive
+recovery journal; concurrent callers cannot register twice for the same target.
+Directories and regular files are private `0700` and `0600`. Pinned directory
+descriptors prevent replacement from redirecting writes; changed directory
+identities or imported state refuse. Existing source child metadata, human
+identity, migration state or pending registration also refuse: this route does
+not migrate or export an existing identity. This separates configuration/handed-off
+credentials, not processes running as the same OS user.
+
+Every reserved root is retained on failure or interruption, including a failure
+before any remote attempt. Never automatically delete it or retry with that
+root. `<member-root>/registration.pending.json` is secret-free, binds the member
+and records the last durable stage: reservation/preflight, pending outcome,
+definite rejection or ambiguity, credential/registry publication pending, or
+complete. An interrupted journal write may leave only the preceding conservative
+stage; a crash during setup may leave a reserved root without a usable journal.
+Neither case proves a remote account was rolled back. Safe stage/recovery
+diagnostics require explicit owner inspection. A generated file-backend password
+is never retained for recovery.
+
+Publication writes member credentials first, then the minimal registry, verifies
+their binding, and completes the journal before reporting success. An incomplete
+root may retain only its own member credentials and recovery evidence. Ordinary
+member sessions refuse an incomplete or mismatched root completion journal,
+even if credential and registry publication already occurred. Subsequent
+registration into any retained root refuses without reissue or registration;
+recovery is an explicit owner operation, not another invocation with `--into`.
+
+The source administrator's public connection entry must contain all of these prerequisites, for example:
 
 ```json
 "admin_registration": {

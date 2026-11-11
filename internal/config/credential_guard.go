@@ -13,6 +13,7 @@ type CredentialGuard struct {
 	name    string
 	human   bool
 	release func()
+	publish func(Credentials) error // Optional descriptor-pinned fresh-root publication.
 }
 
 func LockCredentialMutation(p Paths, name string, human bool) (*CredentialGuard, error) {
@@ -60,6 +61,9 @@ func (g *CredentialGuard) Close() {
 func (g *CredentialGuard) PublishBoundCredentials(c Credentials) error {
 	if g.release == nil {
 		return ErrMigrationStateUnavailable
+	}
+	if g.publish != nil {
+		return g.publish(c)
 	}
 	return publishBoundCredentials(g.p, g.name, g.human, c)
 }

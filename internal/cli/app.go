@@ -56,6 +56,7 @@ type App struct {
 	connectionError       error
 	authorizeRegistration bool
 	beforeNamedPublish    func() error
+	beforeMemberRegistry  func() error // In-process publication interruption seam.
 	connectionSecretStore connectionSecretStore
 	daemonSecrets         config.DaemonSecretStore // package-test-only; no external fake selection
 	// human selects a human operator's own account (humans/<name>.json); never
@@ -147,7 +148,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{"daemon", "daemon serve|register-station|unregister-station|enroll|status | migrate <identity> --to <daemon-base> [--resume|--rollback]   local a2a daemon (a2ad), station enrollment and quiesced identity migration", cmdDaemon},
-		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room   named Matrix routing", cmdConnection},
+		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room [--into /fresh/member-root]   named Matrix routing", cmdConnection},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
