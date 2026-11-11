@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
