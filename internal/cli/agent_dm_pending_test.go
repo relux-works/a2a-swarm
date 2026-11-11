@@ -3,13 +3,70 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
+
+// Pair filtering leaves opaque ordinary mailbox entries visible. An opaque
+// known-pair entry stays unread and hidden; valid peer/principal controls prove
+// that the same transaction neither rejects all mail nor weakens a held pair.
+func TestAgentDMPendingOpaqueOrdinaryIsolation(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		t.Run(map[bool]string{false: "qualified", true: "records-corrupt"}[corrupt], func(t *testing.T) {
+			e, tr, a, b, room := activeAgentFixture(t)
+			ownerPut(t, ownerFiles(e.paths(), "bob").path("principals.json"), principalConfig{V: 1, Principals: []string{"@parent:" + testServer}})
+			if corrupt {
+				if err := os.WriteFile(filepath.Join(agentDMDir(e.paths(), "bob"), "records.json"), []byte(`{`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s, _ := agentRecoverySession(t, e, tr, "bob")
+			peer, err := json.Marshal(agentDirectedEvent(t, "$opaque-peer", a, b))
+			if err != nil {
+				t.Fatal(err)
+			}
+			principal, err := json.Marshal(agentDirectedEvent(t, "$opaque-principal", "@parent:"+testServer, "@wrong:"+testServer))
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries := []config.MailEntry{
+				{ID: "$opaque-ordinary", Kind: config.MailEvent, Room: "!ordinary:" + testServer, Rel: "to"},
+				{ID: "$opaque-held", Kind: config.MailEvent, Room: room, Rel: "to"},
+				{ID: "$opaque-peer", Kind: config.MailEvent, Room: room, Rel: "to", Event: peer},
+				{ID: "$opaque-principal", Kind: config.MailEvent, Room: room, Rel: "to", Event: principal},
+			}
+			if _, err := e.mailbox("bob").Append(entries); err != nil {
+				t.Fatal(err)
+			}
+			visible := map[string]bool{}
+			_, err = s.lockedDeliver(context.Background(), time.Time{}, false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+				for _, entry := range mb.Pending() {
+					visible[entry.ID] = true
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !visible["$opaque-ordinary"] || !visible["$opaque-principal"] || visible["$opaque-held"] || visible["$opaque-peer"] != !corrupt || len(visible) != map[bool]int{false: 3, true: 2}[corrupt] {
+				t.Fatalf("opaque ordinary/pair isolation assertion: corrupt=%v visible=%v", corrupt, visible)
+			}
+			mb := e.mailbox("bob")
+			for _, entry := range entries {
+				if !mb.Has(entry.ID) || mb.Received(entry.ID) {
+					t.Fatalf("Pending view removed or receipted %s", entry.ID)
+				}
+			}
+		})
+	}
+}
 
 // A fresh ack process receipts shown active-pair mail, including all-shown.
 // Current admission or policy withdrawal closes implicit selection without

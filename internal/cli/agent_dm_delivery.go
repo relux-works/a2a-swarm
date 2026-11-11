@@ -367,6 +367,11 @@ func (s *session) agentMailboxView(mb *config.Mailbox) {
 		if e.Kind != config.MailEvent {
 			return true
 		}
+		// This view owns only retained pair rooms. Ordinary mailbox entries may
+		// legitimately have no decoded event and keep their existing semantics.
+		if _, known := g.Rooms[e.Room]; !known {
+			return true
+		}
 		var ev matrix.Event
 		if json.Unmarshal(e.Event, &ev) != nil {
 			return false
