@@ -132,3 +132,13 @@ coverage-start window is everything already behind the committed cursor,
 including initial positioning and a cycle begun before configuration changes
 or with unreadable metadata. It is not replayed; no initial history crawl or
 retroactive backfill occurs. Existing limited-sync recovery remains. See docs/cli.md.
+
+## Read-only room authority facts
+
+`a2a room power ROOM --json` reads current creator and explicit/default power
+facts through the selected own connection. The complete bounded snapshot must
+contain the caller's JOIN; unknown, unsupported or malformed state refuses
+without partial rows. Room v12 creators retain immutable infinite authority
+after leaving. Another user's level100 is not proof of transferred authority.
+The reader changes no room/local state and makes no safe-retirement claim.
+See `docs/cli.md` for the versioned output and observation limits.
