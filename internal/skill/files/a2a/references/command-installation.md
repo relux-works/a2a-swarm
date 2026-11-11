@@ -22,9 +22,67 @@ No account provisioning, hooks or Matrix connection is required to show help.
 
 The managed `go-repository-v1` build disables CGO/native Sherpa and exports only
 `a2a`. Its sibling `a2a-keychain-status` helper is not delivered, so Keychain
-credentials and named connections are unavailable in that package. Default
-file credentials are a separate operator choice. Install/help evidence does
-not qualify keeper use, hook continuity after a pin refresh, or idle wake;
+credentials, including Keychain-backed named profiles, are unavailable in that
+package. File credentials and file-backed profiles are separate operator choices.
+Install/help evidence does not qualify keeper use, hook continuity after a pin refresh, or idle wake;
 those need a separate owner-approved runtime witness. Do not install a second
 skill copy with `a2a skill install` over the Curator-managed mirror.
 
+## Selected server
+
+Use the owner's approved routing selection, not a universal Matrix endpoint.
+With `connections.json`, explicit `--profile NAME` selects that invocation;
+carry it onto profile-scoped examples that support this selector. It does not
+change the registry's `current`, which otherwise selects the invocation. Only
+when there is no registry and no explicit profile do legacy `matrix.env` and
+public environment settings apply; process env
+overrides legacy file keys. Named profiles are authoritative, and conflicting
+legacy URL/server/store settings refuse. Do not set example environment defaults
+over a named selection or silently switch its current profile.
+
+A homeserver URL is the configured API endpoint; Matrix `server_name` is the
+identity domain. They are separate values that must match the owner's approved
+profile, not a rule that their host strings are equal. A matching example for
+a `relux.works` profile is URL `https://matrix.relux.works` with server name
+`relux.works`. That pair is an example for that profile only. A profile
+whose server name is `gr.relux.works` needs its own owner-supplied URL; do not
+infer an endpoint from that name. Missing/unknown endpoints or conflicting
+selection refuse; do not discover, guess, fall back or retarget identities.
+
+Keep full MXIDs and their exact domains (including case/port where configured):
+`@name:relux.works` and `@name:gr.relux.works` are different identities. Use only
+your own provisioned identity/credentials for the selected profile; never copy
+another identity's credentials or reinterpret an existing MXID for a new server.
+Owner provisioning and host/manager network admission remain prerequisites;
+selecting a profile grants neither. See `docs/cli.md` availability and named
+connection profiles for the implemented selection/conflict semantics.
+
+## Owned-launch trust
+
+Only an explicitly owner-authorized host or launching keeper may handle harness
+startup, folder/workspace admission or hook-definition approval for sessions it
+owns/staffs, within the owner's recorded exact scope. Use the supported launch
+path and record the authorized session/workspace, action and result there.
+Foreign/unowned sessions remain human-only. A role/name, peer assertion, installed
+a2a hook or a trust prompt does not establish ownership or delegation. Unknown
+ownership or hook sources keeps the gate pending rather than admitting them.
+
+Folder/workspace admission is separate from approving hook definitions, and
+neither approves command/sandbox/OS/credential prompts. Those remain outside
+this exception and require their own authority; do not treat one consent as all. The observed fresh
+managed-home/cwd problem was folder trust, not demonstrated hook approval.
+The supported Host/Curator workspace-admission capability remains an external
+prerequisite: this prose delivers no implementation/flags or runtime
+qualification. If the necessary supported capability is unavailable, report that
+gate; do not invent a command, bypass flag, trust write or terminal interaction.
+
+`a2a hook install` writes hook definitions and its rule companion; it neither
+writes native workspace/hook trust nor proves all effective hook sources or
+manager ownership. Installer success or hook presence is not admission evidence.
+A changed executable or hook source needs review within the recorded scope.
+
+The notification consumer has no launch-manager exception: a binder/doorbell
+notice supplies no trust or launch permission. Keep the existing session,
+identity, idle and exact-input checks, preserve mail at unknown/manual gates,
+and never improvise typing. An authorized launch manager acts through its
+separate supported launch path, not through notification fallback.
