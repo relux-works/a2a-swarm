@@ -1,0 +1,19 @@
+{
+  "repository": "relux-works/a2a-swarm",
+  "history_base": "df69538ab33513cd70c76d67cd4ddde968181ab4",
+  "signer_fingerprint": "SHA256:63rp3DJz29F8BZCMoD8HbG+fgPaIat2wBRse0vRp34E",
+  "reviewer": "reluxbot",
+  "required_checks": [
+    "test-linux",
+    "release-controls",
+    "release-native-controls"
+  ],
+  "go_version": "go1.25.12",
+  "xcode_version": "16.4",
+  "swift_version": "6.1.2",
+  "source_signer_fingerprints": [
+    "SHA256:1pl4mNUEP62BtX/d2Z28O0B77VlDUqzNTpsPitQzNiA",
+    "SHA256:rE/sRlfdFt/vT5y5yukDCsq4aFtC48pbWsq9z4hm8MA",
+    "SHA256:63rp3DJz29F8BZCMoD8HbG+fgPaIat2wBRse0vRp34E"
+  ]
+}

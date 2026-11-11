@@ -230,3 +230,18 @@ supply these remaining evidence artifacts before native sign-off:
 Infra owns the operator `--check` exemption for an absent boot-volatile run
 directory. Source owns acceptance of the documented preparation fallback;
 there is no launchd inherited-listener path in this producer patch.
+
+## Darwin release: custody and native qualification
+
+The source workflow/gates do not grant Apple-key custody, provisioning, tag or
+publication authority. Direct-owner scope approval is recorded. Actual owner
+repository provisioning and GitHub policy-read access remain prerequisites.
+A protected deployment environment is separately owned optional hardening, not a
+first-release prerequisite. The first proposed0.1.0 release has not been signed/notarized/published by this source unit.
+Actual native keychain import/codesign/notary execution, full DR on final images,
+legacy ACL consent/refusal, no-UI and owner-controlled OS-user fixture remain
+unverified. N-to-N+1 needs a second different admitted image pair and full native
+comparison plus item-access evidence; parser fixtures cannot close it. Archive
+publication does not authorize installing or switching a live consumer. The approved broader Linux/tap/package delivery still needs the concrete shared
+release-standard integration; no duplicate standard or guessed pin is delivered here. See
+[the bounded release contract](docs/darwin-release.md).

@@ -1,0 +1,98 @@
+name: Darwin release
+on:
+  push:
+    tags: ['v*']
+permissions: {}
+concurrency:
+  group: a2a-darwin-release
+  cancel-in-progress: false
+jobs:
+  admission:
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: read
+    runs-on: macos-15
+    timeout-minutes: 15
+    outputs:
+      commit: ${{ steps.admit.outputs.commit }}
+      tag-object: ${{ steps.admit.outputs.tag-object }}
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.25.12'
+          cache: false
+      - name: Admit exact signed tag, reviewed current main and required checks
+        id: admit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run -mod=readonly ./cmd/a2a-release admit "$RELEASE_TAG" > "$RUNNER_TEMP/admission.json"
+          python3 - <<'PY'
+          import json, os, re
+          data = json.load(open(os.environ['RUNNER_TEMP'] + '/admission.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for source, target in [('commit', 'commit'), ('tag_object', 'tag-object')]:
+                  assert re.fullmatch('[0-9a-f]{40}', data[source])
+                  out.write(target + '=' + data[source] + '\n')
+          PY
+  publish:
+    needs: admission
+    permissions:
+      contents: write
+      id-token: write
+      checks: read
+      actions: read
+      pull-requests: read
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.admission.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.25.12'
+          cache: false
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5
+        with:
+          cosign-release: 'v2.6.1'
+      - name: Compile nonsecret release controller
+        run: go build -mod=readonly -o "$RUNNER_TEMP/a2a-release-gate" ./cmd/a2a-release
+      - name: Preflight, native build, explicit signing, notarization and publication
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ADMITTED_TAG_OBJECT: ${{ needs.admission.outputs.tag-object }}
+          GITHUB_TOKEN: ${{ github.token }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          .scripts/release-config.sh
+          "$RUNNER_TEMP/a2a-release-gate" release "$RELEASE_TAG"
+      - name: Remove this job's ephemeral signing material on every exit
+        if: always()
+        run: .scripts/release-cleanup.sh

@@ -88,6 +88,7 @@ keeper/orchestrator pairs with explicit peer join and sole-recipient delivery:
 
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
+| Darwin release gates (Go, native Security APIs, Swift, codesign/notarytool, cosign) | Source-only signed-tag/current-main/full-DR/companion/archive/publication gates and nonsecret controls | `go test -race -count=1 -timeout=3m ./internal/darwinrelease`; [exact admission/build/verify entry points and held rollout](docs/darwin-release.md) | Runner-private payload/evidence and final checksums; publication only after separately authorized tagged execution |
 | `a2a room power` | Read current room creator and explicit/default authority without changing state | `a2a room power ROOM --json` (or escaped text without `--json`) | Minimal versioned JSON/text on stdout; refusals on stderr, no partial rows |
 | Curator build checks (Go, Make) | Verify the dedicated build branch vendor closure and compile its command | `make verify-vendor BUILD_REPOSITORY="$REPOSITORY" BUILD_COMMIT="$FULL_BUILD_OID" MAIN_COMMIT="$FULL_MAIN_OID"`; `make curator-command BUILD_REPOSITORY="$BUILD_CHECKOUT" OUTPUT="$ARTIFACT"`; [branch rule and limits](docs/curator-build.md) | Named equality/refusal output; binary at the explicit output path |
 | Registry bundle qualifier (Go) | Compare complete selected registry functions and one level of resolved callees as inert bytes, with planted controls | [Command and limits](docs/registryqualifier.md) | JSON structural comparison; nonzero on differences, refusals or failed controls |
@@ -445,7 +446,8 @@ codesign --force --sign - bin/a2a-keychain-status
 These are build instructions for an authorized builder; deployment remains held.
 The in-process backend requires a Darwin cgo build. The status companion remains
 separate and reads status only; it is not an item reader or writer. Linux and portable Go tests
-use a fake backend and fake probes; hosted CI does not require Swift. The legacy
+use a fake backend and fake probes; portable Go test jobs do not require Swift.
+The separate native release job builds the real companion. The legacy
 Security APIs are available in the current macOS SDK but deprecated since 10.10.
 The companion prints only `unlocked`/exit 0, `locked`/exit 3 or `error`/exit 2.
 Missing, nonexecutable, failed, timed-out or malformed probes fail closed before
@@ -510,6 +512,18 @@ for this candidate. Actual ACL/partition/no-dialog/refusal behavior, stable
 signing requirement and N-to-N+1 item survival, existing-item rotation/rollback,
 and signing-key custody require separate approval and evidence. Existing item
 ACLs are retained; replacing the reader does not migrate them.
+
+## Darwin release preparation
+
+The [Darwin release source contract](docs/darwin-release.md) provides one native
+arm64 CLI plus real Swift sibling archive path, explicit full designated requirements
+and nonsecret gate controls. The provisional first version is0.1.0; no tag, Apple
+credentials, actual signing/notarization, native success, publication or installation
+is established by this source change. The portable build descriptor is unchanged.
+Direct owner scope approval is recorded; actual provisioning, native/N-to-N+1
+qualification and adoption remain unverified. The approved broader Linux/package/
+Homebrew delivery still needs the shared-standard integration; this Darwin-specific
+source slice does not complete it.
 
 ## History
 Started 2026-09-29 through coordination between a guest orchestrator and the primary orchestrator of skill-project-management.
