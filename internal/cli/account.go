@@ -56,6 +56,11 @@ func (a *App) registerAgent(ctx context.Context, p config.Paths, mx config.Matri
 		return config.Credentials{}, "", err
 	}
 	if store == "keychain" && a.human {
+		// Preserve the existing source fence before human policy, without
+		// reserving credentials. Agent writes still recheck in the reservation.
+		if err := config.CheckIdentityMigration(p, name); err != nil {
+			return config.Credentials{}, "", err
+		}
 		return config.Credentials{}, "", errHumanKeychain
 	}
 	if mx.URL == "" {

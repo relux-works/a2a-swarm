@@ -232,12 +232,17 @@ func (a *App) migrateCredentials(ctx context.Context, args []string) error {
 	if store != "keychain" {
 		return fmt.Errorf("creds migrate requires A2A_SECRET_STORE=keychain")
 	}
-	if a.human {
-		return errHumanKeychain
-	}
 	p, err := a.paths()
 	if err != nil {
 		return err
+	}
+	// The source migration fence precedes human policy without loading tokens.
+	// RewriteCredentialMetadata still rechecks under the credential lock.
+	if err := config.CheckIdentityMigration(p, name); err != nil {
+		return err
+	}
+	if a.human {
+		return errHumanKeychain
 	}
 	err = config.RewriteCredentialMetadata(p, name, a.human, func(c *config.Credentials) error {
 		a.secrets.Add(c.AccessToken, c.Password)

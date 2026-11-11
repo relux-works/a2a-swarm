@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
 // Human sessions and direct credential loaders must observe an agent fence in
@@ -157,7 +158,8 @@ func TestDaemonNamedHumanCounterpartFence(t *testing.T) {
 }
 
 // Legacy creds migrate and register refuse before any fake/real provider access
-// when their source is fenced. The existing migration recoverability tests are
+// when their source is fenced, including both human flag values. Source/target
+// bytes, modes and lock inodes stay fixed. The migration recoverability tests are
 // the valid provider neighbour; move-human's actual CLI neighbour runs here.
 func TestDaemonCredentialCommandFence(t *testing.T) {
 	for _, phase := range []string{"in_progress", "done"} {
@@ -181,18 +183,22 @@ func TestDaemonCredentialCommandFence(t *testing.T) {
 				return originalGetenv(key)
 			}
 			a.keychain = func(config.Paths) *keychainStore { t.Fatal("provider reached through fence"); return nil }
+			sourceBefore := daemonMigrationSnapshot(t, p.Base)
+			targetBefore := daemonMigrationSnapshot(t, to)
 			for _, human := range []bool{false, true} {
 				a.human = human
 				if err := a.migrateCredentials(t.Context(), nil); !errors.Is(err, config.ErrIdentityMigrated) {
 					t.Fatal("creds migrate bypass", err)
 				}
+				if _, _, err := a.registerAgent(t.Context(), p, config.Matrix{URL: "https://example.invalid"}, "fixture", func(*matrix.Client) error { t.Fatal("registration callback reached through fence"); return nil }); !errors.Is(err, config.ErrIdentityMigrated) {
+					t.Fatal("registration bypass", err)
+				}
+				assertDaemonMigrationSnapshot(t, p.Base, sourceBefore)
+				assertDaemonMigrationSnapshot(t, to, targetBefore)
 			}
 			a.human = false
 			if err := cmdCreds(t.Context(), a, []string{"move-human", "fixture"}); !errors.Is(err, config.ErrIdentityMigrated) {
 				t.Fatal("move CLI bypass", err)
-			}
-			if _, _, err := a.registerAgent(t.Context(), p, config.Matrix{URL: "https://example.invalid"}, "fixture", nil); !errors.Is(err, config.ErrIdentityMigrated) {
-				t.Fatal("registration bypass", err)
 			}
 			good, q, _ := daemonCLIFixture(t)
 			if err := cmdCreds(t.Context(), good, []string{"move-human", "fixture"}); err != nil {

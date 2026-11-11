@@ -8,9 +8,11 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
@@ -19,7 +21,9 @@ import (
 // Reconcile is selected-backend/identity work: file, foreign, human, changed
 // binding and migration-fenced selections refuse before constructing Keychain.
 // A valid named Keychain selection reaches its own adapter without HTTP/items
-// when there is no outstanding fence. No real Keychain is exercised.
+// when there is no outstanding fence. The migration case uses the supported
+// abstract transaction authority, cancelled before any secret-store call; it
+// does not claim CLI/native migration capability. No real Keychain is exercised.
 func TestKeychainReconcileSelection(t *testing.T) {
 	for _, mode := range []string{"keychain", "file", "human", "human-class", "foreign", "changed-binding", "backend-conflict", "unknown-profile", "migration"} {
 		t.Run(mode, func(t *testing.T) {
@@ -29,10 +33,20 @@ func TestKeychainReconcileSelection(t *testing.T) {
 			} else {
 				f = newNamedFixture(t, true)
 			}
+			if mode == "migration" {
+				// The migration API rejects symlink ancestors, including a platform
+				// temporary-directory alias; use its actual private fixture root.
+				root, err := filepath.EvalSymlinks(f.root)
+				if err != nil {
+					t.Fatal("fixture canonical root unavailable")
+				}
+				f.root = root
+			}
 			a := f.app()
 			a.profile = "alpha"
 			p := f.paths("alpha", false)
 			want := ""
+			migrationTarget := ""
 			switch mode {
 			case "file":
 				want = "requires the selected Keychain backend"
@@ -63,11 +77,35 @@ func TestKeychainReconcileSelection(t *testing.T) {
 				a.profile = "absent"
 				want = "unknown connection profile"
 			case "migration":
-				if _, err := config.UpdateState(p, "alice", func(s *config.State) error {
-					s.Migration = &config.IdentityMigration{Phase: "pending"}
-					return nil
-				}); err != nil {
-					t.Fatal("fixture migration preparation failed")
+				// Establish the ordinary state directory through its supported
+				// writer before the migration authority takes ownership of the fence.
+				if err := config.SaveState(p, "alice", config.State{}); err != nil {
+					t.Fatal("fixture ordinary state unavailable")
+				}
+				original, err := os.ReadFile(p.AgentFile("alice"))
+				if err != nil {
+					t.Fatal("fixture source unavailable")
+				}
+				targetRoot, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal("fixture target unavailable")
+				}
+				migrationTarget = filepath.Join(targetRoot, "daemon")
+				binding, err := f.r.Profiles["alpha"].Binding("alice", false)
+				if err != nil {
+					t.Fatal("fixture binding unavailable")
+				}
+				store := &daemonCLISecretFixture{present: true}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+				err = config.MigrateDaemon(ctx, p, "alice", config.DaemonMigrationOptions{Binding: &binding, To: migrationTarget, Keychain: true, Secrets: store, Now: at})
+				state, stateErr := config.LoadState(p, "alice")
+				if !errors.Is(err, config.ErrDaemonMigration) || stateErr != nil || state.Migration == nil || state.Migration.Phase != "in_progress" || state.Migration.CutoverStarted || state.Migration.DaemonBase != migrationTarget || !state.Migration.At.Equal(at) || !errors.Is(config.CheckIdentityMigration(p, "alice"), config.ErrIdentityMigrated) {
+					t.Fatal("supported abstract migration did not establish source fence")
+				}
+				if data, err := os.ReadFile(p.AgentFile("alice")); err != nil || !bytes.Equal(data, original) || !store.present || store.reads != 0 || store.deletes != 0 || store.restores != 0 {
+					t.Fatal("cancelled fixture changed credentials or reached abstract provider")
 				}
 				want = config.ErrIdentityMigrated.Error()
 			}
@@ -80,7 +118,24 @@ func TestKeychainReconcileSelection(t *testing.T) {
 				return isolatedKeychainStore(keychainStore{paths: got})
 			}
 			before := memberRootFiles(t, f.root)
+			sourceSnapshot := daemonMigrationSnapshot(t, f.root)
+			var targetSnapshot map[string]daemonMigrationSnapshotEntry
+			if migrationTarget != "" {
+				targetSnapshot = daemonMigrationSnapshot(t, migrationTarget)
+			}
 			err := a.reconcileCredentials(context.Background(), nil)
+			if mode == "migration" {
+				if constructors != 0 {
+					t.Fatal("migration-fenced reconcile reached native constructor")
+				}
+				if !errors.Is(err, config.ErrIdentityMigrated) {
+					t.Fatal("migration-fenced reconcile lost identity_migrated")
+				}
+				assertDaemonMigrationSnapshot(t, migrationTarget, targetSnapshot)
+			}
+			if mode != "keychain" {
+				assertDaemonMigrationSnapshot(t, f.root, sourceSnapshot)
+			}
 			if mode == "keychain" {
 				if err != nil || constructors != 1 || !strings.Contains(f.out.String(), "no unresolved keychain write") {
 					t.Fatal("valid selected reconcile control refused")
@@ -91,6 +146,65 @@ func TestKeychainReconcileSelection(t *testing.T) {
 			if f.effects() != 0 {
 				t.Fatal("reconcile performed HTTP or secret-provider effects")
 			}
+		})
+	}
+}
+
+// The actual legacy reconcile path observes supported file-migration fences
+// before its synthetic Keychain constructor, without changing source/target
+// bytes, modes or lock inodes. An unfenced selected-Keychain control still
+// reconciles normally; its ordinary provider-lock creation is permitted.
+// This prepares only owned abstract/file fixtures, never CLI/native migration.
+func TestKeychainReconcileLegacyMigrationFence(t *testing.T) {
+	for _, phase := range []string{"unfenced", "in_progress", "done"} {
+		t.Run(phase, func(t *testing.T) {
+			a, p, to := daemonCLIFixture(t)
+			if phase != "unfenced" {
+				ctx, cancel := context.WithCancel(context.Background())
+				if phase == "in_progress" {
+					cancel()
+				}
+				err := config.MigrateDaemon(ctx, p, "fixture", config.DaemonMigrationOptions{To: to, Now: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)})
+				cancel()
+				state, stateErr := config.LoadState(p, "fixture")
+				if stateErr != nil || state.Migration == nil || state.Migration.Phase != phase || !errors.Is(config.CheckIdentityMigration(p, "fixture"), config.ErrIdentityMigrated) || phase == "done" && err != nil || phase == "in_progress" && !errors.Is(err, config.ErrDaemonMigration) {
+					t.Fatal("supported legacy migration did not establish source fence")
+				}
+			}
+			getenv := a.Getenv
+			a.Getenv = func(key string) string {
+				if key == envSecretStore {
+					return "keychain"
+				}
+				return getenv(key)
+			}
+			var out bytes.Buffer
+			a.Stdout = &out
+			constructors := 0
+			a.keychain = func(got config.Paths) *keychainStore {
+				constructors++
+				if got != p {
+					t.Fatal("legacy reconcile selected wrong source")
+				}
+				return isolatedKeychainStore(keychainStore{paths: got})
+			}
+			sourceBefore := daemonMigrationSnapshot(t, p.Base)
+			targetBefore := daemonMigrationSnapshot(t, to)
+			err := a.reconcileCredentials(context.Background(), nil)
+			if phase == "unfenced" {
+				if err != nil || constructors != 1 || !strings.Contains(out.String(), "no unresolved keychain write") {
+					t.Fatal("valid unfenced legacy reconcile control refused")
+				}
+			} else {
+				if constructors != 0 {
+					t.Fatal("migration-fenced legacy reconcile reached native constructor")
+				}
+				if !errors.Is(err, config.ErrIdentityMigrated) || out.Len() != 0 {
+					t.Fatal("legacy reconcile lost migration fence refusal")
+				}
+				assertDaemonMigrationSnapshot(t, p.Base, sourceBefore)
+			}
+			assertDaemonMigrationSnapshot(t, to, targetBefore)
 		})
 	}
 }

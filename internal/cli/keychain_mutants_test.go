@@ -99,7 +99,7 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		{"human-migrate-admitted", "credentials.go", `if a.human {
 		return errHumanKeychain
 	}
-	p, err := a.paths()`, `p, err := a.paths()`, "TestKeychainAuthorizationBoundaries"},
+	err = config.RewriteCredentialMetadata`, `err = config.RewriteCredentialMetadata`, "TestKeychainAuthorizationBoundaries"},
 		{"human-reconcile-admitted", "credentials.go", `if a.human {
 		return errHumanKeychain
 	}
@@ -112,9 +112,10 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		return errHumanKeychain
 	}`, `func (a *App) createConnectionSecret(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {`, "TestNamedHumanSecretCreateRefused"},
 
-		{"human-legacy-register-admitted", "account.go", `if store == "keychain" && a.human {
-		return config.Credentials{}, "", errHumanKeychain
-	}`, ``, "TestKeychainHumanLegacyRegistrationRefused/human"},
+		{"human-legacy-register-admitted", "account.go", `		return config.Credentials{}, "", errHumanKeychain
+	}
+	if mx.URL == "" {`, `	}
+	if mx.URL == "" {`, "TestKeychainHumanLegacyRegistrationRefused/human"},
 
 		// Retaining the refusal while constructing first must fail the zero-call
 		// assertion, not get hidden behind a later unrelated migration refusal.
@@ -130,10 +131,14 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 	if a.human {
 		return errHumanKeychain
 	}`, `func (a *App) createConnectionSecretLocked(ctx context.Context, p config.Paths, r config.SecretReference, v string) error {`, "TestNamedHumanLockedSecretCreateRefused"},
-		{"reconcile-migration-fence-skipped", "credentials.go", `if err := config.CheckIdentityMigration(p, name); err != nil {
+		{"reconcile-native-before-migration-fence", "credentials.go", `if err := config.CheckIdentityMigration(p, name); err != nil {
 		return err
 	}
-	var uid, service string`, `var uid, service string`, "TestKeychainReconcileSelection/migration"},
+	var uid, service string`, `_ = a.keychainStore(p)
+	if err := config.CheckIdentityMigration(p, name); err != nil {
+		return err
+	}
+	var uid, service string`, "TestKeychainReconcileSelection/migration"},
 		{"reconcile-service-unselected", "credentials.go", `k.service = service
 	outcome, err := k.reconcile(ctx, uid)`, `k.service = keychainService; _ = service
 	outcome, err := k.reconcile(ctx, uid)`, "TestNamedKeychainFenceReconcile/observed"},
@@ -169,7 +174,9 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 	for _, m := range mutants {
 		t.Run(m.name, func(t *testing.T) {
 			copyRoot := t.TempDir()
-			for _, name := range []string{"go.mod", "go.sum", "internal"} {
+			// CLI tests and matrixtransport import the module's transport seam,
+			// including conformancetest; keep its real source/fixtures in every copy.
+			for _, name := range []string{"go.mod", "go.sum", "internal", "transport"} {
 				src := filepath.Join(root, name)
 				err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 					if err != nil {
@@ -262,6 +269,16 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 			leaf := m.test[strings.LastIndex(m.test, "/")+1:]
 			if !strings.Contains(string(out), "--- FAIL: "+leaf+" ") && !strings.Contains(string(out), "--- FAIL: "+m.test+" ") {
 				t.Fatalf("not a named behavioral kill (exit %d): %s", status, out)
+			}
+			// The separate approved bench requires an unplanted baseline first.
+			// These ordering controls must hit their intended zero-call assertion,
+			// rather than a different failure in the same named test.
+			intended := map[string]string{
+				"daemon-native-before-deferral":           "deferred migration reached native constructor",
+				"reconcile-native-before-migration-fence": "migration-fenced reconcile reached native constructor",
+			}[m.name]
+			if intended != "" && !strings.Contains(string(out), intended) {
+				t.Fatalf("not the intended behavioral assertion (exit %d): %s", status, out)
 			}
 			t.Logf("KILLED mutant=%s test=%s gate_exit=%d\n%s", m.name, m.test, status, out)
 			for _, line := range strings.Split(string(out), "\n") {
