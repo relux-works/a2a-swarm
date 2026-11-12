@@ -201,6 +201,14 @@ func validWriterSeal(s State) bool {
 }
 
 func ordinaryWriterFence(old State, now time.Time) time.Time {
+	fence, _ := ordinaryWriterFenceSealed(old, now)
+	return fence
+}
+
+// ordinaryWriterFenceSealed is ordinaryWriterFence that also reports the result
+// of its own seal verification of this exact disk input. The fence decision
+// is unchanged; the result is not cached beyond the caller's lock.
+func ordinaryWriterFenceSealed(old State, now time.Time) (time.Time, bool) {
 	// Verify every disk input before a callback/effect, including inputs that
 	// already carry a sticky fence. Retaining the timestamp is not a shortcut
 	// around the compatible-writer verification rule.
@@ -208,15 +216,65 @@ func ordinaryWriterFence(old State, now time.Time) time.Time {
 	// Only LoadState's missing-file result has no disk input. An existing
 	// empty/null/unsealed State is foreign history, even with no typed fields.
 	if len(old.rawState) == 0 {
-		return time.Time{}
+		return time.Time{}, false
 	}
 	if old.Writer != nil && !old.Writer.ForeignSeen.IsZero() {
-		return old.Writer.ForeignSeen.UTC()
+		return old.Writer.ForeignSeen.UTC(), valid
 	}
 	if !valid {
-		return now.UTC()
+		return now.UTC(), false
 	}
-	return time.Time{}
+	return time.Time{}, true
+}
+
+// unchangedSealedState reports whether sealing s would reproduce old's exact
+// disk input. The caller must already have verified old's seal under the same
+// lock. canonicalState drops writer.seal, so marshalling s with old's seal
+// yields bytes whose digest equals that of old's input exactly when they are
+// byte-identical; that digest is old's verified seal, so sealedState(s) would
+// emit the same bytes. Any difference, or a marshal error, reports false and
+// leaves the ordinary sealed write (and its error) to the caller.
+func unchangedSealedState(old, s State) bool {
+	if old.Writer == nil || s.Writer == nil {
+		return false
+	}
+	w := *s.Writer
+	w.Seal = old.Writer.Seal
+	s.Writer = &w
+	data, err := marshalState(s)
+	if err != nil {
+		return false
+	}
+	n := len(data)
+	return len(old.rawState) == n+1 && old.rawState[n] == '\n' && bytes.Equal(old.rawState[:n], data)
+}
+
+// ordinaryStateOnDisk rechecks, under the state lock, that the path is still
+// a 0600 regular file holding exactly the loaded input. A cooperative writer
+// cannot intervene there; a non-cooperating replacement, mode change or read
+// error falls back to the ordinary replacement instead of being reported as
+// persisted.
+func ordinaryStateOnDisk(path string, input []byte) bool {
+	if checkSecretFile(path) != nil {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && bytes.Equal(data, input)
+}
+
+// confirmOrdinaryStateUnchanged repeats writeOrdinaryStateAtomic's directory
+// syncs without replacing the file. An elided rewrite therefore makes the same
+// durability claim as a replacement: a parent failure is returned as is, and a
+// state-directory failure is ErrStateWriteUncertain.
+func confirmOrdinaryStateUnchanged(path string, syncDir func(string) error) error {
+	dir := filepath.Dir(path)
+	if err := syncDir(filepath.Dir(dir)); err != nil {
+		return err
+	}
+	if err := syncDir(dir); err != nil {
+		return ErrStateWriteUncertain
+	}
+	return nil
 }
 
 func sealedState(s State) ([]byte, error) {

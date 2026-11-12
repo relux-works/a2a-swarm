@@ -681,6 +681,17 @@ func SaveState(p Paths, name string, s State) error {
 // saveStateLocked never reacquires the state lock. Only monitor lifecycle code
 // may alter the monitor record or explicitly clear the sticky writer fence.
 func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monitor, migration bool) (State, error) {
+	return persistStateLocked(p, name, old, s, fence, monitor, migration, false)
+}
+
+// persistStateLocked is saveStateLocked with one ordinary-transaction option.
+// inputSealed reports that the caller verified old's compatible-writer seal
+// under this same lock (ordinaryWriterFenceSealed). After every refusal below
+// has passed, an ordinary non-Host-v2 save whose sealed bytes would equal that
+// verified input, still present at the path, is not replaced: the file already
+// holds exactly that representation. The directory syncs still run, so success
+// keeps the replacement's durability claim and its ErrStateWriteUncertain.
+func persistStateLocked(p Paths, name string, old, s State, fence time.Time, monitor, migration, inputSealed bool) (State, error) {
 	if !migration && (old.Migration != nil || s.Migration != nil) {
 		return old, ErrIdentityMigrated
 	}
@@ -712,6 +723,14 @@ func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monito
 	}
 	// Caller-supplied writer metadata never erases an observed fence.
 	s.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
+	if inputSealed && !strict && unchangedSealedState(old, s) && ordinaryStateOnDisk(path, old.rawState) {
+		if err := confirmOrdinaryStateUnchanged(path, syncStateDirectory); err != nil {
+			return old, err
+		}
+		// old is the independent snapshot decoded from these exact bytes; the
+		// callback only ever received a separately decoded working copy.
+		return old, nil
+	}
 	data, err := sealedState(s)
 	if err != nil {
 		return old, err
@@ -866,7 +885,7 @@ func updateState(p Paths, name string, lock func(string) (func(), error), fn fun
 		if old.Migration != nil {
 			return old, ErrIdentityMigrated
 		}
-		fence := ordinaryWriterFence(old, time.Now())
+		fence, sealed := ordinaryWriterFenceSealed(old, time.Now())
 		// A callback must not mutate the comparison snapshot through shared
 		// lease/runtime/terminal pointers or slices. Decode the same disk input
 		// into an independent working copy before handing it to ordinary code.
@@ -880,7 +899,7 @@ func updateState(p Paths, name string, lock func(string) (func(), error), fn fun
 		if err := fn(&s); err != nil {
 			return old, err
 		}
-		return saveStateLocked(p, name, old, s, fence, false, false)
+		return persistStateLocked(p, name, old, s, fence, false, false, sealed)
 	})
 }
 
