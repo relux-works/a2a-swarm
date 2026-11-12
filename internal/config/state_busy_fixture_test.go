@@ -127,18 +127,29 @@ func busyCycleNoops(outcome string) []func(*State) error {
 	}
 }
 
+// busyRouteDeadline is the per-transaction deadline of the two bounded routes.
+// The work-count fixture asserts rewrite counts, not latency, so the bound is
+// generous but finite. UpdateStateContext checks its deadline again after it
+// has loaded and decoded the 2,000-record state and before it calls the
+// callback, and a one-second bound expired there under a loaded race run.
+// One minute still exercises the bounded code paths and stays below go
+// test's default timeout. Lock-timeout and cancellation refusals are tested
+// separately, in TestUpdateStateUnchangedRefusalsWithoutWrite.
+const busyRouteDeadline = time.Minute
+
 // updateRoutes are the ordinary transaction entry points used by the bind
 // consumer (UpdateState via App.updateState, UpdateStateContext for daemon
-// and lease paths, UpdateStateBy for bounded observers).
+// and lease paths, UpdateStateBy for bounded observers). Each call to a
+// bounded route gets a fresh busyRouteDeadline.
 func updateRoutes(p Paths, name string) map[string]func(func(*State) error) (State, error) {
 	return map[string]func(func(*State) error) (State, error){
 		"UpdateState": func(fn func(*State) error) (State, error) { return UpdateState(p, name, fn) },
 		"UpdateStateBy": func(fn func(*State) error) (State, error) {
-			return UpdateStateBy(p, name, time.Now().Add(time.Second), fn)
+			return UpdateStateBy(p, name, time.Now().Add(busyRouteDeadline), fn)
 		},
 		"UpdateStateUntil": func(fn func(*State) error) (State, error) { return UpdateStateUntil(p, name, time.Time{}, fn) },
 		"UpdateStateContext": func(fn func(*State) error) (State, error) {
-			return UpdateStateContext(context.Background(), p, name, time.Now().Add(time.Second), fn)
+			return UpdateStateContext(context.Background(), p, name, time.Now().Add(busyRouteDeadline), fn)
 		},
 	}
 }
@@ -164,7 +175,11 @@ func TestSyntheticBusyStateSize(t *testing.T) {
 // repeated busy-cycle transactions with no effective change replace the state
 // file zero times on every ordinary entry point and leave its bytes intact,
 // while a changed outcome still replaces it exactly once. Expected red on the
-// base commit, which replaces the file on every transaction.
+// base commit, which replaces the file on every transaction: there it fails
+// at the zero-rewrite assertion. Any transaction error, a bounded route's
+// ErrLockTimeout included, still fails as "op N"; busyRouteDeadline is sized
+// so that host load should not reach that path first. The test asserts no
+// transaction time and proves nothing about latency.
 func TestUpdateStateUnchangedWorkCount(t *testing.T) {
 	for route := range updateRoutes(Paths{}, "") {
 		t.Run(route, func(t *testing.T) {
