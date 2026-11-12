@@ -865,3 +865,108 @@ func TestUpdateStateUnchangedFileSyncRequired(t *testing.T) {
 		})
 	}
 }
+
+// hostElisionNeighbour seeds a sealed Host-enrolled state through the public
+// writers. Version 1 stays on the ordinary writer; version 2 is the strict
+// Host-v2 writer that elision excludes. Both share one fixture otherwise.
+func hostElisionNeighbour(t *testing.T, version int) (Paths, string) {
+	t.Helper()
+	scope, a, now := hostFixture()
+	p := testPaths(t)
+	s := State{Lease: &a.Lease, NextBatch: "unread-retained"}
+	if err := s.EnrollHost(a, scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(p, scope.Agent, s); err != nil {
+		t.Fatal(err)
+	}
+	if version == 2 {
+		if err := s.EnableHostNotifications(a, scope, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := SaveState(p, scope.Agent, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return p, scope.Agent
+}
+
+// strictNotElided is the checker for the strict-writer exclusion: a Host-v2
+// no-op must be replaced by its own writer and must never reach the ordinary
+// elision syncer. It reports a violation instead of failing, so the ordinary
+// neighbour's elided outcome can serve as its plant.
+func strictNotElided(rec syncRecord, replaced bool) error {
+	if !replaced || len(rec.files) != 0 || len(rec.dirs) != 0 {
+		return errors.New("strict Host-v2 writer entered ordinary elision")
+	}
+	return nil
+}
+
+// Proves the excluded strict writer never enters ordinary elision (the !strict
+// gate). The Host-v2 neighbour is a valid sealed input for which every other
+// elision premise holds: its seal verifies under the transaction's own fence
+// and its resealed no-op bytes equal the disk input. A no-op UpdateState on it
+// is still replaced by the Host-v2 writer with the identical representation,
+// and the ordinary elision syncer is never called. The version 1 neighbour,
+// identical except for the version that selects the strict writer, is elided
+// with one file and two directory syncs, so a gate that never elides cannot
+// pass; feeding that elided outcome to the checker is its plant. Limits: this
+// observes the writer choice and the syncer seam, not power-loss persistence.
+func TestUpdateStateUnchangedHostV2NotElided(t *testing.T) {
+	noop := func(p Paths, name string) func() error {
+		return func() error {
+			_, err := UpdateState(p, name, func(*State) error { return nil })
+			return err
+		}
+	}
+	run := func(t *testing.T, version int) (syncRecord, bool, []byte, Paths, string) {
+		t.Helper()
+		p, name := hostElisionNeighbour(t, version)
+		old, err := LoadState(p, name)
+		if err != nil || old.HostEnrollment == nil || old.HostEnrollment.Version != version {
+			t.Fatalf("neighbour v%d: %+v %v", version, old.HostEnrollment, err)
+		}
+		fence, sealed := ordinaryWriterFenceSealed(old, time.Now())
+		working, err := LoadState(p, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		working.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
+		if !sealed || !validWriterSeal(old) || !unchangedSealedState(old, working) {
+			t.Fatalf("neighbour v%d does not meet the elision premise: sealed=%v", version, sealed)
+		}
+		raw := bytes.Clone(old.rawState)
+		var rec syncRecord
+		swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+		replaced, err := stateReplaced(t, p, name, noop(p, name))
+		if err != nil {
+			t.Fatalf("v%d no-op: %v", version, err)
+		}
+		return rec, replaced, raw, p, name
+	}
+	t.Run("version 1 ordinary neighbour elided", func(t *testing.T) {
+		rec, replaced, raw, p, name := run(t, 1)
+		if replaced || len(rec.files) != 1 || len(rec.dirs) != 2 {
+			t.Fatalf("replaced=%v files=%d dirs=%v", replaced, len(rec.files), rec.dirs)
+		}
+		if err := elisionSynced(rec, p.StateFile(name), !replaced); err != nil {
+			t.Fatal(err)
+		}
+		if disk, err := os.ReadFile(p.StateFile(name)); err != nil || !bytes.Equal(raw, disk) {
+			t.Fatalf("elided no-op changed the file: %v", err)
+		}
+		if strictNotElided(rec, replaced) == nil {
+			t.Fatal("checker accepted an elided outcome")
+		}
+	})
+	t.Run("version 2 strict neighbour replaced", func(t *testing.T) {
+		rec, replaced, raw, p, name := run(t, 2)
+		if err := strictNotElided(rec, replaced); err != nil {
+			t.Fatalf("%v: replaced=%v files=%d dirs=%v", err, replaced, len(rec.files), rec.dirs)
+		}
+		got, err := LoadState(p, name)
+		if err != nil || got.HostEnrollment == nil || got.HostEnrollment.Version != 2 || !validWriterSeal(got) || !bytes.Equal(raw, got.rawState) {
+			t.Fatalf("strict rewrite did not keep the sealed Host-v2 representation: %v", err)
+		}
+	})
+}
