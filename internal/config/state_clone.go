@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 )
@@ -253,7 +252,7 @@ func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
 // A new or changed field anywhere in that graph changes the signature: the
 // scoped decode memo and the writer working-copy clone are then disabled (the
 // ordinary decoder runs) until the clone is reviewed and this pin updated.
-const stateCloneSchemaPin = "2487012efc2b2029a1e5c76e69144b137a8142f3fe5f7c2fba2a5c121cafcfd8"
+const stateCloneSchemaPin = "c7fab2308554db5d830ab890a0f85202e6ef025d3175d2ce92ef5d612d04bfc5"
 
 var stateCloneSchemaOK = stateSchemaReviewed(reflect.TypeFor[State](), stateCloneSchemaPin)
 
@@ -267,95 +266,102 @@ func stateSchemaReviewed(root reflect.Type, pin string) bool {
 // types only, never values.
 func stateSchemaSignature() string { return stateSchemaSignatureOf(reflect.TypeFor[State]()) }
 
-// stateSchemaSignatureOf records one declaration line per named type
-// reachable from root: its package path, name, kind and underlying structure.
-// A struct records, for every field in declaration order, its index, name,
-// package path (exported or not), embedding, full type and tag. Types are
-// written by identity: a named type by package path and name (its own line
-// holds its structure), an unnamed type by kind with its key, element, length,
-// fields or methods spelled out recursively. time.Time is an immutable leaf;
-// its private layout is not part of the State schema. A root line names root,
-// so an unnamed root struct is recorded too.
+// stateSchemaSignatureOf hashes one canonical, recursive encoding of the type
+// graph reachable from root (schemaEncoder). It reads types only, never values.
 func stateSchemaSignatureOf(root reflect.Type) string {
-	seen := map[reflect.Type]bool{}
-	var lines []string
-	var walk func(reflect.Type)
-	walk = func(t reflect.Type) {
-		if seen[t] {
-			return
-		}
-		seen[t] = true
-		if t.Name() != "" && t.PkgPath() != "" {
-			lines = append(lines, schemaTypeRef(t)+" = "+schemaUnderlying(t))
-		}
-		if t == timeType {
-			return
-		}
-		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
-			walk(t.Elem())
-		case reflect.Map:
-			walk(t.Key())
-			walk(t.Elem())
-		case reflect.Struct:
-			for i := 0; i < t.NumField(); i++ {
-				walk(t.Field(i).Type)
-			}
-		}
-	}
-	walk(root)
-	lines = append(lines, "root "+schemaTypeRef(root))
-	sort.Strings(lines)
-	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	e := schemaEncoder{ids: map[reflect.Type]int{}}
+	e.encode(root)
+	h := sha256.Sum256([]byte(e.b.String()))
 	return hex.EncodeToString(h[:])
 }
 
-// schemaTypeRef names t by identity: a named type by package path and name
-// (predeclared types have an empty package path), an unnamed type by its full
-// structure.
-func schemaTypeRef(t reflect.Type) string {
-	if t.Name() != "" {
-		return fmt.Sprintf("%q.%s", t.PkgPath(), t.Name())
-	}
-	return schemaUnderlying(t)
+// schemaEncoder writes the canonical encoding of a type graph. One recursive
+// rule covers every reflect.Kind, so a component type is always spelled by its
+// own identity and structure, never by reflect.Type.String:
+//
+//   - a named type (including predeclared ones such as int and error) is
+//     written as named#<id>(<package path> <name>)=<its structure> at its first
+//     occurrence and as @<id> afterwards; ids count named types in visit
+//     order, so recursion terminates and two distinct types that share a
+//     package path and name stay distinguishable;
+//   - pointer and slice: element; array: length and element; map: key and
+//     element; chan: direction and element;
+//   - struct: every field in declaration order with its index, name, package
+//     path (exported or not), embedding flag, tag and type;
+//   - interface: its full method set (embedded interfaces contribute through
+//     it) with each method's name, package path and function type;
+//   - func: variadic flag, then every input and every output type in order;
+//   - basic kinds: the kind (the named prefix carries the identity).
+//
+// time.Time is an immutable leaf; its private layout is not part of the State
+// schema. Method sets of non-interface named types are not encoded: they do not
+// change the data layout that cloneState copies.
+type schemaEncoder struct {
+	b   strings.Builder
+	ids map[reflect.Type]int
 }
 
-// schemaUnderlying spells out the kind and structure of t, naming component
-// types with schemaTypeRef.
-func schemaUnderlying(t reflect.Type) string {
-	if t == timeType {
-		return "struct immutable-leaf"
+func (e *schemaEncoder) encode(t reflect.Type) {
+	if t.Name() != "" {
+		if id, ok := e.ids[t]; ok {
+			fmt.Fprintf(&e.b, "@%d", id)
+			return
+		}
+		id := len(e.ids)
+		e.ids[t] = id
+		fmt.Fprintf(&e.b, "named#%d(%q %q)=", id, t.PkgPath(), t.Name())
+		if t == timeType {
+			e.b.WriteString("immutable-leaf")
+			return
+		}
 	}
-	k := t.Kind().String()
-	switch t.Kind() {
+	k := t.Kind()
+	e.b.WriteString(k.String())
+	switch k {
 	case reflect.Pointer, reflect.Slice:
-		return k + "(" + schemaTypeRef(t.Elem()) + ")"
+		e.wrap("(", t.Elem(), ")")
 	case reflect.Array:
-		return fmt.Sprintf("%s[%d](%s)", k, t.Len(), schemaTypeRef(t.Elem()))
+		fmt.Fprintf(&e.b, "[len=%d]", t.Len())
+		e.wrap("(", t.Elem(), ")")
 	case reflect.Chan:
-		return fmt.Sprintf("%s %s(%s)", k, t.ChanDir(), schemaTypeRef(t.Elem()))
+		fmt.Fprintf(&e.b, "[dir=%d]", int(t.ChanDir()))
+		e.wrap("(", t.Elem(), ")")
 	case reflect.Map:
-		return k + "(" + schemaTypeRef(t.Key()) + "," + schemaTypeRef(t.Elem()) + ")"
+		e.wrap("(key=", t.Key(), "")
+		e.wrap(",elem=", t.Elem(), ")")
 	case reflect.Struct:
-		var b strings.Builder
-		b.WriteString(k + "{")
+		fmt.Fprintf(&e.b, "{fields=%d", t.NumField())
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
-			fmt.Fprintf(&b, "%v %s pkg=%q embedded=%t %s %q;", f.Index, f.Name, f.PkgPath, f.Anonymous, schemaTypeRef(f.Type), f.Tag)
+			fmt.Fprintf(&e.b, ";field %d %q pkg=%q embedded=%t tag=%q type=", i, f.Name, f.PkgPath, f.Anonymous, string(f.Tag))
+			e.encode(f.Type)
 		}
-		return b.String() + "}"
+		e.b.WriteString("}")
 	case reflect.Interface:
-		var b strings.Builder
-		b.WriteString(k + "{")
+		fmt.Fprintf(&e.b, "{methods=%d", t.NumMethod())
 		for i := 0; i < t.NumMethod(); i++ {
 			m := t.Method(i)
-			fmt.Fprintf(&b, "%s pkg=%q %s;", m.Name, m.PkgPath, m.Type)
+			fmt.Fprintf(&e.b, ";method %q pkg=%q type=", m.Name, m.PkgPath)
+			e.encode(m.Type)
 		}
-		return b.String() + "}"
+		e.b.WriteString("}")
 	case reflect.Func:
-		return k + " " + t.String()
+		fmt.Fprintf(&e.b, "(variadic=%t in=%d", t.IsVariadic(), t.NumIn())
+		for i := 0; i < t.NumIn(); i++ {
+			e.wrap(";", t.In(i), "")
+		}
+		fmt.Fprintf(&e.b, " out=%d", t.NumOut())
+		for i := 0; i < t.NumOut(); i++ {
+			e.wrap(";", t.Out(i), "")
+		}
+		e.b.WriteString(")")
 	}
-	return k
+}
+
+func (e *schemaEncoder) wrap(open string, t reflect.Type, close string) {
+	e.b.WriteString(open)
+	e.encode(t)
+	e.b.WriteString(close)
 }
 
 // stateCharge is a conservative retained-data admission metric for one parsed
