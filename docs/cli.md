@@ -1918,6 +1918,15 @@ compatible writers cannot clear or replace that first timestamp. Direct
 already-mutated State. Update callbacks use an independent working copy and the
 internal locked save, avoiding recursive state-lock acquisition.
 
+Within one cycle of a bound terminal consumer (from the start of the cycle until
+before its timer wait, and closed on every return), that consumer may reuse the
+typed decode of State bytes it has already parsed in the same cycle. Every read
+still opens and reads the complete file with its mode, path and validation
+checks; reuse requires the same state path and byte-for-byte identical content,
+and every reader or update callback receives its own independent copy. Seal,
+fence, lock and connection checks are never skipped or cached. Other commands,
+native runtimes and the time between cycles decode as before.
+
 The SHA-256 input is the deterministic JSON encoding of every State member except
 `writer.seal` itself, including `writer.protocol`, `writer.foreign_seen`, and
 complete opaque top-level values and their nested content. Deleting or zeroing
