@@ -688,9 +688,10 @@ func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monito
 // inputSealed reports that the caller verified old's compatible-writer seal
 // under this same lock (ordinaryWriterFenceSealed). After every refusal below
 // has passed, an ordinary non-Host-v2 save whose sealed bytes would equal that
-// verified input, still present at the path, is not replaced: the file already
-// holds exactly that representation. The directory syncs still run, so success
-// keeps the replacement's durability claim and its ErrStateWriteUncertain.
+// verified input is not replaced when elideUnchangedOrdinaryState establishes
+// the replacement's postconditions on the existing file: same path, mode and
+// bytes, file content synced, directory entries synced. Any other outcome
+// runs the ordinary replacement or returns its directory sync error taxonomy.
 func persistStateLocked(p Paths, name string, old, s State, fence time.Time, monitor, migration, inputSealed bool) (State, error) {
 	if !migration && (old.Migration != nil || s.Migration != nil) {
 		return old, ErrIdentityMigrated
@@ -723,13 +724,16 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	}
 	// Caller-supplied writer metadata never erases an observed fence.
 	s.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
-	if inputSealed && !strict && unchangedSealedState(old, s) && ordinaryStateOnDisk(path, old.rawState) {
-		if err := confirmOrdinaryStateUnchanged(path, syncStateDirectory); err != nil {
+	if inputSealed && !strict && unchangedSealedState(old, s) {
+		elided, err := elideUnchangedOrdinaryState(path, old.rawState, ordinaryStateSync)
+		if err != nil {
 			return old, err
 		}
-		// old is the independent snapshot decoded from these exact bytes; the
-		// callback only ever received a separately decoded working copy.
-		return old, nil
+		if elided {
+			// old is the independent snapshot decoded from these exact bytes; the
+			// callback only ever received a separately decoded working copy.
+			return old, nil
+		}
 	}
 	data, err := sealedState(s)
 	if err != nil {

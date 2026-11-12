@@ -531,58 +531,6 @@ func TestUpdateStateUnchangedDirectorySyncFailures(t *testing.T) {
 	}
 }
 
-// Proves the helper repeats writeOrdinaryStateAtomic's directory sync order
-// and error taxonomy exactly: parent then state directory; a parent failure is
-// returned as is and a state-directory failure is ErrStateWriteUncertain.
-func TestConfirmOrdinaryStateUnchangedMatchesWriter(t *testing.T) {
-	sentinel := errors.New("synthetic sync failure")
-	for _, failAt := range []int{-1, 0, 1} {
-		path := filepath.Join(t.TempDir(), "state", "synthetic.json")
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		results := make([]error, 2)
-		calls := make([][]string, 2)
-		for i, run := range []func(func(string) error) error{
-			func(sync func(string) error) error { return confirmOrdinaryStateUnchanged(path, sync) },
-			func(sync func(string) error) error {
-				return writeOrdinaryStateAtomic(path, "synthetic", []byte("{}\n"), sync)
-			},
-		} {
-			results[i] = run(func(dir string) error {
-				calls[i] = append(calls[i], dir)
-				if len(calls[i])-1 == failAt {
-					return sentinel
-				}
-				return nil
-			})
-		}
-		want := []string{filepath.Dir(filepath.Dir(path)), filepath.Dir(path)}
-		if failAt == 0 {
-			want = want[:1]
-		}
-		for i := range results {
-			if strings.Join(calls[i], "|") != strings.Join(want, "|") {
-				t.Fatalf("failAt=%d route %d synced %v, want %v", failAt, i, calls[i], want)
-			}
-		}
-		switch failAt {
-		case -1:
-			if results[0] != nil || results[1] != nil {
-				t.Fatalf("success: %v, %v", results[0], results[1])
-			}
-		case 0:
-			if !errors.Is(results[0], sentinel) || !errors.Is(results[1], sentinel) || errors.Is(results[0], ErrStateWriteUncertain) {
-				t.Fatalf("parent failure: %v, %v", results[0], results[1])
-			}
-		case 1:
-			if !errors.Is(results[0], ErrStateWriteUncertain) || !errors.Is(results[1], ErrStateWriteUncertain) {
-				t.Fatalf("state directory failure: %v, %v", results[0], results[1])
-			}
-		}
-	}
-}
-
 // Proves the unchanged decision requires byte identity with the verified
 // input plus exactly one trailing newline: extra trailing whitespace, compact
 // formatting and a changed member all report changed (and a no-op on such a
@@ -671,5 +619,249 @@ func TestOrdinaryWriterFenceSealedMatchesFence(t *testing.T) {
 		if !fence.Equal(c.fence) || !ordinaryWriterFence(c.in, now).Equal(c.fence) || sealed != c.sealed {
 			t.Fatalf("%s: fence=%v sealed=%v", name, fence, sealed)
 		}
+	}
+}
+
+// syncRecord observes the elided path's durability operations.
+type syncRecord struct {
+	files []os.FileInfo
+	dirs  []string
+}
+
+// recordingSyncer records every call and otherwise performs the real sync.
+// fileErr fails the file sync; failDirAt fails that directory call index.
+func recordingSyncer(rec *syncRecord, fileErr error, failDirAt int, dirErr error) stateSyncer {
+	return stateSyncer{
+		file: func(f *os.File) error {
+			info, err := f.Stat()
+			if err != nil {
+				return err
+			}
+			rec.files = append(rec.files, info)
+			if fileErr != nil {
+				return fileErr
+			}
+			return f.Sync()
+		},
+		dir: func(dir string) error {
+			rec.dirs = append(rec.dirs, dir)
+			if len(rec.dirs)-1 == failDirAt {
+				return dirErr
+			}
+			return syncStateDirectory(dir)
+		},
+	}
+}
+
+// elisionSynced is the checker for the file-durability guard: an elided
+// result is acceptable only after exactly one file sync of the file the path
+// names. It reports a violation instead of failing, so a plant can be checked.
+func elisionSynced(rec syncRecord, path string, elided bool) error {
+	if !elided {
+		return nil
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if len(rec.files) != 1 || !os.SameFile(rec.files[0], current) {
+		return errors.New("elided without syncing the verified state file")
+	}
+	return nil
+}
+
+func swapOrdinaryStateSync(t *testing.T, s stateSyncer) {
+	t.Helper()
+	saved := ordinaryStateSync
+	ordinaryStateSync = s
+	t.Cleanup(func() { ordinaryStateSync = saved })
+}
+
+// Proves the elision helper's contract on isolated synthetic files: success
+// only after one sync of the verified file plus parent and state directory
+// syncs in writeOrdinaryStateAtomic's order; a file sync failure, different
+// bytes, a widened mode, a symlink or a path replaced during the file sync
+// claim nothing (no directory syncs) so the caller replaces; a parent failure
+// is returned as is and a state-directory failure is ErrStateWriteUncertain.
+// These tests show attempted syncs and error handling, not power-loss
+// persistence.
+func TestElideUnchangedOrdinaryStateContract(t *testing.T) {
+	sentinel := errors.New("synthetic sync failure")
+	cases := map[string]struct {
+		prepare   func(*testing.T, string, []byte) []byte
+		fileErr   error
+		failDirAt int
+		onSync    func(*testing.T, string)
+		elided    bool
+		err       func(error) bool
+		files     int
+		dirs      int
+	}{
+		"unchanged":              {failDirAt: -1, elided: true, files: 1, dirs: 2},
+		"file sync failure":      {fileErr: sentinel, failDirAt: -1, files: 1},
+		"parent sync failure":    {failDirAt: 0, err: func(e error) bool { return errors.Is(e, sentinel) && !errors.Is(e, ErrStateWriteUncertain) }, files: 1, dirs: 1},
+		"state dir sync failure": {failDirAt: 1, err: func(e error) bool { return errors.Is(e, ErrStateWriteUncertain) }, files: 1, dirs: 2},
+		"different bytes":        {prepare: func(_ *testing.T, _ string, raw []byte) []byte { return append(bytes.Clone(raw), ' ') }, failDirAt: -1},
+		"widened mode": {
+			prepare: func(t *testing.T, path string, raw []byte) []byte {
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			},
+			failDirAt: -1,
+		},
+		"symlink": {
+			prepare: func(t *testing.T, path string, raw []byte) []byte {
+				target := path + ".synthetic-target"
+				if err := os.Rename(path, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			},
+			failDirAt: -1,
+		},
+		"path replaced during file sync": {
+			onSync: func(t *testing.T, path string) {
+				other := path + ".synthetic-other"
+				if err := os.WriteFile(other, []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(other, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			failDirAt: -1,
+			files:     1,
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			p, raw := seedSyntheticBusyState(t)
+			path := p.StateFile(busyStateName)
+			input := raw
+			if c.prepare != nil {
+				input = c.prepare(t, path, raw)
+			}
+			var rec syncRecord
+			sync := recordingSyncer(&rec, c.fileErr, c.failDirAt, sentinel)
+			if c.onSync != nil {
+				file := sync.file
+				sync.file = func(f *os.File) error {
+					err := file(f)
+					c.onSync(t, path)
+					return err
+				}
+			}
+			elided, err := elideUnchangedOrdinaryState(path, input, sync)
+			if c.err == nil && err != nil || c.err != nil && !c.err(err) || elided != c.elided || len(rec.files) != c.files || len(rec.dirs) != c.dirs {
+				t.Fatalf("elided=%v err=%v files=%d dirs=%v", elided, err, len(rec.files), rec.dirs)
+			}
+			want := []string{filepath.Dir(filepath.Dir(path)), filepath.Dir(path)}
+			if strings.Join(rec.dirs, "|") != strings.Join(want[:len(rec.dirs)], "|") {
+				t.Fatalf("directory sync order %v, want prefix of %v", rec.dirs, want)
+			}
+			if err := elisionSynced(rec, path, elided); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	// The replacement writer syncs the same directories in the same order.
+	path := filepath.Join(t.TempDir(), "state", "synthetic.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var writerDirs []string
+	if err := writeOrdinaryStateAtomic(path, "synthetic", []byte("{}\n"), func(dir string) error { writerDirs = append(writerDirs, dir); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(writerDirs, "|") != filepath.Dir(filepath.Dir(path))+"|"+filepath.Dir(path) {
+		t.Fatalf("writer directory sync order %v", writerDirs)
+	}
+}
+
+// Proves the file-durability checker is not vacuous: a bounded plant of the
+// elision helper whose file sync never reaches the recorder (an elided path
+// that omits the required file sync) is reported, while the real helper on the
+// same fixture passes. This validates the instrument, not product behavior.
+func TestElisionFileSyncCheckerControl(t *testing.T) {
+	p, raw := seedSyntheticBusyState(t)
+	path := p.StateFile(busyStateName)
+	var actual syncRecord
+	elided, err := elideUnchangedOrdinaryState(path, raw, recordingSyncer(&actual, nil, -1, nil))
+	if err != nil || !elided || elisionSynced(actual, path, elided) != nil {
+		t.Fatalf("real helper: elided=%v err=%v", elided, err)
+	}
+	var planted syncRecord
+	plant := recordingSyncer(&planted, nil, -1, nil)
+	plant.file = func(*os.File) error { return nil }
+	elided, err = elideUnchangedOrdinaryState(path, raw, plant)
+	if err != nil || !elided || elisionSynced(planted, path, elided) == nil {
+		t.Fatalf("checker missed an elision without file sync: elided=%v err=%v", elided, err)
+	}
+}
+
+// Proves, through UpdateState itself, that an elided no-op syncs the verified
+// state file exactly once, and that a failing file sync or a path replaced
+// during that sync is never reported as elided durable success: the
+// transaction falls back to the ordinary replacement (one rewrite, original
+// representation, valid seal) and the elided path issues no directory sync.
+func TestUpdateStateUnchangedFileSyncRequired(t *testing.T) {
+	sentinel := errors.New("synthetic file sync failure")
+	t.Run("synced once", func(t *testing.T) {
+		p, raw := seedSyntheticBusyState(t)
+		var rec syncRecord
+		swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+		replaced, err := stateReplaced(t, p, busyStateName, busyNoop(p))
+		if err != nil || replaced || len(rec.dirs) != 2 || !bytes.Equal(raw, busyDisk(t, p)) {
+			t.Fatalf("err=%v replaced=%v dirs=%v", err, replaced, rec.dirs)
+		}
+		if err := elisionSynced(rec, p.StateFile(busyStateName), !replaced); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for name, fail := range map[string]func(*testing.T, Paths, *syncRecord) stateSyncer{
+		"file sync failure": func(_ *testing.T, _ Paths, rec *syncRecord) stateSyncer {
+			return recordingSyncer(rec, sentinel, -1, nil)
+		},
+		"path replaced during file sync": func(t *testing.T, p Paths, rec *syncRecord) stateSyncer {
+			sync := recordingSyncer(rec, nil, -1, nil)
+			file := sync.file
+			sync.file = func(f *os.File) error {
+				err := file(f)
+				s := syntheticBusyState()
+				s.NextBatch = "s-replaced-during-sync"
+				s.Writer = &StateWriter{Protocol: stateProtocol}
+				data, sealErr := sealedState(s)
+				if sealErr != nil {
+					t.Fatal(sealErr)
+				}
+				path := p.StateFile(busyStateName)
+				if writeErr := os.WriteFile(path+".synthetic-other", append(data, '\n'), 0o600); writeErr != nil {
+					t.Fatal(writeErr)
+				}
+				if renameErr := os.Rename(path+".synthetic-other", path); renameErr != nil {
+					t.Fatal(renameErr)
+				}
+				return err
+			}
+			return sync
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, raw := seedSyntheticBusyState(t)
+			var rec syncRecord
+			swapOrdinaryStateSync(t, fail(t, p, &rec))
+			replaced, err := stateReplaced(t, p, busyStateName, busyNoop(p))
+			if err != nil || !replaced || len(rec.files) != 1 || len(rec.dirs) != 0 {
+				t.Fatalf("err=%v replaced=%v files=%d dirs=%v", err, replaced, len(rec.files), rec.dirs)
+			}
+			if st := busyLoad(t, p); !bytes.Equal(raw, busyDisk(t, p)) || !validWriterSeal(st) || st.NextBatch != "s-synthetic-batch" {
+				t.Fatal("fallback did not persist the transaction's own representation")
+			}
+		})
 	}
 }

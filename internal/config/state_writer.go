@@ -249,32 +249,67 @@ func unchangedSealedState(old, s State) bool {
 	return len(old.rawState) == n+1 && old.rawState[n] == '\n' && bytes.Equal(old.rawState[:n], data)
 }
 
-// ordinaryStateOnDisk rechecks, under the state lock, that the path is still
-// a 0600 regular file holding exactly the loaded input. A cooperative writer
-// cannot intervene there; a non-cooperating replacement, mode change or read
-// error falls back to the ordinary replacement instead of being reported as
-// persisted.
-func ordinaryStateOnDisk(path string, input []byte) bool {
-	if checkSecretFile(path) != nil {
-		return false
-	}
-	data, err := os.ReadFile(path)
-	return err == nil && bytes.Equal(data, input)
+// stateSyncer holds the durability operations of an elided ordinary write.
+type stateSyncer struct {
+	file func(*os.File) error
+	dir  func(string) error
 }
 
-// confirmOrdinaryStateUnchanged repeats writeOrdinaryStateAtomic's directory
-// syncs without replacing the file. An elided rewrite therefore makes the same
-// durability claim as a replacement: a parent failure is returned as is, and a
-// state-directory failure is ErrStateWriteUncertain.
-func confirmOrdinaryStateUnchanged(path string, syncDir func(string) error) error {
+// ordinaryStateSync is a package-private seam: production code never replaces
+// it, and no flag or environment value can reach it. Package tests swap it to
+// observe or fail the file and directory syncs of the elided path.
+var ordinaryStateSync = stateSyncer{file: (*os.File).Sync, dir: syncStateDirectory}
+
+// elideUnchangedOrdinaryState establishes, under the state lock, the
+// postconditions an ordinary replacement with byte-identical content would:
+//   - the path names a 0600 regular file whose content, read through one
+//     descriptor opened without following links, is exactly input;
+//   - that file's content is synced through the same verified descriptor, since
+//     a valid seal and equal bytes do not prove that an earlier writer's file
+//     sync completed;
+//   - the path still names that synced file;
+//   - the parent and state directory entries are synced as
+//     writeOrdinaryStateAtomic does.
+//
+// It returns elided=false with a nil error when the unchanged premise does not
+// hold or the file sync fails. Nothing is then claimed durable, and the caller
+// runs the ordinary replacement. Directory sync failures keep the replacement's
+// taxonomy: a parent failure is returned as is, and a state-directory failure
+// is ErrStateWriteUncertain.
+func elideUnchangedOrdinaryState(path string, input []byte, sync stateSyncer) (bool, error) {
+	if checkSecretFile(path) != nil {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return false, nil
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != SecretFileMode || opened.Size() != int64(len(input)) {
+		return false, nil
+	}
+	// One spare byte detects growth after the size check: only a short read of
+	// exactly len(input) bytes, ending at EOF, can match.
+	data := make([]byte, len(input)+1)
+	n, err := io.ReadFull(f, data)
+	if err != io.ErrUnexpectedEOF || n != len(input) || !bytes.Equal(data[:n], input) {
+		return false, nil
+	}
+	if sync.file(f) != nil {
+		return false, nil
+	}
+	if current, err := os.Lstat(path); err != nil || !os.SameFile(opened, current) {
+		return false, nil
+	}
 	dir := filepath.Dir(path)
-	if err := syncDir(filepath.Dir(dir)); err != nil {
-		return err
+	if err := sync.dir(filepath.Dir(dir)); err != nil {
+		return false, err
 	}
-	if err := syncDir(dir); err != nil {
-		return ErrStateWriteUncertain
+	if err := sync.dir(dir); err != nil {
+		return false, ErrStateWriteUncertain
 	}
-	return nil
+	return true, nil
 }
 
 func sealedState(s State) ([]byte, error) {
