@@ -1045,6 +1045,207 @@ func TestStateCloneSchemaPinned(t *testing.T) {
 	}
 }
 
+// schemaPinPair is a reviewed fixture type and a changed variant. Both carry
+// the same type name and package path (each is declared locally in its own
+// function), so only the field property under test separates their schemas.
+// legacyBlind records that the earlier name/type-string/tag serialization
+// gave both the same fields.
+type schemaPinPair struct {
+	name              string
+	reviewed, changed reflect.Type
+	legacyBlind       bool
+}
+
+func schemaPinPairs() []schemaPinPair {
+	return []schemaPinPair{
+		{"named to embedded", func() reflect.Type {
+			type pinFixture struct {
+				Notification Notification `json:"notification,omitempty"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), func() reflect.Type {
+			type pinFixture struct {
+				Notification `json:"notification,omitempty"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), true},
+		{"exported to unexported", func() reflect.Type {
+			type pinFixture struct {
+				Notification Notification
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), func() reflect.Type {
+			type pinFixture struct {
+				notification Notification
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), false},
+		{"reordered fields", func() reflect.Type {
+			type pinFixture struct {
+				NextBatch string `json:"next_batch"`
+				LastInbox string `json:"last_inbox"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), func() reflect.Type {
+			type pinFixture struct {
+				LastInbox string `json:"last_inbox"`
+				NextBatch string `json:"next_batch"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), false},
+		{"named field type changes kind", func() reflect.Type {
+			type pinKind string
+			type pinFixture struct {
+				K pinKind `json:"k"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), func() reflect.Type {
+			type pinKind int
+			type pinFixture struct {
+				K pinKind `json:"k"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), true},
+		{"named slice changes element type", func() reflect.Type {
+			type pinList []string
+			type pinFixture struct {
+				L pinList `json:"l"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), func() reflect.Type {
+			type pinList []*string
+			type pinFixture struct {
+				L pinList `json:"l"`
+			}
+			return reflect.TypeFor[pinFixture]()
+		}(), true},
+		{"unnamed root named to embedded",
+			reflect.TypeFor[struct {
+				Notification Notification `json:"notification,omitempty"`
+			}](),
+			reflect.TypeFor[struct {
+				Notification `json:"notification,omitempty"`
+			}](), true},
+	}
+}
+
+// legacyFieldKeys is the earlier per-field serialization (name, type string,
+// tag) of t's own fields, kept to show what the fixtures hold equal.
+func legacyFieldKeys(t reflect.Type) string {
+	var b strings.Builder
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		fmt.Fprintf(&b, "%s %s %q;", f.Name, f.Type.String(), f.Tag)
+	}
+	return b.String()
+}
+
+// schemaGateReuse sets the reuse gate the way production does, from
+// stateSchemaReviewed(typ, pin), and drives the public LoadState and
+// UpdateState through an open scope. Every result equals the ordinary decode.
+// It reports whether the scope reused parsed data, and fails if a closed gate
+// still admitted, hit or cloned.
+func schemaGateReuse(t *testing.T, typ reflect.Type, pin string) bool {
+	t.Helper()
+	saved := stateCloneSchemaOK
+	defer func() { stateCloneSchemaOK = saved }()
+	stateCloneSchemaOK = stateSchemaReviewed(typ, pin)
+	plain, scoped, sc := memoFixture(t)
+	richState(t, plain)
+	want := ordinaryState(t, plain)
+	for i := 0; i < 2; i++ {
+		if got, err := LoadState(scoped, "alice"); err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("read %d: %v, equal=%t", i, err, reflect.DeepEqual(got, want))
+		}
+	}
+	if _, err := UpdateState(scoped, "alice", func(s *State) error { s.LastInbox = "gate"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := ordinaryState(t, plain); got.LastInbox != "gate" {
+		t.Fatalf("update lost: %q", got.LastInbox)
+	}
+	st := sc.Stats()
+	if !stateCloneSchemaOK {
+		if st.Admits != 0 || st.Hits != 0 || st.Parses != 0 || st.WriterClones != 0 || st.FallbackUnsupported < 2 {
+			t.Fatalf("changed schema reused parsed data: %+v", st)
+		}
+		return false
+	}
+	if st.Hits < 1 || st.WriterClones != 1 {
+		t.Fatalf("reviewed schema not reused: %+v", st)
+	}
+	return true
+}
+
+// Claim (regression witness for schema-pin-embedding-blind): a field that
+// becomes embedded while keeping its name, type and tag changes the
+// signature, so the reviewed pin no longer matches and the public loader and
+// writer decode ordinarily (no admission, hit or writer clone); the reviewed
+// variant still matches its own pin and is reused (valid neighbour). Covered
+// for a named and an unnamed root struct.
+func TestStateCloneSchemaPinDetectsEmbedding(t *testing.T) {
+	for _, tc := range schemaPinPairs() {
+		if !strings.Contains(tc.name, "embedded") {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			r, c := tc.reviewed.Field(0), tc.changed.Field(0)
+			if r.Name != c.Name || r.Type != c.Type || r.Tag != c.Tag || r.Anonymous || !c.Anonymous {
+				t.Fatalf("fixture differs beyond embedding: %+v / %+v", r, c)
+			}
+			pin := stateSchemaSignatureOf(tc.reviewed)
+			if stateSchemaSignatureOf(tc.changed) == pin {
+				t.Fatal("embedding change keeps the reviewed pin")
+			}
+			if !schemaGateReuse(t, tc.reviewed, pin) {
+				t.Fatal("reviewed schema disabled reuse")
+			}
+			if schemaGateReuse(t, tc.changed, pin) {
+				t.Fatal("embedded schema reused parsed data")
+			}
+		})
+	}
+}
+
+// Claim: the signature separates schemas that differ only in a field's
+// export (name and package path), declaration order, the kind of a named
+// field type, or the element type of a named container; each change fails
+// the reviewed pin and disables reuse through the public loader and writer,
+// while the reviewed variant matches its pin and is reused. The current State
+// still matches stateCloneSchemaPin. Limit: fixtures are small local types,
+// not edits of State itself.
+func TestStateCloneSchemaPinFieldProperties(t *testing.T) {
+	if !stateSchemaReviewed(reflect.TypeFor[State](), stateCloneSchemaPin) {
+		t.Errorf("current State does not match the pin (%s)", stateSchemaSignature())
+	}
+	for _, tc := range schemaPinPairs() {
+		t.Run(tc.name, func(t *testing.T) {
+			if blind := legacyFieldKeys(tc.reviewed) == legacyFieldKeys(tc.changed); blind != tc.legacyBlind {
+				t.Fatalf("fixture premise: legacy keys equal=%t, want %t", blind, tc.legacyBlind)
+			}
+			if tc.reviewed.Name() != tc.changed.Name() || tc.reviewed.PkgPath() != tc.changed.PkgPath() {
+				t.Fatalf("fixture names differ: %s / %s", tc.reviewed, tc.changed)
+			}
+			pin := stateSchemaSignatureOf(tc.reviewed)
+			if pin == stateCloneSchemaPin {
+				t.Fatal("fixture shares the State pin")
+			}
+			if stateSchemaSignatureOf(tc.reviewed) != pin {
+				t.Fatal("signature is not deterministic")
+			}
+			if stateSchemaReviewed(tc.changed, pin) {
+				t.Fatal("changed schema matches the reviewed pin")
+			}
+			if !schemaGateReuse(t, tc.reviewed, pin) {
+				t.Fatal("reviewed schema disabled reuse")
+			}
+			if schemaGateReuse(t, tc.changed, pin) {
+				t.Fatal("changed schema reused parsed data")
+			}
+		})
+	}
+}
+
 // Claim: a populated State read from disk through a hit equals the ordinary
 // decode for every field, including opaque precision and markers.
 func TestStateMemoHitMatchesOrdinary(t *testing.T) {

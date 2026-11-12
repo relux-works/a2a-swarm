@@ -253,15 +253,29 @@ func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
 // A new or changed field anywhere in that graph changes the signature: the
 // scoped decode memo and the writer working-copy clone are then disabled (the
 // ordinary decoder runs) until the clone is reviewed and this pin updated.
-const stateCloneSchemaPin = "883ba71f6bcfa3f802e6a5fefd93587037e7e7bd56a52fd612f671e246b1c29d"
+const stateCloneSchemaPin = "2487012efc2b2029a1e5c76e69144b137a8142f3fe5f7c2fba2a5c121cafcfd8"
 
-var stateCloneSchemaOK = stateSchemaSignature() == stateCloneSchemaPin
+var stateCloneSchemaOK = stateSchemaReviewed(reflect.TypeFor[State](), stateCloneSchemaPin)
 
-// stateSchemaSignature hashes every struct type reachable from State with its
-// field names, types and tags. It reads types only, never values. time.Time is
-// an immutable leaf.
+// stateSchemaReviewed reports whether the reflected type graph of root is the
+// one recorded by pin. Only a match enables reuse.
+func stateSchemaReviewed(root reflect.Type, pin string) bool {
+	return stateSchemaSignatureOf(root) == pin
+}
+
+// stateSchemaSignature hashes the type graph reachable from State. It reads
+// types only, never values.
 func stateSchemaSignature() string { return stateSchemaSignatureOf(reflect.TypeFor[State]()) }
 
+// stateSchemaSignatureOf records one declaration line per named type
+// reachable from root: its package path, name, kind and underlying structure.
+// A struct records, for every field in declaration order, its index, name,
+// package path (exported or not), embedding, full type and tag. Types are
+// written by identity: a named type by package path and name (its own line
+// holds its structure), an unnamed type by kind with its key, element, length,
+// fields or methods spelled out recursively. time.Time is an immutable leaf;
+// its private layout is not part of the State schema. A root line names root,
+// so an unnamed root struct is recorded too.
 func stateSchemaSignatureOf(root reflect.Type) string {
 	seen := map[reflect.Type]bool{}
 	var lines []string
@@ -271,31 +285,77 @@ func stateSchemaSignatureOf(root reflect.Type) string {
 			return
 		}
 		seen[t] = true
+		if t.Name() != "" && t.PkgPath() != "" {
+			lines = append(lines, schemaTypeRef(t)+" = "+schemaUnderlying(t))
+		}
+		if t == timeType {
+			return
+		}
 		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Array:
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
 			walk(t.Elem())
 		case reflect.Map:
 			walk(t.Key())
 			walk(t.Elem())
 		case reflect.Struct:
-			if t == reflect.TypeFor[time.Time]() {
-				return
-			}
-			var b strings.Builder
-			fmt.Fprintf(&b, "%s.%s{", t.PkgPath(), t.Name())
 			for i := 0; i < t.NumField(); i++ {
-				f := t.Field(i)
-				fmt.Fprintf(&b, "%s %s %q;", f.Name, f.Type.String(), f.Tag)
-				walk(f.Type)
+				walk(t.Field(i).Type)
 			}
-			b.WriteString("}")
-			lines = append(lines, b.String())
 		}
 	}
 	walk(root)
+	lines = append(lines, "root "+schemaTypeRef(root))
 	sort.Strings(lines)
 	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return hex.EncodeToString(h[:])
+}
+
+// schemaTypeRef names t by identity: a named type by package path and name
+// (predeclared types have an empty package path), an unnamed type by its full
+// structure.
+func schemaTypeRef(t reflect.Type) string {
+	if t.Name() != "" {
+		return fmt.Sprintf("%q.%s", t.PkgPath(), t.Name())
+	}
+	return schemaUnderlying(t)
+}
+
+// schemaUnderlying spells out the kind and structure of t, naming component
+// types with schemaTypeRef.
+func schemaUnderlying(t reflect.Type) string {
+	if t == timeType {
+		return "struct immutable-leaf"
+	}
+	k := t.Kind().String()
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice:
+		return k + "(" + schemaTypeRef(t.Elem()) + ")"
+	case reflect.Array:
+		return fmt.Sprintf("%s[%d](%s)", k, t.Len(), schemaTypeRef(t.Elem()))
+	case reflect.Chan:
+		return fmt.Sprintf("%s %s(%s)", k, t.ChanDir(), schemaTypeRef(t.Elem()))
+	case reflect.Map:
+		return k + "(" + schemaTypeRef(t.Key()) + "," + schemaTypeRef(t.Elem()) + ")"
+	case reflect.Struct:
+		var b strings.Builder
+		b.WriteString(k + "{")
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			fmt.Fprintf(&b, "%v %s pkg=%q embedded=%t %s %q;", f.Index, f.Name, f.PkgPath, f.Anonymous, schemaTypeRef(f.Type), f.Tag)
+		}
+		return b.String() + "}"
+	case reflect.Interface:
+		var b strings.Builder
+		b.WriteString(k + "{")
+		for i := 0; i < t.NumMethod(); i++ {
+			m := t.Method(i)
+			fmt.Fprintf(&b, "%s pkg=%q %s;", m.Name, m.PkgPath, m.Type)
+		}
+		return b.String() + "}"
+	case reflect.Func:
+		return k + " " + t.String()
+	}
+	return k
 }
 
 // stateCharge is a conservative retained-data admission metric for one parsed
