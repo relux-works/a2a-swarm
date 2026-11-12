@@ -384,6 +384,64 @@ func TestUpdateStateUnchangedRefusalsWithoutWrite(t *testing.T) {
 	}
 }
 
+// Proves a save-time refusal still wins over elision when the refused change
+// seals to the input's exact bytes. The input is a valid sealed state whose
+// valid monitor has a nil Rung; a genuine no-op on it is elided (the positive
+// neighbour). A callback that only sets Rung to an empty slice keeps the
+// sealed bytes identical, because the empty member is omitted, while
+// sameMonitor compares structurally; the test checks that premise, then
+// requires ErrMonitorConflict with no write and the stored monitor intact.
+// Moving elision above the refusals returns nil for that callback.
+func TestUpdateStateUnchangedByteIdenticalMonitorRefused(t *testing.T) {
+	p := Paths{Base: t.TempDir()}
+	path := p.StateFile(busyStateName)
+	monitor := monitorRecord()
+	data, err := sealedState(State{Monitor: &monitor, Writer: &StateWriter{Protocol: stateProtocol}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, input, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := busyLoad(t, p)
+	if !validWriterSeal(old) || old.Monitor == nil || old.Monitor.Validate() != nil || old.Monitor.Rung != nil {
+		t.Fatal("fixture is not a valid sealed monitor input with a nil rung")
+	}
+	noop := func() error {
+		_, err := UpdateState(p, busyStateName, func(*State) error { return nil })
+		return err
+	}
+	if replaced, err := stateReplaced(t, p, busyStateName, noop); err != nil || replaced || !bytes.Equal(input, busyDisk(t, p)) {
+		t.Fatalf("valid no-op neighbour: err=%v replaced=%v", err, replaced)
+	}
+	called, structural, identical, predicate := false, false, false, false
+	replaced, err := stateReplaced(t, p, busyStateName, func() error {
+		_, err := UpdateState(p, busyStateName, func(st *State) error {
+			called = true
+			st.Monitor.Rung = []string{}
+			structural = !sameMonitor(old.Monitor, st.Monitor)
+			sealed, sealErr := sealedState(*st)
+			identical = sealErr == nil && bytes.Equal(append(sealed, '\n'), input)
+			predicate = unchangedSealedState(old, *st)
+			return nil
+		})
+		return err
+	})
+	if !called || !structural || !identical || !predicate {
+		t.Fatalf("fixture premise: called=%v structural=%v identical=%v predicate=%v", called, structural, identical, predicate)
+	}
+	if !errors.Is(err, ErrMonitorConflict) || replaced || !bytes.Equal(input, busyDisk(t, p)) {
+		t.Fatalf("byte-identical monitor change must refuse without a write: err=%v replaced=%v", err, replaced)
+	}
+	if st := busyLoad(t, p); st.Monitor == nil || st.Monitor.Rung != nil || !validWriterSeal(st) {
+		t.Fatal("refused change reached the stored monitor")
+	}
+}
+
 // Proves every effective change is still persisted exactly once, including
 // the authority and arrival changes a busy cycle can observe (lease renewal,
 // generation replacement, cursor move, new thread record, idle qualification),
