@@ -59,7 +59,12 @@ unknown, unsigned, extra-key, wildcard-principal or ambient-trust source refuses
 A source-only maintainer cannot sign a release tag. Admission refuses graft or
 shallow metadata at Git-resolved and common paths, including linked worktrees;
 even an empty metadata file refuses. This prerequisite does not protect against
-arbitrary concurrent filesystem mutation. No private key or installed
+arbitrary concurrent filesystem mutation. All controlled admission Git reads pin
+`core.commitGraph=false`, ignoring ordinary, split, common and alternate ancestry
+caches while preserving valid signed cache-bearing admission. Inherited Git
+overrides, including the test override, remain filtered. Ordinary-cache fixture
+acceptance is separate from the effective reader-policy assertion; no forged-cache
+bypass reproduction is claimed. No private key or installed
 trust file is read or changed by this policy.
 
 Stable annotated signed `vX.Y.Z` must match VERSION and the checked-out commit,

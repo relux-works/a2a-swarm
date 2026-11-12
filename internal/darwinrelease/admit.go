@@ -25,7 +25,8 @@ type runGit func(...string) (string, error)
 
 func localGit(root string) runGit {
 	return func(args ...string) (string, error) {
-		cmd := exec.Command("git", args...)
+		// Admission reads raw ancestry rather than commit-graph caches in any store.
+		cmd := exec.Command("git", append([]string{"-c", "core.commitGraph=false"}, args...)...)
 		cmd.Dir = root
 		cmd.Env = append(cleanEnvironment(), "GIT_NO_REPLACE_OBJECTS=1", "GIT_CONFIG_NOSYSTEM=1")
 		b, e := cmd.Output()
