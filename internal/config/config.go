@@ -64,6 +64,9 @@ type Paths struct {
 	Root           string // Original registry and host root in named mode.
 	MetadataBase   string // Connection-scoped identity metadata root.
 	AgentStateBase string // Resolver-selected agent State root for a named human.
+	// stateDecode is the owning terminal consumer's private decode memo; nil
+	// for every resolved Paths value. It changes no path or routing result.
+	stateDecode *StateDecodeScope
 }
 
 // ResolvePaths returns the base directory from A2A_CONFIG_DIR or ~/.config/a2a-swarm.
@@ -619,6 +622,7 @@ func (s *State) AddThread(root string) bool {
 
 // LoadState reads state/<name>.json. A missing file yields an empty state.
 func LoadState(p Paths, name string) (State, error) {
+	globalStateStats.loadStateCalls.Add(1)
 	path := p.StateFile(name)
 	if err := checkSecretFile(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -626,10 +630,13 @@ func LoadState(p Paths, name string) (State, error) {
 		}
 		return State{}, err
 	}
+	globalStateStats.stateReadAttempts.Add(1)
 	data, err := os.ReadFile(path)
 	if err != nil {
+		globalStateStats.stateReadErrors.Add(1)
 		return State{}, err
 	}
+	globalStateStats.stateReadBytes.Add(int64(len(data)))
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(data, &envelope) == nil {
 		// Match every spelling accepted by the typed JSON decoder. A later
@@ -640,8 +647,10 @@ func LoadState(p Paths, name string) (State, error) {
 			}
 		}
 	}
-	var s State
-	if err := unmarshalState(data, &s); err != nil {
+	// The scoped decode reuses parsed data only for these exact fresh bytes and
+	// returns an owned copy; the supplemental checks above and below still run.
+	s, err := decodeFreshState(p, name, path, data)
+	if err != nil {
 		return State{}, fmt.Errorf("%s is not valid state JSON: %w", path, err)
 	}
 	if err := s.validateHostNotifications(); err != nil {
@@ -749,8 +758,8 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	}
 	// Return only the representation that successfully persisted, including its
 	// fresh seal/input. A failed save makes no durable-fence claim.
-	var saved State
-	if err := unmarshalState(data, &saved); err != nil {
+	saved, err := decodeFreshState(p, name, path, data)
+	if err != nil {
 		return old, err
 	}
 	return saved, nil
@@ -891,11 +900,12 @@ func updateState(p Paths, name string, lock func(string) (func(), error), fn fun
 		}
 		fence, sealed := ordinaryWriterFenceSealed(old, time.Now())
 		// A callback must not mutate the comparison snapshot through shared
-		// lease/runtime/terminal pointers or slices. Decode the same disk input
-		// into an independent working copy before handing it to ordinary code.
+		// lease/runtime/terminal pointers or slices. Derive an independent
+		// working copy of the same disk input before handing it to ordinary code.
 		var s State
 		if len(old.rawState) != 0 {
-			if err := unmarshalState(old.rawState, &s); err != nil {
+			var err error
+			if s, err = writerWorkingCopy(p, name, &old); err != nil {
 				return old, err
 			}
 		}

@@ -39,6 +39,8 @@ func knownStateJSONField(name string) bool {
 }
 
 func unmarshalState(data []byte, s *State) error {
+	globalStateStats.unmarshalPasses.Add(1)
+	globalStateStats.unmarshalBytes.Add(int64(len(data)))
 	// Keep the existing typed decoder's validation and case-fold behavior. Raw
 	// messages retain number precision and complete values without interpreting
 	// unknown data or preserving unknown members inside known typed objects.

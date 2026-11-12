@@ -538,8 +538,22 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 	return a.runTerminalWithRefresh(ctx, s, generation, initial, nil)
 }
 
+// terminalStateMemo is a package-private test seam for matched comparisons;
+// production code, flags and environment never change it.
+var terminalStateMemo = true
+
 func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
 	policy := initial
+	// This consumer's private State decode memo. It is attached once, before
+	// the alarm worker starts, and holds data only inside one cycle's epoch:
+	// opened before the first guard/read, closed before the timer wait and on
+	// every return. It never replaces a read, guard, seal or fence.
+	memo := s.paths.StateDecodeScope()
+	if memo == nil && terminalStateMemo {
+		memo = config.NewStateDecodeScope(s.name)
+		s.paths = s.paths.WithStateDecodeScope(memo)
+	}
+	defer memo.Close()
 	alarmCtx, stopAlarm := context.WithCancel(ctx)
 	defer stopAlarm()
 	alarmWake := make(chan struct{}, 1)
@@ -548,6 +562,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true
 	for ctx.Err() == nil {
+		memo.Open()
 		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
 			return "selected connection unavailable", err
 		}
@@ -644,6 +659,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 		if refresh != nil {
 			refresh()
 		}
+		memo.Close()
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

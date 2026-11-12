@@ -97,6 +97,7 @@ func writeOrdinaryStateAtomic(path, name string, data []byte, syncDir func(strin
 // strings use encoding/json escaping, including HTML escaping. Whitespace and
 // object member order do not matter. Duplicate object keys are invalid.
 func canonicalState(data []byte) ([]byte, error) {
+	globalStateStats.canonicalStates.Add(1)
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.UseNumber()
 	v, err := canonicalValue(d)
@@ -184,6 +185,7 @@ func canonicalValue(d *json.Decoder) (any, error) {
 }
 
 func stateDigest(data []byte) (string, error) {
+	globalStateStats.stateDigests.Add(1)
 	b, err := canonicalState(data)
 	if err != nil {
 		return "", err
@@ -193,6 +195,7 @@ func stateDigest(data []byte) (string, error) {
 }
 
 func validWriterSeal(s State) bool {
+	globalStateStats.writerSealChecks.Add(1)
 	if s.Writer == nil || s.Writer.ambiguous || s.Writer.Protocol < stateProtocol || !lowerHex(s.Writer.Seal, 64) {
 		return false
 	}
@@ -313,6 +316,7 @@ func elideUnchangedOrdinaryState(path string, input []byte, sync stateSyncer) (b
 }
 
 func sealedState(s State) ([]byte, error) {
+	globalStateStats.sealedStates.Add(1)
 	data, err := marshalState(s)
 	if err != nil {
 		return nil, err
