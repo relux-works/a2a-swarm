@@ -90,12 +90,20 @@ Required checks are the union of the three reviewed policy names (`test-linux`,
 the documented GraphQL ref field, with active rules read through the metadata REST
 endpoint; administration-only REST protection APIs are not used.
 The public GitHub Actions app ID is used unless policy explicitly binds another
-positive integration ID. Every required check must be unique, completed, successful
-and bound to the exact SHA/app. Actions checks must additionally match an actual
-successful job and successful main-push run at that SHA/repository and a source
-workflow path. A fabricated check API write with the Actions app ID is insufficient.
-The jobs/runs association uses only the additional actions:read permission. Missing, skipped, pending, failed, unknown, malformed,
-ambiguous or incomplete reads refuse. Unknown rule types and unimplemented
+positive integration ID. Actions job/run provenance is authenticated before event
+eligibility and uniqueness: exact check/job/run IDs, name, SHA, repository and head
+repository, check-run URL association and source workflow path must match. Proven
+pull-request runs are ineligible; their success, failure, pending or skipped jobs
+cannot satisfy or shadow a required main check. Unknown or unreadable provenance
+refuses. Exactly one eligible main-push record per required name/app must remain,
+with completed successful check, job and run. Two eligible main records remain
+ambiguous, and any non-success main record blocks even beside a green one. No
+first/newest/greenest selection is used. Other integrations retain exact SHA/app
+uniqueness and completed-success requirements. A fabricated check API write with
+the Actions app ID is insufficient.
+The jobs/runs association uses only the additional actions:read permission. Missing,
+skipped, pending, failed or unknown eligible main checks refuse, as do malformed,
+ambiguous or incomplete reads. Unknown rule types and unimplemented
 required-workflow/scanning rule semantics refuse rather than disappear from policy. Legacy status-only contexts cannot establish
 the required check-run provenance and remain blocking. Unreadable protection/rules
 APIs refuse; this token's access must be verified independently before a release,

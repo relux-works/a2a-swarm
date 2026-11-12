@@ -246,14 +246,21 @@ func (g *githubAPI) validate(ctx context.Context, p Policy, a *Admission) error 
 		n := 0
 		for _, check := range all {
 			if check.Name == name && check.App.ID == app {
-				n++
-				if check.ID <= 0 || check.HeadSHA != a.Commit || check.Status != "completed" || check.Conclusion != "success" {
+				if check.ID <= 0 || check.HeadSHA != a.Commit {
 					return errors.New("required-check-not-success")
 				}
 				if app == 15368 {
-					if e = g.actionsJob(ctx, p.Repository, a.Commit, name, check.ID, check.Details); e != nil {
-						return e
+					eligible, err := g.actionsJob(ctx, p.Repository, a.Commit, name, check.ID, check.Details, check.Status, check.Conclusion)
+					if err != nil {
+						return err
 					}
+					if !eligible {
+						continue
+					}
+				}
+				n++
+				if check.Status != "completed" || check.Conclusion != "success" {
+					return errors.New("required-check-not-success")
 				}
 				a.Checks[name] = check.ID
 			}
@@ -333,14 +340,14 @@ func addRequired(required map[string]int64, name string, app int64) error {
 	return nil
 }
 
-// A check bearing the Actions app ID must also be the actual successful job
-// from a successful main-push run at this SHA, not an arbitrary check API write.
-func (g *githubAPI) actionsJob(ctx context.Context, repo, sha, name string, checkID int64, details string) error {
+// Authenticate job/run associations before classifying event eligibility. Only a
+// proven PR run is ineligible; unreadable or unknown provenance always refuses.
+func (g *githubAPI) actionsJob(ctx context.Context, repo, sha, name string, checkID int64, details, status, conclusion string) (bool, error) {
 	prefix := "https://github.com/" + repo + "/"
 	pattern := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `(?:actions/runs/([0-9]+)/job/([0-9]+)|runs/([0-9]+)/jobs/([0-9]+))$`)
 	match := pattern.FindStringSubmatch(details)
 	if match == nil {
-		return errors.New("required-check-not-legitimate")
+		return false, errors.New("required-check-not-legitimate")
 	}
 	runText, jobText := match[1], match[2]
 	if runText == "" {
@@ -348,11 +355,11 @@ func (g *githubAPI) actionsJob(ctx context.Context, repo, sha, name string, chec
 	}
 	runID, e := strconv.ParseInt(runText, 10, 64)
 	if e != nil || runID <= 0 {
-		return errors.New("required-check-not-legitimate")
+		return false, errors.New("required-check-not-legitimate")
 	}
 	jobID, e := strconv.ParseInt(jobText, 10, 64)
 	if e != nil || jobID <= 0 {
-		return errors.New("required-check-not-legitimate")
+		return false, errors.New("required-check-not-legitimate")
 	}
 	var job struct {
 		ID                       int64
@@ -362,10 +369,10 @@ func (g *githubAPI) actionsJob(ctx context.Context, repo, sha, name string, chec
 		CheckURL                 string `json:"check_run_url"`
 	}
 	if e = g.get(ctx, fmt.Sprintf("/repos/%s/actions/jobs/%d", repo, jobID), &job); e != nil {
-		return e
+		return false, e
 	}
-	if job.ID != jobID || job.RunID != runID || job.Name != name || job.Status != "completed" || job.Conclusion != "success" || job.HeadSHA != sha || job.CheckURL != fmt.Sprintf("https://api.github.com/repos/%s/check-runs/%d", repo, checkID) {
-		return errors.New("required-check-not-legitimate")
+	if job.ID != jobID || job.RunID != runID || job.Name != name || job.HeadSHA != sha || job.CheckURL != fmt.Sprintf("https://api.github.com/repos/%s/check-runs/%d", repo, checkID) {
+		return false, errors.New("required-check-not-legitimate")
 	}
 	var run struct {
 		ID                              int64
@@ -380,11 +387,36 @@ func (g *githubAPI) actionsJob(ctx context.Context, repo, sha, name string, chec
 		} `json:"head_repository"`
 	}
 	if e = g.get(ctx, fmt.Sprintf("/repos/%s/actions/runs/%d", repo, runID), &run); e != nil {
-		return e
+		return false, e
 	}
 	workflow, _, _ := strings.Cut(run.Path, "@")
-	if run.ID != runID || run.HeadSHA != sha || run.Branch != "main" || run.Event != "push" || run.Status != "completed" || run.Conclusion != "success" || run.Repo.FullName != repo || run.HeadRepo.FullName != repo || !regexp.MustCompile(`^\.github/workflows/[A-Za-z0-9_-]+\.ya?ml$`).MatchString(workflow) {
-		return errors.New("required-check-not-legitimate")
+	if run.ID != runID || run.HeadSHA != sha || run.Repo.FullName != repo || run.HeadRepo.FullName != repo || !regexp.MustCompile(`^\.github/workflows/[A-Za-z0-9_-]+\.ya?ml$`).MatchString(workflow) {
+		return false, errors.New("required-check-not-legitimate")
 	}
-	return nil
+	if run.Event == "pull_request" {
+		// PR failure, pending and skip outcomes cannot shadow a main record, but
+		// missing/unknown states or inconsistent check/job records are not proof.
+		if run.Branch == "" || !knownActionsState(run.Status, run.Conclusion) || !knownActionsState(job.Status, job.Conclusion) || job.Status != status || job.Conclusion != conclusion {
+			return false, errors.New("required-check-not-legitimate")
+		}
+		return false, nil
+	}
+	if run.Event != "push" || run.Branch != "main" || run.Status != "completed" || run.Conclusion != "success" || job.Status != "completed" || job.Conclusion != "success" {
+		return false, errors.New("required-check-not-legitimate")
+	}
+	return true, nil
+}
+
+func knownActionsState(status, conclusion string) bool {
+	if status == "queued" || status == "in_progress" || status == "waiting" || status == "pending" || status == "requested" {
+		return conclusion == ""
+	}
+	if status != "completed" {
+		return false
+	}
+	switch conclusion {
+	case "success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure":
+		return true
+	}
+	return false
 }
