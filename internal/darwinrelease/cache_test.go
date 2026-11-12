@@ -61,8 +61,8 @@ func releaseCacheFixture(t *testing.T, mode string, unsigned bool) (gitFixture, 
 		root = filepath.Join(t.TempDir(), "linked")
 		fixtureCommand(t, f.root, "git", "worktree", "add", "--detach", root, "HEAD")
 		common := fixtureCommand(t, root, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
-		if common != filepath.Dir(objects) {
-			t.Fatal("linked fixture did not use the shared Git directory")
+		if !releaseCacheStoresMatch(common, filepath.Dir(objects)) {
+			t.Fatalf("linked fixture did not use the shared Git directory: %q versus %q", common, filepath.Dir(objects))
 		}
 	case "alternate":
 		root = filepath.Join(t.TempDir(), "borrower")
@@ -70,8 +70,9 @@ func releaseCacheFixture(t *testing.T, mode string, unsigned bool) (gitFixture, 
 		fixtureCommand(t, root, "git", "config", "core.commitGraph", "true")
 		own := fixtureCommand(t, root, "git", "rev-parse", "--path-format=absolute", "--git-path", "objects")
 		alternate := remember(filepath.Join(own, "info", "alternates"))
-		if strings.TrimSpace(string(alternate)) != objects {
-			t.Fatal("alternate fixture did not borrow the cache object store")
+		referenced := releaseAlternateStorePath(own, string(alternate))
+		if !releaseCacheStoresMatch(referenced, objects) {
+			t.Fatalf("alternate fixture did not borrow the cache object store: %q versus %q", referenced, objects)
 		}
 		for _, path := range []string{filepath.Join(own, "info", "commit-graph"), filepath.Join(own, "info", "commit-graphs")} {
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -149,4 +150,96 @@ func TestReleaseGitCacheIsolation(t *testing.T) {
 			assertReleaseCacheUnchanged(t, cache)
 		})
 	}
+}
+
+// Real directory identity accepts symlink aliases and refuses stat errors,
+// non-directories and different existing stores. This protects fixture
+// portability, not a malicious cache or admission-bypass demonstration.
+func TestReleaseCacheStoreIdentity(t *testing.T) {
+	root := t.TempDir()
+	expected := filepath.Join(root, "store")
+	other := filepath.Join(root, "other-store")
+	for _, path := range []string{expected, other} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(expected, alias); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "missing")
+	dangling := filepath.Join(root, "dangling")
+	if err := os.Symlink(missing, dangling); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "regular-file")
+	if err := os.WriteFile(file, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, left, right string
+		want              bool
+	}{
+		{"ordinary", expected, expected, true},
+		{"symlink-alias", alias, expected, true},
+		{"symlink-expected", expected, alias, true},
+		{"different-existing", other, expected, false},
+		{"missing", missing, expected, false},
+		{"dangling", dangling, expected, false},
+		{"missing-expected", expected, missing, false},
+		{"regular-file", file, expected, false},
+		{"regular-file-expected", expected, file, false},
+		{"same-regular-file", file, file, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := releaseCacheStoresMatch(c.left, c.right); got != c.want {
+				t.Fatalf("directory identity for %q and %q: wanted %t, got %t", c.left, c.right, c.want, got)
+			}
+		})
+	}
+	// Git resolves relative alternates from the object directory, not the cwd
+	// or the info directory containing the alternates file.
+	objects := filepath.Join(root, "objects")
+	if err := os.Mkdir(objects, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, record string
+		want         bool
+	}{
+		{"absolute-record", expected, true},
+		{"relative-record", "../store", true},
+		{"relative-alias", "../alias", true},
+		{"relative-different", "../other-store", false},
+		{"relative-missing", "../missing", false},
+		{"relative-file", "../regular-file", false},
+		{"empty-record", "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			resolved := releaseAlternateStorePath(objects, c.record)
+			if got := releaseCacheStoresMatch(resolved, expected); got != c.want {
+				t.Fatalf("alternate record %q resolved to %q: wanted %t, got %t", c.record, resolved, c.want, got)
+			}
+		})
+	}
+}
+
+// Fixture paths must identify the same existing directory, not merely share
+// spelling or a platform-specific prefix. Stat follows ordinary symlink aliases.
+func releaseCacheStoresMatch(left, right string) bool {
+	a, err := os.Stat(left)
+	if err != nil || !a.IsDir() {
+		return false
+	}
+	b, err := os.Stat(right)
+	return err == nil && b.IsDir() && os.SameFile(a, b)
+}
+
+func releaseAlternateStorePath(objects, record string) string {
+	path := strings.TrimSpace(record)
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(objects, path)
 }
