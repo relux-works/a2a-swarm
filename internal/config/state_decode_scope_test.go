@@ -274,22 +274,24 @@ func TestStateMemoSameLengthChangeMisses(t *testing.T) {
 // the frame, another reader or the writer's old snapshot; a real update beside
 // them persists exactly once. Kills M2 (shared frame or working copy).
 func TestStateMemoDeepAliasRollback(t *testing.T) {
-	plain, scoped, _ := memoFixture(t)
+	plain, scoped, sc := memoFixture(t)
 	data := richState(t, plain)
 	want := ordinaryState(t, plain)
-	first, err := LoadState(scoped, "alice")
+	first, err := LoadState(scoped, "alice") // miss: owned copy of a new frame
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := LoadState(scoped, "alice") // hit
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || sc.Stats().Hits != 1 {
+		t.Fatalf("second read: %v %+v", err, sc.Stats())
 	}
 	mutateEverything(t, &first)
 	mutateEverything(t, &second)
-	third, err := LoadState(scoped, "alice") // hit after both results were mutated
-	if err != nil || !reflect.DeepEqual(third, want) {
-		t.Fatalf("frame changed by a mutated result: %v", err)
+	// The frame must still be resident and unchanged: this read is a hit (a
+	// shared raw buffer would make it miss) and equals the ordinary decode.
+	third, err := LoadState(scoped, "alice")
+	if err != nil || sc.Stats().Hits != 2 || !reflect.DeepEqual(third, want) {
+		t.Fatalf("frame changed or lost by a mutated result: %v %+v", err, sc.Stats())
 	}
 	// Rollback: a callback mutates nested state and fails.
 	sentinel := errors.New("rollback")
