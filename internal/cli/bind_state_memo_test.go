@@ -184,7 +184,12 @@ func TestTerminalStateMemoEpochClosedBeforeWait(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	waitChecked := make(chan error, 1)
+	checked := false
 	reason, err := a.runTerminalWithRefresh(ctx, s, "own", initial, func() {
+		if checked {
+			return
+		}
+		checked = true
 		sc := s.paths.StateDecodeScope()
 		before := sc.Stats()
 		if _, err := config.LoadState(s.paths, "alice"); err != nil {

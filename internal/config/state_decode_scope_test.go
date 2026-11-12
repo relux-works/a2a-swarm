@@ -1061,3 +1061,33 @@ func TestStateMemoHitMatchesOrdinary(t *testing.T) {
 		t.Fatalf("fixture opaque=%s", want.opaque["zz_opaque"])
 	}
 }
+
+// Claim: a bulk State beyond the 2000-record retention cap (2500 thread
+// events written directly) loads through the memo exactly as ordinarily: no
+// new loader rejection, retention cap or truncation; a write keeps the
+// existing RememberThreadEvent semantics only for new records.
+func TestStateMemoBulkBeyondRetentionCap(t *testing.T) {
+	plain, scoped, sc := memoFixture(t)
+	events := make([]ThreadEvent, 2500)
+	for i := range events {
+		events[i] = ThreadEvent{Room: fmt.Sprintf("!%029d:bulk.invalid", i%16), EventID: fmt.Sprintf("$%043d", i), Root: fmt.Sprintf("$root%039d", i%64)}
+	}
+	data, _ := json.MarshalIndent(map[string]any{"thread_events": events, "next_batch": "s"}, "", "  ")
+	writeStateBytes(t, plain, "alice", append(data, '\n'))
+	want := ordinaryState(t, plain)
+	for i := 0; i < 2; i++ {
+		got, err := LoadState(scoped, "alice")
+		if err != nil || len(got.ThreadEvents) != 2500 || !reflect.DeepEqual(got, want) {
+			t.Fatalf("read %d: %v len=%d", i, err, len(got.ThreadEvents))
+		}
+	}
+	if st := sc.Stats(); st.Hits != 1 || st.Parses != 1 {
+		t.Fatalf("%+v", st)
+	}
+	if _, err := UpdateState(scoped, "alice", func(s *State) error { s.LastInbox = "x"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := ordinaryState(t, plain); len(got.ThreadEvents) != 2500 || got.LastInbox != "x" {
+		t.Fatalf("update changed bulk records: %d", len(got.ThreadEvents))
+	}
+}
