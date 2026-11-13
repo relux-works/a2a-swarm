@@ -178,17 +178,17 @@ func TestBindFixtureSweepProcess(t *testing.T) {
 // the real home). Each run kills one owner and keeps a live neighbour.
 func TestBindFixtureKilledOwner(t *testing.T) {
 	for _, child := range []struct {
-		name, run string
-		ready     time.Duration
+		name, test, run string
+		ready           time.Duration
 	}{
-		{"lifecycle", "^TestBindDetachedLifecycle$", 30 * time.Second},
-		{"launch-alias", "^TestBindSpawnLaunchAlias$/^absolute_alias$", 150 * time.Second},
+		{"lifecycle", "TestBindDetachedLifecycle", "^TestBindDetachedLifecycle$", 30 * time.Second},
+		{"launch-alias", "TestBindSpawnLaunchAlias", "^TestBindSpawnLaunchAlias$/^absolute_alias$", 150 * time.Second},
 	} {
-		t.Run(child.name, func(t *testing.T) { testBindFixtureKilledOwner(t, child.run, child.ready) })
+		t.Run(child.name, func(t *testing.T) { testBindFixtureKilledOwner(t, child.test, child.run, child.ready) })
 	}
 }
 
-func testBindFixtureKilledOwner(t *testing.T, run string, ready time.Duration) {
+func testBindFixtureKilledOwner(t *testing.T, test, run string, ready time.Duration) {
 	if testing.Short() {
 		t.Skip("detached CLI integration")
 	}
@@ -456,7 +456,7 @@ func testBindFixtureKilledOwner(t *testing.T, run string, ready time.Duration) {
 	err = neighbor.waitErr
 	b, _ := os.ReadFile(filepath.Join(neighbor.control, "child.log"))
 	t.Logf("neighbor normal cleanup: %s", b)
-	if err != nil || !strings.Contains(string(b), "--- PASS: TestBindDetachedLifecycle") {
+	if err != nil || !strings.Contains(string(b), "--- PASS: "+test) {
 		t.Errorf("neighbor normal cleanup failed: %v", err)
 	}
 	for _, p := range []bindFixtureProcess{neighbor.witness.Record.Server, neighbor.witness.Record.Fixture, neighbor.witness.Daemon} {
