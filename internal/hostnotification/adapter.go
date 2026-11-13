@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 	"unicode/utf8"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
 var ErrState = errors.New("host notification state unavailable")
@@ -92,6 +94,9 @@ func (a *Adapter) Notify(ctx context.Context, notice []byte, deadline, legacy ti
 	if len(notice) == 0 || len(notice) > MaxFrame || !utf8.Valid(notice) {
 		return key, Response{}, ErrProtocol
 	}
+	if err := a.admission(ctx, deadline, func(uint64) error { return nil }); err != nil {
+		return key, Response{}, err
+	}
 	digest := sha256.Sum256(notice)
 	var requestID string
 	err := a.control(ctx, deadline, func(deadline time.Time) error {
@@ -140,7 +145,12 @@ func (a *Adapter) Notify(ctx context.Context, notice []byte, deadline, legacy ti
 	}
 	callCtx, cancel := context.WithDeadline(ctx, minTime(deadline, a.attachment.Lease.Expires))
 	defer cancel()
-	r, err := a.client.Call(callCtx, requestID, "trigger", "a2a-"+key.Token)
+	var r Response
+	err = a.admission(callCtx, deadline, func(_ uint64) error {
+		var callErr error
+		r, callErr = a.client.Call(callCtx, requestID, "trigger", "a2a-"+key.Token)
+		return callErr
+	})
 	if err != nil {
 		return key, Response{}, err
 	}
@@ -277,4 +287,26 @@ func stateError(err error) error {
 		}
 	}
 	return ErrState
+}
+
+// The pre-reservation check avoids creating UNKNOWN on an ordinary muted poll;
+// the second check holds the same fence through the actual STREAM trigger.
+func (a *Adapter) admission(ctx context.Context, deadline time.Time, effect func(uint64) error) error {
+	if err := ready(ctx, deadline); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	namespace := "."
+	if a.paths.Root != "" {
+		var err error
+		namespace, err = filepath.Rel(a.paths.ConfigRoot(), a.paths.MetadataBase)
+		if err != nil {
+			return config.ErrHostStateScope
+		}
+	}
+	if a.paths.WakeMuteVersion != 0 {
+		return wakemute.AdmissionRequired(ctx, a.paths.ConfigRoot(), filepath.ToSlash(namespace), a.paths.WakeMuteVersion, effect)
+	}
+	return wakemute.Admission(ctx, a.paths.ConfigRoot(), filepath.ToSlash(namespace), effect)
 }

@@ -35,7 +35,7 @@ const EnvSessionID = "A2A_SESSION_ID"
 // `export` lines to; they reach every later Bash command of the session.
 const envClaudeEnvFile = "CLAUDE_ENV_FILE"
 
-const hostUsage = "usage: a2a host init <slug> [--force] | a2a host show | a2a host principals set|show|clear"
+const hostUsage = "usage: a2a host init <slug> [--force] | a2a host show | a2a host principals set|show|clear | a2a host mute|unmute (see host mute --help)"
 
 // cmdHost: a2a host init <slug> [--force] | a2a host show
 func cmdHost(ctx context.Context, a *App, args []string) error {
@@ -43,6 +43,8 @@ func cmdHost(ctx context.Context, a *App, args []string) error {
 		return usagef("%s", hostUsage)
 	}
 	switch args[0] {
+	case "mute", "unmute":
+		return cmdHostMute(ctx, a, args)
 	case "principals":
 		return cmdHostPrincipals(ctx, a, args[1:])
 	case "init":

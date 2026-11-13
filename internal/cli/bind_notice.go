@@ -203,7 +203,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		}
 		if !b.Stopped && ownTerminalTarget(b, b.Target) {
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-			live = boundTerminal(*b).ObserveReadiness(probe, b.Notice)
+			live = a.terminalEffects(*b).ObserveReadiness(probe, b.Notice)
 			if live.Input.Reason == tmuxwake.InputReasonBusyOrDialog {
 				matchLocation = observeBusyMatchLocation(probe, b.Target)
 			}
@@ -412,6 +412,7 @@ func (a *App) clearTerminalNoticeOnTurn(ctx context.Context, s *session, session
 			b.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
 			b.NoticeReport = nil
 			dropRetiredStrandedAlarms(st)
+			b.WakeMuteHold = false // A real matching turn, never thaw, retires the old draft hold.
 			b.AttemptIDs, b.Notice, b.Typed, b.TypingStarted = nil, "", false, false
 			b.NoticeOrigin, b.NoticePosition, b.Idle = nil, nil, nil
 			b.NoticePublication = "unavailable: own notice changed"

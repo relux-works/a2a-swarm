@@ -59,11 +59,12 @@ type Getenv func(string) string
 
 // Paths resolves files under the base directory.
 type Paths struct {
-	DaemonOwner    string // Immutable service-start policy; never loaded from State.
-	Base           string
-	Root           string // Original registry and host root in named mode.
-	MetadataBase   string // Connection-scoped identity metadata root.
-	AgentStateBase string // Resolver-selected agent State root for a named human.
+	WakeMuteVersion int    // Explicit embedding/daemon launch admission; 0 is legacy/uninstalled, 1 requires retained control state.
+	DaemonOwner     string // Immutable service-start policy; never loaded from State.
+	Base            string
+	Root            string // Original registry and host root in named mode.
+	MetadataBase    string // Connection-scoped identity metadata root.
+	AgentStateBase  string // Resolver-selected agent State root for a named human.
 	// stateDecode is the owning terminal consumer's private decode memo; nil
 	// for every resolved Paths value. It changes no path or routing result.
 	stateDecode *StateDecodeScope

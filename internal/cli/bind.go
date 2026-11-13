@@ -18,6 +18,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
+	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
 // descendant inspects PID/PPID only, never command arguments or environment.
@@ -680,6 +681,15 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 }
 
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string, alarmWakes ...chan<- struct{}) error {
+	// State/control waits inside and after root admission share one finite cycle
+	// budget. Copy only the App; preserve the shared monotonic spacing clock.
+	ctx, cancelCycle := context.WithTimeout(ctx, nativeRPCTimeout)
+	defer cancelCycle()
+	a.notificationClockState()
+	scoped := *a
+	scoped.wakeContext = ctx
+	a = &scoped
+
 	// Only the consumer supplies a wake channel for alarm observation.
 	var alarmWake chan<- struct{}
 	if len(alarmWakes) > 0 {
@@ -749,40 +759,59 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}); err != nil {
 			return err
 		}
-		// Diagnostics never grant ownership; continuation below independently
-		// checks the persisted generation-scoped typing origin.
-		readiness := boundTerminal(*b).ObserveReadiness(ctx, b.Notice)
-		observation := readinessInput(readiness)
-		if alarmWake != nil {
-			a.observeMailAlarm(s, generation, alarmObservation(alarm, readiness))
-			select {
-			case alarmWake <- struct{}{}:
-			default:
-			}
-		}
-		if err := a.observeTerminalReadiness(s, *b, readiness); err != nil {
-			return err
-		}
-		observed = true
-		if err := a.observeTerminalNotice(s, generation, *b, observation); err != nil {
-			return err
-		}
-		// Only an aged empty observation disproves continuous presence. A redraw
-		// inside the recovery window must retain lost-ACK typing authority.
-		if observation == "empty" && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) {
-			if err := a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
-				current.NoticeOrigin = nil
-				current.NoticePosition = nil
-				current.TypingStarted = false
-			}); err != nil {
+		admissionCtx, cancelAdmission := context.WithTimeout(ctx, nativeRPCTimeout)
+		defer cancelAdmission()
+		return a.withWakeAdmission(admissionCtx, s.paths, func(scopeGeneration uint64) error {
+			if held, err := a.requalifyWakeScope(s, generation, scopeGeneration); err != nil || held {
 				return err
 			}
-			b.NoticeOrigin = nil
-			b.NoticePosition = nil
-			b.TypingStarted = false
-		}
-		if observation == "empty" && b.Typed && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) && len(b.AttemptIDs) < b.NoticeCount {
-			if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			// Diagnostics never grant ownership; continuation below independently
+			// checks the persisted generation-scoped typing origin.
+			readiness := a.terminalEffects(*b).ObserveReadiness(ctx, b.Notice)
+			observation := readinessInput(readiness)
+			if alarmWake != nil {
+				a.observeMailAlarm(s, generation, alarmObservation(alarm, readiness))
+				select {
+				case alarmWake <- struct{}{}:
+				default:
+				}
+			}
+			if err := a.observeTerminalReadiness(s, *b, readiness); err != nil {
+				return err
+			}
+			observed = true
+			if err := a.observeTerminalNotice(s, generation, *b, observation); err != nil {
+				return err
+			}
+			// Only an aged empty observation disproves continuous presence. A redraw
+			// inside the recovery window must retain lost-ACK typing authority.
+			if observation == "empty" && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) {
+				if err := a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
+					current.NoticeOrigin = nil
+					current.NoticePosition = nil
+					current.TypingStarted = false
+				}); err != nil {
+					return err
+				}
+				b.NoticeOrigin = nil
+				b.NoticePosition = nil
+				b.TypingStarted = false
+			}
+			if observation == "empty" && b.Typed && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) && len(b.AttemptIDs) < b.NoticeCount {
+				if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+					b.Typed = false
+					b.AttemptIDs = nil
+					b.Notice = ""
+					b.NoticeCount = 0
+					b.NoticeOrigin = nil
+					b.NoticePosition = nil
+					b.TypingStarted = false
+					b.AttemptAt = time.Time{}
+					b.Retried = false
+					b.Idle = nil
+				}); err != nil {
+					return err
+				}
 				b.Typed = false
 				b.AttemptIDs = nil
 				b.Notice = ""
@@ -790,90 +819,78 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				b.NoticeOrigin = nil
 				b.NoticePosition = nil
 				b.TypingStarted = false
-				b.AttemptAt = time.Time{}
-				b.Retried = false
 				b.Idle = nil
-			}); err != nil {
+			}
+			if len(b.AttemptIDs) > 0 || b.NoticeOrigin != nil && b.Notice != "" {
+				return a.recoverTerminal(ctx, s, generation, *b, readiness)
+			}
+			if len(ids) == 0 {
+				return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "armed: no new mail" })
+			}
+			// Screen admission precedes the durable attempt fence. A busy target
+			// retains IDs for the next idle observation without spending its rate.
+			if !readiness.Eligible() {
+				return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: busy, draft or unknown input" })
+			}
+			now := a.Now()
+			if qualified, err := a.qualifyTerminalIdle(s, generation, *b, readiness); err != nil || !qualified {
 				return err
 			}
-			b.Typed = false
-			b.AttemptIDs = nil
-			b.Notice = ""
-			b.NoticeCount = 0
-			b.NoticeOrigin = nil
-			b.NoticePosition = nil
-			b.TypingStarted = false
-			b.Idle = nil
-		}
-		if len(b.AttemptIDs) > 0 || b.NoticeOrigin != nil && b.Notice != "" {
-			return a.recoverTerminal(ctx, s, generation, *b, readiness)
-		}
-		if len(ids) == 0 {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "armed: no new mail" })
-		}
-		// Screen admission precedes the durable attempt fence. A busy target
-		// retains IDs for the next idle observation without spending its rate.
-		if !readiness.Eligible() {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: busy, draft or unknown input" })
-		}
-		now := a.Now()
-		if qualified, err := a.qualifyTerminalIdle(s, generation, *b, readiness); err != nil || !qualified {
-			return err
-		}
-		reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
-		if len(reservations) >= b.MaxWakes {
-			return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
-		}
-		var reservedAttempt config.TerminalBinding
-		token, reserveErr := a.reserveNotification(ctx, s, time.Now().Add(nativeRPCTimeout), "terminal", b.SessionID, generation, false, func(st *config.State, mb *config.Mailbox, token string) (bool, error) {
-			current := st.Terminal
-			if current == nil || current.Stopped || current.Generation != generation || current.SessionID != b.SessionID || !ownTerminalTarget(current, b.Target) || !sameTerminalScope(*current, *b) || !sameTerminalIdle(current.Idle, b.Idle) {
-				return false, errors.New("binding retired")
+			reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
+			if len(reservations) >= b.MaxWakes {
+				return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
 			}
-			if st.HooksPaused || manualWakeGate(*st) != "" {
-				current.Outcome = "suppressed: manual gate"
-				return false, nil
-			}
-			if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
-				return false, errors.New("terminal lease changed")
-			}
-			if len(current.AttemptIDs) > 0 {
-				return false, errors.New("terminal attempt changed")
-			}
-			pending := mb.Pending()
-			ids = slices.DeleteFunc(ids, func(id string) bool {
-				return !slices.ContainsFunc(pending, func(en config.MailEntry) bool { return en.ID == id }) || slices.Contains(current.Rung, id)
-			})
-			if len(ids) == 0 {
+			var reservedAttempt config.TerminalBinding
+			token, reserveErr := a.reserveNotification(ctx, s, time.Now().Add(nativeRPCTimeout), "terminal", b.SessionID, generation, false, func(st *config.State, mb *config.Mailbox, token string) (bool, error) {
+				current := st.Terminal
+				if current == nil || current.Stopped || current.Generation != generation || current.SessionID != b.SessionID || !ownTerminalTarget(current, b.Target) || !sameTerminalScope(*current, *b) || !sameTerminalIdle(current.Idle, b.Idle) {
+					return false, errors.New("binding retired")
+				}
+				if st.HooksPaused || manualWakeGate(*st) != "" {
+					current.Outcome = "suppressed: manual gate"
+					return false, nil
+				}
+				if l := st.Lease; l == nil || l.Holder != b.SessionID || l.Host != machineLabel() || !l.Expires.After(a.Now()) {
+					return false, errors.New("terminal lease changed")
+				}
+				if len(current.AttemptIDs) > 0 {
+					return false, errors.New("terminal attempt changed")
+				}
+				pending := mb.Pending()
+				ids = slices.DeleteFunc(ids, func(id string) bool {
+					return !slices.ContainsFunc(pending, func(en config.MailEntry) bool { return en.ID == id }) || slices.Contains(current.Rung, id)
+				})
+				if len(ids) == 0 {
+					current.Idle = nil
+					current.Outcome = "armed: no new mail"
+					return false, nil
+				}
+				current.NoticeOrigin = current.Idle
+				current.NoticePosition = nil
+				current.TypingStarted = false
 				current.Idle = nil
-				current.Outcome = "armed: no new mail"
-				return false, nil
+				current.AttemptIDs = ids
+				current.Notice = tmuxwake.Notice(len(ids))
+				current.NoticeCount = len(ids)
+				current.AttemptAt = now
+				current.Retried = false
+				current.Typed = false
+				current.Reservations = append(reservations, now)
+				current.NotificationToken = token
+				current.Outcome = "attempt reserved"
+				reservedAttempt = *current
+				reservedAttempt.AttemptIDs = slices.Clone(current.AttemptIDs)
+				return true, nil
+			})
+			if reserveErr != nil || token == "" {
+				return reserveErr
 			}
-			current.NoticeOrigin = current.Idle
-			current.NoticePosition = nil
-			current.TypingStarted = false
-			current.Idle = nil
-			current.AttemptIDs = ids
-			current.Notice = tmuxwake.Notice(len(ids))
-			current.NoticeCount = len(ids)
-			current.AttemptAt = now
-			current.Retried = false
-			current.Typed = false
-			current.Reservations = append(reservations, now)
-			current.NotificationToken = token
-			current.Outcome = "attempt reserved"
-			reservedAttempt = *current
-			reservedAttempt.AttemptIDs = slices.Clone(current.AttemptIDs)
-			return true, nil
+			if err := s.checkConnection(); err != nil {
+				return err
+			}
+			outcome, sendErr := a.sendTerminalAttempt(ctx, s, reservedAttempt, readiness.Key)
+			return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 		})
-		if reserveErr != nil || token == "" {
-			return reserveErr
-		}
-		if err := s.checkConnection(); err != nil {
-			return err
-		}
-		outcome, sendErr := a.sendTerminalAttempt(ctx, s, reservedAttempt, readiness.Key)
-		return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 	})
 	if err != nil {
 		_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
@@ -882,6 +899,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		a.unknownTerminalNotice(ctx, s, generation, false)
 	} else {
 		return a.completeTerminalObservation(ctx, s, generation)
+	}
+	if errors.Is(err, wakemute.ErrMuted) {
+		return nil
 	}
 	return err
 }

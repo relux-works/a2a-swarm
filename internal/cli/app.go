@@ -30,6 +30,8 @@ const (
 
 // App carries the process environment so tests can run commands in-process.
 type App struct {
+	wakeContext              context.Context                              // Bounded terminal dispatch copy; never changes ambient command cleanup.
+	terminalFixture          func(config.TerminalBinding) terminalEffects // Isolated tests only; production always uses the bound terminal.
 	admissionSessions        []*identityAdmission
 	daemonEngine             bool
 	daemonOwner              string // Root policy snapshot, inherited by requests only.
@@ -156,7 +158,7 @@ func commands() []command {
 		{"agent-dm", "agent-dm ensure|status|say|unset|leave FULL_PEER   exact admitted agent pair (default off)", cmdAgentDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"availability", "availability <localpart|@localpart:server> [--json]   read selected-server registration availability (no existence guarantee)", cmdAvailability},
-		{"host", "host init <slug> [--force] | host show | host principals set|show|clear   this machine's host slug, the first part of every identity", cmdHost},
+		{"host", "host init <slug> [--force] | host show | host principals set|show|clear | host mute|unmute   host identity, principal policy and owner-confirmed scope wake mute leases", cmdHost},
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
@@ -218,6 +220,12 @@ func (a *App) usage(w io.Writer) {
 // Run executes one a2a invocation and returns the exit code.
 func (a *App) Run(ctx context.Context, args []string) int {
 	defer a.closeAdmission()
+	if hostMuteInvocation(args) {
+		return a.fail(cmdHostMute(ctx, a, args[1:]))
+	}
+	if hostMuteInvocation(stationArgs(args)) {
+		return a.fail(usagef("host mute requires canonical argv without global identity selectors"))
+	}
 	// This exact hidden probe must bypass connection preflight and owner-DM
 	// diagnostics: neither state nor credentials may be consulted by negotiation.
 	if len(args) == 2 && args[0] == "bind" && args[1] == "--consumer-protocol" {

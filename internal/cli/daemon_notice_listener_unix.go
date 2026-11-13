@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -25,6 +26,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/daemonenroll"
+	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
 const noticeEndpoint = "daemon-notice-listener.endpoint"
@@ -32,15 +34,17 @@ const noticeEndpoint = "daemon-notice-listener.endpoint"
 // Listener authority is private to this invocation. No request bytes, URL,
 // address, capability or backend error is ever used as a diagnostic.
 type noticeListener struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	logMu   sync.Mutex
-	client  *websocket.Conn
-	claimed bool
-	ready   chan struct{}
-	log     io.Writer
-	partial []byte
+	scopeVersion string
+	scopeRoot    string // Exact enrolled station root, independent of daemon configuration.
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	logMu        sync.Mutex
+	client       *websocket.Conn
+	claimed      bool
+	ready        chan struct{}
+	log          io.Writer
+	partial      []byte
 }
 
 func (a *App) stationNoticeListener(ctx context.Context, home string, e daemonenroll.Enrolled, args []string) int {
@@ -62,7 +66,7 @@ func (a *App) stationNoticeListener(ctx context.Context, home string, e daemonen
 	args = o.noticeListenerArgs(plan.Selection)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	l := &noticeListener{ctx: ctx, cancel: cancel, ready: make(chan struct{}), log: a.Stderr}
+	l := &noticeListener{scopeRoot: home, scopeVersion: a.Getenv(wakemute.EnvRequiredVersion), ctx: ctx, cancel: cancel, ready: make(chan struct{}), log: a.Stderr}
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return a.noticeUnavailable()
@@ -226,9 +230,23 @@ func (l *noticeListener) Write(p []byte) (int, error) {
 			return 0, daemon.Unavailable
 		}
 		ctx, cancel := context.WithTimeout(l.ctx, daemon.LockReleaseBound)
-		err = client.Write(ctx, websocket.MessageText, canonical)
+		if l.scopeRoot == "" {
+			cancel()
+			return 0, daemon.NotAllowed
+		}
+		admit := wakemute.Admission
+		if l.scopeVersion != "" {
+			if l.scopeVersion != "1" {
+				cancel()
+				return 0, daemon.NotAllowed
+			}
+			admit = func(ctx context.Context, root, path string, effect func(uint64) error) error {
+				return wakemute.AdmissionRequired(ctx, root, path, wakemute.Version, effect)
+			}
+		}
+		err = admit(ctx, l.scopeRoot, ".", func(_ uint64) error { return client.Write(ctx, websocket.MessageText, canonical) })
 		cancel()
-		if err != nil {
+		if err != nil && !errors.Is(err, wakemute.ErrMuted) {
 			return 0, daemon.Unavailable
 		}
 		l.partial = append(l.partial[:0], rest...)

@@ -11,6 +11,20 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
+type terminalEffects interface {
+	ObserveReadiness(context.Context, string) tmuxwake.ReadinessAssessment
+	AssessOwnedNotice(context.Context, string) tmuxwake.ReadinessAssessment
+	Send(context.Context, int, tmuxwake.ReadinessKey, func(), func()) (tmuxwake.SendResult, error)
+	ResumeNotice(context.Context, int, string, tmuxwake.ReadinessKey, ...func() error) (tmuxwake.SendResult, error)
+}
+
+func (a *App) terminalEffects(b config.TerminalBinding) terminalEffects {
+	if a.terminalFixture != nil {
+		return a.terminalFixture(b)
+	}
+	return boundTerminal(b)
+}
+
 func boundTerminal(b config.TerminalBinding) tmuxwake.BoundTerminal {
 	return tmuxwake.BoundTerminal{Target: b.Target, ClaudeRegistryRoot: b.ClaudeRegistryRoot, Generation: b.Generation, SessionID: b.SessionID, NoticePosition: b.NoticePosition}
 }

@@ -10,6 +10,9 @@ import (
 // hook bookkeeping reached indirectly from a command. Local commands retain
 // their existing independent cleanup and lock-deadline semantics.
 func (a *App) updateState(p config.Paths, name string, fn func(*config.State) error) (config.State, error) {
+	if a != nil && a.wakeContext != nil {
+		return config.UpdateStateContext(a.wakeContext, p, name, time.Time{}, fn)
+	}
 	if a != nil && a.daemonEngine {
 		return config.UpdateStateContext(a.ctx, p, name, time.Time{}, fn)
 	}
@@ -17,6 +20,9 @@ func (a *App) updateState(p config.Paths, name string, fn func(*config.State) er
 }
 
 func (a *App) updateStateBy(p config.Paths, name string, deadline time.Time, fn func(*config.State) error) (config.State, error) {
+	if a != nil && a.wakeContext != nil {
+		return config.UpdateStateContext(a.wakeContext, p, name, deadline, fn)
+	}
 	if a != nil && a.daemonEngine {
 		return config.UpdateStateContext(a.ctx, p, name, deadline, fn)
 	}
@@ -24,6 +30,9 @@ func (a *App) updateStateBy(p config.Paths, name string, deadline time.Time, fn 
 }
 
 func (a *App) withRuntimeLock(p config.Paths, name, kind string, deadline time.Time, fn func() error) error {
+	if a != nil && a.wakeContext != nil {
+		return config.WithRuntimeLockContext(a.wakeContext, p, name, kind, deadline, fn)
+	}
 	if a != nil && a.daemonEngine {
 		return config.WithRuntimeLockContext(a.ctx, p, name, kind, deadline, fn)
 	}

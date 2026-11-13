@@ -16,7 +16,7 @@ func (a *App) sendTerminalAttempt(ctx context.Context, s *session, expected conf
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var fenceErr error
-	result, err := boundTerminal(expected).Send(ctx, expected.NoticeCount, key, func() {
+	result, err := a.terminalEffects(expected).Send(ctx, expected.NoticeCount, key, func() {
 		_, fenceErr = a.updateState(s.paths, s.name, func(st *config.State) error {
 			b := st.Terminal
 			if b == nil || b.Stopped || !sameTerminalScope(*b, expected) || b.NotificationToken != expected.NotificationToken || b.Notice != expected.Notice || !b.AttemptAt.Equal(expected.AttemptAt) || !slices.Equal(b.AttemptIDs, expected.AttemptIDs) || st.HooksPaused || manualWakeGate(*st) != "" {
@@ -79,7 +79,7 @@ func (a *App) resumeTerminalNotice(ctx context.Context, s *session, generation s
 	if b.Retried || now.Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) || !noticeRecoveryBudget(b, now) {
 		return held()
 	}
-	r := boundTerminal(b).AssessOwnedNotice(ctx, b.Notice)
+	r := a.terminalEffects(b).AssessOwnedNotice(ctx, b.Notice)
 	if !r.OwnedNoticeEligible() || !sameNoticeOrigin(b, r.Key) {
 		return held()
 	}
@@ -89,7 +89,7 @@ func (a *App) resumeTerminalNotice(ctx context.Context, s *session, generation s
 		expected, err = a.reserveTerminalRecovery(ctx, s, generation, b, r.Key)
 		return err
 	}
-	result, sendErr := boundTerminal(expected).ResumeNotice(ctx, expected.NoticeCount, expected.Notice, r.Key, beforeEnter)
+	result, sendErr := a.terminalEffects(expected).ResumeNotice(ctx, expected.NoticeCount, expected.Notice, r.Key, beforeEnter)
 	return a.finishTerminal(s, generation, result, sendErr, true, expected)
 }
 

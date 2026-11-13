@@ -13,11 +13,16 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/daemon"
+	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
 // daemonHandler constructs a fresh App for every authenticated invocation.
 // Neither selection/cache fields nor daemon environment/session state are copied.
 func (a *App) daemonHandler(home string) daemon.Handler {
+	requiredVersion := ""
+	if a.Getenv != nil {
+		requiredVersion = a.Getenv(wakemute.EnvRequiredVersion)
+	} // Immutable service-start admission, never station input.
 	return func(ctx context.Context, inv daemon.Invocation) int {
 		refuse := func(message string) int { _, _ = io.WriteString(inv.Stderr, message); return ExitError }
 		if inv.Request.Session != "" && !daemon.ValidSession(inv.Request.Session) {
@@ -45,6 +50,9 @@ func (a *App) daemonHandler(home string) daemon.Handler {
 		request := &App{Stdout: inv.Stdout, Stderr: inv.Stderr, Stdin: bytes.NewReader(inv.Request.Stdin), HTTP: a.HTTP, Now: a.Now, as: inv.Identity, ctx: ctx, daemonEngine: true, daemonFiles: map[string]daemon.InputFile{}}
 		defer request.closeAdmission()
 		request.Getenv = func(k string) string {
+			if k == wakemute.EnvRequiredVersion {
+				return requiredVersion
+			}
 			if k == config.EnvConfigDir {
 				return root
 			}

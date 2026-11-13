@@ -84,10 +84,16 @@ The default-off [agent pair DM](docs/agent-dm.md) supports exact host-admitted
 keeper/orchestrator pairs with explicit peer join and sole-recipient delivery:
 `a2a agent-dm ensure|status|say|unset|leave FULL_PEER`.
 
+Owner-confirmed [scope wake mute leases](docs/host-mute.md) suppress new local
+wake admissions for explicitly enrolled roots/connections. They preserve mail
+and independent pauses and always report `quiesced=false`; installation and
+scope admission remain separate from source delivery.
+
 ## Tools
 
 | Tool | Purpose | How to run | Output |
 | --- | --- | --- | --- |
+| Scope wake mute (Go, OS TTY checks, local directory flocks) | Owner-confirmed finite-scope wake admission fence and exact cleanup | `a2a host mute capability`; `host mute enroll --scope FILE --run RUN --budget DUR`; `host mute --scope FILE --run RUN --budget DUR`; `host mute status --scope FILE --budget DUR`; `host unmute --scope FILE --run RUN --budget DUR --token OPERATION_ID`; [contract and focused fixture commands](docs/host-mute.md) | Versioned JSON stdout; selected roots contain private `wake-mute.enrolled.json` and `wake-mute.operations.json`; test evidence under `.temp/`; no live qualification or quiescence claim |
 | Darwin release gates (Go, native Security APIs, Swift, codesign/notarytool, cosign) | Source-only signed-tag/current-main/full-DR/companion/archive/publication gates and nonsecret controls | `go test -race -count=1 -timeout=3m ./internal/darwinrelease`; [exact admission/build/verify entry points and held rollout](docs/darwin-release.md) | Runner-private payload/evidence and final checksums; publication only after separately authorized tagged execution |
 | `a2a room power` | Read current room creator and explicit/default authority without changing state | `a2a room power ROOM --json` (or escaped text without `--json`) | Minimal versioned JSON/text on stdout; refusals on stderr, no partial rows |
 | Curator build checks (Go, Make) | Verify the dedicated build branch vendor closure and compile its command | `make verify-vendor BUILD_REPOSITORY="$REPOSITORY" BUILD_COMMIT="$FULL_BUILD_OID" MAIN_COMMIT="$FULL_MAIN_OID"`; `make curator-command BUILD_REPOSITORY="$BUILD_CHECKOUT" OUTPUT="$ARTIFACT"`; [branch rule and limits](docs/curator-build.md) | Named equality/refusal output; binary at the explicit output path |

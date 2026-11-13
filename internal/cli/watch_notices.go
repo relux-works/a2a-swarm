@@ -12,6 +12,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
+	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
 const noticeCoalesce = 30 * time.Second
@@ -119,31 +120,27 @@ func (a *App) noticeLoop(ctx context.Context, s *session, g *config.MonitorGener
 				return err
 			}
 			if len(payload) != 0 {
+				var gateErr error
 				sink, err := admitMonitorSink(g, record.Generation, func() error {
-					data := append(payload, '\n')
-					n, err := a.Stdout.Write(data)
-					if err == nil && n != len(data) {
-						err = io.ErrShortWrite
+					gateErr = a.emitScopedNotice(ctx, s, append(payload, '\n'), itemIDs(items))
+					if errors.Is(gateErr, wakemute.ErrMuted) {
+						return nil
 					}
-					return err
+					return gateErr
 				})
 				if err != nil {
 					return err
 				}
-				if err := sink.announce(); err != nil {
+				err = sink.announce()
+				if err != nil && !errors.Is(gateErr, wakemute.ErrMuted) {
 					return err
 				}
-				if listener {
-					if err := g.RecordNotice(record.Generation, a.Now()); err != nil {
+				if err == nil && gateErr == nil && listener {
+					if err = g.RecordNotice(record.Generation, a.Now()); err != nil {
 						return err
 					}
 				}
-				// Flow ACKs are not the C2+C3 receipt barrier. Watch never
-				// calls Delivered/afterPrint, AddReceived or inbox rendering.
-				_, err = s.lockedDeliver(ctx, time.Now().Add(time.Second), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) { return nil, mb.MarkShown(itemIDs(items)) })
-				if err != nil {
-					return err
-				}
+
 			}
 			window.due = time.Time{}
 		}
@@ -194,4 +191,22 @@ func noticeOwnerSender(items []waitItem, owner string) bool {
 		}
 	}
 	return false
+}
+
+// The output and Shown transition share admission. A suppressed notice performs
+// neither operation; ingestion and owner/lease maintenance remain in noticeLoop.
+func (a *App) emitScopedNotice(ctx context.Context, s *session, data []byte, ids []string) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return a.withWakeAdmission(ctx, s.paths, func(_ uint64) error {
+		n, err := wakemute.WriteOutput(ctx, a.Stdout, data)
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			return err
+		}
+		_, err = s.lockedDeliver(ctx, time.Now().Add(time.Second), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) { return nil, mb.MarkShown(ids) })
+		return err
+	})
 }

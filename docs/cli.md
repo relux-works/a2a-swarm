@@ -4581,3 +4581,23 @@ SessionStart/prompt/stop events, stdin/stdout JSON, and real monitor WebSocket
 handshake/close handling before qualification. No Muse installation or pinned
 native fixture is available here. Synthetic hook and WebSocket tests do not
 claim native Muse E2E or idle-wake reliability. No shim is provided.
+
+
+## Scope wake mute leases: `a2a host mute|unmute`
+
+Use `host mute capability` for the versioned image handshake. Explicit
+`host mute enroll --scope FILE --run RUN --budget DUR` admits compatible
+consumers for selected roots/connections; each `host mute` requires a fresh
+owner TTY confirmation with the same required flags. Inspect with
+`host mute status --scope FILE --budget DUR`, and clean up only that operation
+with `host unmute --scope FILE --run RUN --budget DUR --token OPERATION_ID`.
+The ID is public correlation, not bearer authority. There are no implicit roots,
+connection selections, budgets, approval flags, TTLs or automatic thaw.
+
+The [full contract](host-mute.md) defines the JSON scope file, required launch
+version, owner/host/run binding, durability and partial recovery, every effect
+sink, bounded waits and coverage limits. Mail, receipts, subscriptions and
+independent pauses remain separate. Every result says `quiesced=false`;
+already admitted async work may complete. Read-only status does not repair or
+expire state. An installed image and exact scope still require independent
+admission; this capability does not stop processes or authorize a live run.

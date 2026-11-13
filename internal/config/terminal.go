@@ -39,6 +39,8 @@ func (w *OwnStatusWrite) UnmarshalJSON(data []byte) error {
 // TerminalBinding contains only local process metadata and event IDs. A wake
 // reservation is independent of inbox receipts and survives an uncertain send.
 type TerminalBinding struct {
+	WakeMuteGeneration uint64                     `json:"wake_mute_generation,omitempty"`
+	WakeMuteHold       bool                       `json:"wake_mute_hold,omitempty"`
 	RefreshStatus      string                     `json:"refresh_status,omitempty"`
 	NotificationToken  string                     `json:"notification_token,omitempty"`
 	OwnNotice          OwnNoticeObservation       `json:"own_notice"`

@@ -408,7 +408,7 @@ func (c Connection) Paths(p Paths, name string, human bool) (Paths, error) {
 		return Paths{}, e
 	}
 	base := filepath.Join(p.ConfigRoot(), "connections", c.ID)
-	out := Paths{Base: base, Root: p.ConfigRoot(), MetadataBase: base}
+	out := Paths{Base: base, Root: p.ConfigRoot(), MetadataBase: base, WakeMuteVersion: p.WakeMuteVersion}
 	for _, path := range []string{base, filepath.Join(base, "agents"), filepath.Join(base, "humans")} {
 		if err := checkConnectionDirectories(p.ConfigRoot(), path); err != nil {
 			return Paths{}, err
