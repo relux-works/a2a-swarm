@@ -579,6 +579,11 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true
 	var quietSince time.Time
+	// The owner's native identity is taken once, before the first cycle, and
+	// kept for this consumer's lifetime; an unknown read leaves it to the
+	// first successful read of a later wait.
+	owner := &ownerIdentity{}
+	owner.observe(policy.OwnerPID)
 	for ctx.Err() == nil {
 		cycleStart := time.Now()
 		quiet := false
@@ -695,7 +700,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			quietSince = time.Time{}
 		}
 		if terminalQuiescence && !quietSince.IsZero() && time.Since(quietSince) >= terminalQuietAfter {
-			result, reason := a.waitQuiescent(ctx, s, policy, cycleStart, view)
+			result, reason := a.waitQuiescent(ctx, s, policy, owner, cycleStart, view)
 			if result == quiescentCancelled {
 				return "cancelled", nil
 			}
@@ -710,7 +715,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 				continue
 			}
 		}
-		switch a.waitActive(ctx, delay, policy) {
+		switch a.waitActive(ctx, delay, policy, owner) {
 		case "cancelled":
 			return "cancelled", nil
 		case "owner-replaced":
@@ -727,9 +732,9 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 // read returned: a known owner replacement or absence ends the wait at once
 // (the prior-consumer path of a SessionStart rebind has seconds), while an
 // unknown inspection result is ignored, proves nothing and is retried on the
-// next tick. Limit: the token baseline is the first successful read of this
-// wait; the preceding full cycle has just checked the canonical Birth.
-func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config.TerminalBinding) string {
+// next tick. The token is compared with the consumer's lifetime owner
+// identity, never re-baselined per wait.
+func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config.TerminalBinding, owner *ownerIdentity) string {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	var tick <-chan time.Time
@@ -738,23 +743,11 @@ func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config
 		defer ticker.Stop()
 		tick = ticker.C
 	}
-	// The baseline is the first token read successfully during this wait. An
-	// unknown read leaves it unset and is retried on the next bounded tick;
-	// absence is a known end whenever it is observed.
-	start, known := "", false
+	// An unknown read proves nothing and is retried on the next bounded tick;
+	// absence or a token differing from the lifetime identity is a known end.
+	owner.beginWait()
 	observe := func() bool {
-		current, err := terminalProcessStart(policy.OwnerPID)
-		switch {
-		case errors.Is(err, errProcessGone):
-			return true
-		case err != nil:
-			return false
-		case !known:
-			start, known = current, true
-			return false
-		default:
-			return current != start && terminalKnownReplacementStops
-		}
+		return owner.observe(policy.OwnerPID) == ownerTokenReplaced
 	}
 	if terminalWatchOwnerWhileHeld && observe() {
 		return "owner-replaced"

@@ -2377,9 +2377,11 @@ refreshes observations. Each reason runs an ordinary full cycle with all of its 
 owner stays watched while that interval is held. Files are compared by metadata only. The consumer's own locked writes are recorded under
 the state lock so they do not wake it; if a locked operation finds the files already changed by another writer since its previous own record,
 that evidence is kept until the next full cycle, so a later own write never hides another writer's change. The owner is watched without forking
-every `min(interval, 1s)`, in quiescent waits and in ordinary waits: its absence, or a native start token that changed to another valid token,
-is a known replacement and stops the consumer at once, even when the second-resolution canonical birth time is unchanged; an inspection error
-is unknown, proves nothing and leaves the ordinary checks to decide. Any outstanding work returns the consumer to the per-interval loop. Hook pause,
+every `min(interval, 1s)`, in quiescent waits and in ordinary waits. The consumer keeps the owner's native start token from its first
+successful read for its whole lifetime, across full cycles and both kinds of wait. The owner's absence, or a native start token that differs
+from that remembered token, is a known replacement and stops the consumer at once, even when the second-resolution canonical birth time is
+unchanged. An inspection error is unknown: it proves nothing, never sets or clears the remembered token, and leaves the ordinary checks to
+decide. Before the first successful read nothing is remembered, so a replacement before that read is left to the canonical birth check. Any outstanding work returns the consumer to the per-interval loop. Hook pause,
 manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
 `state/NAME.binding.log` contains fixed errors and a `binding exit: REASON` line on each handled consumer exit, including vanished/replaced/stopped
 bindings, owner/target exit, cancellation and startup failure; it never contains captured screens or peer bodies. SIGKILL, a crash or host loss cannot

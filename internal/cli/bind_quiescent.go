@@ -132,6 +132,9 @@ var (
 	terminalKnownReplacementStops = true
 	// Calibration only: false waits out the post-wake Interval blind.
 	terminalWatchOwnerWhileHeld = true
+	// Calibration only: true forgets the owner identity at every wait, the
+	// per-wait baseline that let a reused PID be adopted across cycles.
+	terminalOwnerIdentityPerWait = false
 )
 
 // errProcessGone is processStart's answer for a PID with no process.
@@ -145,23 +148,48 @@ const (
 	ownerTokenUnknown             // inspection failed; grants nothing, proves nothing
 )
 
-// classifyOwner compares the owner's current native start token with the one
-// registered for this process instance. A different VALID token is a known
-// replacement even when the second-resolution canonical Birth is unchanged.
-func classifyOwner(pid int, start string) ownerToken {
-	current, err := terminalProcessStart(pid)
+// ownerIdentity is the owner's native start token as first read successfully
+// by this consumer. It lives for the whole consumer, across every full cycle
+// and both scheduler modes, so a reused PID is recognised whenever it is first
+// seen. An unknown read never sets, changes or clears it.
+type ownerIdentity struct {
+	start string
+	known bool
+}
+
+// beginWait applies the per-wait calibration seam; production keeps the
+// lifetime identity.
+func (o *ownerIdentity) beginWait() {
+	if terminalOwnerIdentityPerWait {
+		*o = ownerIdentity{}
+	}
+}
+
+// classify compares a native start token with the lifetime identity. The
+// first successful token becomes the identity. A different VALID token is a
+// known replacement even when the second-resolution canonical Birth is
+// unchanged.
+func (o *ownerIdentity) classify(current string, err error) ownerToken {
 	switch {
 	case errors.Is(err, errProcessGone):
 		return ownerTokenReplaced
 	case err != nil:
 		return ownerTokenUnknown
-	case current == start:
+	case !o.known:
+		o.start, o.known = current, true
+		return ownerTokenSame
+	case current == o.start:
 		return ownerTokenSame
 	case terminalKnownReplacementStops:
 		return ownerTokenReplaced
 	default:
 		return ownerTokenUnknown
 	}
+}
+
+// observe reads the owner's native start token and classifies it.
+func (o *ownerIdentity) observe(pid int) ownerToken {
+	return o.classify(terminalProcessStart(pid))
 }
 
 // ownerReason maps a non-same owner state to its wake reason.
@@ -197,7 +225,7 @@ func (w *quiescentWriting) set(writing bool) {
 // ingestion that already holds the State lock completes its transaction.
 // Registration uncertainty returns quiescentUnavailable so the caller keeps
 // the ordinary active wait and its owner checks.
-func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.TerminalBinding, lastFull time.Time, refresh terminalRefreshView) (quiescentResult, string) {
+func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.TerminalBinding, owner *ownerIdentity, lastFull time.Time, refresh terminalRefreshView) (quiescentResult, string) {
 	// wake records the reason at the moment it is detected (before any hold),
 	// so observers see the cause, not the end of the Interval hold.
 	wake := func(result quiescentResult, reason string) (quiescentResult, string) {
@@ -219,6 +247,12 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	if before != policy.OwnerBirth {
 		return wake(quiescentReconcile, "owner")
 	}
+	// Registration never re-baselines: a token differing from the identity
+	// this consumer already knows is a known replacement.
+	owner.beginWait()
+	if state := owner.classify(start, nil); state != ownerTokenSame {
+		return wake(quiescentReconcile, ownerReason(state))
+	}
 	a.traceTerminal("register")
 	watch := newQuiescentWatch(s, refresh)
 	ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
@@ -239,7 +273,7 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 			case <-ticker.C:
 				timer.Stop()
 				a.traceTerminal("tick")
-				if state := classifyOwner(policy.OwnerPID, start); state != ownerTokenSame {
+				if state := owner.observe(policy.OwnerPID); state != ownerTokenSame {
 					return wake(quiescentReconcile, ownerReason(state))
 				}
 			}
@@ -305,7 +339,7 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 			a.traceTerminal("exchanged")
 		case <-ticker.C:
 			a.traceTerminal("tick")
-			if state := classifyOwner(policy.OwnerPID, start); state != ownerTokenSame {
+			if state := owner.observe(policy.OwnerPID); state != ownerTokenSame {
 				return wake(quiescentReconcile, ownerReason(state))
 			}
 			writes.mu.Lock()
