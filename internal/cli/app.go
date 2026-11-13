@@ -87,6 +87,8 @@ type App struct {
 	// before it takes the state lock to persist and print: tests use it to let
 	// a concurrent consumer win the race.
 	beforeDeliver func()
+	// terminalTrace, when set by a test, observes consumer loop events.
+	terminalTrace func(string)
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
 	// hookSelection replaces executable selection in installer merge tests only.

@@ -154,6 +154,23 @@ func (r *terminalRefresh) initializePath() {
 	}
 }
 
+// pending reports a changed executable that is still stabilizing, waiting
+// for its safety re-check or probe retry. Such a candidate keeps its 1s, 30s
+// and 60s schedule in the active loop. Current and failed images are settled.
+func (r *terminalRefresh) pending() bool {
+	return r != nil && r.seen != (terminalExecutable{})
+}
+
+// aliasStamps observes the retained launch path and the file it resolves to
+// without reading either, so a quiescent consumer notices a retarget or an
+// in-place replacement and runs the ordinary refresh poll.
+func (r *terminalRefresh) aliasStamps() [2]config.FileStamp {
+	if r == nil || r.path == "" {
+		return [2]config.FileStamp{{Known: true}, {Known: true}}
+	}
+	return [2]config.FileStamp{config.StampFile(r.path), config.StampTarget(r.path)}
+}
+
 // admittedLaunchAlias admits argv0 as the launch alias of executable only when
 // it is absolute, currently resolves to the same file, and passes the same
 // custody policy as an installed hook command: the alias is owned by this UID

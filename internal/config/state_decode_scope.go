@@ -57,6 +57,15 @@ type StateDecodeScope struct {
 	charge int64
 	nodes  int64
 	stats  StateDecodeScopeStats
+
+	// own holds the state and mailbox versions this consumer last left behind
+	// while holding its state lock. They are wake hints, never authority.
+	own ownFileStamps
+}
+
+type ownFileStamps struct {
+	recorded       bool
+	state, mailbox FileStamp
 }
 
 // StateDecodeScopeStats are this scope's own diagnostic counts.
@@ -397,4 +406,44 @@ func ReadStateDecodeStats() StateDecodeStats {
 		WriterClones: g.writerClones.Load(), StateDigests: g.stateDigests.Load(), CanonicalStates: g.canonicalStates.Load(),
 		SealedStates: g.sealedStates.Load(), WriterSealChecks: g.writerSealChecks.Load(),
 	}
+}
+
+// noteOwnFiles records name's state and mailbox files as the caller leaves
+// them. It must run while the caller holds name's state lock: every State and
+// mailbox writer takes that lock, so the recorded versions are exactly the
+// lock holder's. It is independent of the decode epoch. A nil scope or another
+// identity is a no-op.
+func (sc *StateDecodeScope) noteOwnFiles(p Paths, name string) {
+	if sc == nil || name != sc.identity {
+		return
+	}
+	state, mailbox := StampFile(p.StateFile(name)), StampFile(p.MailboxFile(name))
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.own = ownFileStamps{recorded: true, state: state, mailbox: mailbox}
+}
+
+// OwnFilesUnchanged reports whether name's state and mailbox files are still
+// exactly the versions last recorded under the state lock by this scope's
+// consumer. It reads no file contents. It is false when nothing was recorded,
+// for another identity, or when a stamp is unknown, so any uncertainty is a
+// change. A true result is a wake hint only and grants no authority.
+func (sc *StateDecodeScope) OwnFilesUnchanged(p Paths, name string) bool {
+	if sc == nil || name != sc.identity {
+		return false
+	}
+	sc.mu.Lock()
+	own := sc.own
+	sc.mu.Unlock()
+	return own.recorded && own.state.Equal(StampFile(p.StateFile(name))) && own.mailbox.Equal(StampFile(p.MailboxFile(name)))
+}
+
+// OwnFilesRecorded reports whether a locked version has been recorded.
+func (sc *StateDecodeScope) OwnFilesRecorded() bool {
+	if sc == nil {
+		return false
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.own.recorded
 }

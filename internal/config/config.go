@@ -931,6 +931,9 @@ func withStateLock(p Paths, name string, lock func(string) (func(), error), fn f
 		return State{}, err
 	}
 	defer unlock()
+	// Record, still under the lock, the files this holder leaves behind; a
+	// consumer compares them later to tell its own writes from others'.
+	defer p.stateDecode.noteOwnFiles(p, name)
 	s, err := LoadState(p, name)
 	if err != nil {
 		return State{}, err

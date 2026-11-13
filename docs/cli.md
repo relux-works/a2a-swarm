@@ -2367,7 +2367,15 @@ macOS inspection uses `/usr/sbin/lsof` executable vnode metadata; Linux uses `/p
 
 Timing and spend flags default to the same policy as SessionStart: `--interval 2s`, `--retry-max 30s`, `--max-wakes-per-hour 30`.
 Explicit flags still accept `--interval` 1s..60s, `--retry-max` interval..5m and `--max-wakes-per-hour` 1..3600. The process syncs and
-observes idle input at that interval, refreshes its own identity lease, and exponentially backs off sync errors to the chosen maximum. Hook pause,
+observes idle input at that interval, refreshes its own identity lease, and exponentially backs off sync errors to the chosen maximum.
+A consumer with nothing outstanding (no undelivered mail, attempt, reservation, cooldown, notice report or retry, idle sample, open
+availability episode or refresh candidate) that stays so for 30 seconds becomes quiescent: instead of a full cycle every interval it waits for a
+reason. Reasons are new server events (a `/sync` long-poll with a 25-second server timeout, ingested by the same mailbox-before-cursor path),
+a change to its own state or mailbox file by another writer, a change to its connection, credential, subscription-policy or owner files or
+to its launch alias, its owner's exit or replacement (a fork-free start-time check every `min(interval, 1s)`), and a full reconciliation at
+least every 60 seconds, which also renews the lease and refreshes observations. Each reason runs an ordinary full cycle with all of its guards;
+except for an owner exit, full cycles stay at least one interval apart. Files are compared by metadata only, and the consumer's own locked
+writes are recorded under the state lock so they do not wake it. Any outstanding work returns the consumer to the per-interval loop. Hook pause,
 manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
 `state/NAME.binding.log` contains fixed errors and a `binding exit: REASON` line on each handled consumer exit, including vanished/replaced/stopped
 bindings, owner/target exit, cancellation and startup failure; it never contains captured screens or peer bodies. SIGKILL, a crash or host loss cannot

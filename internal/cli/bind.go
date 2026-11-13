@@ -430,7 +430,7 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 			fmt.Fprintln(a.Stderr, "binding re-exec: executable changed")
 		}
 		var runErr error
-		reason, runErr = a.runTerminalWithRefresh(ctx, s, generation, initial, func() { refresh.poll(ctx, a, s, generation, lock) })
+		reason, runErr = a.runTerminalLoop(ctx, s, generation, initial, func() { refresh.poll(ctx, a, s, generation, lock) }, refresh)
 		return runErr
 	})
 	if errors.Is(err, errBindingStaleConsumer) {
@@ -554,6 +554,12 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 var terminalStateMemo = true
 
 func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
+	return a.runTerminalLoop(ctx, s, generation, initial, refresh, nil)
+}
+
+// runTerminalLoop is the consumer loop. view, when present, is the refresh
+// state behind refresh; a pending candidate keeps the active schedule.
+func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func(), view terminalRefreshView) (string, error) {
 	policy := initial
 	// This consumer's private State decode memo. It is attached once, before
 	// the alarm worker starts, and holds data only inside one cycle's epoch:
@@ -572,7 +578,11 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 	delay := policy.Interval
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true
+	var quietSince time.Time
 	for ctx.Err() == nil {
+		cycleStart := time.Now()
+		quiet := false
+		a.traceTerminal("cycle")
 		memo.Open()
 		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
 			return "selected connection unavailable", err
@@ -661,6 +671,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			delay = policy.Interval
 			if fresh, readErr := config.LoadState(s.paths, s.name); readErr == nil {
 				delay = a.notificationWait(fresh, delay)
+				quiet = terminalQuiescent(fresh, generation, os.Getpid(), a.Now())
 			}
 		}
 		// Dispatch (including Send, finish and all notice publication) returned;
@@ -671,6 +682,36 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			refresh()
 		}
 		memo.Close()
+		// A quiescent streak is measured on the monotonic clock; any active or
+		// failed cycle, or a refresh candidate in progress, restarts it.
+		if quiet && (view == nil || !view.pending()) {
+			if quietSince.IsZero() {
+				quietSince = cycleStart
+			}
+		} else {
+			quietSince = time.Time{}
+		}
+		if terminalQuiescence && !quietSince.IsZero() && time.Since(quietSince) >= terminalQuietAfter {
+			result, reason := a.waitQuiescent(ctx, s, policy, cycleStart, view)
+			a.traceTerminal("wake:" + reason)
+			if result == quiescentCancelled {
+				return "cancelled", nil
+			}
+			if result == quiescentReconcile {
+				// Owner exit is urgent (a prior-consumer wait has seconds); every
+				// other reason keeps at least one Interval between full cycles.
+				if wait := policy.Interval - time.Since(cycleStart); reason != "owner" && wait > 0 {
+					timer := time.NewTimer(wait)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return "cancelled", nil
+					case <-timer.C:
+					}
+				}
+				continue
+			}
+		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
