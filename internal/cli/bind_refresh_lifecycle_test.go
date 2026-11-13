@@ -150,7 +150,7 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 	if aliased {
 		// A retained launch alias must pass the custody policy, which refuses
 		// shared temporary ancestry: keep image and alias in a private root.
-		custody = launchAliasCustody(t)
+		custody = launchAliasCustodyRoot(t)
 		mkdirs(t, filepath.Join(custody, "images"), filepath.Join(custody, "installed"))
 		exe = filepath.Join(custody, "images", "a2a")
 	}

@@ -18,12 +18,12 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// launchAliasCustody returns a private fixture root directly under the real
+// launchAliasCustodyRoot returns a private fixture root directly under the real
 // home. Shared temporary ancestry must refuse under the production custody
 // policy, so the positive cases need an ancestry that passes it; the home is
 // a candidate base, checked first, not a promise. The root is recorded in the
 // owning bind fixture record so an interrupted run's next sweep removes it.
-func launchAliasCustody(t *testing.T) string {
+func launchAliasCustodyRoot(t *testing.T) string {
 	t.Helper()
 	if bindFixtureHome == "" {
 		t.Skip("real home unavailable")
@@ -54,14 +54,20 @@ func mkdirs(t *testing.T, dirs ...string) {
 // Admission of a launch alias: only an absolute argv0 that resolves to the
 // running executable's file AND passes the installed-command custody policy
 // is admitted. Bare names (never searched in PATH), relative paths, dangling
-// links, aliases of another image, aliases in a directory writable by other
-// users and aliases inside a source checkout all refuse; the direct image and
-// an alias chain in private directories are the positive controls.
+// links, aliases of another image, aliases in a group- or other-writable
+// directory and aliases inside a source checkout all refuse; the direct image
+// and an alias chain in private directories are the positive controls. The
+// verdicts come from the independent policy, not from comparing two
+// implementations. Limit: foreign-owned aliases and ancestors need another
+// UID and are covered by the shared policy code, not executed here.
 func TestAdmittedLaunchAlias(t *testing.T) {
-	root := launchAliasCustody(t)
-	images, links, open, checkout := filepath.Join(root, "images"), filepath.Join(root, "links"), filepath.Join(root, "open"), filepath.Join(root, "checkout")
-	mkdirs(t, images, links, open, filepath.Join(checkout, ".git"))
+	root := launchAliasCustodyRoot(t)
+	images, links, open, group, checkout := filepath.Join(root, "images"), filepath.Join(root, "links"), filepath.Join(root, "open"), filepath.Join(root, "group"), filepath.Join(root, "checkout")
+	mkdirs(t, images, links, open, group, filepath.Join(checkout, ".git"))
 	if err := os.Chmod(open, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(group, 0770); err != nil {
 		t.Fatal(err)
 	}
 	image := filepath.Join(images, "a2a-image")
@@ -76,8 +82,9 @@ func TestAdmittedLaunchAlias(t *testing.T) {
 	foreign := filepath.Join(links, "a2a-foreign")
 	dangling := filepath.Join(links, "a2a-dangling")
 	writable := filepath.Join(open, "a2a")
+	groupWritable := filepath.Join(group, "a2a")
 	inCheckout := filepath.Join(checkout, "a2a")
-	for link, target := range map[string]string{alias: image, chain: alias, foreign: other, dangling: filepath.Join(root, "missing"), writable: image, inCheckout: image} {
+	for link, target := range map[string]string{alias: image, chain: alias, foreign: other, dangling: filepath.Join(root, "missing"), writable: image, groupWritable: image, inCheckout: image} {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
@@ -96,6 +103,7 @@ func TestAdmittedLaunchAlias(t *testing.T) {
 		{"alias of another image", foreign, image, false},
 		{"dangling alias", dangling, image, false},
 		{"alias in other-writable directory", writable, image, false},
+		{"alias in group-writable directory", groupWritable, image, false},
 		{"alias inside a source checkout", inCheckout, image, false},
 		{"empty argv0", "", image, false},
 		{"unknown executable", alias, "", false},
@@ -266,9 +274,11 @@ func copyImage(t *testing.T, from, to string, mode os.FileMode) {
 // A real bind parent started through an absolute, custody-admitted alias
 // spawns a consumer that runs the validated image with that alias as
 // argv[0]. A retarget of the alias to an unsafe (group-writable) copy of the
-// same image is refused with no exec and an unchanged image; the following
-// safe retarget is adopted by exactly one in-place re-exec (same PID, birth
-// and generation, still bound). Base-red on Linux, where os.Executable
+// same image is refused with no exec and an unchanged image; a safe retarget
+// while the alias directory is other-writable (custody changed after
+// admission) is refused as well; restoring custody lets that retarget be
+// adopted by exactly one in-place re-exec (same PID, birth and generation,
+// still bound). Base-red on Linux, where os.Executable
 // resolves the alias; on Darwin os.Executable keeps the exec path, so there it
 // is a control. Hook stdin parsing is excluded (the hook route reaches the
 // same spawn lines); incompatible candidates stay covered by the refresh tests.
@@ -281,7 +291,7 @@ func TestBindSpawnLaunchAlias(t *testing.T) {
 	if testing.Short() {
 		t.Skip("detached executable integration")
 	}
-	custody := launchAliasCustody(t)
+	custody := launchAliasCustodyRoot(t)
 	images := filepath.Join(custody, "images")
 	mkdirs(t, images)
 	exe := filepath.Join(images, "a2a")
@@ -328,8 +338,23 @@ func TestBindSpawnLaunchAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Paired control: a safe retarget of the same alias is adopted.
+		// Changed ancestry after admission: with the alias directory made
+		// other-writable, the safe retarget grants no execution authority.
+		if err := os.Chmod(installed, 0777); err != nil {
+			t.Fatal(err)
+		}
 		retargetLink(t, alias, next)
+		b.awaitSyncs(t, 3)
+		if strings.Contains(b.log(t), "binding re-exec: executable changed\n") {
+			t.Fatalf("an alias whose custody changed was adopted: log=%s", b.log(t))
+		}
+		if image, err := bindingImage(context.Background(), b.pid); err != nil || image != current.Image {
+			t.Fatalf("an alias whose custody changed changed the running image: %v", err)
+		}
+		// Paired control: restoring custody lets the same safe retarget be adopted.
+		if err := os.Chmod(installed, 0700); err != nil {
+			t.Fatal(err)
+		}
 		until := time.Now().Add(testDeadline)
 		for time.Now().Before(until) {
 			image, err := bindingImage(context.Background(), b.pid)
@@ -427,7 +452,7 @@ func TestBindSpawnLaunchAliasCalibration(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("os.Executable keeps the exec path on " + runtime.GOOS + "; mutant not distinguishable")
 	}
-	custody := launchAliasCustody(t)
+	custody := launchAliasCustodyRoot(t)
 	images, installed := filepath.Join(custody, "images"), filepath.Join(custody, "installed")
 	mkdirs(t, images, installed)
 	exe := filepath.Join(images, "a2a")
@@ -443,5 +468,74 @@ func TestBindSpawnLaunchAliasCalibration(t *testing.T) {
 	err := launchArgvError(b.pid, alias)
 	if err == nil || !strings.Contains(err.Error(), "want launch alias") {
 		t.Fatalf("witness did not detect the dropped alias: %v", err)
+	}
+}
+
+// The registry signals only the exact recorded process instance. A record
+// whose identity no longer matches a live private control (a stale or reused
+// instance, injected as a wrong birth) is retired without any signal and the
+// control survives; the paired record carrying the control's true identity is
+// reclaimed. Both records have a dead owner, so the sweep is entitled to act.
+func TestBindFixtureSweepRefusesReusedInstance(t *testing.T) {
+	root, err := bindFixtureRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := exec.Command("sleep", "0.2")
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	dead, err := bindFixtureIdentity(owner.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	for _, exact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exact-%t", exact), func(t *testing.T) {
+			control := exec.Command("sleep", "60")
+			if err := control.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := make(chan struct{})
+			go func() { control.Wait(); close(waited) }() // reap promptly
+			t.Cleanup(func() {
+				control.Process.Kill()
+				<-waited
+			})
+			identity, err := bindFixtureIdentity(control.Process.Pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorded := identity
+			if !exact {
+				recorded.Birth = "stale-" + recorded.Birth
+			}
+			dir, err := os.MkdirTemp(root, "fixture-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeBindFixtureRecord(dir, bindFixtureRecord{Owner: dead, Fixture: recorded}); err != nil {
+				t.Fatal(err)
+			}
+			if err := sweepBindFixtures(root); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+				t.Fatalf("dead-owner record was not retired: %v", err)
+			}
+			if !exact {
+				if !identity.live() {
+					t.Fatal("the sweep signalled a process whose recorded identity did not match")
+				}
+				return
+			}
+			select {
+			case <-waited:
+			case <-time.After(5 * time.Second):
+				t.Fatal("positive control: the exact recorded instance was not reclaimed")
+			}
+		})
 	}
 }

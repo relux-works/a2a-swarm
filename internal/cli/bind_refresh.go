@@ -97,6 +97,10 @@ func terminalRefreshSafe(st config.State, generation, birth string, now time.Tim
 }
 
 type terminalRefresh struct {
+	// aliased marks a custody-admitted launch alias in path; its custody is
+	// re-checked before every candidate, so a later custody change grants
+	// no execution authority.
+	aliased      bool
 	lastStatus   string
 	failedStatus string
 	path         string
@@ -150,6 +154,8 @@ func (r *terminalRefresh) initializePath() {
 	if len(os.Args) > 0 {
 		if alias, ok := admittedLaunchAlias(os.Args[0], r.path); ok {
 			r.path = alias
+			info, err := os.Lstat(alias)
+			r.aliased = err == nil && info.Mode()&os.ModeSymlink != 0
 		}
 	}
 }
@@ -174,17 +180,25 @@ func admittedLaunchAlias(argv0, executable string) (string, bool) {
 	if err != nil || launch != actual {
 		return "", false
 	}
-	info, err := os.Lstat(argv0)
-	if err != nil {
-		return "", false
-	}
-	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 && st.Uid != uint32(os.Getuid()) {
-		return "", false
-	}
-	if launchAliasCustodyParents(argv0, actual) != nil {
+	if !launchAliasCustody(argv0, actual) {
 		return "", false
 	}
 	return argv0, true
+}
+
+// launchAliasCustody reports whether alias and the image it resolves to pass
+// the installed-command custody policy: the alias is owned by this UID or
+// root, and no directory above either is writable by other users,
+// foreign-owned or inside a source checkout.
+func launchAliasCustody(alias, resolved string) bool {
+	info, err := os.Lstat(alias)
+	if err != nil {
+		return false
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 && st.Uid != uint32(os.Getuid()) {
+		return false
+	}
+	return launchAliasCustodyParents(alias, resolved) == nil
 }
 
 // launchAliasCustodyParents is the installed-command ancestry policy. It is a
@@ -239,6 +253,13 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	}
 	if metadata == r.failed.metadata() {
 		diagnostic = r.failedStatus
+		r.seen = terminalExecutable{}
+		return
+	}
+	// A retained alias whose custody changed since admission names no
+	// candidate: nothing is observed, probed or executed through it.
+	if r.aliased && !launchAliasCustody(r.path, resolved) {
+		diagnostic = "changed_candidate_unavailable"
 		r.seen = terminalExecutable{}
 		return
 	}
@@ -349,7 +370,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	args := append([]string{r.path}, pin...)
 	args = append(args, "--as", s.name, "bind", "--run-generation", generation, "--consumer-lock-fd", strconv.Itoa(int(lock.Fd())))
 	finalPath, err := filepath.EvalSymlinks(r.path)
-	if err != nil || finalPath != resolved {
+	if err != nil || finalPath != resolved || r.aliased && !launchAliasCustody(r.path, resolved) {
 		diagnostic = "changed_candidate_unavailable"
 		r.seen = terminalExecutable{}
 		return
