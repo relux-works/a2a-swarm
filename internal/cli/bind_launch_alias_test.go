@@ -206,7 +206,8 @@ func TestAdmittedLaunchAlias(t *testing.T) {
 // A real bind parent started through an absolute alias spawns a consumer that
 // runs the validated image with that alias as argv[0]; an atomic retarget of
 // the alias is then adopted by exactly one in-place re-exec (same PID and
-// generation, still bound). Base-red on Linux, where os.Executable resolves the
+// generation, still bound), after a prior retarget to an unsafe
+// (group-writable) copy was refused with no exec and an unchanged image. Base-red on Linux, where os.Executable resolves the
 // alias; on Darwin os.Executable keeps the exec path, so there it is a control.
 // Excludes: hook stdin parsing (the hook route reaches the same spawn code) and
 // incompatible candidates (TestTerminalRefreshOldCandidateContinues).
@@ -246,6 +247,41 @@ func TestBindSpawnLaunchAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Unsafe retarget: the same image bytes, but group-writable. The alias
+		// grants no execution authority, so the refresh gates refuse it: no
+		// re-exec and the same running image over several consumer cycles.
+		unsafe := filepath.Join(build, "a2a-unsafe")
+		if err := os.WriteFile(unsafe, raw, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(unsafe, 0770); err != nil {
+			t.Fatal(err)
+		}
+		retarget := func(target string) {
+			t.Helper()
+			link := alias + ".next"
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(link, alias); err != nil {
+				t.Fatal(err)
+			}
+		}
+		retarget(unsafe)
+		syncs := f.e.hs.SyncCount("@alice:" + testServer)
+		until := time.Now().Add(testDeadline)
+		for f.e.hs.SyncCount("@alice:"+testServer) < syncs+3 && time.Now().Before(until) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if f.e.hs.SyncCount("@alice:"+testServer) < syncs+3 {
+			t.Fatalf("setup: consumer stopped cycling: log=%s", f.log(t))
+		}
+		if strings.Contains(f.log(t), "binding re-exec: executable changed\n") {
+			t.Fatalf("unsafe alias target crossed exec: log=%s", f.log(t))
+		}
+		if image, err := bindingImage(context.Background(), pid); err != nil || image != current.Image {
+			t.Fatalf("unsafe alias target changed the running image: %v", err)
+		}
 		next := filepath.Join(build, "a2a-next")
 		if err := os.WriteFile(next, raw, 0700); err != nil {
 			t.Fatal(err)
@@ -254,14 +290,9 @@ func TestBindSpawnLaunchAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		link := alias + ".next"
-		if err := os.Symlink(next, link); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(link, alias); err != nil {
-			t.Fatal(err)
-		}
-		until := time.Now().Add(testDeadline)
+		// Paired control: a safe retarget of the same alias is adopted.
+		retarget(next)
+		until = time.Now().Add(testDeadline)
 		for time.Now().Before(until) {
 			image, err := bindingImage(context.Background(), pid)
 			if err == nil && image == candidate.Image && strings.Count(f.log(t), "binding re-exec: executable changed\n") == 1 {
