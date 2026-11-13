@@ -207,3 +207,28 @@ func TestReviewAlarmProbeNonblockingContext(t *testing.T) {
 		t.Fatalf("cancelled probe invoked callback: called=%d err=%v", called, err)
 	}
 }
+
+// A retired generation needs no idle cleanup: its replacement remains untouched,
+// and callers retain the established binding-retired rejection contract.
+func TestReviewCancelledCleanupRetiredBinding(t *testing.T) {
+	e, a, s, terminal, _ := muteTerminalWorld(t)
+	muteDispatch(t, a, s)
+	if _, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Terminal.Generation = "replacement"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(e.paths().StateFile("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = a.dispatchTerminal(context.Background(), s, "scope-terminal")
+	if err == nil || err.Error() != "binding retired" {
+		t.Fatalf("retired binding contract changed: %v", err)
+	}
+	after, err := os.ReadFile(e.paths().StateFile("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || terminal.types != 0 || terminal.enters != 0 {
+		t.Fatal("retired cleanup changed replacement authority or input")
+	}
+}

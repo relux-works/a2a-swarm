@@ -502,6 +502,8 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 	return nil
 }
 
+var errTerminalBindingRetired = errors.New("binding retired")
+
 func (a *App) terminalUpdate(s *session, generation string, fn func(*config.TerminalBinding)) error {
 	if err := s.checkConnection(); err != nil {
 		return err
@@ -511,7 +513,7 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 			return err
 		}
 		if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.Stopped {
-			return errors.New("binding retired")
+			return errTerminalBindingRetired
 		}
 		fn(st.Terminal)
 		dropRetiredStrandedAlarms(st)
@@ -912,7 +914,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		cleanup.wakeContext = cleanupCtx
 		cleanupErr := cleanup.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
 		cancelCleanup()
-		if cleanupErr != nil {
+		// A retired generation no longer has wake authority to invalidate.
+		// Do not touch its replacement or alter the original rejection contract.
+		if cleanupErr != nil && !errors.Is(cleanupErr, errTerminalBindingRetired) {
 			return errors.Join(err, fmt.Errorf("terminal idle invalidation failed: %w", cleanupErr))
 		}
 	}
