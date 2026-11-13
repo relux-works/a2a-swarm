@@ -322,13 +322,13 @@ func TestQuiescentConsumerCancelDuringLongPoll(t *testing.T) {
 	run.trace.await(t, "poll", time.Time{}, 20*time.Second)
 	time.Sleep(200 * time.Millisecond)
 	cursor := f.e.state("alice").NextBatch
-	mailbox := readFile(t, f.s.paths.MailboxFile("alice"))
+	mailbox := optionalFile(t, f.s.paths.MailboxFile("alice"))
 	run.cancel()
 	run.wait(t, 2*time.Second)
 	if run.outcome != "cancelled" || run.err != nil {
 		t.Fatalf("outcome=%q err=%v", run.outcome, run.err)
 	}
-	if f.e.state("alice").NextBatch != cursor || readFile(t, f.s.paths.MailboxFile("alice")) != mailbox {
+	if f.e.state("alice").NextBatch != cursor || optionalFile(t, f.s.paths.MailboxFile("alice")) != mailbox {
 		t.Fatal("cancelled long-poll changed the cursor or mailbox")
 	}
 }
@@ -556,7 +556,7 @@ func TestQuiescentConsumerOwnerExitWhileIngestBlocked(t *testing.T) {
 			run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
 			polled := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
 			cursor := f.e.state("alice").NextBatch
-			mailbox := readFile(t, f.s.paths.MailboxFile("alice"))
+			mailbox := optionalFile(t, f.s.paths.MailboxFile("alice"))
 			release := holdStateLock(t, f)
 			f.e.hs.inject(f.room, "@bob:test.local", msg("@alice:test.local SYNTHETIC_BLOCKED_MAIL", nil))
 			run.trace.await(t, "ingest", polled, 10*time.Second)
@@ -579,7 +579,7 @@ func TestQuiescentConsumerOwnerExitWhileIngestBlocked(t *testing.T) {
 			}
 			release()
 			time.Sleep(500 * time.Millisecond)
-			if f.e.state("alice").NextBatch != cursor || readFile(t, f.s.paths.MailboxFile("alice")) != mailbox {
+			if f.e.state("alice").NextBatch != cursor || optionalFile(t, f.s.paths.MailboxFile("alice")) != mailbox {
 				t.Fatal("cancelled ingestion advanced the cursor or changed the mailbox")
 			}
 			if n := screenSubmitted(t, f); n != 0 {
@@ -593,12 +593,26 @@ func TestQuiescentConsumerOwnerExitWhileIngestBlocked(t *testing.T) {
 // lock when the owner exits; the consumer still stops within 3s.
 func TestQuiescentConsumerOwnerExitWhileDeliveryBlocked(t *testing.T) {
 	isolateBindTest(t)
-	quiescentTiming(t, 0, time.Minute, 300*time.Millisecond, 100*time.Millisecond)
+	// Zero server wait: each exchange completes at once, and the next one
+	// starts one Interval (300ms) after the previous start. The lock is taken
+	// right after an exchange completed, so the next startDelivery waits on it.
+	quiescentTiming(t, 0, time.Minute, 0, 100*time.Millisecond)
 	f := newOrphanDispatchFixture(t)
 	run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
-	run.trace.await(t, "poll", time.Time{}, 20*time.Second)
-	holdStateLock(t, f)
-	held := time.Now()
+	var held, after time.Time
+	for attempt := 0; ; attempt++ {
+		exchanged := run.trace.await(t, "exchanged", after, 20*time.Second)
+		release := holdStateLock(t, f)
+		held = time.Now()
+		if held.Sub(exchanged) <= 250*time.Millisecond {
+			break
+		}
+		release() // too late for this gap; take the next one
+		if attempt == 4 {
+			t.Fatal("setup: could not take the lock between two exchanges")
+		}
+		after = held
+	}
 	run.trace.await(t, "deliver", held, 5*time.Second)
 	time.Sleep(200 * time.Millisecond)
 	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
@@ -761,4 +775,18 @@ func TestQuiescentConsumerOwnerExitWhileIngestBlockedCalibration(t *testing.T) {
 	case <-time.After(3 * time.Second):
 	}
 	release()
+}
+
+// optionalFile reads path, treating a missing file as empty (a fresh fixture
+// has no mailbox until its first append).
+func optionalFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

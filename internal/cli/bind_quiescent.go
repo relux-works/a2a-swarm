@@ -219,6 +219,7 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 			if reason != "" {
 				return quiescentReconcile, reason
 			}
+			a.traceTerminal("exchanged")
 		case <-ticker.C:
 			a.traceTerminal("tick")
 			current, err := terminalProcessStart(policy.OwnerPID)
