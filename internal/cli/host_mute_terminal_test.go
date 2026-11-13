@@ -73,7 +73,7 @@ func (f *muteTerminal) ResumeNotice(_ context.Context, _ int, _ string, _ tmuxwa
 	f.owned = false
 	return tmuxwake.SendResult{Disposition: tmuxwake.SendSubmitted, Outcome: tmuxwake.SendWakeSubmitted}, nil
 }
-func muteTerminalWorld(t *testing.T) (*env, *App, *session, *muteTerminal, *time.Time) {
+func muteTerminalWorld(t *testing.T, connections ...wakemute.Connection) (*env, *App, *session, *muteTerminal, *time.Time) {
 	t.Helper()
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
@@ -93,7 +93,10 @@ func muteTerminalWorld(t *testing.T) (*env, *App, *session, *muteTerminal, *time
 	}
 	fake := &muteTerminal{b: b}
 	a.terminalFixture = func(binding config.TerminalBinding) terminalEffects { fake.b = binding; return fake }
-	fixture.Enroll(t, fixture.Scope(e.dir))
+	if len(connections) == 0 {
+		connections = []wakemute.Connection{{Path: "."}}
+	}
+	fixture.Enroll(t, wakemute.Scope{{Root: e.dir, Connections: connections}})
 	return e, a, s, fake, &now
 }
 func muteDispatch(t *testing.T, a *App, s *session) {
@@ -234,4 +237,19 @@ func TestScopeMuteTerminalActiveGate(t *testing.T) {
 	if fake.types != 1 || fake.enters != 1 {
 		t.Fatal("post-thaw terminal positive refused")
 	}
+}
+
+// A mute on another named connection cannot invalidate this connection's
+// already-qualified idle sample or impose a draft hold outside the exact scope.
+func TestScopeMuteTerminalUnselectedConnection(t *testing.T) {
+	e, a, s, fake, now := muteTerminalWorld(t, wakemute.Connection{Path: "."}, wakemute.Connection{Name: "one", Path: "connections/one"})
+	muteDispatch(t, a, s)
+	*now = now.Add(2 * time.Second)
+	scope := wakemute.Scope{{Root: e.dir, Connections: []wakemute.Connection{{Name: "one", Path: "connections/one"}}}}
+	operation := fixture.Mute(t, scope, "other-connection")
+	muteDispatch(t, a, s)
+	if fake.types != 1 || fake.enters != 1 {
+		t.Fatal("unselected connection lost qualified wake")
+	}
+	fixture.Unmute(t, operation)
 }

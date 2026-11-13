@@ -65,17 +65,19 @@ type Operation struct {
 	State   string    `json:"state"` // installing, active, closing or closed
 }
 type Store struct {
-	Version    int         `json:"version"`
-	Generation uint64      `json:"generation"`
-	Operations []Operation `json:"operations"`
+	ConnectionGenerations map[string]uint64 `json:"connection_generations"`
+	Version               int               `json:"version"`
+	Generation            uint64            `json:"generation"`
+	Operations            []Operation       `json:"operations"`
 }
 type RootStatus struct {
-	Root        string           `json:"root"`
-	State       string           `json:"state"`
-	Generation  uint64           `json:"generation"`
-	Operations  []Operation      `json:"operations"`
-	Ages        map[string]int64 `json:"age_seconds"`
-	Uncertainty string           `json:"uncertainty,omitempty"`
+	ConnectionGenerations map[string]uint64 `json:"connection_generations"`
+	Root                  string            `json:"root"`
+	State                 string            `json:"state"`
+	Generation            uint64            `json:"generation"`
+	Operations            []Operation       `json:"operations"`
+	Ages                  map[string]int64  `json:"age_seconds"`
+	Uncertainty           string            `json:"uncertainty,omitempty"`
 }
 type OperationCoverage struct {
 	ID         string `json:"id"`
@@ -227,7 +229,7 @@ func decode(b []byte, v any) error {
 	return nil
 }
 func (s Store) valid() bool {
-	if s.Version != Version || s.Operations == nil {
+	if s.Version != Version || s.Operations == nil || s.ConnectionGenerations == nil {
 		return false
 	}
 	ids := map[string]bool{}
@@ -265,7 +267,13 @@ func equalStore(a, b Store) bool {
 // Union never interprets disagreement as permission to wake or as a closed
 // operation. Immutable authorization bindings must agree for a shared ID.
 func recoveryStore(anchor, ledger Store) (Store, error) {
-	out := Store{Version: Version, Generation: max(anchor.Generation, ledger.Generation), Operations: slices.Clone(anchor.Operations)}
+	out := Store{Version: Version, Generation: max(anchor.Generation, ledger.Generation), Operations: slices.Clone(anchor.Operations), ConnectionGenerations: map[string]uint64{}}
+	for path, epoch := range anchor.ConnectionGenerations {
+		out.ConnectionGenerations[path] = epoch
+	}
+	for path, epoch := range ledger.ConnectionGenerations {
+		out.ConnectionGenerations[path] = max(out.ConnectionGenerations[path], epoch)
+	}
 	for _, old := range ledger.Operations {
 		index := slices.IndexFunc(out.Operations, func(o Operation) bool { return o.ID == old.ID })
 		if index < 0 {
@@ -290,4 +298,18 @@ func recoveryStore(anchor, ledger Store) (Store, error) {
 		}
 	}
 	return out, nil
+}
+
+func emptyStore(connections []Connection) Store {
+	s := Store{Version: Version, Operations: []Operation{}, ConnectionGenerations: map[string]uint64{}}
+	for _, c := range connections {
+		s.ConnectionGenerations[c.Path] = 0
+	}
+	return s
+}
+func bumpStore(s *Store, selected []Connection) {
+	s.Generation++
+	for _, connection := range selected {
+		s.ConnectionGenerations[connection.Path]++
+	}
 }

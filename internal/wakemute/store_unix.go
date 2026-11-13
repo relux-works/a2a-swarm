@@ -254,6 +254,15 @@ func (r *pinnedRoot) enrolled() (Enrollment, Store, error) {
 		return e, s, ErrUnsafe
 	}
 	validate := func(store Store) bool {
+		if len(store.ConnectionGenerations) != len(e.Connections) {
+			return false
+		}
+		for _, c := range e.Connections {
+			epoch, ok := store.ConnectionGenerations[c.Path]
+			if !ok || epoch > store.Generation {
+				return false
+			}
+		}
 		for _, op := range store.Operations {
 			if op.Host != host || op.Owner != os.Geteuid() {
 				return false
@@ -330,10 +339,10 @@ func Enroll(ctx context.Context, approved Operation) error {
 	}
 	for i, r := range rs {
 		// Ledger precedes marker; interrupted enrollment fails closed on discovery.
-		if err = r.write(ctx, Ledger, Store{Version: Version, Operations: []Operation{}}, nil); err != nil {
+		if err = r.write(ctx, Ledger, emptyStore(approved.Scope[i].Connections), nil); err != nil {
 			return uncertain(err)
 		}
-		e := Enrollment{Version: Version, Host: approved.Host, Owner: approved.Owner, Identity: identity(r.info), Connections: approved.Scope[i].Connections, Snapshot: &Store{Version: Version, Operations: []Operation{}}}
+		e := Enrollment{Version: Version, Host: approved.Host, Owner: approved.Owner, Identity: identity(r.info), Connections: approved.Scope[i].Connections, Snapshot: func() *Store { v := emptyStore(approved.Scope[i].Connections); return &v }()}
 		if err = r.write(ctx, Marker, e, nil); err != nil {
 			return uncertain(err)
 		}
@@ -372,7 +381,7 @@ func mute(ctx context.Context, o Operation, inject fault) (result Result, err er
 	// other root changes. Installing is itself an effective mute on that root.
 	for i, r := range rs {
 		stores[i].Operations = append(stores[i].Operations, o)
-		stores[i].Generation++
+		bumpStore(&stores[i], o.Scope[i].Connections)
 		if err = r.writeStore(ctx, stores[i], inject); err != nil {
 			return result, uncertain(err)
 		}
@@ -446,7 +455,7 @@ func unmute(ctx context.Context, scope Scope, run, id string, inject fault) (res
 				result.Operation = o
 			}
 		}
-		stores[i].Generation++
+		bumpStore(&stores[i], s[i].Connections)
 		if err = r.writeStore(ctx, stores[i], inject); err != nil {
 			return result, uncertain(err)
 		}
@@ -459,7 +468,7 @@ func statusRoots(rs []*pinnedRoot, scope Scope) []RootStatus {
 	out := make([]RootStatus, 0, len(rs))
 	for _, r := range rs {
 		_, s, err := r.enrolled()
-		st := RootStatus{Root: r.path, State: "unmuted", Generation: s.Generation, Operations: s.Operations, Ages: map[string]int64{}}
+		st := RootStatus{Root: r.path, State: "unmuted", Generation: s.Generation, Operations: s.Operations, Ages: map[string]int64{}, ConnectionGenerations: s.ConnectionGenerations}
 		for _, o := range s.Operations {
 			st.Ages[o.ID] = max(0, int64(time.Since(o.Created)/time.Second))
 		}
@@ -654,7 +663,7 @@ func admission(ctx context.Context, root, connectionPath string, required bool, 
 	if err = ctx.Err(); err != nil {
 		return err
 	}
-	return effect(s.Generation)
+	return effect(s.ConnectionGenerations[connectionPath])
 }
 
 // The enrollment's recovery snapshot is durable BEFORE the operational copy.

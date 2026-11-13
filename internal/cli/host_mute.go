@@ -202,11 +202,11 @@ func (a *App) withWakeAdmission(ctx context.Context, p config.Paths, effect func
 	if err != nil {
 		return err
 	}
-	required := ""
+	required := a.wakeRequiredVersion
 	if p.WakeMuteVersion != 0 {
 		return wakemute.AdmissionRequired(ctx, p.ConfigRoot(), namespace, p.WakeMuteVersion, effect)
 	}
-	if a.Getenv != nil {
+	if required == "" && a.Getenv != nil {
 		required = a.Getenv(wakemute.EnvRequiredVersion)
 	}
 	if required != "" {
@@ -222,19 +222,16 @@ func (a *App) withWakeAdmission(ctx context.Context, p config.Paths, effect func
 // never sampled the mute. Invalidate observations only, retaining owned notices
 // and attempts. Old uncertain drafts require explicit intervention, never an
 // automatic retry/Enter under observations from before the pulse or restart.
-func (a *App) requalifyWakeScope(s *session, generation string, epoch uint64) (bool, error) {
-	st, err := config.LoadState(s.paths, s.name)
-	if err != nil {
-		return false, err
-	}
-	b := st.Terminal
-	if b == nil || b.Generation != generation {
+func (a *App) requalifyWakeScope(s *session, generation string, epoch uint64, b config.TerminalBinding) (bool, error) {
+	// The caller already loaded this binding under identity control. Do not add
+	// an unconditional State read to every unchanged terminal poll.
+	if b.Generation != generation {
 		return false, errors.New("binding retired")
 	}
 	if b.WakeMuteGeneration == epoch {
 		return b.WakeMuteHold, nil
 	}
-	_, err = a.updateState(s.paths, s.name, func(current *config.State) error {
+	_, err := a.updateState(s.paths, s.name, func(current *config.State) error {
 		b := current.Terminal
 		if b == nil || b.Generation != generation {
 			return errors.New("binding retired")

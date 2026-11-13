@@ -19,10 +19,7 @@ import (
 // daemonHandler constructs a fresh App for every authenticated invocation.
 // Neither selection/cache fields nor daemon environment/session state are copied.
 func (a *App) daemonHandler(home string) daemon.Handler {
-	requiredVersion := ""
-	if a.Getenv != nil {
-		requiredVersion = a.Getenv(wakemute.EnvRequiredVersion)
-	} // Immutable service-start admission, never station input.
+	requiredVersion := a.wakeRequiredVersion // Immutable process-start admission, never ambient selection or station input.
 	return func(ctx context.Context, inv daemon.Invocation) int {
 		refuse := func(message string) int { _, _ = io.WriteString(inv.Stderr, message); return ExitError }
 		if inv.Request.Session != "" && !daemon.ValidSession(inv.Request.Session) {

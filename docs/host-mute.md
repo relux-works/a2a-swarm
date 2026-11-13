@@ -170,7 +170,9 @@ policy, mailbox receipts or existing UNKNOWN records. Independent pauses remain
 at their current values. Explicit inbox/read/status stay usable. Unmuting one
 operation never restores an old identity snapshot or clears another mute.
 
-Every mute/unmute advances the root generation. Terminal consumers lazily
+Every mute/unmute advances the aggregate root generation and only the selected
+connections' qualification generations. An unselected connection keeps its idle
+qualification and draft policy. Terminal consumers lazily
 invalidate pre-pulse idle/readiness samples even when they never observed the
 muted interval. The next cycle obtains fresh observations; old owned drafts and
 uncertain attempts are retained under a hold, never automatically submitted or

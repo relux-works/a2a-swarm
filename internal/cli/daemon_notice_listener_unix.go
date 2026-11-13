@@ -66,7 +66,11 @@ func (a *App) stationNoticeListener(ctx context.Context, home string, e daemonen
 	args = o.noticeListenerArgs(plan.Selection)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	l := &noticeListener{scopeRoot: home, scopeVersion: a.Getenv(wakemute.EnvRequiredVersion), ctx: ctx, cancel: cancel, ready: make(chan struct{}), log: a.Stderr}
+	scopeVersion := a.wakeRequiredVersion
+	if scopeVersion == "" && a.Getenv != nil {
+		scopeVersion = a.Getenv(wakemute.EnvRequiredVersion)
+	}
+	l := &noticeListener{scopeRoot: home, scopeVersion: scopeVersion, ctx: ctx, cancel: cancel, ready: make(chan struct{}), log: a.Stderr}
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return a.noticeUnavailable()

@@ -264,7 +264,17 @@ func TestScopeMuteConnectionSelectionAndUndoScope(t *testing.T) {
 	all := wakemute.Scope{{Root: root, Connections: []wakemute.Connection{{Path: "."}, {Name: "one", Path: "connections/one"}}}}
 	fixture.Enroll(t, all)
 	one := wakemute.Scope{{Root: root, Connections: []wakemute.Connection{{Name: "one", Path: "connections/one"}}}}
+	var beforeEpoch uint64
+	wakemute.Admission(fixture.Context(t), root, ".", func(epoch uint64) error { beforeEpoch = epoch; return nil })
 	op := fixture.Mute(t, one, "named")
+	if err := wakemute.Admission(fixture.Context(t), root, ".", func(epoch uint64) error {
+		if epoch != beforeEpoch {
+			t.Fatal("named mute invalidated unselected connection")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := admission(t, root); err != nil {
 		t.Fatal("legacy connection was broadened")
 	}
@@ -431,7 +441,7 @@ func TestScopeMuteReplacedLedgerRetainsRecovery(t *testing.T) {
 			fixture.Enroll(t, scope)
 			a := fixture.Mute(t, scope, "replace-A")
 			b := fixture.Mute(t, scope, "replace-B")
-			empty := wakemute.Store{Version: 1, Operations: []wakemute.Operation{}}
+			empty := wakemute.Store{Version: 1, Operations: []wakemute.Operation{}, ConnectionGenerations: map[string]uint64{".": 0}}
 			if replace == "ledger" {
 				data, _ := json.Marshal(empty)
 				if err := os.WriteFile(filepath.Join(root, wakemute.Ledger), data, 0600); err != nil {

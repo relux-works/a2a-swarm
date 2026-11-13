@@ -762,7 +762,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		admissionCtx, cancelAdmission := context.WithTimeout(ctx, nativeRPCTimeout)
 		defer cancelAdmission()
 		return a.withWakeAdmission(admissionCtx, s.paths, func(scopeGeneration uint64) error {
-			if held, err := a.requalifyWakeScope(s, generation, scopeGeneration); err != nil || held {
+			if held, err := a.requalifyWakeScope(s, generation, scopeGeneration, *b); err != nil || held {
 				return err
 			}
 			// Diagnostics never grant ownership; continuation below independently

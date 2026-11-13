@@ -18,6 +18,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/redact"
 	"github.com/relux-works/a2a-swarm/internal/voice"
+	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
 // Exit codes.
@@ -30,6 +31,7 @@ const (
 
 // App carries the process environment so tests can run commands in-process.
 type App struct {
+	wakeRequiredVersion      string                                       // Immutable process-start admission; never read from a daemon request or ambient selector.
 	wakeContext              context.Context                              // Bounded terminal dispatch copy; never changes ambient command cleanup.
 	terminalFixture          func(config.TerminalBinding) terminalEffects // Isolated tests only; production always uses the bound terminal.
 	admissionSessions        []*identityAdmission
@@ -125,12 +127,13 @@ type App struct {
 // NewApp returns an App bound to the real process environment.
 func NewApp() *App {
 	return &App{
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Stdin:  os.Stdin,
-		Getenv: os.Getenv,
-		HTTP:   &http.Client{},
-		Now:    time.Now,
+		wakeRequiredVersion: os.Getenv(wakemute.EnvRequiredVersion),
+		Stdout:              os.Stdout,
+		Stderr:              os.Stderr,
+		Stdin:               os.Stdin,
+		Getenv:              os.Getenv,
+		HTTP:                &http.Client{},
+		Now:                 time.Now,
 	}
 }
 
