@@ -571,12 +571,12 @@ func TestQuiescentConsumerOwnerExitWhileIngestBlocked(t *testing.T) {
 				}
 				return
 			}
+			killed := time.Now()
 			if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
 				t.Fatal(err)
 			}
-			run.wait(t, 3*time.Second)
-			if run.err != nil || run.outcome != "owner gone or replaced" {
-				t.Fatalf("outcome=%q err=%v", run.outcome, run.err)
+			if err := stopWithin(run, killed, 3*time.Second, "owner exit while ingestion waits for the lock"); err != nil {
+				t.Fatal(err)
 			}
 			release()
 			time.Sleep(500 * time.Millisecond)
@@ -769,15 +769,15 @@ func TestQuiescentConsumerOwnerExitWhileIngestBlockedCalibration(t *testing.T) {
 	f.e.hs.inject(f.room, "@bob:test.local", msg("@alice:test.local SYNTHETIC_BLOCKED_MAIL", nil))
 	run.trace.await(t, "ingest", polled, 10*time.Second)
 	time.Sleep(200 * time.Millisecond)
+	killed := time.Now()
 	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-run.done:
-		t.Fatalf("inline exchange still met the 3s owner bound (%q); the witness cannot detect the regression", run.outcome)
-	case <-time.After(3 * time.Second):
-	}
+	err := stopWithin(run, killed, 3*time.Second, "owner exit while ingestion waits for the lock")
 	release()
+	if err == nil || !strings.Contains(err.Error(), "not stopped within") {
+		t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
+	}
 }
 
 // optionalFile reads path, treating a missing file as empty (a fresh fixture
@@ -841,9 +841,8 @@ func TestReview477NativePIDReuseWithinBirthSecond(t *testing.T) {
 	isolateBindTest(t)
 	t.Run("changed-token", func(t *testing.T) {
 		run, flipped := runNativeReuse(t, true)
-		run.wait(t, 3*time.Second)
-		if run.outcome != "owner gone or replaced" || time.Since(flipped) > 3*time.Second {
-			t.Fatalf("native PID replacement adopted instead of stopped: outcome=%q after %s", run.outcome, time.Since(flipped))
+		if err := stopWithin(run, flipped, 3*time.Second, "native PID replacement adopted instead of stopped"); err != nil {
+			t.Fatal(err)
 		}
 		if n := run.trace.count("register", flipped, time.Now()); n != 0 {
 			t.Fatalf("replacement was re-registered %d times", n)
@@ -860,17 +859,17 @@ func TestReview477NativePIDReuseWithinBirthSecond(t *testing.T) {
 	})
 }
 
-// Calibration for finding 1: treating a known token change as unknown (the
-// earlier oracle) must fail the witness at its stop assertion.
+// Calibration for finding 1: with a known token change treated as unknown
+// (the earlier oracle), the UNCHANGED witness must fail on its intended
+// assertion (not stopped within 3s).
 func TestReview477NativePIDReuseCalibration(t *testing.T) {
 	isolateBindTest(t)
 	terminalKnownReplacementStops = false
 	t.Cleanup(func() { terminalKnownReplacementStops = true })
-	run, _ := runNativeReuse(t, true)
-	select {
-	case <-run.done:
-		t.Fatalf("mutant still stopped (%q); the witness cannot detect the regression", run.outcome)
-	case <-time.After(3 * time.Second):
+	run, flipped := runNativeReuse(t, true)
+	err := stopWithin(run, flipped, 3*time.Second, "native PID replacement adopted instead of stopped")
+	if err == nil || !strings.Contains(err.Error(), "not stopped within") {
+		t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
 	}
 }
 
@@ -910,8 +909,8 @@ func TestReview477ForeignMailBeforeExchange(t *testing.T) {
 // by a local write (hooks pause) and, while it holds the remaining Interval
 // before its next full cycle, only the fixture owner exits: the held wait
 // keeps the cheap owner watch and the consumer stops within 3s.
-func TestReview477OwnerExitAfterLocalWake(t *testing.T) {
-	isolateBindTest(t)
+func ownerExitAfterLocalWakeError(t *testing.T) error {
+	t.Helper()
 	quiescentTiming(t, 0, time.Minute, 20*time.Second, time.Second)
 	f := newOrphanDispatchFixture(t)
 	run := startQuiescentConsumer(t, f, 30*time.Second, nil)
@@ -922,31 +921,25 @@ func TestReview477OwnerExitAfterLocalWake(t *testing.T) {
 	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	run.wait(t, 3*time.Second)
-	if run.outcome != "owner gone or replaced" {
-		t.Fatalf("outcome=%q after %s", run.outcome, time.Since(killed))
+	return stopWithin(run, killed, 3*time.Second, "owner exit during the held Interval")
+}
+
+func TestReview477OwnerExitAfterLocalWake(t *testing.T) {
+	isolateBindTest(t)
+	if err := ownerExitAfterLocalWakeError(t); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// Calibration for finding 3: waiting out the held Interval blind (the earlier
-// shape) must fail the same owner-exit assertion.
+// Calibration for finding 3: with the held Interval waited out blind (the
+// earlier shape), the UNCHANGED witness must fail on its intended assertion.
 func TestReview477OwnerExitAfterLocalWakeCalibration(t *testing.T) {
 	isolateBindTest(t)
 	terminalWatchOwnerWhileHeld = false
 	t.Cleanup(func() { terminalWatchOwnerWhileHeld = true })
-	quiescentTiming(t, 0, time.Minute, 20*time.Second, time.Second)
-	f := newOrphanDispatchFixture(t)
-	run := startQuiescentConsumer(t, f, 30*time.Second, nil)
-	run.trace.await(t, "poll", time.Time{}, 40*time.Second)
-	f.update(func(st *config.State) { st.HooksPaused = true })
-	time.Sleep(1500 * time.Millisecond)
-	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-run.done:
-		t.Fatalf("blind hold still stopped (%q); the witness cannot detect the regression", run.outcome)
-	case <-time.After(3 * time.Second):
+	err := ownerExitAfterLocalWakeError(t)
+	if err == nil || !strings.Contains(err.Error(), "not stopped within") {
+		t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
 	}
 }
 
@@ -976,5 +969,108 @@ func TestQuiescentConsumerActiveWaitWatchesOwner(t *testing.T) {
 	run.wait(t, 3*time.Second)
 	if run.outcome != "owner gone or replaced" {
 		t.Fatalf("outcome=%q after %s", run.outcome, time.Since(killed))
+	}
+}
+
+// stopWithin is the shared owner-exit witness: the consumer must return the
+// owner outcome within bound of from. Calibrations run this SAME function
+// under a disabled fence and require its intended failure.
+func stopWithin(run *consumerRun, from time.Time, bound time.Duration, what string) error {
+	select {
+	case <-run.done:
+	case <-time.After(time.Until(from.Add(bound))):
+		return fmt.Errorf("%s: consumer not stopped within %s", what, bound)
+	}
+	if run.err != nil || run.outcome != "owner gone or replaced" {
+		return fmt.Errorf("%s: outcome=%q err=%v", what, run.outcome, run.err)
+	}
+	if late := time.Since(from); late > bound {
+		return fmt.Errorf("%s: consumer not stopped within %s (%s)", what, bound, late)
+	}
+	return nil
+}
+
+// activeUnknownOwner runs a gated (never quiescent) 30s lane whose owner token
+// reads fail while fail is set. It returns the run and its fixture.
+func activeUnknownOwner(t *testing.T, fail *atomic.Bool) (*consumerRun, *orphanDispatchFixture) {
+	t.Helper()
+	quiescentTiming(t, 0, time.Minute, 20*time.Second, time.Second)
+	processSeams(t, tmuxwake.Birth, func(pid int) (string, error) {
+		if fail.Load() {
+			return "", errors.New("transient inspection failure")
+		}
+		return processStart(pid)
+	})
+	f := newOrphanDispatchFixture(t)
+	f.update(func(st *config.State) { st.HooksPaused = true })
+	run := startQuiescentConsumer(t, f, 30*time.Second, nil)
+	run.trace.await(t, "cycle", time.Time{}, 20*time.Second)
+	time.Sleep(1500 * time.Millisecond) // the wait began with an unknown read
+	return run, f
+}
+
+func initialUnknownOwnerExitError(t *testing.T) error {
+	t.Helper()
+	var fail atomic.Bool
+	fail.Store(true)
+	run, f := activeUnknownOwner(t, &fail)
+	fail.Store(false)
+	killed := time.Now()
+	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	return stopWithin(run, killed, 3*time.Second, "owner exit after an initially unknown read")
+}
+
+// The active wait keeps its bounded owner watch after an INITIAL unknown read:
+//   - the owner then exits: stop within 3s;
+//   - the owner stays live and readable: no false stop;
+//   - every read stays unknown: no false stop, and no hot loop (at most one
+//     watch per second plus slack).
+func TestQuiescentConsumerActiveWaitInitialUnknown(t *testing.T) {
+	isolateBindTest(t)
+	t.Run("then-owner-exits", func(t *testing.T) {
+		if err := initialUnknownOwnerExitError(t); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("then-live-owner", func(t *testing.T) {
+		var fail atomic.Bool
+		fail.Store(true)
+		run, _ := activeUnknownOwner(t, &fail)
+		fail.Store(false)
+		time.Sleep(3 * time.Second)
+		select {
+		case <-run.done:
+			t.Fatalf("a live owner after an unknown read stopped the consumer: %q", run.outcome)
+		default:
+		}
+	})
+	t.Run("persistently-unknown", func(t *testing.T) {
+		var fail atomic.Bool
+		fail.Store(true)
+		run, _ := activeUnknownOwner(t, &fail)
+		from := time.Now()
+		time.Sleep(3 * time.Second)
+		select {
+		case <-run.done:
+			t.Fatalf("unknown inspection invented a death: %q", run.outcome)
+		default:
+		}
+		if n := run.trace.count("watch", from, time.Now()); n > 5 {
+			t.Fatalf("unknown reads hot-looped: %d watches in 3s", n)
+		}
+	})
+}
+
+// Calibration: with the owner watch disabled for the wait, the UNCHANGED
+// initial-unknown witness must fail on its intended assertion.
+func TestQuiescentConsumerActiveWaitInitialUnknownCalibration(t *testing.T) {
+	isolateBindTest(t)
+	terminalWatchOwnerWhileHeld = false
+	t.Cleanup(func() { terminalWatchOwnerWhileHeld = true })
+	err := initialUnknownOwnerExitError(t)
+	if err == nil || !strings.Contains(err.Error(), "not stopped within") {
+		t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
 	}
 }

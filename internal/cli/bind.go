@@ -724,23 +724,41 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 }
 
 // waitActive is the ordinary inter-cycle wait. It also keeps the fork-free
-// owner watch of min(Interval, 1s): a known owner replacement or absence ends
-// the wait at once (the prior-consumer path of a SessionStart rebind has
-// seconds), while an unknown inspection result is ignored and changes
-// nothing. Limit: the watch starts from the owner token read when the wait
-// begins; the preceding full cycle has just checked the canonical Birth.
+// owner watch of min(Interval, 1s) for the whole wait, whatever the first
+// read returned: a known owner replacement or absence ends the wait at once
+// (the prior-consumer path of a SessionStart rebind has seconds), while an
+// unknown inspection result is ignored, proves nothing and is retried on the
+// next tick. Limit: the token baseline is the first successful read of this
+// wait; the preceding full cycle has just checked the canonical Birth.
 func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config.TerminalBinding) string {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
-	start, err := terminalProcessStart(policy.OwnerPID)
-	if terminalWatchOwnerWhileHeld && errors.Is(err, errProcessGone) {
-		return "owner-replaced"
-	}
 	var tick <-chan time.Time
-	if terminalWatchOwnerWhileHeld && err == nil {
+	if terminalWatchOwnerWhileHeld {
 		ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
 		defer ticker.Stop()
 		tick = ticker.C
+	}
+	// The baseline is the first token read successfully during this wait. An
+	// unknown read leaves it unset and is retried on the next bounded tick;
+	// absence is a known end whenever it is observed.
+	start, known := "", false
+	observe := func() bool {
+		current, err := terminalProcessStart(policy.OwnerPID)
+		switch {
+		case errors.Is(err, errProcessGone):
+			return true
+		case err != nil:
+			return false
+		case !known:
+			start, known = current, true
+			return false
+		default:
+			return current != start && terminalKnownReplacementStops
+		}
+	}
+	if terminalWatchOwnerWhileHeld && observe() {
+		return "owner-replaced"
 	}
 	for {
 		select {
@@ -749,7 +767,8 @@ func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config
 		case <-timer.C:
 			return ""
 		case <-tick:
-			if classifyOwner(policy.OwnerPID, start) == ownerTokenReplaced {
+			a.traceTerminal("watch")
+			if observe() {
 				return "owner-replaced"
 			}
 		}
