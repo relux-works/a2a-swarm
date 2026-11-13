@@ -511,6 +511,12 @@ func TestTerminalRefreshEarlyRetarget(t *testing.T) {
 // missing, truncated and nonexecutable targets never exec or change state.
 func TestTerminalRefreshSymlinkTargets(t *testing.T) {
 	isolateBindTest(t)
+	// Target resolution only: launch and target live in shared temporary
+	// ancestry, which the alias custody policy refuses (covered by the alias
+	// tests). The direct-link rule still applies here.
+	custody := launchAliasCustodyParents
+	launchAliasCustodyParents = func(...string) error { return nil }
+	t.Cleanup(func() { launchAliasCustodyParents = custody })
 	for _, change := range []string{"replace-target", "retarget", "missing", "truncated", "nonexec"} {
 		t.Run(change, func(t *testing.T) {
 			a, s, e := refreshApp(t)

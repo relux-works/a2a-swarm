@@ -97,10 +97,6 @@ func terminalRefreshSafe(st config.State, generation, birth string, now time.Tim
 }
 
 type terminalRefresh struct {
-	// aliased marks a custody-admitted launch alias in path; its custody is
-	// re-checked before every candidate, so a later custody change grants
-	// no execution authority.
-	aliased      bool
 	lastStatus   string
 	failedStatus string
 	path         string
@@ -154,8 +150,6 @@ func (r *terminalRefresh) initializePath() {
 	if len(os.Args) > 0 {
 		if alias, ok := admittedLaunchAlias(os.Args[0], r.path); ok {
 			r.path = alias
-			info, err := os.Lstat(alias)
-			r.aliased = err == nil && info.Mode()&os.ModeSymlink != 0
 		}
 	}
 }
@@ -188,8 +182,11 @@ func admittedLaunchAlias(argv0, executable string) (string, bool) {
 
 // launchAliasCustody reports whether alias and the image it resolves to pass
 // the installed-command custody policy: the alias is owned by this UID or
-// root, and no directory above either is writable by other users,
-// foreign-owned or inside a source checkout.
+// root; a symlink alias links DIRECTLY to the regular image (directory aliases
+// such as /var -> /private/var are resolved, but a chain of file aliases is
+// refused, so no unchecked hop exists); and no directory above the alias, its
+// link target or the image is writable by other users, foreign-owned or
+// inside a source checkout.
 func launchAliasCustody(alias, resolved string) bool {
 	info, err := os.Lstat(alias)
 	if err != nil {
@@ -198,7 +195,41 @@ func launchAliasCustody(alias, resolved string) bool {
 	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 && st.Uid != uint32(os.Getuid()) {
 		return false
 	}
-	return launchAliasCustodyParents(alias, resolved) == nil
+	paths := []string{alias, resolved}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(alias)
+		if err != nil {
+			return false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(alias), target)
+		}
+		parent, err := filepath.EvalSymlinks(filepath.Dir(target))
+		if err != nil || filepath.Join(parent, filepath.Base(target)) != resolved {
+			return false
+		}
+		image, err := os.Lstat(resolved)
+		if err != nil || !image.Mode().IsRegular() {
+			return false
+		}
+		paths = append(paths, target)
+	case !info.Mode().IsRegular():
+		return false
+	}
+	return launchAliasCustodyParents(paths...) == nil
+}
+
+// aliasCustodyRefused decides, at the moment of use and never from a cached
+// startup observation, whether path is a symlink that fails launch-alias
+// custody. A regular file at path is the direct image and keeps the ordinary
+// executable checks; an unreadable path is refused.
+func aliasCustodyRefused(path, resolved string) bool {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return true
+	}
+	return info.Mode()&os.ModeSymlink != 0 && !launchAliasCustody(path, resolved)
 }
 
 // launchAliasCustodyParents is the installed-command ancestry policy. It is a
@@ -256,9 +287,9 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 		r.seen = terminalExecutable{}
 		return
 	}
-	// A retained alias whose custody changed since admission names no
-	// candidate: nothing is observed, probed or executed through it.
-	if r.aliased && !launchAliasCustody(r.path, resolved) {
+	// A symlink at the launch path that fails custody now (whatever it was at
+	// startup) names no candidate: nothing is observed, probed or executed.
+	if aliasCustodyRefused(r.path, resolved) {
 		diagnostic = "changed_candidate_unavailable"
 		r.seen = terminalExecutable{}
 		return
@@ -370,7 +401,7 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	args := append([]string{r.path}, pin...)
 	args = append(args, "--as", s.name, "bind", "--run-generation", generation, "--consumer-lock-fd", strconv.Itoa(int(lock.Fd())))
 	finalPath, err := filepath.EvalSymlinks(r.path)
-	if err != nil || finalPath != resolved || r.aliased && !launchAliasCustody(r.path, resolved) {
+	if err != nil || finalPath != resolved || aliasCustodyRefused(r.path, resolved) {
 		diagnostic = "changed_candidate_unavailable"
 		r.seen = terminalExecutable{}
 		return

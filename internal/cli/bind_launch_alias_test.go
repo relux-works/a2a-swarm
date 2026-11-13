@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -55,8 +57,10 @@ func mkdirs(t *testing.T, dirs ...string) {
 // running executable's file AND passes the installed-command custody policy
 // is admitted. Bare names (never searched in PATH), relative paths, dangling
 // links, aliases of another image, aliases in a group- or other-writable
-// directory and aliases inside a source checkout all refuse; the direct image
-// and an alias chain in private directories are the positive controls. The
+// directory, aliases inside a source checkout and every chain of file links
+// (including one hopping through an other-writable directory) all refuse;
+// the direct image and a direct link (absolute or relative target) in
+// private directories are the positive controls. The
 // verdicts come from the independent policy, not from comparing two
 // implementations. Limit: foreign-owned aliases and ancestors need another
 // UID and are covered by the shared policy code, not executed here.
@@ -82,12 +86,20 @@ func TestAdmittedLaunchAlias(t *testing.T) {
 	foreign := filepath.Join(links, "a2a-foreign")
 	dangling := filepath.Join(links, "a2a-dangling")
 	writable := filepath.Join(open, "a2a")
+	// A chain whose intermediate link sits in an other-writable directory:
+	// EvalSymlinks would hide that hop, so chains are refused outright.
+	hop := filepath.Join(open, "a2a-hop")
+	viaOpen := filepath.Join(links, "a2a-via-open")
 	groupWritable := filepath.Join(group, "a2a")
 	inCheckout := filepath.Join(checkout, "a2a")
-	for link, target := range map[string]string{alias: image, chain: alias, foreign: other, dangling: filepath.Join(root, "missing"), writable: image, groupWritable: image, inCheckout: image} {
+	for link, target := range map[string]string{alias: image, chain: alias, foreign: other, dangling: filepath.Join(root, "missing"), writable: image, groupWritable: image, inCheckout: image, hop: image, viaOpen: hop} {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
+	}
+	relLink := filepath.Join(links, "a2a-relative")
+	if err := os.Symlink(filepath.Join("..", "images", "a2a-image"), relLink); err != nil {
+		t.Fatal(err)
 	}
 	t.Setenv("PATH", links)
 	for _, tc := range []struct {
@@ -95,7 +107,7 @@ func TestAdmittedLaunchAlias(t *testing.T) {
 		ok                      bool
 	}{
 		{"absolute alias", alias, image, true},
-		{"absolute alias chain", chain, image, true},
+		{"alias chain (link to a link)", chain, image, false},
 		{"direct image", image, image, true},
 		{"executable is alias too", alias, alias, true},
 		{"bare name in PATH", "a2a", image, false},
@@ -103,6 +115,8 @@ func TestAdmittedLaunchAlias(t *testing.T) {
 		{"alias of another image", foreign, image, false},
 		{"dangling alias", dangling, image, false},
 		{"alias in other-writable directory", writable, image, false},
+		{"chain through an other-writable intermediate directory", viaOpen, image, false},
+		{"relative link target", relLink, image, true},
 		{"alias in group-writable directory", groupWritable, image, false},
 		{"alias inside a source checkout", inCheckout, image, false},
 		{"empty argv0", "", image, false},
@@ -535,6 +549,75 @@ func TestBindFixtureSweepRefusesReusedInstance(t *testing.T) {
 			case <-waited:
 			case <-time.After(5 * time.Second):
 				t.Fatal("positive control: the exact recorded instance was not reclaimed")
+			}
+		})
+	}
+}
+
+// A launch path that began as the direct image and is later replaced by a
+// symlink is checked as an alias at the moment of use, never from a startup
+// observation: a link to an image in an other-writable directory never
+// execs, and the paired link to an image in a private directory execs once.
+// State is unchanged either way. Base-red: before this check the unsafe link
+// was executed because only the image file itself was validated.
+func TestTerminalRefreshDirectPathBecomesAlias(t *testing.T) {
+	isolateBindTest(t)
+	for _, unsafe := range []bool{true, false} {
+		t.Run(fmt.Sprintf("unsafe-%t", unsafe), func(t *testing.T) {
+			root := launchAliasCustodyRoot(t)
+			private, open := filepath.Join(root, "images"), filepath.Join(root, "open")
+			mkdirs(t, private, open)
+			if err := os.Chmod(open, 0777); err != nil {
+				t.Fatal(err)
+			}
+			a, s, e := refreshApp(t)
+			_, raw := refreshExecutable(t)
+			path := filepath.Join(private, "a2a")
+			if err := os.WriteFile(path, raw, 0700); err != nil {
+				t.Fatal(err)
+			}
+			stamp, err := observeTerminalExecutable(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := private
+			if unsafe {
+				dir = open
+			}
+			next := filepath.Join(dir, "a2a-next")
+			if err := os.WriteFile(next, raw, 0700); err != nil {
+				t.Fatal(err)
+			}
+			retargetLink(t, path, next) // the regular file becomes a link
+			resolved, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := e.state("alice")
+			calls := 0
+			r := &terminalRefresh{path: path, current: stamp, exec: func(target string, args, _ []string) error {
+				calls++
+				if target != resolved || args[0] != path {
+					t.Fatal("exec did not resolve the link and keep the launch path")
+				}
+				return syscall.ENOEXEC
+			}}
+			err = config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
+				for i := 0; i < 3; i++ {
+					r.poll(context.Background(), a, s, "refresh-gen", lock)
+					r.since = time.Now().Add(-2 * time.Second)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if unsafe {
+				want = 0
+			}
+			if calls != want || !reflect.DeepEqual(withoutRefreshDiagnostic(before), withoutRefreshDiagnostic(e.state("alice"))) {
+				t.Fatalf("direct path turned link: execs=%d want=%d", calls, want)
 			}
 		})
 	}

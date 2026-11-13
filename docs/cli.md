@@ -2394,10 +2394,13 @@ is available in argv, it is retained and resolved on each poll and before exec; 
 Exec uses the resolved path and retains the launch path as argv[0] for later refreshes. The same rule applies when a manual
 or hook-started terminal `bind` spawns its consumer: the validated running image is executed, and the invoking absolute launch alias
 becomes the consumer's argv[0] only if it currently resolves to that image and passes the installed-command custody policy (the
-alias is owned by this user or root, and no directory above it or its image is writable by other users, foreign-owned or inside a
-source checkout). Refresh admits a launch alias by the same rule. A bare-name (`PATH`) or relative invocation, or an alias that fails
-custody, is not admitted and the consumer keeps the direct image, so invoke `bind` and configure hooks with the installed command's
-absolute path. This applies only to
+alias is owned by this user or root and links directly to the regular image, without a chain of links, and no directory above the
+alias, its link target or the image is writable by other users, foreign-owned or inside a source checkout). Refresh applies the
+same rule at the moment of each candidate and again before exec, on every platform: a symlink at the launch path that fails custody
+(even one that replaced a direct image later) is never observed or executed. A bare-name (`PATH`) or relative invocation, or an alias
+that fails custody, is not admitted and the consumer keeps the direct image, so invoke `bind` and configure hooks with the installed
+command's absolute path. A consumer started through an alias inside a source checkout no longer adopts a retarget of that alias;
+rebind it once through the installed command. This applies only to
 terminal `bind`; native Codex `runtime bind` consumers are out of scope. **One manual unbind/rebind from the owning session is still needed to
 get an already-running old consumer onto the first build containing this feature.** Later compatible replacements need no unbind, `--force`, new
 consumer or new generation. A pre-feature or incompatible candidate is refused and needs a manual rebind.
