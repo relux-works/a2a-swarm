@@ -18,10 +18,20 @@ func processStart(pid int) (string, error) {
 	}
 	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
+		// kern.proc.pid answers an absent PID with a short record (EIO in
+		// x/sys); only a signal-0 ESRCH proves absence, anything else stays
+		// unknown.
+		if errors.Is(err, unix.ESRCH) || errors.Is(unix.Kill(pid, 0), unix.ESRCH) {
+			return "", errProcessGone
+		}
 		return "", err
 	}
+	// kern.proc.pid answers an absent PID with an empty record.
+	if k.Proc.P_pid == 0 {
+		return "", errProcessGone
+	}
 	if int(k.Proc.P_pid) != pid {
-		return "", errors.New("process not found")
+		return "", errors.New("process record mismatch")
 	}
 	t := k.Proc.P_starttime
 	return strconv.FormatInt(int64(t.Sec), 10) + "." + strconv.FormatInt(int64(t.Usec), 10), nil

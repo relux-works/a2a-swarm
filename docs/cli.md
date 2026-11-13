@@ -2372,10 +2372,14 @@ A consumer with nothing outstanding (no undelivered mail, attempt, reservation, 
 availability episode or refresh candidate) that stays so for 30 seconds becomes quiescent: instead of a full cycle every interval it waits for a
 reason. Reasons are new server events (a `/sync` long-poll with a 25-second server timeout, ingested by the same mailbox-before-cursor path),
 a change to its own state or mailbox file by another writer, a change to its connection, credential, subscription-policy or owner files or
-to its launch alias, its owner's exit or replacement (a fork-free start-time check every `min(interval, 1s)`), and a full reconciliation at
-least every 60 seconds, which also renews the lease and refreshes observations. Each reason runs an ordinary full cycle with all of its guards;
-except for an owner exit, full cycles stay at least one interval apart. Files are compared by metadata only, and the consumer's own locked
-writes are recorded under the state lock so they do not wake it. Any outstanding work returns the consumer to the per-interval loop. Hook pause,
+to its launch alias, its owner's exit or replacement, and a full reconciliation at least every 60 seconds, which also renews the lease and
+refreshes observations. Each reason runs an ordinary full cycle with all of its guards; full cycles stay at least one interval apart, and the
+owner stays watched while that interval is held. Files are compared by metadata only. The consumer's own locked writes are recorded under
+the state lock so they do not wake it; if a locked operation finds the files already changed by another writer since its previous own record,
+that evidence is kept until the next full cycle, so a later own write never hides another writer's change. The owner is watched without forking
+every `min(interval, 1s)`, in quiescent waits and in ordinary waits: its absence, or a native start token that changed to another valid token,
+is a known replacement and stops the consumer at once, even when the second-resolution canonical birth time is unchanged; an inspection error
+is unknown, proves nothing and leaves the ordinary checks to decide. Any outstanding work returns the consumer to the per-interval loop. Hook pause,
 manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
 `state/NAME.binding.log` contains fixed errors and a `binding exit: REASON` line on each handled consumer exit, including vanished/replaced/stopped
 bindings, owner/target exit, cancellation and startup failure; it never contains captured screens or peer bodies. SIGKILL, a crash or host loss cannot

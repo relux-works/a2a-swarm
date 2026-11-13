@@ -89,6 +89,9 @@ type App struct {
 	beforeDeliver func()
 	// terminalTrace, when set by a test, observes consumer loop events.
 	terminalTrace func(string)
+	// quiescentExchangeHook, when set by a test, runs before each quiescent
+	// exchange (foreign-writer fixtures).
+	quiescentExchangeHook func()
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
 	// hookSelection replaces executable selection in installer merge tests only.

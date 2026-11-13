@@ -98,3 +98,39 @@ func TestStateDecodeScopeOwnFiles(t *testing.T) {
 		t.Fatal("nil scope or another identity must read as changed")
 	}
 }
+
+// Foreign-write evidence survives a later own write: when another writer
+// changes the files between two own locked operations, the second own
+// operation must not relabel that change as its own, so the files read as
+// changed until the evidence is consumed. Neighbour: own, own reads
+// unchanged. Calibration: with detection disabled (the earlier behaviour)
+// the same sequence wrongly reads unchanged.
+func TestStateDecodeScopeForeignBetweenOwnWrites(t *testing.T) {
+	for _, detect := range []bool{true, false} {
+		foreignWriteDetection = detect
+		base := Paths{Base: t.TempDir()}
+		scope := NewStateDecodeScope("alice")
+		own := base.WithStateDecodeScope(scope)
+		write := func(p Paths, v string) {
+			t.Helper()
+			if _, err := UpdateState(p, "alice", func(st *State) error { st.NextBatch = v; return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(own, "s1")
+		write(own, "s2")
+		if !scope.OwnFilesUnchanged(own, "alice") {
+			t.Fatal("neighbour: two own writes must read unchanged")
+		}
+		write(base, "foreign")
+		write(own, "s3") // the own locked op that previously relabelled
+		if got := scope.OwnFilesUnchanged(own, "alice"); got == detect {
+			t.Fatalf("detect=%v: unchanged=%v after a foreign write between own writes", detect, got)
+		}
+		scope.ClearForeignWrites()
+		if detect && !scope.OwnFilesUnchanged(own, "alice") {
+			t.Fatal("consumed evidence must leave the current own record")
+		}
+	}
+	foreignWriteDetection = true
+}

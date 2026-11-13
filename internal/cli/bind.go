@@ -583,6 +583,9 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 		cycleStart := time.Now()
 		quiet := false
 		a.traceTerminal("cycle")
+		// A full cycle reads everything afresh, so earlier foreign-write
+		// evidence is consumed here and nowhere else.
+		memo.ClearForeignWrites()
 		memo.Open()
 		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
 			return "selected connection unavailable", err
@@ -697,35 +700,60 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			if result == quiescentCancelled {
 				return "cancelled", nil
 			}
-			if result == quiescentReconcile && reason == "owner" {
-				if outcome, stopped := a.quiescentOwnerTeardown(ctx, s, generation, policy); stopped {
+			if result == quiescentReconcile && (reason == "owner" || reason == "owner-replaced") {
+				if outcome, stopped := a.quiescentOwnerTeardown(ctx, s, generation, policy, reason == "owner-replaced"); stopped {
 					return outcome, nil
 				}
 			}
 			if result == quiescentReconcile {
-				// Owner exit is urgent (a prior-consumer wait has seconds); every
-				// other reason keeps at least one Interval between full cycles.
-				if wait := policy.Interval - time.Since(cycleStart); reason != "owner" && wait > 0 {
-					timer := time.NewTimer(wait)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						return "cancelled", nil
-					case <-timer.C:
-					}
-				}
+				// waitQuiescent already held every non-owner reason until one
+				// Interval after the last full cycle, with the owner watched.
 				continue
 			}
 		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		switch a.waitActive(ctx, delay, policy) {
+		case "cancelled":
 			return "cancelled", nil
-		case <-timer.C:
+		case "owner-replaced":
+			if outcome, stopped := a.quiescentOwnerTeardown(ctx, s, generation, policy, true); stopped {
+				return outcome, nil
+			}
 		}
 	}
 	return "cancelled", nil
+}
+
+// waitActive is the ordinary inter-cycle wait. It also keeps the fork-free
+// owner watch of min(Interval, 1s): a known owner replacement or absence ends
+// the wait at once (the prior-consumer path of a SessionStart rebind has
+// seconds), while an unknown inspection result is ignored and changes
+// nothing. Limit: the watch starts from the owner token read when the wait
+// begins; the preceding full cycle has just checked the canonical Birth.
+func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config.TerminalBinding) string {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	start, err := terminalProcessStart(policy.OwnerPID)
+	if terminalWatchOwnerWhileHeld && errors.Is(err, errProcessGone) {
+		return "owner-replaced"
+	}
+	var tick <-chan time.Time
+	if terminalWatchOwnerWhileHeld && err == nil {
+		ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
+		defer ticker.Stop()
+		tick = ticker.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return "cancelled"
+		case <-timer.C:
+			return ""
+		case <-tick:
+			if classifyOwner(policy.OwnerPID, start) == ownerTokenReplaced {
+				return "owner-replaced"
+			}
+		}
+	}
 }
 
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string, alarmWakes ...chan<- struct{}) error {

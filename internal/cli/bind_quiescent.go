@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -127,7 +128,49 @@ func (a *App) traceTerminal(event string) {
 var (
 	terminalBirth        = tmuxwake.Birth
 	terminalProcessStart = processStart
+	// Calibration only: false treats a known start-token change as unknown.
+	terminalKnownReplacementStops = true
+	// Calibration only: false waits out the post-wake Interval blind.
+	terminalWatchOwnerWhileHeld = true
 )
+
+// errProcessGone is processStart's answer for a PID with no process.
+var errProcessGone = errors.New("process gone")
+
+type ownerToken int
+
+const (
+	ownerTokenSame     ownerToken = iota
+	ownerTokenReplaced            // known: absent, or a different valid start token
+	ownerTokenUnknown             // inspection failed; grants nothing, proves nothing
+)
+
+// classifyOwner compares the owner's current native start token with the one
+// registered for this process instance. A different VALID token is a known
+// replacement even when the second-resolution canonical Birth is unchanged.
+func classifyOwner(pid int, start string) ownerToken {
+	current, err := terminalProcessStart(pid)
+	switch {
+	case errors.Is(err, errProcessGone):
+		return ownerTokenReplaced
+	case err != nil:
+		return ownerTokenUnknown
+	case current == start:
+		return ownerTokenSame
+	case terminalKnownReplacementStops:
+		return ownerTokenReplaced
+	default:
+		return ownerTokenUnknown
+	}
+}
+
+// ownerReason maps a non-same owner state to its wake reason.
+func ownerReason(state ownerToken) string {
+	if state == ownerTokenReplaced {
+		return "owner-replaced"
+	}
+	return "owner"
+}
 
 // quiescentWriting serialises the exchange worker's State/mailbox write
 // phases with the waiting loop's own-file comparison, so an in-progress own
@@ -175,6 +218,38 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
 	defer ticker.Stop()
 	deadline := lastFull.Add(terminalReconcileEvery)
+	// hold keeps full cycles at least one Interval apart after a non-owner
+	// reason without going blind: the owner tick continues until then.
+	hold := func(reason string) (quiescentResult, string) {
+		until := lastFull.Add(policy.Interval)
+		for terminalWatchOwnerWhileHeld && time.Now().Before(until) {
+			timer := time.NewTimer(time.Until(until))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return quiescentCancelled, "cancelled"
+			case <-timer.C:
+			case <-ticker.C:
+				timer.Stop()
+				a.traceTerminal("tick")
+				if state := classifyOwner(policy.OwnerPID, start); state != ownerTokenSame {
+					return quiescentReconcile, ownerReason(state)
+				}
+			}
+		}
+		if !terminalWatchOwnerWhileHeld {
+			if wait := time.Until(until); wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return quiescentCancelled, "cancelled"
+				case <-timer.C:
+				}
+			}
+		}
+		return quiescentReconcile, reason
+	}
 
 	writes := &quiescentWriting{}
 	done := make(chan string, 1)
@@ -217,23 +292,25 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 				return quiescentCancelled, "cancelled"
 			}
 			if reason != "" {
-				return quiescentReconcile, reason
+				stop()
+				return hold(reason)
 			}
 			a.traceTerminal("exchanged")
 		case <-ticker.C:
 			a.traceTerminal("tick")
-			current, err := terminalProcessStart(policy.OwnerPID)
-			if err != nil || current != start {
-				return quiescentReconcile, "owner"
+			if state := classifyOwner(policy.OwnerPID, start); state != ownerTokenSame {
+				return quiescentReconcile, ownerReason(state)
 			}
 			writes.mu.Lock()
 			changed := !writes.writing && !scope.OwnFilesUnchanged(s.paths, s.name)
 			writes.mu.Unlock()
 			if changed {
-				return quiescentReconcile, "state"
+				stop()
+				return hold("state")
 			}
 			if watch.changed() {
-				return quiescentReconcile, "local"
+				stop()
+				return hold("local")
 			}
 		}
 	}
@@ -245,6 +322,9 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 // redactions and rewrites). It returns "" to keep waiting or the reason for a
 // full cycle. Its write phases are marked for the waiting loop.
 func (a *App) quiescentExchange(ctx context.Context, s *session, writes *quiescentWriting) string {
+	if a.quiescentExchangeHook != nil {
+		a.quiescentExchangeHook()
+	}
 	a.traceTerminal("deliver")
 	writes.set(true)
 	op, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
@@ -284,18 +364,23 @@ func cancellablePoll(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithCancel(ctx)
 }
 
-// quiescentOwnerTeardown decides an owner-exit wake directly from the retained
+// quiescentOwnerTeardown decides an owner wake directly from the retained
 // owner association, before any connection, State or network work of a full
-// cycle could delay it: the canonical Birth or process absence proves the
-// owner gone or replaced. Unknown inspection is not death; the caller then
-// runs the ordinary full cycle. The stop record is best effort with a 500ms
+// cycle could delay it. A KNOWN replacement (the owner is absent, or its
+// registered native start token changed to another valid token) stops at
+// once, even when the second-resolution canonical Birth still matches; it is
+// never re-registered as a new baseline. For an UNKNOWN inspection result the
+// canonical Birth or process absence decides; otherwise the caller runs the
+// ordinary full cycle. The stop record is best effort with a 500ms
 // lock deadline, as a held lock must not keep a dead owner's consumer alive.
-func (a *App) quiescentOwnerTeardown(ctx context.Context, s *session, generation string, policy config.TerminalBinding) (string, bool) {
-	probe, cancel := context.WithTimeout(ctx, time.Second)
-	live, err := terminalBirth(probe, policy.OwnerPID)
-	cancel()
-	if !(err == nil && live != policy.OwnerBirth || processGone(policy.OwnerPID)) {
-		return "", false
+func (a *App) quiescentOwnerTeardown(ctx context.Context, s *session, generation string, policy config.TerminalBinding, known bool) (string, bool) {
+	if !known {
+		probe, cancel := context.WithTimeout(ctx, time.Second)
+		live, err := terminalBirth(probe, policy.OwnerPID)
+		cancel()
+		if !(err == nil && live != policy.OwnerBirth || processGone(policy.OwnerPID)) {
+			return "", false
+		}
 	}
 	if s.checkConnection() == nil {
 		_, _ = a.updateStateBy(s.paths, s.name, time.Now().Add(500*time.Millisecond), func(st *config.State) error {

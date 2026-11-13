@@ -61,7 +61,17 @@ type StateDecodeScope struct {
 	// own holds the state and mailbox versions this consumer last left behind
 	// while holding its state lock. They are wake hints, never authority.
 	own ownFileStamps
+	// foreign records that some locked operation of this consumer found the
+	// files already changed by another writer since its previous own record.
+	// It stays set until the consumer's next full cycle consumes it, so a
+	// later own write can never relabel that change as its own.
+	foreign bool
 }
+
+// foreignWriteDetection is a package-private calibration seam: false is the
+// mutant that relabels another writer's change as own. Production never
+// changes it.
+var foreignWriteDetection = true
 
 type ownFileStamps struct {
 	recorded       bool
@@ -408,34 +418,59 @@ func ReadStateDecodeStats() StateDecodeStats {
 	}
 }
 
-// noteOwnFiles records name's state and mailbox files as the caller leaves
-// them. It must run while the caller holds name's state lock: every State and
-// mailbox writer takes that lock, so the recorded versions are exactly the
-// lock holder's. It is independent of the decode epoch. A nil scope or another
-// identity is a no-op.
-func (sc *StateDecodeScope) noteOwnFiles(p Paths, name string) {
+// stampOwnFiles observes name's state and mailbox files. A nil scope or
+// another identity returns a zero (unrecorded) value.
+func (sc *StateDecodeScope) stampOwnFiles(p Paths, name string) ownFileStamps {
+	if sc == nil || name != sc.identity {
+		return ownFileStamps{}
+	}
+	return ownFileStamps{recorded: true, state: StampFile(p.StateFile(name)), mailbox: StampFile(p.MailboxFile(name))}
+}
+
+// noteOwnFiles runs while the caller still holds name's state lock. before is
+// the observation taken right after that lock was acquired. If it differs
+// from the previous own record, another writer changed the files in between:
+// that evidence is kept (foreign) before the files as the caller leaves them
+// become the new own record. Every State and mailbox writer takes the lock,
+// so the recorded versions are exactly the lock holder's. It is independent
+// of the decode epoch. A nil scope or another identity is a no-op.
+func (sc *StateDecodeScope) noteOwnFiles(p Paths, name string, before ownFileStamps) {
 	if sc == nil || name != sc.identity {
 		return
 	}
-	state, mailbox := StampFile(p.StateFile(name)), StampFile(p.MailboxFile(name))
+	after := sc.stampOwnFiles(p, name)
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	sc.own = ownFileStamps{recorded: true, state: state, mailbox: mailbox}
+	if sc.own.recorded && foreignWriteDetection && !(before.recorded && before.state.Equal(sc.own.state) && before.mailbox.Equal(sc.own.mailbox)) {
+		sc.foreign = true
+	}
+	sc.own = after
+}
+
+// ClearForeignWrites consumes recorded foreign-write evidence. The consumer
+// calls it only when a full cycle starts, which reads everything afresh.
+func (sc *StateDecodeScope) ClearForeignWrites() {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	sc.foreign = false
+	sc.mu.Unlock()
 }
 
 // OwnFilesUnchanged reports whether name's state and mailbox files are still
 // exactly the versions last recorded under the state lock by this scope's
 // consumer. It reads no file contents. It is false when nothing was recorded,
-// for another identity, or when a stamp is unknown, so any uncertainty is a
-// change. A true result is a wake hint only and grants no authority.
+// for another identity, when a stamp is unknown, or while foreign-write
+// evidence awaits the next full cycle, so any uncertainty is a change. A true result is a wake hint only and grants no authority.
 func (sc *StateDecodeScope) OwnFilesUnchanged(p Paths, name string) bool {
 	if sc == nil || name != sc.identity {
 		return false
 	}
 	sc.mu.Lock()
-	own := sc.own
+	own, foreign := sc.own, sc.foreign
 	sc.mu.Unlock()
-	return own.recorded && own.state.Equal(StampFile(p.StateFile(name))) && own.mailbox.Equal(StampFile(p.MailboxFile(name)))
+	return !foreign && own.recorded && own.state.Equal(StampFile(p.StateFile(name))) && own.mailbox.Equal(StampFile(p.MailboxFile(name)))
 }
 
 // OwnFilesRecorded reports whether a locked version has been recorded.

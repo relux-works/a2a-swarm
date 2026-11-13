@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"strconv"
 )
@@ -17,6 +18,9 @@ func processStart(pid int) (string, error) {
 		return "", errors.New("invalid pid")
 	}
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", errProcessGone
+	}
 	if err != nil {
 		return "", err
 	}
