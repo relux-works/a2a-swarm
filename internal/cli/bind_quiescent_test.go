@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -505,4 +507,230 @@ func TestProcessStart(t *testing.T) {
 	if _, err := processStart(1); err == nil {
 		t.Fatal("pid 1 must be refused")
 	}
+}
+
+// holdStateLock makes another writer hold alice's State lock until the
+// returned release runs; its transaction then aborts without writing.
+func holdStateLock(t *testing.T, f *orphanDispatchFixture) func() {
+	t.Helper()
+	held, release := make(chan struct{}), make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		config.UpdateState(f.e.paths(), "alice", func(*config.State) error {
+			close(held)
+			<-release
+			return errors.New("released without writing")
+		})
+	}()
+	<-held
+	var once sync.Once
+	stop := func() { once.Do(func() { close(release); <-finished }) }
+	t.Cleanup(stop)
+	return stop
+}
+
+func screenSubmitted(t *testing.T, f *orphanDispatchFixture) int {
+	t.Helper()
+	b, err := os.ReadFile(f.dir + "/screen.json")
+	var s orphanScreen
+	if err != nil || json.Unmarshal(b, &s) != nil {
+		t.Fatalf("read fixture screen: %v", err)
+	}
+	return len(s.Submitted)
+}
+
+// T7 witness: a ready response is being ingested while another writer holds
+// the State lock, so the real ingestion waits for the lock. The owner exits
+// meanwhile: the consumer cancels the waiting ingestion and stops within the
+// 3s prior-consumer budget, with no typing, no cursor advance and no mailbox
+// change, and nothing writes after the lock is released. Control: without the
+// exit, releasing the lock lets the same ingestion commit and the mail is
+// notified exactly once.
+func TestQuiescentConsumerOwnerExitWhileIngestBlocked(t *testing.T) {
+	isolateBindTest(t)
+	for _, exit := range []bool{true, false} {
+		t.Run(fmt.Sprintf("owner-exit-%t", exit), func(t *testing.T) {
+			quiescentTiming(t, 0, time.Minute, 20*time.Second, 100*time.Millisecond)
+			f := newOrphanDispatchFixture(t)
+			run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
+			polled := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
+			cursor := f.e.state("alice").NextBatch
+			mailbox := readFile(t, f.s.paths.MailboxFile("alice"))
+			release := holdStateLock(t, f)
+			f.e.hs.inject(f.room, "@bob:test.local", msg("@alice:test.local SYNTHETIC_BLOCKED_MAIL", nil))
+			run.trace.await(t, "ingest", polled, 10*time.Second)
+			time.Sleep(200 * time.Millisecond) // the real ingestion is waiting for the held lock
+			if !exit {
+				release()
+				run.trace.await(t, "wake:mail", polled, 10*time.Second)
+				f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
+				if f.e.state("alice").NextBatch == cursor {
+					t.Fatal("control: committed ingestion did not advance the cursor")
+				}
+				return
+			}
+			if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
+				t.Fatal(err)
+			}
+			run.wait(t, 3*time.Second)
+			if run.err != nil || run.outcome != "owner gone or replaced" {
+				t.Fatalf("outcome=%q err=%v", run.outcome, run.err)
+			}
+			release()
+			time.Sleep(500 * time.Millisecond)
+			if f.e.state("alice").NextBatch != cursor || readFile(t, f.s.paths.MailboxFile("alice")) != mailbox {
+				t.Fatal("cancelled ingestion advanced the cursor or changed the mailbox")
+			}
+			if n := screenSubmitted(t, f); n != 0 {
+				t.Fatalf("a stopped consumer typed %d notices", n)
+			}
+		})
+	}
+}
+
+// T7 witness: the next exchange's startDelivery is waiting for a held State
+// lock when the owner exits; the consumer still stops within 3s.
+func TestQuiescentConsumerOwnerExitWhileDeliveryBlocked(t *testing.T) {
+	isolateBindTest(t)
+	quiescentTiming(t, 0, time.Minute, 300*time.Millisecond, 100*time.Millisecond)
+	f := newOrphanDispatchFixture(t)
+	run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
+	run.trace.await(t, "poll", time.Time{}, 20*time.Second)
+	holdStateLock(t, f)
+	held := time.Now()
+	run.trace.await(t, "deliver", held, 5*time.Second)
+	time.Sleep(200 * time.Millisecond)
+	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	run.wait(t, 3*time.Second)
+	if run.err != nil || run.outcome != "owner gone or replaced" {
+		t.Fatalf("outcome=%q err=%v", run.outcome, run.err)
+	}
+}
+
+// processSeams replaces the owner inspection seams for one test.
+func processSeams(t *testing.T, birth func(context.Context, int) (string, error), start func(int) (string, error)) {
+	t.Helper()
+	oldBirth, oldStart := terminalBirth, terminalProcessStart
+	terminalBirth, terminalProcessStart = birth, start
+	t.Cleanup(func() { terminalBirth, terminalProcessStart = oldBirth, oldStart })
+}
+
+// PID replacement and uncertainty, driven through the inspection seams around
+// a live fixture owner (no real PID reuse):
+//   - start time changes but the canonical Birth is unchanged: a wake and a
+//     full cycle, never an invented death; the consumer keeps running;
+//   - start time and canonical Birth both change (replacement): stop within
+//     3s with the owner-replaced outcome;
+//   - the two registration Birth checks disagree (a race during
+//     registration): no quiescent wait; the active loop continues;
+//   - the start time becomes unknown: a wake, no stop, the active loop
+//     continues with its ordinary owner checks.
+func TestQuiescentConsumerOwnerReplacementSeams(t *testing.T) {
+	isolateBindTest(t)
+	type flip struct{ on atomic.Bool }
+	cases := []struct {
+		name  string
+		birth func(*flip) func(context.Context, int) (string, error)
+		start func(*flip) func(int) (string, error)
+		stops bool
+	}{
+		{"start-changed-birth-same", nil, func(f *flip) func(int) (string, error) {
+			return func(pid int) (string, error) {
+				v, err := processStart(pid)
+				if f.on.Load() {
+					v += "-reused"
+				}
+				return v, err
+			}
+		}, false},
+		{"replaced", func(f *flip) func(context.Context, int) (string, error) {
+			return func(ctx context.Context, pid int) (string, error) {
+				v, err := tmuxwake.Birth(ctx, pid)
+				if f.on.Load() {
+					v += "-replaced"
+				}
+				return v, err
+			}
+		}, func(f *flip) func(int) (string, error) {
+			return func(pid int) (string, error) {
+				v, err := processStart(pid)
+				if f.on.Load() {
+					v += "-replaced"
+				}
+				return v, err
+			}
+		}, true},
+		{"unknown-start", nil, func(f *flip) func(int) (string, error) {
+			return func(pid int) (string, error) {
+				if f.on.Load() {
+					return "", errors.New("inspection unavailable")
+				}
+				return processStart(pid)
+			}
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			quiescentTiming(t, 0, time.Minute, 20*time.Second, 100*time.Millisecond)
+			var fl flip
+			birth, start := tmuxwake.Birth, processStart
+			if tc.birth != nil {
+				birth = tc.birth(&fl)
+			}
+			if tc.start != nil {
+				start = tc.start(&fl)
+			}
+			processSeams(t, birth, start)
+			f := newOrphanDispatchFixture(t)
+			run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
+			polled := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
+			flipped := time.Now()
+			fl.on.Store(true)
+			run.trace.await(t, "wake:owner", polled, 3*time.Second)
+			if tc.stops {
+				run.wait(t, 3*time.Second)
+				if run.outcome != "owner gone or replaced" || time.Since(flipped) > 3*time.Second {
+					t.Fatalf("replacement outcome=%q after %s", run.outcome, time.Since(flipped))
+				}
+				return
+			}
+			after := time.Now()
+			time.Sleep(1500 * time.Millisecond)
+			select {
+			case <-run.done:
+				t.Fatalf("uncertain owner inspection stopped the consumer: %q", run.outcome)
+			default:
+			}
+			if b := f.binding(); b.Stopped {
+				t.Fatal("uncertain owner inspection recorded a stop")
+			}
+			if n := run.trace.count("cycle", after, time.Now()); n == 0 {
+				t.Fatal("no full cycle followed the owner wake")
+			}
+		})
+	}
+	t.Run("registration-race", func(t *testing.T) {
+		quiescentTiming(t, 0, time.Minute, 20*time.Second, 100*time.Millisecond)
+		var calls atomic.Int64
+		processSeams(t, func(ctx context.Context, pid int) (string, error) {
+			v, err := tmuxwake.Birth(ctx, pid)
+			if calls.Add(1)%2 == 0 {
+				v += "-raced"
+			}
+			return v, err
+		}, processStart)
+		f := newOrphanDispatchFixture(t)
+		run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
+		first := run.trace.await(t, "wake:owner registration", time.Time{}, 20*time.Second)
+		time.Sleep(1500 * time.Millisecond)
+		if n := run.trace.count("poll", time.Time{}, time.Now()); n != 0 {
+			t.Fatalf("a racing registration started %d long-polls", n)
+		}
+		if n := run.trace.count("cycle", first, time.Now()); n < 3 {
+			t.Fatalf("active loop did not continue: %d cycles", n)
+		}
+	})
 }

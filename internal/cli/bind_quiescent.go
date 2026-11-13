@@ -2,10 +2,10 @@ package cli
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
-	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
@@ -66,11 +66,6 @@ const (
 	quiescentUnavailable                        // wake sources unknown: take the ordinary wait
 )
 
-type quiescentPoll struct {
-	resp matrix.SyncResponse
-	err  error
-}
-
 // quiescentWatch is the set of local objects a quiescent consumer depends on
 // but does not write: connection, credential, subscription policy and owner
 // files, and the retained launch alias. They are compared by stamp only.
@@ -126,21 +121,47 @@ func (a *App) traceTerminal(event string) {
 	}
 }
 
+// Process inspection seams for PID-replacement fixtures; production code
+// never changes them.
+var (
+	terminalBirth        = tmuxwake.Birth
+	terminalProcessStart = processStart
+)
+
+// quiescentWriting serialises the exchange worker's State/mailbox write
+// phases with the waiting loop's own-file comparison, so an in-progress own
+// write is never mistaken for another writer's change.
+type quiescentWriting struct {
+	mu      sync.Mutex
+	writing bool
+}
+
+func (w *quiescentWriting) set(writing bool) {
+	w.mu.Lock()
+	w.writing = writing
+	w.mu.Unlock()
+}
+
 // waitQuiescent waits for the first reason to run a full cycle. It holds no
 // lock and no decoded State across its waits. The owner is registered by its
 // native start time between two canonical Birth checks, so PID reuse during
-// registration is detected; afterwards a fork-free check runs every
-// min(Interval, 1s). Any registration uncertainty returns quiescentUnavailable
-// so the caller keeps the ordinary active wait and its owner checks.
+// registration is detected. One exchange worker at a time runs startDelivery,
+// the /sync long-poll and ingestion on a cancellable context, while this loop
+// keeps its tick of min(Interval, 1s): a fork-free start-time comparison and
+// metadata stamp comparisons only. Any reason cancels and joins the worker
+// before returning; cancellation aborts lock waits and the request, and an
+// ingestion that already holds the State lock completes its transaction.
+// Registration uncertainty returns quiescentUnavailable so the caller keeps
+// the ordinary active wait and its owner checks.
 func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.TerminalBinding, lastFull time.Time, refresh terminalRefreshView) (quiescentResult, string) {
 	scope := s.paths.StateDecodeScope()
 	if !scope.OwnFilesRecorded() {
 		return quiescentUnavailable, "own files unrecorded"
 	}
 	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-	before, beforeErr := tmuxwake.Birth(probe, policy.OwnerPID)
-	start, startErr := processStart(policy.OwnerPID)
-	after, afterErr := tmuxwake.Birth(probe, policy.OwnerPID)
+	before, beforeErr := terminalBirth(probe, policy.OwnerPID)
+	start, startErr := terminalProcessStart(policy.OwnerPID)
+	after, afterErr := terminalBirth(probe, policy.OwnerPID)
 	cancel()
 	if beforeErr != nil || afterErr != nil || startErr != nil || before != after {
 		return quiescentUnavailable, "owner registration"
@@ -150,93 +171,59 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	}
 	a.traceTerminal("register")
 	watch := newQuiescentWatch(s, refresh)
-	tick := min(policy.Interval, terminalQuietTickMax)
-	ticker := time.NewTicker(tick)
+	ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
 	defer ticker.Stop()
 	deadline := lastFull.Add(terminalReconcileEvery)
-	mailbox := s.paths.MailboxFile(s.name)
 
-	polls := make(chan quiescentPoll, 1)
-	polling := false
-	pollCancel := context.CancelFunc(func() {})
-	var since string
-	var subs []Sub
-	var mailboxBefore config.FileStamp
-	nextPoll := time.Time{}
+	writes := &quiescentWriting{}
+	done := make(chan string, 1)
+	running := false
+	workerCancel := context.CancelFunc(func() {})
 	stop := func() {
-		pollCancel()
-		if polling {
-			<-polls
-			polling = false
+		workerCancel()
+		if running {
+			<-done
+			running = false
 		}
 	}
 	defer stop()
+	var nextExchange time.Time
 	for {
 		now := time.Now()
 		if !now.Before(deadline) {
 			return quiescentReconcile, "reconcile"
 		}
-		if !polling && !now.Before(nextPoll) {
-			op, opCancel := context.WithTimeout(ctx, nativeRPCTimeout)
-			st, list, err := s.startDelivery(op, a.Now())
-			opCancel()
-			if err != nil {
-				if ctx.Err() != nil {
-					return quiescentCancelled, "cancelled"
-				}
-				return quiescentReconcile, "delivery"
-			}
-			if st.NextBatch == "" {
-				return quiescentReconcile, "cursor"
-			}
-			s.principals = s.readDeliveryPrincipals()
-			since, subs, mailboxBefore = st.NextBatch, list.Subs, config.StampFile(mailbox)
-			var pctx context.Context
-			// stop (deferred) cancels and joins the request on every return.
-			pctx, pollCancel = cancellablePoll(ctx)
-			polling = true
+		if !running && !now.Before(nextExchange) {
 			// Rate bound: an immediately returning or empty response cannot
-			// start the next request earlier than one Interval after this one.
-			nextPoll = now.Add(policy.Interval)
-			a.traceTerminal("poll")
-			go func(since string) {
-				resp, err := s.client.Sync(pctx, since, terminalLongPoll, syncFilter)
-				polls <- quiescentPoll{resp, err}
-			}(since)
+			// start the next exchange earlier than one Interval after this one.
+			nextExchange = now.Add(policy.Interval)
+			var wctx context.Context
+			wctx, workerCancel = cancellablePoll(ctx)
+			running = true
+			go func() { done <- a.quiescentExchange(wctx, s, writes) }()
 		}
 		select {
 		case <-ctx.Done():
 			return quiescentCancelled, "cancelled"
-		case out := <-polls:
-			polling = false
-			pollCancel()
-			if out.err != nil {
-				if ctx.Err() != nil {
-					return quiescentCancelled, "cancelled"
-				}
-				return quiescentReconcile, "sync"
+		case reason := <-done:
+			running = false
+			workerCancel()
+			if ctx.Err() != nil {
+				return quiescentCancelled, "cancelled"
 			}
-			// The authoritative ingestion path: mailbox before cursor,
-			// mandatory principal classification, redactions and rewrites.
-			op, opCancel := context.WithTimeout(ctx, nativeRPCTimeout)
-			a.traceTerminal("ingest")
-			_, err := s.ingest(op, out.resp, since, subs, nil, time.Now().Add(nativeRPCTimeout))
-			opCancel()
-			if err != nil {
-				if ctx.Err() != nil {
-					return quiescentCancelled, "cancelled"
-				}
-				return quiescentReconcile, "ingest"
-			}
-			if !mailboxBefore.Equal(config.StampFile(mailbox)) {
-				return quiescentReconcile, "mail"
+			if reason != "" {
+				return quiescentReconcile, reason
 			}
 		case <-ticker.C:
-			current, err := processStart(policy.OwnerPID)
+			a.traceTerminal("tick")
+			current, err := terminalProcessStart(policy.OwnerPID)
 			if err != nil || current != start {
 				return quiescentReconcile, "owner"
 			}
-			if !scope.OwnFilesUnchanged(s.paths, s.name) {
+			writes.mu.Lock()
+			changed := !writes.writing && !scope.OwnFilesUnchanged(s.paths, s.name)
+			writes.mu.Unlock()
+			if changed {
 				return quiescentReconcile, "state"
 			}
 			if watch.changed() {
@@ -244,6 +231,47 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 			}
 		}
 	}
+}
+
+// quiescentExchange runs one long-poll exchange through the authoritative
+// delivery path: startDelivery (subscription expiry), the /sync long-poll,
+// then ingestion (mailbox before cursor, mandatory principal classification,
+// redactions and rewrites). It returns "" to keep waiting or the reason for a
+// full cycle. Its write phases are marked for the waiting loop.
+func (a *App) quiescentExchange(ctx context.Context, s *session, writes *quiescentWriting) string {
+	a.traceTerminal("deliver")
+	writes.set(true)
+	op, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
+	st, list, err := s.startDelivery(op, a.Now())
+	cancel()
+	writes.set(false)
+	if err != nil {
+		return "delivery"
+	}
+	if st.NextBatch == "" {
+		return "cursor"
+	}
+	s.principals = s.readDeliveryPrincipals()
+	mailbox := s.paths.MailboxFile(s.name)
+	before := config.StampFile(mailbox)
+	a.traceTerminal("poll")
+	resp, err := s.client.Sync(ctx, st.NextBatch, terminalLongPoll, syncFilter)
+	if err != nil {
+		return "sync"
+	}
+	a.traceTerminal("ingest")
+	writes.set(true)
+	op, cancel = context.WithTimeout(ctx, nativeRPCTimeout)
+	_, err = s.ingest(op, resp, st.NextBatch, list.Subs, nil, time.Now().Add(nativeRPCTimeout))
+	cancel()
+	writes.set(false)
+	if err != nil {
+		return "ingest"
+	}
+	if !before.Equal(config.StampFile(mailbox)) {
+		return "mail"
+	}
+	return ""
 }
 
 func cancellablePoll(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -256,11 +284,9 @@ func cancellablePoll(ctx context.Context) (context.Context, context.CancelFunc) 
 // owner gone or replaced. Unknown inspection is not death; the caller then
 // runs the ordinary full cycle. The stop record is best effort with a 500ms
 // lock deadline, as a held lock must not keep a dead owner's consumer alive.
-// Limit: an ingestion already waiting for the State lock delays the next
-// liveness tick by at most its own lock deadline.
 func (a *App) quiescentOwnerTeardown(ctx context.Context, s *session, generation string, policy config.TerminalBinding) (string, bool) {
 	probe, cancel := context.WithTimeout(ctx, time.Second)
-	live, err := tmuxwake.Birth(probe, policy.OwnerPID)
+	live, err := terminalBirth(probe, policy.OwnerPID)
 	cancel()
 	if !(err == nil && live != policy.OwnerBirth || processGone(policy.OwnerPID)) {
 		return "", false
