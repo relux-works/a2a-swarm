@@ -173,7 +173,22 @@ func TestBindFixtureSweepProcess(t *testing.T) {
 	}
 }
 
+// Both registered real-parent fixtures are covered: the detached lifecycle and
+// the launch-alias spawn (consumer argv[0] is the alias, custody root under
+// the real home). Each run kills one owner and keeps a live neighbour.
 func TestBindFixtureKilledOwner(t *testing.T) {
+	for _, child := range []struct {
+		name, run string
+		ready     time.Duration
+	}{
+		{"lifecycle", "^TestBindDetachedLifecycle$", 30 * time.Second},
+		{"launch-alias", "^TestBindSpawnLaunchAlias$/^absolute_alias$", 150 * time.Second},
+	} {
+		t.Run(child.name, func(t *testing.T) { testBindFixtureKilledOwner(t, child.run, child.ready) })
+	}
+}
+
+func testBindFixtureKilledOwner(t *testing.T, run string, ready time.Duration) {
 	if testing.Short() {
 		t.Skip("detached CLI integration")
 	}
@@ -244,7 +259,7 @@ func TestBindFixtureKilledOwner(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.cmd = exec.Command(os.Args[0], "-test.run=^TestBindDetachedLifecycle$", "-test.v", "-test.timeout=85s")
+		c.cmd = exec.Command(os.Args[0], "-test.run="+run, "-test.v", fmt.Sprintf("-test.timeout=%ds", int((ready+55*time.Second)/time.Second)))
 		c.cmd.Env = append(os.Environ(), "A2A_RUN_BIND_FIXTURE_CONTROL="+c.control)
 		c.cmd.Stdout, c.cmd.Stderr = c.log, c.log
 		if err = c.cmd.Start(); err != nil {
@@ -256,7 +271,7 @@ func TestBindFixtureKilledOwner(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		until := time.Now().Add(30 * time.Second)
+		until := time.Now().Add(ready)
 		for time.Now().Before(until) {
 			b, e := os.ReadFile(filepath.Join(c.control, "ready.json"))
 			if e == nil && json.Unmarshal(b, &c.witness) == nil {
@@ -410,6 +425,16 @@ func TestBindFixtureKilledOwner(t *testing.T) {
 	}
 	if !allGone() {
 		t.Error("stale fixture processes survived next-run sweep")
+	}
+	if custody := victim.witness.Record.Custody; custody != "" {
+		if _, err := os.Lstat(custody); !os.IsNotExist(err) {
+			t.Errorf("next-run sweep left the victim's custody root: %v", err)
+		}
+	}
+	if custody := neighbor.witness.Record.Custody; custody != "" {
+		if _, err := os.Lstat(custody); err != nil {
+			t.Errorf("live neighbouring custody root was removed: %v", err)
+		}
 	}
 	for _, p := range []bindFixtureProcess{neighbor.witness.Record.Owner, neighbor.witness.Record.Server, neighbor.witness.Record.Fixture, neighbor.witness.Daemon} {
 		if !p.live() {

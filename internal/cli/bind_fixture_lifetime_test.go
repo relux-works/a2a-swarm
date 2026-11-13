@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,6 +33,39 @@ type bindFixtureRecord struct {
 	Owner   bindFixtureProcess
 	Server  bindFixtureProcess
 	Fixture bindFixtureProcess
+	// Launch is the command the fixture pane runs and Consumers the argv[0]
+	// values its detached consumer may carry; both default to dir/a2a.
+	Launch    string   `json:",omitempty"`
+	Consumers []string `json:",omitempty"`
+	// Custody is a private launch-alias root under the real home (custody
+	// policy refuses shared temporary ancestry), removed with the record.
+	Custody string `json:",omitempty"`
+}
+
+func (r bindFixtureRecord) launch(dir string) string {
+	if r.Launch != "" {
+		return r.Launch
+	}
+	return filepath.Join(dir, "a2a")
+}
+
+func (r bindFixtureRecord) consumers(dir string) []string {
+	if len(r.Consumers) > 0 {
+		return r.Consumers
+	}
+	return []string{filepath.Join(dir, "a2a")}
+}
+
+// bindFixtureHome is the real home, read before any test isolation moves HOME.
+var bindFixtureHome, _ = os.UserHomeDir()
+
+const launchAliasCustodyPrefix = ".a2a-launch-alias-fixture-"
+
+// A recorded custody root grants removal only for this harness's own private
+// directory directly under the real home.
+func bindFixtureCustody(path string) bool {
+	return bindFixtureHome != "" && filepath.Dir(path) == bindFixtureHome &&
+		strings.HasPrefix(filepath.Base(path), launchAliasCustodyPrefix) && privateBindFixturePath(path, true)
 }
 
 func bindFixtureIdentity(pid int) (bindFixtureProcess, error) {
@@ -152,7 +186,7 @@ func recoverBindFixtureProcesses(dir string, r *bindFixtureRecord) {
 	if r.Fixture.PID == 0 {
 		var screen struct{ PID int }
 		b, err := os.ReadFile(filepath.Join(dir, "screen.json"))
-		if err == nil && json.Unmarshal(b, &screen) == nil && bindFixtureCommand(screen.PID) == "python3 "+filepath.Join(dir, "fixture.py")+" "+dir+" "+filepath.Join(dir, "a2a") {
+		if err == nil && json.Unmarshal(b, &screen) == nil && bindFixtureCommand(screen.PID) == "python3 "+filepath.Join(dir, "fixture.py")+" "+dir+" "+r.launch(dir) {
 			r.Fixture, _ = bindFixtureIdentity(screen.PID)
 		}
 	}
@@ -169,7 +203,9 @@ func bindFixtureDaemon(dir string, r bindFixtureRecord) bindFixtureProcess {
 	}
 	// Match the executable and generation before using the persisted birth.
 	command := bindFixtureCommand(b.DaemonPID)
-	if command != filepath.Join(dir, "a2a")+" --as alice bind --run-generation "+b.Generation {
+	if !slices.ContainsFunc(r.consumers(dir), func(argv0 string) bool {
+		return command == argv0+" --as alice bind --run-generation "+b.Generation
+	}) {
 		return bindFixtureProcess{}
 	}
 	p, err := bindFixtureIdentity(b.DaemonPID)
@@ -272,6 +308,12 @@ func sweepBindFixtures(root string) error {
 		}
 		if err := reclaimBindFixture(dir, r); err != nil {
 			return err
+		}
+		// An interrupted owner never ran its own custody cleanup.
+		if r.Custody != "" && bindFixtureCustody(r.Custody) {
+			if err := os.RemoveAll(r.Custody); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

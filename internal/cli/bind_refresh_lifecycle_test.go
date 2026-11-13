@@ -145,13 +145,22 @@ func testTerminalRefreshDetachedLifecycle(t *testing.T, mode string) {
 		gate = consumerConnectionGate(t)
 	}
 	exe := filepath.Join(f.dir, "a2a")
+	aliased := mode != "direct" && mode != "connection-recovery"
+	var custody string
+	if aliased {
+		// A retained launch alias must pass the custody policy, which refuses
+		// shared temporary ancestry: keep image and alias in a private root.
+		custody = launchAliasCustody(t)
+		mkdirs(t, filepath.Join(custody, "images"), filepath.Join(custody, "installed"))
+		exe = filepath.Join(custody, "images", "a2a")
+	}
 	buildRefreshLifecycleCLI(t, exe)
 	// A cold build must not spend the consumer's lifecycle deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	launch := exe
-	if mode != "direct" && mode != "connection-recovery" {
-		launch = filepath.Join(t.TempDir(), "a2a")
+	if aliased {
+		launch = filepath.Join(custody, "installed", "a2a")
 		if err := os.Symlink(exe, launch); err != nil {
 			t.Fatal(err)
 		}

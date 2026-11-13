@@ -433,6 +433,12 @@ func TestTerminalRefreshMetadataShortcut(t *testing.T) {
 // argv[0] must not become an upgrade path.
 func TestTerminalRefreshEarlyRetarget(t *testing.T) {
 	isolateBindTest(t)
+	// Timing only: the test binary lives in shared temporary ancestry, which
+	// the alias custody policy refuses (TestAdmittedLaunchAlias and the real
+	// spawn witness cover that policy). Isolate timing from custody here.
+	custody := launchAliasCustodyParents
+	launchAliasCustodyParents = func(...string) error { return nil }
+	t.Cleanup(func() { launchAliasCustodyParents = custody })
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

@@ -155,9 +155,13 @@ func (r *terminalRefresh) initializePath() {
 }
 
 // admittedLaunchAlias admits argv0 as the launch alias of executable only when
-// it is absolute and currently resolves to the same file. Bare or relative
-// names are never searched in PATH, and an alias of another image is refused.
-// The detached consumer spawn and refresh share this one admission rule.
+// it is absolute, currently resolves to the same file, and passes the same
+// custody policy as an installed hook command: the alias is owned by this UID
+// or root, and no directory above it or above its image is writable by other
+// users, foreign-owned or inside a source checkout. Bare or relative names are
+// never searched in PATH, and an alias of another image is refused. The
+// detached consumer spawn and refresh share this one admission rule; a refused
+// alias keeps the direct image.
 func admittedLaunchAlias(argv0, executable string) (string, bool) {
 	if argv0 == "" || executable == "" || !filepath.IsAbs(argv0) {
 		return "", false
@@ -170,8 +174,23 @@ func admittedLaunchAlias(argv0, executable string) (string, bool) {
 	if err != nil || launch != actual {
 		return "", false
 	}
+	info, err := os.Lstat(argv0)
+	if err != nil {
+		return "", false
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 && st.Uid != uint32(os.Getuid()) {
+		return "", false
+	}
+	if launchAliasCustodyParents(argv0, actual) != nil {
+		return "", false
+	}
 	return argv0, true
 }
+
+// launchAliasCustodyParents is the installed-command ancestry policy. It is a
+// package-private seam only so timing tests whose test binary lives in shared
+// temporary ancestry can isolate refresh timing; production never changes it.
+var launchAliasCustodyParents = hookExecutableParents
 
 func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generation string, lock *os.File) {
 	if ctx.Err() != nil {

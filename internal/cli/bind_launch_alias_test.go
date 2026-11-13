@@ -12,128 +12,217 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// The private pane runtime records its PID, runs exactly one requested command
-// as its own child (so that command's parent is the pinned pane runtime, as for
-// a hook or a manual bind), records the result, and stays alive as the owner.
-const launchAliasPane = `import os,sys,json,time,subprocess
-root=sys.argv[1]
-def put(name,data):
-    tmp=os.path.join(root,name+'.tmp')
-    open(tmp,'w').write(data)
-    os.rename(tmp,os.path.join(root,name))
-put('pid',str(os.getpid()))
-req=os.path.join(root,'request.json')
-while not os.path.exists(req): time.sleep(0.02)
-r=json.load(open(req))
-env=dict(os.environ); env.update(r['env'])
-p=subprocess.run(r['argv'],env=env,cwd=r['cwd'] or None,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=120)
-put('result.json',json.dumps({'code':p.returncode,'out':p.stdout.decode('utf-8','replace'),'err':p.stderr.decode('utf-8','replace')}))
-while True: time.sleep(1)
-`
-
-type launchAliasFixture struct {
-	e     *env
-	dir   string
-	owner int
+// launchAliasCustody returns a private fixture root directly under the real
+// home. Shared temporary ancestry must refuse under the production custody
+// policy, so the positive cases need an ancestry that passes it; the home is
+// a candidate base, checked first, not a promise. The root is recorded in the
+// owning bind fixture record so an interrupted run's next sweep removes it.
+func launchAliasCustody(t *testing.T) string {
+	t.Helper()
+	if bindFixtureHome == "" {
+		t.Skip("real home unavailable")
+	}
+	if err := hookExecutableParents(filepath.Join(bindFixtureHome, "fixture")); err != nil {
+		t.Skipf("launch-alias fixture requires home ancestry without Git markers or unsafe mode bits: %v", err)
+	}
+	root, err := os.MkdirTemp(bindFixtureHome, launchAliasCustodyPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	if root, err = filepath.EvalSymlinks(root); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
-// newLaunchAliasFixture starts a private tmux server whose only pane runs the
-// pane runtime above, in an isolated config with a fake homeserver.
-func newLaunchAliasFixture(t *testing.T) *launchAliasFixture {
+func mkdirs(t *testing.T, dirs ...string) {
 	t.Helper()
-	isolateBindTest(t)
-	if testing.Short() {
-		t.Skip("detached executable integration")
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
+}
+
+// Admission of a launch alias: only an absolute argv0 that resolves to the
+// running executable's file AND passes the installed-command custody policy
+// is admitted. Bare names (never searched in PATH), relative paths, dangling
+// links, aliases of another image, aliases in a directory writable by other
+// users and aliases inside a source checkout all refuse; the direct image and
+// an alias chain in private directories are the positive controls.
+func TestAdmittedLaunchAlias(t *testing.T) {
+	root := launchAliasCustody(t)
+	images, links, open, checkout := filepath.Join(root, "images"), filepath.Join(root, "links"), filepath.Join(root, "open"), filepath.Join(root, "checkout")
+	mkdirs(t, images, links, open, filepath.Join(checkout, ".git"))
+	if err := os.Chmod(open, 0777); err != nil {
+		t.Fatal(err)
+	}
+	image := filepath.Join(images, "a2a-image")
+	other := filepath.Join(images, "a2a-other")
+	for _, p := range []string{image, other} {
+		if err := os.WriteFile(p, []byte("image"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(links, "a2a")
+	chain := filepath.Join(links, "a2a-chain")
+	foreign := filepath.Join(links, "a2a-foreign")
+	dangling := filepath.Join(links, "a2a-dangling")
+	writable := filepath.Join(open, "a2a")
+	inCheckout := filepath.Join(checkout, "a2a")
+	for link, target := range map[string]string{alias: image, chain: alias, foreign: other, dangling: filepath.Join(root, "missing"), writable: image, inCheckout: image} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", links)
+	for _, tc := range []struct {
+		name, argv0, executable string
+		ok                      bool
+	}{
+		{"absolute alias", alias, image, true},
+		{"absolute alias chain", chain, image, true},
+		{"direct image", image, image, true},
+		{"executable is alias too", alias, alias, true},
+		{"bare name in PATH", "a2a", image, false},
+		{"relative path", "./a2a", image, false},
+		{"alias of another image", foreign, image, false},
+		{"dangling alias", dangling, image, false},
+		{"alias in other-writable directory", writable, image, false},
+		{"alias inside a source checkout", inCheckout, image, false},
+		{"empty argv0", "", image, false},
+		{"unknown executable", alias, "", false},
+	} {
+		got, ok := admittedLaunchAlias(tc.argv0, tc.executable)
+		if ok != tc.ok || ok && got != tc.argv0 || !ok && got != "" {
+			t.Errorf("%s: got %q %v, want admitted=%v", tc.name, got, ok, tc.ok)
+		}
+	}
+}
+
+// launchAliasBind is one registered real-parent bind: the private tmux pane
+// of the existing bind fixture runs `<launch> --as alice bind ...` as the
+// pane runtime's child, so the parent spawn under test is the production one.
+type launchAliasBind struct {
+	e     *env
+	dir   string
+	owned bindFixtureRecord
+	pid   int
+}
+
+func startLaunchAliasBind(t *testing.T, custody, launch, paneCwd string, consumers ...string) *launchAliasBind {
+	t.Helper()
 	for _, tool := range []string{"tmux", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " unavailable; private launch-alias lane unrun")
 		}
 	}
-	e, _ := world(t)
-	e.extra[EnvSessionID] = "owned-thread"
-	e.as("alice", "wait", "--timeout", "1ms").ok(t)
-	dir, err := os.MkdirTemp("/tmp", "al-")
-	if err != nil {
+	dir, owned := newBindFixtureDir(t)
+	owned.Launch, owned.Consumers, owned.Custody = launch, consumers, custody
+	if err := writeBindFixtureRecord(dir, owned); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	script := filepath.Join(dir, "pane.py")
-	if err := os.WriteFile(script, []byte(launchAliasPane), 0600); err != nil {
+	e, _ := world(t)
+	configDir := filepath.Join(dir, "config")
+	if err := os.Rename(e.dir, configDir); err != nil {
+		t.Fatal(err)
+	}
+	e.dir = configDir
+	t.Cleanup(func() {
+		if t.Failed() {
+			b, _ := os.ReadFile(filepath.Join(e.dir, "state", "alice.binding.log"))
+			t.Logf("synthetic binding log: %s", b)
+		}
+	})
+	e.extra["CODEX_THREAD_ID"] = "bind-fixture"
+	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	script := filepath.Join(dir, "fixture.py")
+	if err := os.WriteFile(script, []byte(bindFixture), 0600); err != nil {
 		t.Fatal(err)
 	}
 	socket := filepath.Join(dir, "socket")
-	if out, err := exec.Command("tmux", "-S", socket, "-f", "/dev/null", "new-session", "-d", "-x", "120", "-y", "24", "python3", script, dir).CombinedOutput(); err != nil {
+	args := []string{"-S", socket, "-f", "/dev/null", "new-session", "-d", "-x", "120", "-y", "24"}
+	if paneCwd != "" {
+		args = append(args, "-c", paneCwd)
+	}
+	cmd := exec.Command("tmux", append(args, "python3", script, dir, launch)...)
+	cmd.Env = append(os.Environ(), "A2A_CONFIG_DIR="+e.dir, "A2A_SESSION_ID=", "A2A_AGENT=alice", "CODEX_THREAD_ID=bind-fixture")
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup: private tmux: %v %s", err, out)
 	}
-	t.Cleanup(func() { exec.Command("tmux", "-S", socket, "kill-server").Run() })
-	raw := awaitFile(t, filepath.Join(dir, "pid"))
-	owner, err := strconv.Atoi(raw)
-	if err != nil || owner <= 1 {
-		t.Fatalf("setup: pane runtime PID %q", raw)
-	}
-	t.Cleanup(func() { syscall.Kill(owner, syscall.SIGKILL) })
-	return &launchAliasFixture{e: e, dir: dir, owner: owner}
-}
-
-func awaitFile(t *testing.T, path string) string {
-	t.Helper()
-	until := time.Now().Add(testDeadline)
+	var screen struct{ PID int }
+	until := time.Now().Add(5 * time.Second)
 	for time.Now().Before(until) {
-		if b, err := os.ReadFile(path); err == nil {
-			return string(b)
+		b, err := os.ReadFile(filepath.Join(dir, "screen.json"))
+		if err == nil && json.Unmarshal(b, &screen) == nil && screen.PID > 0 {
+			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("setup: %s never appeared", filepath.Base(path))
-	return ""
-}
-
-// bind runs `<argv0> --as alice bind ...` from the pane runtime and returns the
-// detached consumer PID reported by the real parent.
-func (f *launchAliasFixture) bind(t *testing.T, argv0, cwd string) int {
-	t.Helper()
-	request, err := json.Marshal(map[string]any{
-		"argv": []string{argv0, "--as", "alice", "bind", "--runtime", "codex", "--owner-pid", strconv.Itoa(f.owner), "--session-id", "owned-thread"},
-		"env": map[string]string{
-			"A2A_CONFIG_DIR": f.e.dir, "A2A_SESSION_ID": "owned-thread", "A2A_SECRET_STORE": "file",
-			"A2A_MATRIX_URL": f.e.hs.srv.URL, "A2A_MATRIX_SERVER_NAME": testServer,
-		},
-		"cwd": cwd,
-	})
+	if screen.PID <= 0 {
+		t.Fatal("setup: fixture not ready")
+	}
+	out, err := exec.Command("tmux", "-S", socket, "display-message", "-p", "#{pid}").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmp := filepath.Join(f.dir, "request.tmp")
-	if err := os.WriteFile(tmp, request, 0600); err != nil {
+	serverPID, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	if owned.Server, err = bindFixtureIdentity(serverPID); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(tmp, filepath.Join(f.dir, "request.json")); err != nil {
+	if owned.Fixture, err = bindFixtureIdentity(screen.PID); err != nil {
 		t.Fatal(err)
 	}
-	var result struct {
+	if err = writeBindFixtureRecord(dir, owned); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBindingFixtureCommand(dir, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
 		Code     int
 		Out, Err string
+		Request  int
 	}
-	if err := json.Unmarshal([]byte(awaitFile(t, filepath.Join(f.dir, "result.json"))), &result); err != nil {
-		t.Fatal(err)
+	until = time.Now().Add(12 * time.Second)
+	for time.Now().Before(until) {
+		b, err := os.ReadFile(filepath.Join(dir, "result.json"))
+		if err == nil && json.Unmarshal(b, &r) == nil && r.Request == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	_, rest, found := strings.Cut(result.Out, "alice bound pid=")
-	pid, convErr := strconv.Atoi(strings.TrimSpace(strings.SplitN(rest, ";", 2)[0]))
-	if result.Code != 0 || !found || convErr != nil || pid <= 1 {
-		t.Fatalf("setup: real bind parent failed: code=%d out=%q err=%q", result.Code, result.Out, result.Err)
+	if r.Request != 1 || r.Code != 0 {
+		t.Fatalf("setup: real bind parent failed: code=%d out=%q err=%q", r.Code, r.Out, r.Err)
 	}
-	t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
-	return pid
+	st := awaitBinding(t, e.paths(), func(st config.State) bool {
+		return st.Terminal != nil && strings.HasPrefix(st.Terminal.Outcome, "armed:")
+	})
+	return &launchAliasBind{e: e, dir: dir, owned: owned, pid: st.Terminal.DaemonPID}
 }
 
-func (f *launchAliasFixture) log(t *testing.T) string {
-	return readFile(t, filepath.Join(f.e.dir, "state", "alice.binding.log"))
+func (b *launchAliasBind) log(t *testing.T) string {
+	return readFile(t, filepath.Join(b.e.dir, "state", "alice.binding.log"))
+}
+
+// awaitSyncs waits until the consumer has issued n more /sync requests.
+func (b *launchAliasBind) awaitSyncs(t *testing.T, n int) {
+	t.Helper()
+	from := b.e.hs.SyncCount("@alice:" + testServer)
+	until := time.Now().Add(testDeadline)
+	for b.e.hs.SyncCount("@alice:"+testServer) < from+n && time.Now().Before(until) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if b.e.hs.SyncCount("@alice:"+testServer) < from+n {
+		t.Fatalf("setup: consumer stopped cycling: log=%s", b.log(t))
+	}
 }
 
 // launchArgvError is the witness assertion: the live consumer's argv[0] must
@@ -149,200 +238,179 @@ func launchArgvError(pid int, want string) error {
 	return nil
 }
 
-func physicalTempDir(t *testing.T) string {
+func retargetLink(t *testing.T, link, target string) {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
+	next := link + ".next"
+	if err := os.Symlink(target, next); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func copyImage(t *testing.T, from, to string, mode os.FileMode) {
+	t.Helper()
+	raw, err := os.ReadFile(from)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dir
-}
-
-// Admission of a launch alias: only an absolute argv0 that currently resolves
-// to the running executable's file is admitted. Bare names (never searched in
-// PATH), relative paths, dangling links and aliases of another image refuse;
-// the direct absolute image and a symlink chain to it are the positive controls.
-func TestAdmittedLaunchAlias(t *testing.T) {
-	dir := physicalTempDir(t)
-	image := filepath.Join(dir, "a2a-image")
-	other := filepath.Join(dir, "a2a-other")
-	for _, p := range []string{image, other} {
-		if err := os.WriteFile(p, []byte("image"), 0700); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(to, raw, 0700); err != nil {
+		t.Fatal(err)
 	}
-	alias := filepath.Join(dir, "a2a")
-	chain := filepath.Join(dir, "a2a-chain")
-	foreign := filepath.Join(dir, "a2a-foreign")
-	dangling := filepath.Join(dir, "a2a-dangling")
-	for link, target := range map[string]string{alias: image, chain: alias, foreign: other, dangling: filepath.Join(dir, "missing")} {
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", dir)
-	for _, tc := range []struct {
-		name, argv0, executable string
-		ok                      bool
-	}{
-		{"absolute alias", alias, image, true},
-		{"absolute alias chain", chain, image, true},
-		{"direct image", image, image, true},
-		{"executable is alias too", alias, alias, true},
-		{"bare name in PATH", "a2a", image, false},
-		{"relative path", "./a2a", image, false},
-		{"alias of another image", foreign, image, false},
-		{"dangling alias", dangling, image, false},
-		{"empty argv0", "", image, false},
-		{"unknown executable", alias, "", false},
-	} {
-		got, ok := admittedLaunchAlias(tc.argv0, tc.executable)
-		if ok != tc.ok || ok && got != tc.argv0 || !ok && got != "" {
-			t.Errorf("%s: got %q %v, want admitted=%v", tc.name, got, ok, tc.ok)
-		}
+	if err := os.Chmod(to, mode); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// A real bind parent started through an absolute alias spawns a consumer that
-// runs the validated image with that alias as argv[0]; an atomic retarget of
-// the alias is then adopted by exactly one in-place re-exec (same PID and
-// generation, still bound), after a prior retarget to an unsafe
-// (group-writable) copy was refused with no exec and an unchanged image. Base-red on Linux, where os.Executable resolves the
-// alias; on Darwin os.Executable keeps the exec path, so there it is a control.
-// Excludes: hook stdin parsing (the hook route reaches the same spawn code) and
-// incompatible candidates (TestTerminalRefreshOldCandidateContinues).
+// A real bind parent started through an absolute, custody-admitted alias
+// spawns a consumer that runs the validated image with that alias as
+// argv[0]. A retarget of the alias to an unsafe (group-writable) copy of the
+// same image is refused with no exec and an unchanged image; the following
+// safe retarget is adopted by exactly one in-place re-exec (same PID, birth
+// and generation, still bound). Base-red on Linux, where os.Executable
+// resolves the alias; on Darwin os.Executable keeps the exec path, so there it
+// is a control. Hook stdin parsing is excluded (the hook route reaches the
+// same spawn lines); incompatible candidates stay covered by the refresh tests.
 // A direct absolute image remains the argv[0] of its own consumer; a relative
-// invocation gains no alias and still runs only the validated image.
+// invocation gains no alias and runs only the validated image; an alias in an
+// other-writable directory is not retained and its retarget is not adopted
+// (Linux; Darwin's exec path is outside this change).
 func TestBindSpawnLaunchAlias(t *testing.T) {
 	isolateBindTest(t)
 	if testing.Short() {
 		t.Skip("detached executable integration")
 	}
-	build := physicalTempDir(t)
-	exe := filepath.Join(build, "a2a")
+	custody := launchAliasCustody(t)
+	images := filepath.Join(custody, "images")
+	mkdirs(t, images)
+	exe := filepath.Join(images, "a2a")
 	buildRefreshLifecycleCLI(t, exe)
+	if err := os.Chmod(exe, 0700); err != nil {
+		t.Fatal(err)
+	}
 	current, err := observeTerminalExecutable(exe)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("absolute alias", func(t *testing.T) {
-		f := newLaunchAliasFixture(t)
-		alias := filepath.Join(physicalTempDir(t), "a2a")
+		installed := filepath.Join(custody, "installed")
+		mkdirs(t, installed)
+		alias := filepath.Join(installed, "a2a")
 		if err := os.Symlink(exe, alias); err != nil {
 			t.Fatal(err)
 		}
-		pid := f.bind(t, alias, "")
-		if err := launchArgvError(pid, alias); err != nil {
+		b := startLaunchAliasBind(t, custody, alias, "", alias)
+		if err := launchArgvError(b.pid, alias); err != nil {
 			t.Fatal(err)
 		}
-		if image, err := bindingImage(context.Background(), pid); err != nil || image != current.Image {
+		if image, err := bindingImage(context.Background(), b.pid); err != nil || image != current.Image {
 			t.Fatalf("consumer is not running the validated image: %v", err)
 		}
-		before := f.e.state("alice").Terminal
-		if before == nil || before.DaemonPID != pid || before.Stopped {
-			t.Fatalf("setup: binding not armed: %+v", before)
+		if holdBindFixtureControl(t, b.dir, b.owned) {
+			return
 		}
-		raw, err := os.ReadFile(exe)
-		if err != nil {
-			t.Fatal(err)
+		before := b.e.state("alice").Terminal
+		unsafe := filepath.Join(images, "a2a-unsafe")
+		copyImage(t, exe, unsafe, 0770)
+		retargetLink(t, alias, unsafe)
+		b.awaitSyncs(t, 3)
+		if strings.Contains(b.log(t), "binding re-exec: executable changed\n") {
+			t.Fatalf("unsafe alias target crossed exec: log=%s", b.log(t))
 		}
-		// Unsafe retarget: the same image bytes, but group-writable. The alias
-		// grants no execution authority, so the refresh gates refuse it: no
-		// re-exec and the same running image over several consumer cycles.
-		unsafe := filepath.Join(build, "a2a-unsafe")
-		if err := os.WriteFile(unsafe, raw, 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(unsafe, 0770); err != nil {
-			t.Fatal(err)
-		}
-		retarget := func(target string) {
-			t.Helper()
-			link := alias + ".next"
-			if err := os.Symlink(target, link); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(link, alias); err != nil {
-				t.Fatal(err)
-			}
-		}
-		retarget(unsafe)
-		syncs := f.e.hs.SyncCount("@alice:" + testServer)
-		until := time.Now().Add(testDeadline)
-		for f.e.hs.SyncCount("@alice:"+testServer) < syncs+3 && time.Now().Before(until) {
-			time.Sleep(20 * time.Millisecond)
-		}
-		if f.e.hs.SyncCount("@alice:"+testServer) < syncs+3 {
-			t.Fatalf("setup: consumer stopped cycling: log=%s", f.log(t))
-		}
-		if strings.Contains(f.log(t), "binding re-exec: executable changed\n") {
-			t.Fatalf("unsafe alias target crossed exec: log=%s", f.log(t))
-		}
-		if image, err := bindingImage(context.Background(), pid); err != nil || image != current.Image {
+		if image, err := bindingImage(context.Background(), b.pid); err != nil || image != current.Image {
 			t.Fatalf("unsafe alias target changed the running image: %v", err)
 		}
-		next := filepath.Join(build, "a2a-next")
-		if err := os.WriteFile(next, raw, 0700); err != nil {
-			t.Fatal(err)
-		}
+		next := filepath.Join(images, "a2a-next")
+		copyImage(t, exe, next, 0700)
 		candidate, err := observeTerminalExecutable(next)
 		if err != nil {
 			t.Fatal(err)
 		}
 		// Paired control: a safe retarget of the same alias is adopted.
-		retarget(next)
-		until = time.Now().Add(testDeadline)
+		retargetLink(t, alias, next)
+		until := time.Now().Add(testDeadline)
 		for time.Now().Before(until) {
-			image, err := bindingImage(context.Background(), pid)
-			if err == nil && image == candidate.Image && strings.Count(f.log(t), "binding re-exec: executable changed\n") == 1 {
+			image, err := bindingImage(context.Background(), b.pid)
+			if err == nil && image == candidate.Image && strings.Count(b.log(t), "binding re-exec: executable changed\n") == 1 {
 				break
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		if image, err := bindingImage(context.Background(), pid); err != nil || image != candidate.Image || strings.Count(f.log(t), "binding re-exec: executable changed\n") != 1 {
-			t.Fatalf("alias retarget not adopted by one in-place re-exec: %v log=%s", err, f.log(t))
+		if image, err := bindingImage(context.Background(), b.pid); err != nil || image != candidate.Image || strings.Count(b.log(t), "binding re-exec: executable changed\n") != 1 {
+			t.Fatalf("alias retarget not adopted by one in-place re-exec: %v log=%s", err, b.log(t))
 		}
-		if err := launchArgvError(pid, alias); err != nil {
+		if err := launchArgvError(b.pid, alias); err != nil {
 			t.Fatalf("re-exec dropped the alias: %v", err)
 		}
-		after := f.e.state("alice").Terminal
-		if after == nil || after.DaemonPID != pid || after.DaemonBirth != before.DaemonBirth || after.Generation != before.Generation || after.Stopped {
+		after := b.e.state("alice").Terminal
+		if after == nil || after.DaemonPID != b.pid || after.DaemonBirth != before.DaemonBirth || after.Generation != before.Generation || after.Stopped {
 			t.Fatal("re-exec changed consumer identity or stopped the binding")
 		}
 	})
 
 	t.Run("direct image", func(t *testing.T) {
-		f := newLaunchAliasFixture(t)
-		pid := f.bind(t, exe, "")
-		if err := launchArgvError(pid, exe); err != nil {
+		b := startLaunchAliasBind(t, custody, exe, "", exe)
+		if err := launchArgvError(b.pid, exe); err != nil {
 			t.Fatal(err)
 		}
-		if image, err := bindingImage(context.Background(), pid); err != nil || image != current.Image {
+		if image, err := bindingImage(context.Background(), b.pid); err != nil || image != current.Image {
 			t.Fatalf("direct consumer is not running the validated image: %v", err)
 		}
 	})
 
 	t.Run("relative invocation", func(t *testing.T) {
-		f := newLaunchAliasFixture(t)
-		aliasDir := physicalTempDir(t)
-		if err := os.Symlink(exe, filepath.Join(aliasDir, "a2a")); err != nil {
+		relative := filepath.Join(custody, "relative")
+		mkdirs(t, relative)
+		link := filepath.Join(relative, "a2a")
+		if err := os.Symlink(exe, link); err != nil {
 			t.Fatal(err)
 		}
-		pid := f.bind(t, "./a2a", aliasDir)
-		args, _, err := bindingArguments(pid)
+		// Linux records the resolved image; Darwin's os.Executable keeps the
+		// absolute exec path of the relative invocation.
+		b := startLaunchAliasBind(t, custody, "./a2a", relative, exe, link)
+		args, _, err := bindingArguments(b.pid)
 		if err != nil || len(args) == 0 {
 			t.Fatalf("inspect consumer argv: %v", err)
 		}
 		if args[0] == "./a2a" || !filepath.IsAbs(args[0]) {
 			t.Fatalf("relative launch name reached the consumer: %q", args[0])
 		}
-		resolved, err := filepath.EvalSymlinks(args[0])
-		if err != nil || resolved != exe {
+		if resolved, err := filepath.EvalSymlinks(args[0]); err != nil || resolved != exe {
 			t.Fatalf("consumer argv0 does not name the validated image: %q", args[0])
 		}
-		if image, err := bindingImage(context.Background(), pid); err != nil || image != current.Image {
+		if image, err := bindingImage(context.Background(), b.pid); err != nil || image != current.Image {
 			t.Fatalf("relative invocation executed another image: %v", err)
+		}
+	})
+
+	t.Run("other-writable alias directory", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("Darwin's os.Executable keeps the exec path; this change concerns the Linux parent path")
+		}
+		open := filepath.Join(custody, "open")
+		mkdirs(t, open)
+		if err := os.Chmod(open, 0777); err != nil {
+			t.Fatal(err)
+		}
+		alias := filepath.Join(open, "a2a")
+		if err := os.Symlink(exe, alias); err != nil {
+			t.Fatal(err)
+		}
+		b := startLaunchAliasBind(t, custody, alias, "", exe)
+		if err := launchArgvError(b.pid, exe); err != nil {
+			t.Fatalf("an alias in an other-writable directory was retained: %v", err)
+		}
+		next := filepath.Join(images, "a2a-open-next")
+		copyImage(t, exe, next, 0700)
+		retargetLink(t, alias, next)
+		b.awaitSyncs(t, 3)
+		if strings.Contains(b.log(t), "binding re-exec:") {
+			t.Fatalf("an unadmitted alias retarget was adopted: log=%s", b.log(t))
+		}
+		if image, err := bindingImage(context.Background(), b.pid); err != nil || image != current.Image {
+			t.Fatalf("unadmitted alias changed the running image: %v", err)
 		}
 	})
 }
@@ -359,15 +427,20 @@ func TestBindSpawnLaunchAliasCalibration(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("os.Executable keeps the exec path on " + runtime.GOOS + "; mutant not distinguishable")
 	}
-	exe := filepath.Join(physicalTempDir(t), "a2a")
+	custody := launchAliasCustody(t)
+	images, installed := filepath.Join(custody, "images"), filepath.Join(custody, "installed")
+	mkdirs(t, images, installed)
+	exe := filepath.Join(images, "a2a")
 	buildRefreshLifecycleCLI(t, exe, overlayEdit{file: "bind.go", anchor: "\t\t\t\tchild.Args[0] = alias\n", replacement: "\t\t\t\t_ = alias\n"})
-	f := newLaunchAliasFixture(t)
-	alias := filepath.Join(physicalTempDir(t), "a2a")
+	if err := os.Chmod(exe, 0700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(installed, "a2a")
 	if err := os.Symlink(exe, alias); err != nil {
 		t.Fatal(err)
 	}
-	pid := f.bind(t, alias, "")
-	err := launchArgvError(pid, alias)
+	b := startLaunchAliasBind(t, custody, alias, "", alias, exe)
+	err := launchArgvError(b.pid, alias)
 	if err == nil || !strings.Contains(err.Error(), "want launch alias") {
 		t.Fatalf("witness did not detect the dropped alias: %v", err)
 	}
