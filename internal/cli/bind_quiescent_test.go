@@ -703,7 +703,7 @@ func TestQuiescentConsumerOwnerReplacementSeams(t *testing.T) {
 			polled := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
 			flipped := time.Now()
 			fl.on.Store(true)
-			run.trace.await(t, "wake:owner", polled, 3*time.Second)
+			woke := run.trace.await(t, "wake:owner", polled, 3*time.Second)
 			if tc.stops {
 				run.wait(t, 3*time.Second)
 				if run.outcome != "owner gone or replaced" || time.Since(flipped) > 3*time.Second {
@@ -711,7 +711,6 @@ func TestQuiescentConsumerOwnerReplacementSeams(t *testing.T) {
 				}
 				return
 			}
-			after := time.Now()
 			time.Sleep(1500 * time.Millisecond)
 			select {
 			case <-run.done:
@@ -721,7 +720,9 @@ func TestQuiescentConsumerOwnerReplacementSeams(t *testing.T) {
 			if b := f.binding(); b.Stopped {
 				t.Fatal("uncertain owner inspection recorded a stop")
 			}
-			if n := run.trace.count("cycle", after, time.Now()); n == 0 {
+			// Count from the wake itself: the following full cycle can start
+			// before this goroutine observes the wake in the trace.
+			if n := run.trace.count("cycle", woke, time.Now()); n == 0 {
 				t.Fatal("no full cycle followed the owner wake")
 			}
 		})
