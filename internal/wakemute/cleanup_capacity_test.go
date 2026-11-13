@@ -4,6 +4,7 @@ package wakemute_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/wakemute"
 	"github.com/relux-works/a2a-swarm/internal/wakemute/fixture"
@@ -203,22 +205,27 @@ func TestR2CapacityOriginalCleanupShortageRefuses(t *testing.T) {
 func TestR3CapacityOverlapAndRetry(t *testing.T) {
 	scope, approved := cleanupCapacityFixture(t, wakemute.MaxBytes, true, true)
 	root := scope[0].Root
-	if _, err := wakemute.Mute(fixture.Context(t), approved); err != nil {
+	// Repeated validation and durable writes of near-1-MiB, 500-row copies
+	// can exceed the generic fixture's 3s under hosted -race CI. Bound this
+	// entire admission/cleanup sequence to 2m; retries share, not reset, it.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := wakemute.Mute(ctx, approved); err != nil {
 		t.Fatal(err)
 	}
-	status, err := wakemute.Status(fixture.Context(t), scope)
+	status, err := wakemute.Status(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := status.Roots[0].Operations[0]
-	if _, err := wakemute.Unmute(fixture.Context(t), scope, old.Run, old.ID); err != nil {
+	if _, err := wakemute.Unmute(ctx, scope, old.Run, old.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := wakemute.Admission(fixture.Context(t), root, scope[0].Connections[0].Path, func(uint64) error { return nil }); !errors.Is(err, wakemute.ErrMuted) {
+	if err := wakemute.Admission(ctx, root, scope[0].Connections[0].Path, func(uint64) error { return nil }); !errors.Is(err, wakemute.ErrMuted) {
 		t.Fatalf("overlap lost: %v", err)
 	}
 	calls := 0
-	_, err = wakemute.FaultUnmuteForTest(fixture.Context(t), scope, approved.Run, approved.ID, func(p string) error {
+	_, err = wakemute.FaultUnmuteForTest(ctx, scope, approved.Run, approved.ID, func(p string) error {
 		if p == "after-rename" {
 			calls++
 			if calls == 3 {
@@ -230,10 +237,10 @@ func TestR3CapacityOverlapAndRetry(t *testing.T) {
 	if !errors.Is(err, wakemute.ErrUncertain) || calls != 3 {
 		t.Fatalf("close fault not witnessed: %v calls=%d", err, calls)
 	}
-	if _, err := wakemute.Unmute(fixture.Context(t), scope, approved.Run, approved.ID); err != nil {
+	if _, err := wakemute.Unmute(ctx, scope, approved.Run, approved.ID); err != nil {
 		t.Fatalf("reserved retry stranded: %v", err)
 	}
-	status, err = wakemute.Status(fixture.Context(t), scope)
+	status, err = wakemute.Status(ctx, scope)
 	if err != nil || status.Status != "unmuted" || len(status.Roots[0].Operations) != 500 {
 		t.Fatalf("retry lost history or cleanup: %v", err)
 	}
