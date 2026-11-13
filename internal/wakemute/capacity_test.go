@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,8 +17,9 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/wakemute/fixture"
 )
 
-// Complete bytes (including newline) fit exactly or refuse before either copy changes.
-// The adjacent valid history uses the public owner-confirmed mutation path.
+// Complete bytes (including newline) fit exactly or refuse before either copy
+// changes. Full-width generation fixtures leave no extra width to reserve;
+// ordinary rollover reservation is covered by TestR2CapacityCleanupRollover.
 func TestReviewStateCapacityBoundary(t *testing.T) {
 	for _, targetSize := range []int{wakemute.MaxBytes - 1, wakemute.MaxBytes} {
 		t.Run(fmt.Sprintf("encoded-size-%d", targetSize), func(t *testing.T) {
@@ -42,7 +44,7 @@ func TestReviewStateCapacityBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			predicted := wakemute.Store{Version: 1, Generation: 2, ConnectionGenerations: map[string]uint64{".": 2}, Operations: []wakemute.Operation{approved}}
+			predicted := wakemute.Store{Version: 1, Generation: math.MaxUint64 - 1, ConnectionGenerations: map[string]uint64{".": math.MaxUint64 - 1}, Operations: []wakemute.Operation{approved}}
 			enrollment.Snapshot = &predicted
 			initialJSON, err := json.Marshal(enrollment)
 			if err != nil {
@@ -70,7 +72,7 @@ func TestReviewStateCapacityBoundary(t *testing.T) {
 			if err != nil || len(predictedJSON) != targetSize {
 				t.Fatalf("bad boundary setup: length=%d target=%d err=%v", len(predictedJSON), targetSize, err)
 			}
-			initialStore := wakemute.Store{Version: 1, Generation: 1, ConnectionGenerations: map[string]uint64{".": 1}, Operations: operations}
+			initialStore := wakemute.Store{Version: 1, Generation: math.MaxUint64 - 2, ConnectionGenerations: map[string]uint64{".": math.MaxUint64 - 2}, Operations: operations}
 			enrollment.Snapshot = &initialStore
 			markerData, err = json.Marshal(enrollment)
 			if err != nil {

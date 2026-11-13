@@ -378,11 +378,19 @@ func mute(ctx context.Context, o Operation, inject fault) (result Result, err er
 			}
 		}
 	}
+	// Reserve every root before publishing even the coordinator intent. Future
+	// mutes must preserve the same envelope, so they cannot spend cleanup space
+	// owed to an overlapping or partially closed operation.
+	for i := range stores {
+		stores[i].Operations = append(stores[i].Operations, o)
+		bumpStore(&stores[i], o.Scope[i].Connections)
+		if err = rs[i].reserveCleanup(stores[i]); err != nil {
+			return result, err
+		}
+	}
 	// All roots are pinned and locked. Coordinator intent is durable before any
 	// other root changes. Installing is itself an effective mute on that root.
 	for i, r := range rs {
-		stores[i].Operations = append(stores[i].Operations, o)
-		bumpStore(&stores[i], o.Scope[i].Connections)
 		if err = r.writeStore(ctx, stores[i], inject); err != nil {
 			return result, uncertain(err)
 		}
@@ -398,6 +406,38 @@ func mute(ctx context.Context, o Operation, inject fault) (result Result, err er
 	result.Operation = &o
 	result.Roots = statusRoots(rs, result.Scope)
 	return result, nil
+}
+
+// This is a virtual upper bound, never persisted. Cleanup and its retries add
+// no operation IDs or authority fields. uint64 counters need at most 20 decimal
+// digits; installing is the longest nonclosed state, including recovery unions.
+// Reserving all counters also covers retries through roots already closed by a
+// partial multi-root cleanup. No retry count or cleanup order is assumed.
+func (r *pinnedRoot) reserveCleanup(s Store) error {
+	s.Generation = ^uint64(0)
+	generations := make(map[string]uint64, len(s.ConnectionGenerations))
+	for path := range s.ConnectionGenerations {
+		generations[path] = ^uint64(0)
+	}
+	s.ConnectionGenerations = generations
+	var enrollment Enrollment
+	if err := r.read(Marker, &enrollment); err != nil {
+		return err
+	}
+	s.Operations = slices.Clone(s.Operations)
+	for i := range s.Operations {
+		if s.Operations[i].State != "closed" {
+			s.Operations[i].State = "installing"
+		}
+	}
+	enrollment.Snapshot = &s
+	for _, value := range []any{s, enrollment} {
+		data, err := json.Marshal(value)
+		if err != nil || len(data)+1 > MaxBytes {
+			return ErrUnsafe
+		}
+	}
+	return nil
 }
 
 func Unmute(ctx context.Context, s Scope, run, id string) (Result, error) {
