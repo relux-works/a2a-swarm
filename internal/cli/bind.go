@@ -312,6 +312,14 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 			return err
 		}
 		child = exec.Command(exe, append(pin, "--as", s.name, "bind", "--run-generation", b.Generation)...)
+		// Execute the validated running image. Only an admitted absolute launch
+		// alias travels as argv[0], so the consumer's refresh can observe a later
+		// retarget of that alias (os.Executable resolves it on Linux).
+		if len(os.Args) > 0 {
+			if alias, ok := admittedLaunchAlias(os.Args[0], exe); ok {
+				child.Args[0] = alias
+			}
+		}
 		child.Env = detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), b.SessionID)
 		child.ExtraFiles = []*os.File{writer}
 		child.Stdout = log

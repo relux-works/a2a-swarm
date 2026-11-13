@@ -147,13 +147,30 @@ func (r *terminalRefresh) initializePath() {
 	// Executable may already have resolved the launch symlink (notably on
 	// Linux). Retain an absolute argv[0] alias of that same executable, including
 	// across our own exec, so subsequent symlink retargets remain observable.
-	if len(os.Args) > 0 && filepath.IsAbs(os.Args[0]) {
-		launch, launchErr := filepath.EvalSymlinks(os.Args[0])
-		actual, actualErr := filepath.EvalSymlinks(r.path)
-		if launchErr == nil && actualErr == nil && launch == actual {
-			r.path = os.Args[0]
+	if len(os.Args) > 0 {
+		if alias, ok := admittedLaunchAlias(os.Args[0], r.path); ok {
+			r.path = alias
 		}
 	}
+}
+
+// admittedLaunchAlias admits argv0 as the launch alias of executable only when
+// it is absolute and currently resolves to the same file. Bare or relative
+// names are never searched in PATH, and an alias of another image is refused.
+// The detached consumer spawn and refresh share this one admission rule.
+func admittedLaunchAlias(argv0, executable string) (string, bool) {
+	if argv0 == "" || executable == "" || !filepath.IsAbs(argv0) {
+		return "", false
+	}
+	launch, err := filepath.EvalSymlinks(argv0)
+	if err != nil {
+		return "", false
+	}
+	actual, err := filepath.EvalSymlinks(executable)
+	if err != nil || launch != actual {
+		return "", false
+	}
+	return argv0, true
 }
 
 func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generation string, lock *os.File) {

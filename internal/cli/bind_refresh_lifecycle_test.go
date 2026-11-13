@@ -54,7 +54,11 @@ func TestTerminalRefreshSymlinkLifecycle(t *testing.T) {
 // build overlay, never a production flag or environment override. Each poll
 // advances past the safety throttle (and eventually the probe retry cooldown).
 // The safety wrapper records an actual rejection, not a guessed cycle count.
-func buildRefreshLifecycleCLI(t *testing.T, exe string) {
+// overlayEdit replaces one unique anchor in one package source file of the
+// test-built CLI. Calibration mutants use it; production never sees it.
+type overlayEdit struct{ file, anchor, replacement string }
+
+func buildRefreshLifecycleCLI(t *testing.T, exe string, extra ...overlayEdit) {
 	t.Helper()
 	source, err := filepath.Abs("bind_refresh.go")
 	if err != nil {
@@ -95,7 +99,26 @@ func buildRefreshLifecycleCLI(t *testing.T, exe string) {
 	if err := os.WriteFile(patched, []byte(strings.Replace(string(raw), anchor, replacement, 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{source: patched}})
+	replace := map[string]string{source: patched}
+	for i, edit := range extra {
+		file, err := filepath.Abs(edit.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(string(raw), edit.anchor) != 1 || replace[file] != "" {
+			t.Fatalf("setup: nonunique overlay anchor in %s", edit.file)
+		}
+		edited := filepath.Join(dir, strconv.Itoa(i)+"-"+filepath.Base(file))
+		if err := os.WriteFile(edited, []byte(strings.Replace(string(raw), edit.anchor, edit.replacement, 1)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		replace[file] = edited
+	}
+	overlay, err := json.Marshal(map[string]any{"Replace": replace})
 	if err != nil {
 		t.Fatal(err)
 	}
