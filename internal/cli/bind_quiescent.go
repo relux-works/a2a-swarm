@@ -198,9 +198,15 @@ func (w *quiescentWriting) set(writing bool) {
 // Registration uncertainty returns quiescentUnavailable so the caller keeps
 // the ordinary active wait and its owner checks.
 func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.TerminalBinding, lastFull time.Time, refresh terminalRefreshView) (quiescentResult, string) {
+	// wake records the reason at the moment it is detected (before any hold),
+	// so observers see the cause, not the end of the Interval hold.
+	wake := func(result quiescentResult, reason string) (quiescentResult, string) {
+		a.traceTerminal("wake:" + reason)
+		return result, reason
+	}
 	scope := s.paths.StateDecodeScope()
 	if !scope.OwnFilesRecorded() {
-		return quiescentUnavailable, "own files unrecorded"
+		return wake(quiescentUnavailable, "own files unrecorded")
 	}
 	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 	before, beforeErr := terminalBirth(probe, policy.OwnerPID)
@@ -208,10 +214,10 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	after, afterErr := terminalBirth(probe, policy.OwnerPID)
 	cancel()
 	if beforeErr != nil || afterErr != nil || startErr != nil || before != after {
-		return quiescentUnavailable, "owner registration"
+		return wake(quiescentUnavailable, "owner registration")
 	}
 	if before != policy.OwnerBirth {
-		return quiescentReconcile, "owner"
+		return wake(quiescentReconcile, "owner")
 	}
 	a.traceTerminal("register")
 	watch := newQuiescentWatch(s, refresh)
@@ -221,19 +227,20 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	// hold keeps full cycles at least one Interval apart after a non-owner
 	// reason without going blind: the owner tick continues until then.
 	hold := func(reason string) (quiescentResult, string) {
+		a.traceTerminal("wake:" + reason)
 		until := lastFull.Add(policy.Interval)
 		for terminalWatchOwnerWhileHeld && time.Now().Before(until) {
 			timer := time.NewTimer(time.Until(until))
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return quiescentCancelled, "cancelled"
+				return wake(quiescentCancelled, "cancelled")
 			case <-timer.C:
 			case <-ticker.C:
 				timer.Stop()
 				a.traceTerminal("tick")
 				if state := classifyOwner(policy.OwnerPID, start); state != ownerTokenSame {
-					return quiescentReconcile, ownerReason(state)
+					return wake(quiescentReconcile, ownerReason(state))
 				}
 			}
 		}
@@ -243,12 +250,12 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 				select {
 				case <-ctx.Done():
 					timer.Stop()
-					return quiescentCancelled, "cancelled"
+					return wake(quiescentCancelled, "cancelled")
 				case <-timer.C:
 				}
 			}
 		}
-		return quiescentReconcile, reason
+		return quiescentReconcile, reason // traced when detected
 	}
 
 	writes := &quiescentWriting{}
@@ -267,7 +274,7 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	for {
 		now := time.Now()
 		if !now.Before(deadline) {
-			return quiescentReconcile, "reconcile"
+			return wake(quiescentReconcile, "reconcile")
 		}
 		if !running && !now.Before(nextExchange) {
 			// Rate bound: an immediately returning or empty response cannot
@@ -284,12 +291,12 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 		}
 		select {
 		case <-ctx.Done():
-			return quiescentCancelled, "cancelled"
+			return wake(quiescentCancelled, "cancelled")
 		case reason := <-done:
 			running = false
 			workerCancel()
 			if ctx.Err() != nil {
-				return quiescentCancelled, "cancelled"
+				return wake(quiescentCancelled, "cancelled")
 			}
 			if reason != "" {
 				stop()
@@ -299,7 +306,7 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 		case <-ticker.C:
 			a.traceTerminal("tick")
 			if state := classifyOwner(policy.OwnerPID, start); state != ownerTokenSame {
-				return quiescentReconcile, ownerReason(state)
+				return wake(quiescentReconcile, ownerReason(state))
 			}
 			writes.mu.Lock()
 			changed := !writes.writing && !scope.OwnFilesUnchanged(s.paths, s.name)

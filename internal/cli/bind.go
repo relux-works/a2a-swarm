@@ -696,7 +696,6 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 		}
 		if terminalQuiescence && !quietSince.IsZero() && time.Since(quietSince) >= terminalQuietAfter {
 			result, reason := a.waitQuiescent(ctx, s, policy, cycleStart, view)
-			a.traceTerminal("wake:" + reason)
 			if result == quiescentCancelled {
 				return "cancelled", nil
 			}

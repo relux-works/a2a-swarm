@@ -837,7 +837,7 @@ func runNativeReuse(t *testing.T, change bool) (*consumerRun, time.Time) {
 // native start token with an unchanged second-resolution canonical Birth is a
 // KNOWN replacement: the consumer stops within 3s and never re-registers it.
 // Neighbour: an unchanged token keeps the consumer running (no stop).
-func TestReview477NativePIDReuseWithinBirthSecond(t *testing.T) {
+func TestQuiescentNativePIDReuseWithinBirthSecond(t *testing.T) {
 	isolateBindTest(t)
 	t.Run("changed-token", func(t *testing.T) {
 		run, flipped := runNativeReuse(t, true)
@@ -862,7 +862,7 @@ func TestReview477NativePIDReuseWithinBirthSecond(t *testing.T) {
 // Calibration for finding 1: with a known token change treated as unknown
 // (the earlier oracle), the UNCHANGED witness must fail on its intended
 // assertion (not stopped within 3s).
-func TestReview477NativePIDReuseCalibration(t *testing.T) {
+func TestQuiescentNativePIDReuseCalibration(t *testing.T) {
 	isolateBindTest(t)
 	terminalKnownReplacementStops = false
 	t.Cleanup(func() { terminalKnownReplacementStops = true })
@@ -879,7 +879,7 @@ func TestReview477NativePIDReuseCalibration(t *testing.T) {
 // consumer must not relabel it as its own: it wakes for the state reason and
 // notifies the mail exactly once without any second event. The own-write
 // neighbour is TestQuiescentConsumerBoundedWork (no self-wake).
-func TestReview477ForeignMailBeforeExchange(t *testing.T) {
+func TestQuiescentForeignMailBeforeExchange(t *testing.T) {
 	isolateBindTest(t)
 	quiescentTiming(t, 0, time.Minute, 25*time.Second, time.Second)
 	f := newOrphanDispatchFixture(t)
@@ -924,7 +924,7 @@ func ownerExitAfterLocalWakeError(t *testing.T) error {
 	return stopWithin(run, killed, 3*time.Second, "owner exit during the held Interval")
 }
 
-func TestReview477OwnerExitAfterLocalWake(t *testing.T) {
+func TestQuiescentOwnerExitAfterLocalWake(t *testing.T) {
 	isolateBindTest(t)
 	if err := ownerExitAfterLocalWakeError(t); err != nil {
 		t.Fatal(err)
@@ -933,7 +933,7 @@ func TestReview477OwnerExitAfterLocalWake(t *testing.T) {
 
 // Calibration for finding 3: with the held Interval waited out blind (the
 // earlier shape), the UNCHANGED witness must fail on its intended assertion.
-func TestReview477OwnerExitAfterLocalWakeCalibration(t *testing.T) {
+func TestQuiescentOwnerExitAfterLocalWakeCalibration(t *testing.T) {
 	isolateBindTest(t)
 	terminalWatchOwnerWhileHeld = false
 	t.Cleanup(func() { terminalWatchOwnerWhileHeld = true })
