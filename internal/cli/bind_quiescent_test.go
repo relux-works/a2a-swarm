@@ -734,3 +734,31 @@ func TestQuiescentConsumerOwnerReplacementSeams(t *testing.T) {
 		}
 	})
 }
+
+// Calibration for the blocked-ingestion witness: with the exchange run inline
+// on the waiting goroutine (the earlier synchronous shape), the same owner
+// exit is NOT noticed within 3s while the ingestion waits for the held lock.
+// The setup is proven reached (the ingestion started) so the failure is the
+// intended liveness one, not a fixture error.
+func TestQuiescentConsumerOwnerExitWhileIngestBlockedCalibration(t *testing.T) {
+	isolateBindTest(t)
+	quiescentTiming(t, 0, time.Minute, 20*time.Second, 100*time.Millisecond)
+	terminalExchangeInline = true
+	t.Cleanup(func() { terminalExchangeInline = false })
+	f := newOrphanDispatchFixture(t)
+	run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
+	polled := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
+	release := holdStateLock(t, f)
+	f.e.hs.inject(f.room, "@bob:test.local", msg("@alice:test.local SYNTHETIC_BLOCKED_MAIL", nil))
+	run.trace.await(t, "ingest", polled, 10*time.Second)
+	time.Sleep(200 * time.Millisecond)
+	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-run.done:
+		t.Fatalf("inline exchange still met the 3s owner bound (%q); the witness cannot detect the regression", run.outcome)
+	case <-time.After(3 * time.Second):
+	}
+	release()
+}

@@ -25,6 +25,7 @@ var (
 	terminalLongPoll       = 25 * time.Second // server-side /sync wait
 	terminalQuietTickMax   = time.Second      // owner liveness and local-change checks
 	terminalQuiescence     = true             // matched comparisons: false keeps the active loop
+	terminalExchangeInline = false            // calibration: the earlier synchronous exchange
 )
 
 // terminalQuiescent reports whether a freshly loaded State leaves the binding
@@ -200,7 +201,11 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 			var wctx context.Context
 			wctx, workerCancel = cancellablePoll(ctx)
 			running = true
-			go func() { done <- a.quiescentExchange(wctx, s, writes) }()
+			if terminalExchangeInline {
+				done <- a.quiescentExchange(wctx, s, writes)
+			} else {
+				go func() { done <- a.quiescentExchange(wctx, s, writes) }()
+			}
 		}
 		select {
 		case <-ctx.Done():
