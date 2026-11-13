@@ -54,8 +54,9 @@ func TestFileStampVersions(t *testing.T) {
 
 // Own-write stamps are recorded under the state lock by the scope's own
 // writer. They stay unchanged across that writer's own updates and change for
-// another writer's update and for a mailbox change; a nil scope, another
-// identity or nothing recorded is always "changed".
+// another writer's update and for a mailbox change; another writer's change
+// stays visible through a later own operation until the evidence is consumed;
+// a nil scope, another identity or nothing recorded is always "changed".
 func TestStateDecodeScopeOwnFiles(t *testing.T) {
 	base := Paths{Base: t.TempDir()}
 	scope := NewStateDecodeScope("alice")
@@ -84,8 +85,14 @@ func TestStateDecodeScopeOwnFiles(t *testing.T) {
 	if _, err := UpdateState(own, "alice", func(st *State) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+	// The own operation re-records the files, but the foreign change it found
+	// stays evidence until the consumer's next full cycle consumes it.
+	if scope.OwnFilesUnchanged(own, "alice") {
+		t.Fatal("an own operation must not relabel another writer's earlier change")
+	}
+	scope.ClearForeignWrites()
 	if !scope.OwnFilesUnchanged(own, "alice") {
-		t.Fatal("a fresh own locked operation must re-record")
+		t.Fatal("after the evidence is consumed, the fresh own record must read unchanged")
 	}
 	if err := os.WriteFile(own.MailboxFile("alice"), []byte("{}\n"), 0600); err != nil {
 		t.Fatal(err)
