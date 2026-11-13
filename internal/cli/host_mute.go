@@ -33,7 +33,7 @@ func loadWakeScope(file string) (wakemute.Scope, error) {
 	if file == "" {
 		return nil, usagef("%s", hostMuteUsage)
 	}
-	f, err := os.Open(file)
+	f, err := openWakeScope(file)
 	if err != nil {
 		return nil, err
 	}

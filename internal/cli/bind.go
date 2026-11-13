@@ -761,7 +761,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}
 		admissionCtx, cancelAdmission := context.WithTimeout(ctx, nativeRPCTimeout)
 		defer cancelAdmission()
-		return a.withWakeAdmission(admissionCtx, s.paths, func(scopeGeneration uint64) error {
+		admissionErr := a.withWakeAdmission(admissionCtx, s.paths, func(scopeGeneration uint64) error {
 			if held, err := a.requalifyWakeScope(s, generation, scopeGeneration, *b); err != nil || held {
 				return err
 			}
@@ -891,9 +891,30 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			outcome, sendErr := a.sendTerminalAttempt(ctx, s, reservedAttempt, readiness.Key)
 			return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 		})
+		if errors.Is(admissionErr, wakemute.ErrMuted) && alarmWake != nil {
+			// Muting local input must not stop mailbox incident observations.
+			// No terminal readiness or input authority is inferred while muted.
+			alarm.Reason = "scope muted"
+			a.observeMailAlarm(s, generation, alarm)
+			select {
+			case alarmWake <- struct{}{}:
+			default:
+			}
+		}
+		return admissionErr
 	})
 	if err != nil {
-		_ = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
+		// Cancellation stops admission, but cannot cancel its safety cleanup.
+		// A failed reset is returned to the consumer's qualificationInterrupted
+		// fence, which retries the reset before dispatch (also on restart).
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), nativeRPCTimeout)
+		cleanup := *a
+		cleanup.wakeContext = cleanupCtx
+		cleanupErr := cleanup.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil })
+		cancelCleanup()
+		if cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("terminal idle invalidation failed: %w", cleanupErr))
+		}
 	}
 	if err != nil || !observed {
 		a.unknownTerminalNotice(ctx, s, generation, false)

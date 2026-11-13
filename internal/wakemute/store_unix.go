@@ -151,6 +151,7 @@ func (r *pinnedRoot) write(ctx context.Context, name string, v any, inject fault
 		return ErrUnsafe
 	}
 	data, err := json.Marshal(v)
+	data = append(data, '\n')
 	if err != nil || len(data) > MaxBytes {
 		return ErrUnsafe
 	}
@@ -171,7 +172,7 @@ func (r *pinnedRoot) write(ctx context.Context, name string, v any, inject fault
 	if err = f.Chmod(0600); err != nil {
 		return err
 	}
-	if _, err = f.Write(append(data, '\n')); err != nil {
+	if _, err = f.Write(data); err != nil {
 		return err
 	}
 	if err = point("before-file-sync"); err != nil {
