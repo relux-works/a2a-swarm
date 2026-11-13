@@ -31,6 +31,8 @@ var (
 // with no outstanding work for this consumer. Diagnostic history (recovery,
 // send refusal, publication outcome) does not count as work; anything that
 // carries its own deadline or effect does. Unknown or unsettled means active.
+// The caller also requires the same cycle's fresh delivery view to have found
+// no un-rung pending entry (session.terminalUndelivered == 0).
 func terminalQuiescent(st config.State, generation string, pid int, now time.Time) bool {
 	b := st.Terminal
 	if b == nil || b.DaemonPID != pid {
@@ -39,7 +41,9 @@ func terminalQuiescent(st config.State, generation string, pid int, now time.Tim
 	if terminalRefreshBlockReason(st, generation, b.DaemonBirth, machineLabel(), pid, now) != "" {
 		return false
 	}
-	if b.Outcome != "armed: no new mail" && b.Outcome != "suppressed: manual gate" {
+	// A hook pause or manual gate keeps the active loop: its retained mail and
+	// gate changes are observed every Interval exactly as before.
+	if b.Outcome != "armed: no new mail" || st.HooksPaused || manualWakeGate(st) != "" {
 		return false
 	}
 	if b.Idle != nil || b.NoticeOrigin != nil || b.NoticePosition != nil || b.TypingStarted {
@@ -144,6 +148,7 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	if before != policy.OwnerBirth {
 		return quiescentReconcile, "owner"
 	}
+	a.traceTerminal("register")
 	watch := newQuiescentWatch(s, refresh)
 	tick := min(policy.Interval, terminalQuietTickMax)
 	ticker := time.NewTicker(tick)
@@ -214,6 +219,7 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 			// The authoritative ingestion path: mailbox before cursor,
 			// mandatory principal classification, redactions and rewrites.
 			op, opCancel := context.WithTimeout(ctx, nativeRPCTimeout)
+			a.traceTerminal("ingest")
 			_, err := s.ingest(op, out.resp, since, subs, nil, time.Now().Add(nativeRPCTimeout))
 			opCancel()
 			if err != nil {
@@ -242,4 +248,32 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 
 func cancellablePoll(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithCancel(ctx)
+}
+
+// quiescentOwnerTeardown decides an owner-exit wake directly from the retained
+// owner association, before any connection, State or network work of a full
+// cycle could delay it: the canonical Birth or process absence proves the
+// owner gone or replaced. Unknown inspection is not death; the caller then
+// runs the ordinary full cycle. The stop record is best effort with a 500ms
+// lock deadline, as a held lock must not keep a dead owner's consumer alive.
+// Limit: an ingestion already waiting for the State lock delays the next
+// liveness tick by at most its own lock deadline.
+func (a *App) quiescentOwnerTeardown(ctx context.Context, s *session, generation string, policy config.TerminalBinding) (string, bool) {
+	probe, cancel := context.WithTimeout(ctx, time.Second)
+	live, err := tmuxwake.Birth(probe, policy.OwnerPID)
+	cancel()
+	if !(err == nil && live != policy.OwnerBirth || processGone(policy.OwnerPID)) {
+		return "", false
+	}
+	if s.checkConnection() == nil {
+		_, _ = a.updateStateBy(s.paths, s.name, time.Now().Add(500*time.Millisecond), func(st *config.State) error {
+			if b := st.Terminal; b != nil && b.Generation == generation && !b.Stopped {
+				b.Stopped = true
+				b.Outcome = "target exited or replaced"
+				dropRetiredStrandedAlarms(st)
+			}
+			return nil
+		})
+	}
+	return "owner gone or replaced", true
 }

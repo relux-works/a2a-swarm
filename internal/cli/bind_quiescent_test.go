@@ -4,9 +4,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -121,60 +123,70 @@ func (r *consumerRun) wait(t *testing.T, within time.Duration) {
 	}
 }
 
-// quietWindowError is the bounded-work assertion: within a quiescent window
-// shorter than the reconciliation deadline there is no full cycle and no
-// self-write wake, while long-polls continue.
-func quietWindowError(trace *terminalTraceLog, from, to time.Time) error {
+// quietWindowError is the bounded-work assertion for a quiescent window
+// shorter than the reconciliation deadline, split by work source:
+//   - extra full terminal cycles (State/connection guards, ps/tmux probes,
+//     lease and observation writes, dispatch): none;
+//   - owner re-registration (two ps Birth checks): none, as ticks only run
+//     the fork-free start-time check and stamp comparisons;
+//   - self-write wakes: none;
+//   - long-poll request starts: at least one, at most one per completed
+//     response plus the one in flight, and never more often than polls can
+//     complete (window/longPoll + 2);
+//   - authoritative ingestion: exactly one per completed response (its own
+//     guards, State/mailbox reads and cursor or privacy writes are expected).
+func quietWindowError(trace *terminalTraceLog, from, to time.Time, longPoll time.Duration) error {
 	if n := trace.count("cycle", from, to); n != 0 {
-		return fmt.Errorf("quiescent window ran %d full cycles", n)
+		return fmt.Errorf("quiescent window ran %d extra full cycles", n)
+	}
+	if n := trace.count("register", from, to); n != 0 {
+		return fmt.Errorf("quiescent window re-registered the owner %d times", n)
 	}
 	if n := trace.count("wake:state", from, to); n != 0 {
 		return fmt.Errorf("own writes woke the consumer %d times", n)
 	}
-	if n := trace.count("poll", from, to); n == 0 {
+	polls, ingests := trace.count("poll", from, to), trace.count("ingest", from, to)
+	if polls == 0 {
 		return fmt.Errorf("no long-poll during the quiescent window")
+	}
+	if limit := int(to.Sub(from)/longPoll) + 2; polls > limit {
+		return fmt.Errorf("%d long-poll starts exceed %d", polls, limit)
+	}
+	if ingests > polls {
+		return fmt.Errorf("%d ingestions for %d long-polls", ingests, polls)
 	}
 	return nil
 }
 
-// measureQuietWindow starts a consumer, waits for its first long-poll and
-// returns the trace and the window [start, start+window).
-func measureQuietWindow(t *testing.T, window time.Duration) (*terminalTraceLog, time.Time, time.Time) {
-	t.Helper()
-	f := newOrphanDispatchFixture(t)
-	run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
-	start := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
-	if !terminalQuiescence {
-		// The calibration loop never polls; measure from its first cycles.
-		start = time.Now()
-	}
-	time.Sleep(window)
-	return run.trace, start, start.Add(window)
-}
-
-// T1/T11: a quiescent consumer does bounded work. For a window shorter than the
-// reconciliation deadline it runs no full cycle (no State load, connection
-// probe, tmux/ps inspection or dispatch), its own long-poll ingestion does not
-// wake it, and it keeps long-polling; the deadline then forces exactly one
-// full cycle. Limits: fixture timing with shortened seams; this is not the
-// real-binary CPU target.
+// T1/T11: a quiescent consumer does bounded work per source (see
+// quietWindowError) through the production long-poll and ingestion path, its
+// own writes do not wake it, and the reconciliation deadline then forces
+// exactly one full cycle and one fresh registration. Limits: fixture timing
+// with shortened seams; this is not the real-binary CPU target.
 func TestQuiescentConsumerBoundedWork(t *testing.T) {
 	isolateBindTest(t)
 	quiescentTiming(t, 0, 4*time.Second, time.Second, 100*time.Millisecond)
-	trace, from, to := measureQuietWindow(t, 2500*time.Millisecond)
-	if err := quietWindowError(trace, from, to); err != nil {
+	f := newOrphanDispatchFixture(t)
+	run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
+	from := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
+	time.Sleep(2500 * time.Millisecond)
+	to := from.Add(2500 * time.Millisecond)
+	if err := quietWindowError(run.trace, from, to, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	trace.await(t, "wake:reconcile", from, 5*time.Second)
-	reconciled := trace.await(t, "cycle", from, 5*time.Second)
-	if n := trace.count("cycle", from, reconciled.Add(time.Millisecond)); n != 1 {
+	if run.trace.count("ingest", from, to) == 0 {
+		t.Fatal("no completed long-poll was ingested through the production path")
+	}
+	run.trace.await(t, "wake:reconcile", from, 5*time.Second)
+	reconciled := run.trace.await(t, "cycle", from, 5*time.Second)
+	if n := run.trace.count("cycle", from, reconciled.Add(time.Millisecond)); n != 1 {
 		t.Fatalf("reconciliation ran %d full cycles, want 1", n)
 	}
+	run.trace.await(t, "register", reconciled, 5*time.Second)
 }
 
-// Calibration for T1: the same measurement with quiescence disabled (the
-// per-Interval full-cycle loop) must fail the bounded-work assertion at its
-// full-cycle count, proving the checker detects the reverted behaviour.
+// Calibration for T1: with quiescence disabled the per-Interval loop returns,
+// and the same checker must fail on its intended counter (extra full cycles).
 func TestQuiescentConsumerBoundedWorkCalibration(t *testing.T) {
 	isolateBindTest(t)
 	quiescentTiming(t, 0, 4*time.Second, time.Second, 100*time.Millisecond)
@@ -185,9 +197,41 @@ func TestQuiescentConsumerBoundedWorkCalibration(t *testing.T) {
 	run.trace.await(t, "cycle", time.Time{}, 20*time.Second)
 	from := time.Now()
 	time.Sleep(2500 * time.Millisecond)
-	err := quietWindowError(run.trace, from, from.Add(2500*time.Millisecond))
-	if err == nil || !strings.Contains(err.Error(), "full cycles") {
+	err := quietWindowError(run.trace, from, from.Add(2500*time.Millisecond), time.Second)
+	if err == nil || !strings.Contains(err.Error(), "extra full cycles") {
 		t.Fatalf("checker did not detect per-Interval full cycles: %v", err)
+	}
+}
+
+// Checker controls with known-violation traces: per-tick re-registration,
+// self-write wakes, per-tick request restarts and ingestion without a
+// completed response are each rejected at their own counter; a valid trace
+// passes.
+func TestQuietWindowErrorControls(t *testing.T) {
+	from := time.Now()
+	build := func(events ...string) *terminalTraceLog {
+		l := &terminalTraceLog{}
+		for i, e := range events {
+			l.events = append(l.events, e)
+			l.at = append(l.at, from.Add(time.Duration(i+1)*10*time.Millisecond))
+		}
+		return l
+	}
+	to := from.Add(2500 * time.Millisecond)
+	if err := quietWindowError(build("poll", "ingest", "poll", "ingest", "poll"), from, to, time.Second); err != nil {
+		t.Fatalf("positive control: %v", err)
+	}
+	for want, trace := range map[string]*terminalTraceLog{
+		"extra full cycles": build("poll", "cycle"),
+		"re-registered":     build("poll", "register", "register"),
+		"own writes woke":   build("poll", "wake:state"),
+		"exceed":            build("poll", "poll", "poll", "poll", "poll", "poll"),
+		"ingestions":        build("poll", "ingest", "ingest"),
+		"no long-poll":      build("ingest"),
+	} {
+		if err := quietWindowError(trace, from, to, time.Second); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: checker accepted a violating trace: %v", want, err)
+		}
 	}
 }
 
@@ -232,19 +276,34 @@ func TestQuiescentConsumerWakesOnExternalStateWrite(t *testing.T) {
 // SessionStart rebind, including a lane whose Interval is 30s.
 func TestQuiescentConsumerStopsOnOwnerExit(t *testing.T) {
 	isolateBindTest(t)
-	for _, interval := range []time.Duration{300 * time.Millisecond, 30 * time.Second} {
-		t.Run(interval.String(), func(t *testing.T) {
+	for _, tc := range []struct {
+		interval   time.Duration
+		lockedHeld bool
+	}{{300 * time.Millisecond, false}, {30 * time.Second, false}, {300 * time.Millisecond, true}} {
+		t.Run(fmt.Sprintf("%s-locked-%t", tc.interval, tc.lockedHeld), func(t *testing.T) {
+			interval := tc.interval
 			quiescentTiming(t, 0, time.Minute, 20*time.Second, time.Second)
 			f := newOrphanDispatchFixture(t)
 			run := startQuiescentConsumer(t, f, interval, nil)
 			run.trace.await(t, "poll", time.Time{}, 40*time.Second)
 			owner := f.binding().OwnerPID
+			if tc.lockedHeld {
+				// Another writer holds the State lock for the whole stop path.
+				held, release := make(chan struct{}), make(chan struct{})
+				go config.UpdateState(f.e.paths(), "alice", func(*config.State) error {
+					close(held)
+					<-release
+					return errors.New("released")
+				})
+				<-held
+				t.Cleanup(func() { close(release) })
+			}
 			killed := time.Now()
 			if err := syscall.Kill(owner, syscall.SIGKILL); err != nil {
 				t.Fatal(err)
 			}
 			run.wait(t, 3*time.Second)
-			if run.err != nil || !strings.Contains(run.outcome, "gone or replaced") {
+			if run.err != nil || run.outcome != "owner gone or replaced" {
 				t.Fatalf("outcome=%q err=%v after %s", run.outcome, run.err, time.Since(killed))
 			}
 		})
@@ -270,6 +329,45 @@ func TestQuiescentConsumerCancelDuringLongPoll(t *testing.T) {
 	if f.e.state("alice").NextBatch != cursor || readFile(t, f.s.paths.MailboxFile("alice")) != mailbox {
 		t.Fatal("cancelled long-poll changed the cursor or mailbox")
 	}
+}
+
+// Resource lifetime: repeated quiescent ticks keep one registration and one
+// in-flight request, and a cancelled consumer leaves no goroutine or file
+// descriptor behind (idle HTTP connections closed; small tolerance for the
+// runtime and the fixture's helpers).
+func TestQuiescentConsumerResourceLifetime(t *testing.T) {
+	isolateBindTest(t)
+	quiescentTiming(t, 0, time.Minute, 20*time.Second, 50*time.Millisecond)
+	f := newOrphanDispatchFixture(t)
+	goroutines, fds := runtime.NumGoroutine(), openFDs(t)
+	run := startQuiescentConsumer(t, f, 300*time.Millisecond, nil)
+	from := run.trace.await(t, "poll", time.Time{}, 20*time.Second)
+	time.Sleep(time.Second) // about 20 ticks
+	if n := run.trace.count("register", from, time.Now()); n != 0 {
+		t.Fatalf("ticks re-registered the owner %d times", n)
+	}
+	if n := run.trace.count("poll", from, time.Now()); n != 1 {
+		t.Fatalf("ticks restarted the long-poll: %d request starts", n)
+	}
+	run.cancel()
+	run.wait(t, 2*time.Second)
+	f.a.HTTP.CloseIdleConnections()
+	until := time.Now().Add(3 * time.Second)
+	for time.Now().Before(until) && (runtime.NumGoroutine() > goroutines+2 || openFDs(t) > fds+2) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if runtime.NumGoroutine() > goroutines+2 || openFDs(t) > fds+2 {
+		t.Fatalf("consumer leaked: goroutines %d->%d fds %d->%d", goroutines, runtime.NumGoroutine(), fds, openFDs(t))
+	}
+}
+
+func openFDs(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		t.Skip("fd inspection unavailable")
+	}
+	return len(entries)
 }
 
 type stubRefreshView struct {
@@ -342,10 +440,8 @@ func TestTerminalQuiescentPredicate(t *testing.T) {
 	diagnostic.Terminal.Recovery = &config.TerminalRecovery{Reason: "x", At: now}
 	diagnostic.Terminal.SendRefusal = &config.TerminalSendRefusal{At: now}
 	diagnostic.Terminal.OwnNotice.PossiblyOrphaned = &no
-	diagnostic.Terminal.Outcome = "suppressed: manual gate"
-	diagnostic.HooksPaused = true
 	if !terminalQuiescent(diagnostic, "g", pid, now) {
-		t.Fatal("diagnostic history or a manual gate must not prevent quiescence")
+		t.Fatal("diagnostic history must not prevent quiescence")
 	}
 	for name, mutate := range map[string]func(*config.State){
 		"other generation":      func(st *config.State) {},
@@ -368,6 +464,8 @@ func TestTerminalQuiescentPredicate(t *testing.T) {
 		"publication retry":     func(st *config.State) { st.NoticeRetry = &config.NoticeRetry{} },
 		"uncertain publication": func(st *config.State) { st.NoticeWriteUncertain = true },
 		"no binding":            func(st *config.State) { st.Terminal = nil },
+		"hooks paused":          func(st *config.State) { st.HooksPaused = true },
+		"gated outcome":         func(st *config.State) { st.Terminal.Outcome = "suppressed: manual gate" },
 	} {
 		st := base()
 		mutate(&st)

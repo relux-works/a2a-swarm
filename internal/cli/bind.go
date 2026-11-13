@@ -671,7 +671,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			delay = policy.Interval
 			if fresh, readErr := config.LoadState(s.paths, s.name); readErr == nil {
 				delay = a.notificationWait(fresh, delay)
-				quiet = terminalQuiescent(fresh, generation, os.Getpid(), a.Now())
+				quiet = s.terminalUndelivered == 0 && terminalQuiescent(fresh, generation, os.Getpid(), a.Now())
 			}
 		}
 		// Dispatch (including Send, finish and all notice publication) returned;
@@ -696,6 +696,11 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			a.traceTerminal("wake:" + reason)
 			if result == quiescentCancelled {
 				return "cancelled", nil
+			}
+			if result == quiescentReconcile && reason == "owner" {
+				if outcome, stopped := a.quiescentOwnerTeardown(ctx, s, generation, policy); stopped {
+					return outcome, nil
+				}
 			}
 			if result == quiescentReconcile {
 				// Owner exit is urgent (a prior-consumer wait has seconds); every
@@ -738,6 +743,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 	if len(alarmWakes) > 0 {
 		alarmWake = alarmWakes[0]
 	}
+	s.terminalUndelivered = -1
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -794,6 +800,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		if err != nil {
 			return err
 		}
+		s.terminalUndelivered = len(ids)
 		attemptIDs := slices.DeleteFunc(slices.Clone(b.AttemptIDs), func(id string) bool { return !slices.Contains(pendingIDs, id) })
 		b.AttemptIDs = attemptIDs
 		if err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {

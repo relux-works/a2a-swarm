@@ -548,6 +548,10 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // session is an authenticated identity bound to one homeserver.
 type session struct {
+	// terminalUndelivered is set by each terminal dispatch from its fresh,
+	// generation-consistent delivery view: un-rung pending entries, or -1
+	// when that dispatch did not compute the view.
+	terminalUndelivered int
 	agentDelivery       *agentDMDelivery
 	agentDeliveryWarned bool
 	agentReplayDeferred bool
