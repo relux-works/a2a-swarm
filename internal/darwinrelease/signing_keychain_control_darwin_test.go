@@ -50,15 +50,21 @@ func errorClass(stderr string) string {
 	return "other"
 }
 
+// step is one executed command. The zero value is UNRUN: a command that was
+// never started is never reported or admitted as success.
 type step struct {
+	ran     bool
 	exit    int
 	class   string
 	timeout bool
 }
 
-func (s step) ok() bool { return s.exit == 0 && !s.timeout }
+func (s step) ok() bool { return s.ran && s.exit == 0 && !s.timeout }
 
 func (s step) String() string {
+	if !s.ran {
+		return "UNRUN"
+	}
 	if s.timeout {
 		return "timeout"
 	}
@@ -75,9 +81,9 @@ func run(t *testing.T, limit time.Duration, name string, args ...string) step {
 	cmd.Stdout, cmd.Stderr = nil, &stderr
 	err := cmd.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return step{timeout: true, class: "timeout"}
+		return step{ran: true, timeout: true, class: "timeout"}
 	}
-	out := step{class: errorClass(stderr.String())}
+	out := step{ran: true, class: errorClass(stderr.String())}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		out.exit = exit.ExitCode()
@@ -236,7 +242,7 @@ func controlVerdict(unchanged, widened arm) (string, string) {
 		}
 		return "INCONCLUSIVE", "unchanged signed but did not verify; " + pair
 	}
-	if !unchanged.sign.timeout && aclClass(unchanged.sign.class) {
+	if unchanged.sign.ran && !unchanged.sign.timeout && aclClass(unchanged.sign.class) {
 		return "H1-REPRODUCED", pair
 	}
 	return "INCONCLUSIVE", "unchanged refusal is not of the access-control class; " + pair
@@ -265,10 +271,12 @@ func TestSigningControlErrorClass(t *testing.T) {
 // refusal of the unchanged arm; H1_NOT_REPRODUCED needs the positive control
 // AND a signed, verified unchanged arm. Every other combination, including a
 // non-ACL refusal, a timeout, a sign without verification and any failure of
-// the positive control, is INCONCLUSIVE.
+// the positive control, is INCONCLUSIVE. A step that never ran (UNRUN) is
+// never admitted as a success or as a refusal.
 func TestSigningControlVerdict(t *testing.T) {
-	good := step{class: "none"}
-	acl := step{exit: 1, class: "internal-component"}
+	good := step{ran: true, class: "none"}
+	acl := step{ran: true, exit: 1, class: "internal-component"}
+	refused := func(class string) step { return step{ran: true, exit: 1, class: class} }
 	pass := arm{sign: good, verify: good}
 	for _, c := range []struct {
 		name               string
@@ -276,21 +284,36 @@ func TestSigningControlVerdict(t *testing.T) {
 		want               string
 	}{
 		{"valid H1 pair", arm{sign: acl}, pass, "H1-REPRODUCED"},
-		{"valid H1 pair, interaction class", arm{sign: step{exit: 1, class: "interaction-not-allowed"}}, pass, "H1-REPRODUCED"},
+		{"valid H1 pair, interaction class", arm{sign: refused("interaction-not-allowed")}, pass, "H1-REPRODUCED"},
 		{"valid no-repro pair", pass, pass, "H1_NOT_REPRODUCED"},
-		{"chain refusal is not ACL", arm{sign: step{exit: 1, class: "chain-build"}}, pass, "INCONCLUSIVE"},
-		{"identity-not-found is not ACL", arm{sign: step{exit: 1, class: "identity-not-found"}}, pass, "INCONCLUSIVE"},
-		{"requirement refusal is not ACL", arm{sign: step{exit: 1, class: "requirement-unsatisfied"}}, pass, "INCONCLUSIVE"},
-		{"other refusal is not ACL", arm{sign: step{exit: 1, class: "other"}}, pass, "INCONCLUSIVE"},
-		{"refusal without stderr is not ACL", arm{sign: step{exit: 1, class: "none"}}, pass, "INCONCLUSIVE"},
-		{"timeout is not ACL", arm{sign: step{timeout: true, class: "timeout"}}, pass, "INCONCLUSIVE"},
-		{"unchanged signs, verify fails", arm{sign: good, verify: step{exit: 3, class: "requirement-unsatisfied"}}, pass, "INCONCLUSIVE"},
+		{"chain refusal is not ACL", arm{sign: refused("chain-build")}, pass, "INCONCLUSIVE"},
+		{"identity-not-found is not ACL", arm{sign: refused("identity-not-found")}, pass, "INCONCLUSIVE"},
+		{"requirement refusal is not ACL", arm{sign: refused("requirement-unsatisfied")}, pass, "INCONCLUSIVE"},
+		{"other refusal is not ACL", arm{sign: refused("other")}, pass, "INCONCLUSIVE"},
+		{"refusal without stderr is not ACL", arm{sign: refused("none")}, pass, "INCONCLUSIVE"},
+		{"timeout is not ACL", arm{sign: step{ran: true, timeout: true, class: "timeout"}}, pass, "INCONCLUSIVE"},
+		{"unchanged signs, verify fails", arm{sign: good, verify: step{ran: true, exit: 3, class: "requirement-unsatisfied"}}, pass, "INCONCLUSIVE"},
 		{"positive control sign fails, unchanged ACL", arm{sign: acl}, arm{sign: acl}, "INCONCLUSIVE"},
-		{"positive control verify fails, unchanged ACL", arm{sign: acl}, arm{sign: good, verify: step{exit: 3, class: "other"}}, "INCONCLUSIVE"},
+		{"positive control verify fails, unchanged ACL", arm{sign: acl}, arm{sign: good, verify: step{ran: true, exit: 3, class: "other"}}, "INCONCLUSIVE"},
 		{"positive control fails, unchanged passes", pass, arm{sign: acl}, "INCONCLUSIVE"},
+		{"unchanged signs, verify UNRUN", arm{sign: good}, pass, "INCONCLUSIVE"},
+		{"positive control signs, verify UNRUN", arm{sign: acl}, arm{sign: good}, "INCONCLUSIVE"},
+		{"unchanged sign UNRUN with an ACL class", arm{sign: step{exit: 1, class: "internal-component"}}, pass, "INCONCLUSIVE"},
+		{"positive control UNRUN", arm{sign: acl}, arm{}, "INCONCLUSIVE"},
 	} {
 		if got, _ := controlVerdict(c.unchanged, c.widened); got != c.want {
 			t.Fatalf("%s: verdict %s, want %s", c.name, got, c.want)
 		}
+	}
+}
+
+// Proves an UNRUN step never reads as success: it is not ok and prints UNRUN,
+// beside an executed exit 0 that is ok.
+func TestSigningControlUnrunStep(t *testing.T) {
+	if (step{}).ok() || (step{}).String() != "UNRUN" {
+		t.Fatalf("zero step = ok:%v %q, want not ok and UNRUN", (step{}).ok(), step{})
+	}
+	if ran := (step{ran: true, class: "none"}); !ran.ok() || ran.String() != "exit=0 class=none" {
+		t.Fatalf("executed exit 0 = ok:%v %q", ran.ok(), ran)
 	}
 }
