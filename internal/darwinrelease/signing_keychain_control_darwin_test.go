@@ -25,31 +25,9 @@ import (
 // Without it the control is skipped.
 const signingControlDirEnv = "A2A_SIGNING_KEYCHAIN_CONTROL_DIR"
 
-// errorClass maps codesign stderr to a bounded vocabulary. Raw stderr is
-// never logged: only the class and the exit status leave the test.
-func errorClass(stderr string) string {
-	s := strings.ToLower(stderr)
-	for _, c := range []struct{ needle, class string }{
-		{"errsecinternalcomponent", "internal-component"},
-		{"user interaction is not allowed", "interaction-not-allowed"},
-		{"unable to build chain", "chain-build"},
-		{"not trusted", "not-trusted"},
-		{"timestamp", "timestamp"},
-		{"no identity found", "identity-not-found"},
-		{"could not be found", "identity-not-found"},
-		{"cannot be used for signing", "identity-unusable"},
-		{"test-requirement", "requirement-unsatisfied"},
-		{"does not satisfy", "requirement-unsatisfied"},
-	} {
-		if strings.Contains(s, c.needle) {
-			return c.class
-		}
-	}
-	if strings.TrimSpace(s) == "" {
-		return "none"
-	}
-	return "other"
-}
+// errorClass is the production codesignErrorClass: the control and the
+// release classify stderr with one closed vocabulary.
+func errorClass(stderr string) string { return codesignErrorClass(stderr) }
 
 // step is one executed command. The zero value is UNRUN: a command that was
 // never started is never reported or admitted as success.
@@ -175,18 +153,6 @@ func nativeListOps(t *testing.T) listOps {
 			return nil
 		},
 	}
-}
-
-func sameList(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // armSearchList puts the search list into the arm's state and returns the

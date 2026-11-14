@@ -177,18 +177,21 @@ func Prepare(ctx context.Context, root, tag, tagObject string) (out string, err 
 	}
 	ids := []Identity{}
 	cdhashes := map[string]string{}
-	for _, name := range Binaries {
+	for i, name := range Binaries {
 		expr, _ := Requirement(name)
 		onDisk, e := os.ReadFile(filepath.Join(root, "release/requirements", name+".txt"))
 		if e != nil || strings.TrimSpace(string(onDisk)) != expr {
 			return "", errors.New("requirement-policy-drift")
 		}
 		path := filepath.Join(work, name)
-		if _, e = execute(ctx, root, "/usr/bin/codesign", signArgs(signer.selector, signer.path, name, expr, path)...); e != nil {
-			return "", errors.New("binary-sign")
+		// The private keychain is on the user search list for exactly this
+		// codesign call (signOne); the original list is restored before it returns.
+		if st := signOne(ctx, releaseSearchList(), signer.selector, signer.path, name, expr, path, root, releaseSignDeadline, nil); !st.ok() {
+			return "", signFailure(Binaries, i, st)
 		}
-		if _, e = execute(ctx, root, "/usr/bin/codesign", "--verify", "--strict", "--verbose=4", "--test-requirement", "="+expr, path); e != nil {
-			return "", errors.New("binary-signature-check")
+		if st := executeClassified(ctx, releaseSignDeadline, root, "/usr/bin/codesign", "--verify", "--strict", "--verbose=4", "--test-requirement", "="+expr, path); st.State != "ran" || st.Exit != 0 || st.Class == "output-overflow" {
+			st.List = "-"
+			return "", errors.New(st.message("binary-signature-check", name))
 		}
 		// Display writes to stderr. Capture only after signature+native full-DR gate;
 		// commands contain no Apple secrets, and display cannot access key material.

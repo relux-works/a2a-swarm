@@ -64,6 +64,17 @@ static OSStatus import_signer(const char *path,const char *password,const void *
 }
 static OSStatus delete_signer(void *k) { if(!k)return 0; OSStatus e=SecKeychainDelete((SecKeychainRef)k);CFRelease(k);return e; }
 static char *signer_path(void *k) { UInt32 n=4096;char *p=calloc(n,1);if(SecKeychainGetPath((SecKeychainRef)k,&n,p)){free(p);return NULL;}return p; }
+// User-domain keychain search list, by ordered keychain paths. An empty list
+// is set as an explicit empty array, never NULL.
+static OSStatus copy_user_list(CFArrayRef *out) { *out=NULL; return SecKeychainCopyDomainSearchList(kSecPreferencesDomainUser,out); }
+static CFIndex list_count(CFArrayRef a) { return a ? CFArrayGetCount(a) : 0; }
+static char *list_path_at(CFArrayRef a, CFIndex i) { return signer_path((void*)CFArrayGetValueAtIndex(a,i)); }
+static void release_list(CFArrayRef a) { if(a) CFRelease(a); }
+static OSStatus set_user_list(char **paths, int n) {
+ CFMutableArrayRef arr=CFArrayCreateMutable(NULL,n,&kCFTypeArrayCallBacks); if(!arr) return errSecAllocate;
+ for(int i=0;i<n;i++){ SecKeychainRef k=NULL; OSStatus e=SecKeychainOpen(paths[i],&k); if(e){CFRelease(arr);return e;} CFArrayAppendValue(arr,k); CFRelease(k); }
+ OSStatus e=SecKeychainSetDomainSearchList(kSecPreferencesDomainUser,arr); CFRelease(arr); return e;
+}
 static char *copy_text(CFStringRef s) {
  CFIndex n=CFStringGetMaximumSizeForEncoding(CFStringGetLength(s),kCFStringEncodingUTF8)+1;
  char *b=malloc(n);if(!CFStringGetCString(s,b,n,kCFStringEncodingUTF8)){free(b);return NULL;}return b;
@@ -79,6 +90,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"unsafe"
 )
 
@@ -198,6 +210,50 @@ func (k *signingKeychain) close() error {
 	}
 	if _, e := os.Lstat(k.path); !os.IsNotExist(e) {
 		return errors.New("signing-keychain-remains")
+	}
+	return nil
+}
+
+// nativeSearchList reads and replaces the USER keychain search list through
+// SecKeychainCopyDomainSearchList and SecKeychainSetDomainSearchList. Errors
+// carry only a fixed token and the OSStatus number.
+type nativeSearchList struct{}
+
+func releaseSearchList() searchListOps { return nativeSearchList{} }
+
+func (nativeSearchList) Get() ([]string, error) {
+	var arr C.CFArrayRef
+	if status := C.copy_user_list(&arr); status != 0 {
+		return nil, errors.New("copy-failed:" + strconv.Itoa(int(status)))
+	}
+	defer C.release_list(arr)
+	n := int(C.list_count(arr))
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		p := C.list_path_at(arr, C.CFIndex(i))
+		if p == nil {
+			return nil, errors.New("path-failed")
+		}
+		out = append(out, C.GoString(p))
+		C.free(unsafe.Pointer(p))
+	}
+	return out, nil
+}
+
+func (nativeSearchList) Set(paths []string) error {
+	cs := C.malloc(C.size_t(len(paths)+1) * C.size_t(unsafe.Sizeof(uintptr(0))))
+	defer C.free(cs)
+	list := unsafe.Slice((**C.char)(cs), len(paths)+1)
+	for i, p := range paths {
+		list[i] = C.CString(p)
+	}
+	defer func() {
+		for i := range paths {
+			C.free(unsafe.Pointer(list[i]))
+		}
+	}()
+	if status := C.set_user_list((**C.char)(cs), C.int(len(paths))); status != 0 {
+		return errors.New("set-failed:" + strconv.Itoa(int(status)))
 	}
 	return nil
 }
