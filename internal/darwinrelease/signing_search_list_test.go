@@ -1,3 +1,5 @@
+//go:build unix
+
 package darwinrelease
 
 import (
@@ -7,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -297,33 +301,67 @@ func waitFile(t *testing.T, path string, bound time.Duration) {
 	t.Fatalf("%s did not appear within %s", filepath.Base(path), bound)
 }
 
-// processGone reports whether pid no longer runs: it does not exist, or it
-// is a zombie awaiting its reaper.
-func processGone(t *testing.T, pid string, bound time.Duration) bool {
-	t.Helper()
-	for end := time.Now().Add(bound); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		out, err := exec.Command("/bin/ps", "-o", "stat=", "-p", pid).Output()
-		if err != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
-			return true
-		}
+// childState observes one process the test owns, with a bounded
+// observation: "gone" (no such process), "not-running" (a zombie awaiting its
+// reaper), "running", or "unknown" when the observation itself fails. ps is
+// the observer binary, so a control can break it.
+func childState(pid int, ps string, bound time.Duration) string {
+	switch err := syscall.Kill(pid, 0); {
+	case errors.Is(err, syscall.ESRCH):
+		return "gone"
+	case err != nil:
+		return "unknown"
 	}
-	return false
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, ps, "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return "unknown"
+	}
+	switch st := strings.TrimSpace(string(out)); {
+	case st == "":
+		return "unknown"
+	case strings.HasPrefix(st, "Z"):
+		return "not-running"
+	default:
+		return "running"
+	}
 }
 
-func readPID(t *testing.T, path string) string {
+// stopOwnChild stops a fixture child this test started, by its exact PID,
+// and requires it to be observed gone or not running within the bound. An
+// unknown observation fails. Production code makes no claim to reap such
+// descendants; the test owns and cleans up its own.
+func stopOwnChild(t *testing.T, pid int) {
+	t.Helper()
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	state := ""
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if state = childState(pid, "/bin/ps", time.Second); state == "gone" || state == "not-running" {
+			return
+		}
+	}
+	t.Fatalf("own fixture child %d not stopped: last observation %q", pid, state)
+}
+
+func readPID(t *testing.T, path string) int {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return strings.TrimSpace(string(b))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 {
+		t.Fatalf("bad fixture pid %q", b)
+	}
+	return pid
 }
 
 // Proves the guard restores the original list when its signing call ends by
 // the per-call deadline (G14) or by a parent cancellation issued only AFTER
-// the command has started (G13), each with a fresh context, a bounded
-// completion and the command's own child gone afterwards; beside a call that
-// exits cleanly.
+// the command has started (G13), each with a fresh context and a bounded
+// completion, beside a call that exits cleanly. The fixture's own child is
+// then stopped by the test itself (production does not claim to reap it).
 func TestSigningSearchListRestoresAfterTimeoutAndCancel(t *testing.T) {
 	for _, c := range []struct {
 		name      string
@@ -368,18 +406,18 @@ func TestSigningSearchListRestoresAfterTimeoutAndCancel(t *testing.T) {
 		if elapsed > 5*time.Second {
 			t.Fatalf("%s: took %s, not bounded", c.name, elapsed)
 		}
-		if c.wantState != "ran" && !processGone(t, readPID(t, pidFile), 3*time.Second) {
-			t.Fatalf("%s: the command's own child survived", c.name)
+		if c.wantState != "ran" {
+			stopOwnChild(t, readPID(t, pidFile))
 		}
 	}
 }
 
 // Proves a descendant holding the command's inherited output pipes cannot
-// hold executeClassified open: on the deadline the whole own process group is
-// killed (bounded, child gone), and when the command exits while a
-// descendant keeps the pipe, WaitDelay ends the wait with state wait-delay,
-// not ok and not an exit code, and the descendant is reaped. Positive
-// neighbour: a quick clean exit.
+// hold executeClassified open past its bound: on the deadline the state is
+// timeout, and when the command exits 0 while a descendant keeps the pipe,
+// WaitDelay ends the wait with state wait-delay, not ok and not an exit code.
+// Positive neighbour: a quick clean exit. The descendant may outlive the call
+// (stated residual); the test stops its own fixture child by exact PID.
 func TestExecuteClassifiedBoundsInheritedPipes(t *testing.T) {
 	if st := shell(t, context.Background(), 10*time.Second, "exit 0"); !st.commandOK() {
 		t.Fatalf("positive = %+v", st)
@@ -402,9 +440,7 @@ func TestExecuteClassifiedBoundsInheritedPipes(t *testing.T) {
 		if st.State != c.wantState || st.commandOK() {
 			t.Fatalf("%s: %+v", c.name, st)
 		}
-		if !processGone(t, readPID(t, pidFile), 3*time.Second) {
-			t.Fatalf("%s: the pipe-holding child survived", c.name)
-		}
+		stopOwnChild(t, readPID(t, pidFile))
 	}
 }
 
@@ -427,10 +463,7 @@ func TestUnboundedCommandControl(t *testing.T) {
 	case <-time.After(2500 * time.Millisecond):
 	}
 	waitFile(t, pidFile, 2*time.Second)
-	pid := readPID(t, pidFile)
-	if err := exec.Command("/bin/kill", "-KILL", pid).Run(); err != nil {
-		t.Fatalf("stop the control's own child %s: %v", pid, err)
-	}
+	stopOwnChild(t, readPID(t, pidFile))
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -453,5 +486,28 @@ func TestCommandOKRefusesOverflow(t *testing.T) {
 	normal.List = "ok"
 	if !normal.ok() {
 		t.Fatal("ok refused a clean, restored command")
+	}
+}
+
+// Proves childState keeps observation failure distinct from absence: a
+// broken observer yields "unknown" for a live owned child, never "gone",
+// beside genuine controls where the same child is observed "running" and,
+// after the test stops and reaps it, "gone".
+func TestChildStateUnknownIsNotAbsence(t *testing.T) {
+	c := exec.Command("/bin/sleep", "30")
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := c.Process.Pid
+	if got := childState(pid, "/bin/ps", 2*time.Second); got != "running" {
+		t.Fatalf("live child = %q, want running", got)
+	}
+	if got := childState(pid, filepath.Join(t.TempDir(), "no-such-ps"), 2*time.Second); got != "unknown" {
+		t.Fatalf("broken observer = %q, want unknown", got)
+	}
+	_ = c.Process.Kill()
+	_ = c.Wait()
+	if got := childState(pid, "/bin/ps", 2*time.Second); got != "gone" {
+		t.Fatalf("stopped and reaped child = %q, want gone", got)
 	}
 }

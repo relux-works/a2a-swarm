@@ -185,25 +185,25 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 // bounded status. stderr is held in memory up to stderrCap, mapped to a closed
 // class and discarded; stdout is discarded.
 //
-// The command runs in its own process group (unix). Cancellation and the
-// deadline kill the whole group, and WaitDelay bounds the wait for output, so
-// a descendant holding an inherited pipe cannot hold Run open. Descendants
-// left in the group after the command exits are killed. A parent
-// cancellation, the deadline, a signal, a failed start and an output wait cut
-// by WaitDelay (wait-delay) are distinct states, and none is reported as an
-// exit code.
+// Cancellation and the deadline kill the direct process through os/exec's
+// managed Kill, which is coordinated with Wait and never signals after the
+// process is reaped. WaitDelay bounds the wait for output after exit or
+// cancellation, so a descendant holding an inherited pipe cannot hold Run
+// open. No other process is ever signalled. Residual: a descendant the
+// command started may outlive the call; this executor does not claim to
+// reap it. A parent cancellation, the deadline, a signal, a failed start and
+// an output wait cut by WaitDelay (wait-delay) are distinct states, and none
+// is reported as an exit code.
 func executeClassified(ctx context.Context, deadline time.Duration, dir, name string, args ...string) signStatus {
 	cctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	c := exec.CommandContext(cctx, name, args...)
 	c.Dir = dir
 	c.Env = cleanEnvironment()
-	ownProcessGroup(c)
 	c.WaitDelay = executeWaitDelay
 	stderr := &boundedBuffer{max: stderrCap}
 	c.Stdout, c.Stderr = io.Discard, stderr
 	err := c.Run()
-	reapOwnGroup(c)
 	switch {
 	case ctx.Err() != nil:
 		return signStatus{State: "cancelled"}
