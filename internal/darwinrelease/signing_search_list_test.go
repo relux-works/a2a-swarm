@@ -3,7 +3,9 @@ package darwinrelease
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,8 +65,10 @@ var (
 // install) keep search-list-set and are never attributed to another writer;
 // a change after a VERIFIED install is search-list-concurrent; a failed or
 // unverifiable restore is search-list-restore and wins over everything; fn's
-// own status survives a clean restore. Each case checks the list afterwards,
-// next to a clean positive.
+// own status survives a clean restore (G11: exact Exit and Class). Each case
+// also asserts how often fn and Set ran: a setup refusal never invokes fn,
+// and G1/G2 attempt no mutation at all. The list is checked afterwards, next
+// to a clean positive.
 func TestSigningSearchListGuard(t *testing.T) {
 	refused := func() signStatus { return signStatus{State: "ran", Exit: 1, Class: "identity-not-found"} }
 	installed := append([]string{releaseKC}, origList...)
@@ -78,21 +82,23 @@ func TestSigningSearchListGuard(t *testing.T) {
 		wantOK     bool
 		wantAfter  []string // nil means: the original list
 		checkAfter bool
+		calls      int // fn invocations; 0 on every setup refusal
+		sets       int // Set calls; 0 means no mutation was attempted
 	}{
-		{name: "positive: install, sign, restore", fn: okSign, wantList: "ok", wantState: "ran", wantOK: true, checkAfter: true},
-		{name: "G1 S0 read fails", f: fakeSearchList{getFail: map[int]bool{1: true}}, fn: okSign, wantList: "search-list-unavailable", wantState: "unrun", checkAfter: true},
-		{name: "G2 original already lists the release keychain", start: installed, fn: okSign, wantList: "search-list-unexpected", wantState: "unrun", wantAfter: installed, checkAfter: true},
-		{name: "G3 set fails, list unchanged", f: fakeSearchList{setFailBefore: 1}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true},
-		{name: "G4 set fails after a partial mutation", f: fakeSearchList{setFailAfter: 1, partial: true}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true},
-		{name: "G5 install readback fails", f: fakeSearchList{getFail: map[int]bool{2: true}}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true},
-		{name: "G6 install readback differs", f: fakeSearchList{external: map[int][]string{2: {"/other"}}}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true},
-		{name: "G7 another writer after a verified install", f: fakeSearchList{external: map[int][]string{3: {releaseKC}}}, fn: okSign, wantList: "search-list-concurrent", wantState: "ran", checkAfter: true},
-		{name: "G8 restore set fails twice", f: fakeSearchList{setFailBefore: 2, setFailAfter: 3}, fn: okSign, wantList: "search-list-restore", wantState: "ran"},
-		{name: "G9 restore readback differs", f: fakeSearchList{external: map[int][]string{4: {"/x"}, 5: {"/x"}}}, fn: okSign, wantList: "search-list-restore", wantState: "ran"},
-		{name: "G10 setup refusal and restore failure", f: fakeSearchList{setFailBefore: 1, getFail: map[int]bool{2: true, 3: true}}, fn: okSign, wantList: "search-list-restore", wantState: "unrun"},
-		{name: "G11 fn refusal survives a clean restore", fn: refused, wantList: "ok", wantState: "ran", checkAfter: true},
-		{name: "S4 unreadable before restore", f: fakeSearchList{getFail: map[int]bool{3: true}}, fn: okSign, wantList: "search-list-restore", wantState: "ran", checkAfter: true},
-		{name: "G16 empty original list", start: []string{}, fn: okSign, wantList: "ok", wantState: "ran", wantOK: true, wantAfter: []string{}, checkAfter: true},
+		{name: "positive: install, sign, restore", fn: okSign, wantList: "ok", wantState: "ran", wantOK: true, checkAfter: true, calls: 1, sets: 2},
+		{name: "G1 S0 read fails", f: fakeSearchList{getFail: map[int]bool{1: true}}, fn: okSign, wantList: "search-list-unavailable", wantState: "unrun", checkAfter: true, calls: 0, sets: 0},
+		{name: "G2 original already lists the release keychain", start: installed, fn: okSign, wantList: "search-list-unexpected", wantState: "unrun", wantAfter: installed, checkAfter: true, calls: 0, sets: 0},
+		{name: "G3 set fails, list unchanged", f: fakeSearchList{setFailBefore: 1}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true, calls: 0, sets: 2},
+		{name: "G4 set fails after a partial mutation", f: fakeSearchList{setFailAfter: 1, partial: true}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true, calls: 0, sets: 2},
+		{name: "G5 install readback fails", f: fakeSearchList{getFail: map[int]bool{2: true}}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true, calls: 0, sets: 2},
+		{name: "G6 install readback differs", f: fakeSearchList{external: map[int][]string{2: {"/other"}}}, fn: okSign, wantList: "search-list-set", wantState: "unrun", checkAfter: true, calls: 0, sets: 2},
+		{name: "G7 another writer after a verified install", f: fakeSearchList{external: map[int][]string{3: {releaseKC}}}, fn: okSign, wantList: "search-list-concurrent", wantState: "ran", checkAfter: true, calls: 1, sets: 2},
+		{name: "G8 restore set fails twice", f: fakeSearchList{setFailBefore: 2, setFailAfter: 3}, fn: okSign, wantList: "search-list-restore", wantState: "ran", calls: 1, sets: 3},
+		{name: "G9 restore readback differs", f: fakeSearchList{external: map[int][]string{4: {"/x"}, 5: {"/x"}}}, fn: okSign, wantList: "search-list-restore", wantState: "ran", calls: 1, sets: 3},
+		{name: "G10 setup refusal and restore failure", f: fakeSearchList{setFailBefore: 1, getFail: map[int]bool{2: true, 3: true}}, fn: okSign, wantList: "search-list-restore", wantState: "unrun", calls: 0, sets: 3},
+		{name: "G11 fn refusal survives a clean restore", fn: refused, wantList: "ok", wantState: "ran", checkAfter: true, calls: 1, sets: 2},
+		{name: "S4 unreadable before restore", f: fakeSearchList{getFail: map[int]bool{3: true}}, fn: okSign, wantList: "search-list-restore", wantState: "ran", checkAfter: true, calls: 1, sets: 2},
+		{name: "G16 empty original list", start: []string{}, fn: okSign, wantList: "ok", wantState: "ran", wantOK: true, wantAfter: []string{}, checkAfter: true, calls: 1, sets: 2},
 	} {
 		f := c.f
 		start := origList
@@ -100,9 +106,16 @@ func TestSigningSearchListGuard(t *testing.T) {
 			start = c.start
 		}
 		f.list = append([]string(nil), start...)
-		st := withSigningSearchList(&f, releaseKC, nil, c.fn)
+		calls := 0
+		st := withSigningSearchList(&f, releaseKC, nil, func() signStatus { calls++; return c.fn() })
+		if calls != c.calls || f.sets != c.sets {
+			t.Fatalf("%s: fn calls %d, Set calls %d; want %d, %d", c.name, calls, f.sets, c.calls, c.sets)
+		}
 		if st.List != c.wantList || st.State != c.wantState || st.ok() != c.wantOK {
 			t.Fatalf("%s: got %+v ok=%v, want list=%s state=%s ok=%v", c.name, st, st.ok(), c.wantList, c.wantState, c.wantOK)
+		}
+		if c.name == "G11 fn refusal survives a clean restore" && (st.Exit != 1 || st.Class != "identity-not-found") {
+			t.Fatalf("G11: fn status not preserved exactly: %+v", st)
 		}
 		if c.checkAfter {
 			want := origList
@@ -117,8 +130,8 @@ func TestSigningSearchListGuard(t *testing.T) {
 }
 
 // Proves the observe seam sees exactly the verified install, [keychain] plus
-// the original list, and that fn runs only after it; it is never called for
-// a setup refusal.
+// the original list, and that fn runs only after it; neither observe nor fn
+// is called for a setup refusal.
 func TestSigningSearchListObserveAfterVerifiedInstall(t *testing.T) {
 	f := fakeSearchList{list: append([]string(nil), origList...)}
 	var seen []string
@@ -131,10 +144,10 @@ func TestSigningSearchListObserveAfterVerifiedInstall(t *testing.T) {
 		t.Fatalf("observe %q before fn=%v, status %+v", seen, calledBefore, st)
 	}
 	g := fakeSearchList{list: append([]string(nil), origList...), setFailBefore: 1}
-	observed := false
-	withSigningSearchList(&g, releaseKC, func([]string) { observed = true }, okSign)
-	if observed {
-		t.Fatal("observe ran for a setup refusal")
+	observed, called := false, false
+	withSigningSearchList(&g, releaseKC, func([]string) { observed = true }, func() signStatus { called = true; return okSign() })
+	if observed || called {
+		t.Fatalf("setup refusal ran observe=%v fn=%v", observed, called)
 	}
 }
 
@@ -242,8 +255,11 @@ func TestSigningErrorCarriesNoValues(t *testing.T) {
 	}
 }
 
-// Proves a failure on the first binary reports every later binary as unrun,
-// and a failure on the last binary reports none.
+// Proves the error FORMAT for a partial run: a failure on the first binary
+// reports every later binary as unrun, and a failure on the last reports
+// none. Limit: formatting only; it does not execute Prepare or prove that a
+// later binary's signing step is not invoked (Prepare returns on the first
+// failure by construction).
 func TestSignFailureMarksLaterBinariesUnrun(t *testing.T) {
 	st := signStatus{State: "ran", Exit: 1, Class: "identity-not-found", List: "ok"}
 	if got := signFailure(Binaries, 0, st).Error(); got != "binary-sign: name=a2a state=ran exit=1 class=identity-not-found list=ok; a2a-keychain-status state=unrun" {
@@ -270,28 +286,172 @@ func TestCodesignErrorClass(t *testing.T) {
 	}
 }
 
+// waitFile polls until path exists or the bound passes.
+func waitFile(t *testing.T, path string, bound time.Duration) {
+	t.Helper()
+	for end := time.Now().Add(bound); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+	}
+	t.Fatalf("%s did not appear within %s", filepath.Base(path), bound)
+}
+
+// processGone reports whether pid no longer runs: it does not exist, or it
+// is a zombie awaiting its reaper.
+func processGone(t *testing.T, pid string, bound time.Duration) bool {
+	t.Helper()
+	for end := time.Now().Add(bound); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		out, err := exec.Command("/bin/ps", "-o", "stat=", "-p", pid).Output()
+		if err != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+			return true
+		}
+	}
+	return false
+}
+
+func readPID(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // Proves the guard restores the original list when its signing call ends by
-// the per-call deadline (G14) or a parent cancellation (G13), with the state
-// carried through and the step not ok, beside a call that exits cleanly.
+// the per-call deadline (G14) or by a parent cancellation issued only AFTER
+// the command has started (G13), each with a fresh context, a bounded
+// completion and the command's own child gone afterwards; beside a call that
+// exits cleanly.
 func TestSigningSearchListRestoresAfterTimeoutAndCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
 	for _, c := range []struct {
 		name      string
-		ctx       context.Context
 		deadline  time.Duration
-		script    string
+		cancel    bool
 		wantState string
 		wantOK    bool
 	}{
-		{"positive: clean exit", context.Background(), 10 * time.Second, "exit 0", "ran", true},
-		{"G14 deadline", context.Background(), 200 * time.Millisecond, "sleep 5", "timeout", false},
-		{"G13 parent cancellation", ctx, 10 * time.Second, "sleep 5", "cancelled", false},
+		{"positive: clean exit", 10 * time.Second, false, "ran", true},
+		{"G14 deadline", 300 * time.Millisecond, false, "timeout", false},
+		{"G13 parent cancellation after start", 10 * time.Second, true, "cancelled", false},
 	} {
+		dir := t.TempDir()
+		marker, pidFile := filepath.Join(dir, "entered"), filepath.Join(dir, "child.pid")
+		script := "exit 0"
+		if c.wantState != "ran" {
+			script = "sleep 30 & echo $! > " + pidFile + "; echo in > " + marker + "; wait"
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		if c.cancel {
+			// Cancel only after the command reports that it started; never call
+			// t.Fatal from this goroutine.
+			go func() {
+				for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+					if _, err := os.Stat(marker); err == nil {
+						break
+					}
+				}
+				cancel()
+			}()
+		}
 		f := fakeSearchList{list: append([]string(nil), origList...)}
-		st := withSigningSearchList(&f, releaseKC, nil, func() signStatus { return shell(t, c.ctx, c.deadline, c.script) })
+		start := time.Now()
+		st := withSigningSearchList(&f, releaseKC, nil, func() signStatus {
+			return executeClassified(ctx, c.deadline, dir, "/bin/sh", "-c", script)
+		})
+		elapsed := time.Since(start)
+		cancel()
 		if st.State != c.wantState || st.ok() != c.wantOK || st.List != "ok" || !sameList(f.list, origList) {
 			t.Fatalf("%s: %+v ok=%v list=%q", c.name, st, st.ok(), f.list)
 		}
+		if elapsed > 5*time.Second {
+			t.Fatalf("%s: took %s, not bounded", c.name, elapsed)
+		}
+		if c.wantState != "ran" && !processGone(t, readPID(t, pidFile), 3*time.Second) {
+			t.Fatalf("%s: the command's own child survived", c.name)
+		}
+	}
+}
+
+// Proves a descendant holding the command's inherited output pipes cannot
+// hold executeClassified open: on the deadline the whole own process group is
+// killed (bounded, child gone), and when the command exits while a
+// descendant keeps the pipe, WaitDelay ends the wait with state wait-delay,
+// not ok and not an exit code, and the descendant is reaped. Positive
+// neighbour: a quick clean exit.
+func TestExecuteClassifiedBoundsInheritedPipes(t *testing.T) {
+	if st := shell(t, context.Background(), 10*time.Second, "exit 0"); !st.commandOK() {
+		t.Fatalf("positive = %+v", st)
+	}
+	for _, c := range []struct {
+		name, script string
+		deadline     time.Duration
+		wantState    string
+	}{
+		{"deadline with a pipe-holding child", "sleep 30 & echo $! > PID; wait", 300 * time.Millisecond, "timeout"},
+		{"exit 0 while a child holds the pipe", "sleep 30 & echo $! > PID; exit 0", 10 * time.Second, "wait-delay"},
+	} {
+		dir := t.TempDir()
+		pidFile := filepath.Join(dir, "child.pid")
+		start := time.Now()
+		st := executeClassified(context.Background(), c.deadline, dir, "/bin/sh", "-c", strings.ReplaceAll(c.script, "PID", pidFile))
+		if elapsed := time.Since(start); elapsed > c.deadline+executeWaitDelay+3*time.Second {
+			t.Fatalf("%s: took %s, not bounded", c.name, elapsed)
+		}
+		if st.State != c.wantState || st.commandOK() {
+			t.Fatalf("%s: %+v", c.name, st)
+		}
+		if !processGone(t, readPID(t, pidFile), 3*time.Second) {
+			t.Fatalf("%s: the pipe-holding child survived", c.name)
+		}
+	}
+}
+
+// Control for the test above: a plain CommandContext with no WaitDelay and no
+// own process group stays blocked well past its deadline while a child holds
+// the pipe, so the bounded-executor test does detect a missing bound. The
+// control then stops only its own child, by its exact PID.
+func TestUnboundedCommandControl(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	c := exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 30 & echo $! > "+pidFile+"; wait")
+	c.Stdout, c.Stderr = io.Discard, io.Discard
+	done := make(chan struct{})
+	go func() { _ = c.Run(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("control returned within its bound: it cannot detect a missing bound")
+	case <-time.After(2500 * time.Millisecond):
+	}
+	waitFile(t, pidFile, 2*time.Second)
+	pid := readPID(t, pidFile)
+	if err := exec.Command("/bin/kill", "-KILL", pid).Run(); err != nil {
+		t.Fatalf("stop the control's own child %s: %v", pid, err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("control did not return after its own child stopped")
+	}
+}
+
+// Proves commandOK, the release verification predicate, refuses a real
+// over-cap stderr with exit 0, beside a normal exit 0 that passes; and that
+// ok additionally requires the guard's List=ok.
+func TestCommandOKRefusesOverflow(t *testing.T) {
+	over := shell(t, context.Background(), 30*time.Second, "head -c 70000 /dev/zero | tr '\\0' x >&2; exit 0")
+	if over.State != "ran" || over.Exit != 0 || over.commandOK() {
+		t.Fatalf("over-cap exit 0 = %+v commandOK=%v", over, over.commandOK())
+	}
+	normal := shell(t, context.Background(), 10*time.Second, "exit 0")
+	if !normal.commandOK() || normal.ok() {
+		t.Fatalf("normal = %+v commandOK=%v ok=%v (ok needs List=ok)", normal, normal.commandOK(), normal.ok())
+	}
+	normal.List = "ok"
+	if !normal.ok() {
+		t.Fatal("ok refused a clean, restored command")
 	}
 }

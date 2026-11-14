@@ -15,7 +15,9 @@ import (
 	"time"
 )
 
-// fixtureArm is one fresh fixture keychain for one release-path arm.
+// fixtureArm is one fresh fixture keychain for one release-path arm. It uses
+// the owned fixture basename control.keychain-db, which the fixture cleanup
+// observer recognises, in its own fresh directory.
 type fixtureArm struct {
 	signer *signingKeychain
 	dir    string
@@ -31,7 +33,7 @@ func newFixtureArm(t *testing.T, values map[string]string) fixtureArm {
 	if _, err := rand.Read(random); err != nil {
 		t.Fatal(err)
 	}
-	signer, err := openSigningKeychainWithPassword(filepath.Join(dir, "release-path.keychain-db"), values, hex.EncodeToString(random))
+	signer, err := openSigningKeychainWithPassword(filepath.Join(dir, "control.keychain-db"), values, hex.EncodeToString(random))
 	if err != nil {
 		t.Fatalf("SETUP: fixture import through the release path failed: %v", err)
 	}
@@ -138,7 +140,7 @@ func TestReleasePathSigning(t *testing.T) {
 			fail(arm, "sign not ok")
 		}
 		installedOK(arm, seen, f.signer.path, original)
-		if v := executeClassified(ctx, 60*time.Second, f.dir, "/usr/bin/codesign", "--verify", "--strict", "--test-requirement", "="+expr, target); v.State != "ran" || v.Exit != 0 {
+		if v := executeClassified(ctx, 60*time.Second, f.dir, "/usr/bin/codesign", "--verify", "--strict", "--test-requirement", "="+expr, target); !v.commandOK() {
 			fail(arm, "verify "+v.message("verify", name))
 		}
 		restoredOK(arm, original)
