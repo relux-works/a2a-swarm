@@ -23,7 +23,7 @@ type EventRecord struct {
 	EventID  string   `json:"event_id,omitempty"`
 	Sender   string   `json:"sender,omitempty"`
 	At       string   `json:"at,omitempty"`
-	AtMS     int64    `json:"at_ms,omitempty"` // raw origin_server_ts in ms, exact; omitted when absent (0)
+	AtMS     int64    `json:"at_ms,omitempty"` // raw origin_server_ts in ms, exact; omitted only when it is 0
 	Kind     string   `json:"kind,omitempty"`
 	Topic    string   `json:"topic,omitempty"` // topic slug
 	Title    string   `json:"title,omitempty"` // topic roots only
@@ -85,7 +85,7 @@ func eventRecord(typ, room, roomID string, ev matrix.Event, server string, excer
 		EventID:  ev.EventID,
 		Sender:   ev.Sender,
 		At:       time.UnixMilli(ev.OriginServerTS).UTC().Format(time.RFC3339),
-		AtMS:     max(ev.OriginServerTS, 0),
+		AtMS:     ev.OriginServerTS,
 		Root:     eventTopicRoot(ev),
 	}
 	text := m.Body

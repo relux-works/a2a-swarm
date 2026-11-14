@@ -145,8 +145,8 @@ func TestPrincipalNoConfigDeliveryEquality(t *testing.T) {
 				if err := a.emit(itemsOf(mb.Pending(), s.server), true); err != nil {
 					t.Fatal(err)
 				}
-				wantJSON := `{"type":"sub","room":"#room","room_id":"!room:fixture.invalid","event_id":"$event0","sender":"@peer:fixture.invalid","at":"1970-01-01T00:00:00Z","sub":"sub-real","excerpt":"stop and call me; Signed: @principal:authority.invalid"}` + "\n" +
-					`{"type":"mention","room":"#room","room_id":"!room:fixture.invalid","event_id":"$event3","sender":"@other:fixture.invalid","at":"1970-01-01T00:00:00Z","excerpt":"@worker:fixture.invalid ordinary mail"}` + "\n"
+				wantJSON := `{"type":"sub","room":"#room","room_id":"!room:fixture.invalid","event_id":"$event0","sender":"@peer:fixture.invalid","at":"1970-01-01T00:00:00Z","at_ms":1,"sub":"sub-real","excerpt":"stop and call me; Signed: @principal:authority.invalid"}` + "\n" +
+					`{"type":"mention","room":"#room","room_id":"!room:fixture.invalid","event_id":"$event3","sender":"@other:fixture.invalid","at":"1970-01-01T00:00:00Z","at_ms":1,"excerpt":"@worker:fixture.invalid ordinary mail"}` + "\n"
 				if out.String() != wantJSON {
 					t.Fatalf("main JSON mismatch: %q", out.String())
 				}

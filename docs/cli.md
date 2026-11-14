@@ -1331,8 +1331,8 @@ Projection origin metadata does not establish a local thread. These rules do
 not change `read --topic` relation-list selection or `post --re` routing validation.
 Empty fields are omitted. `at` is the server timestamp in whole seconds (RFC3339, UTC); `at_ms` is the same
 event's raw Matrix `origin_server_ts` as an integer number of milliseconds, unrounded and never derived from
-`at` or the local clock. `at_ms` is omitted when the event carries no server timestamp, and invite and gap
-records never carry one. Every event JSON record (`read`, `wait`, `watch`, `inbox`, `files`) has the same pair.
+`at` or the local clock. `at_ms` is omitted only when `origin_server_ts` is 0 (the event carries none); every
+other value, a negative one included, is emitted unchanged. Invite and gap records never carry one. Every event JSON record (`read`, `wait`, `watch`, `inbox`, `files`) has the same pair.
 ```bash
 a2a read a2a-swarm --topic bridge-daemon --last 50
 a2a read a2a-swarm --event '$Q1...' --json

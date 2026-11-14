@@ -46,19 +46,29 @@ func jsonLines(t *testing.T, out string) []map[string]any {
 }
 
 // Proves: at_ms is the event's raw origin_server_ts, exact to the
-// millisecond. Two events inside the same second keep the same RFC3339 `at`
-// but different exact at_ms, and a whole-second neighbour keeps its own value;
-// no rounding, no parsing of `at` and no local clock is involved.
+// millisecond, with no rounding, no parsing of `at` and no local clock.
+// Inside one second (.000, .123, .987) `at` stays the same while at_ms
+// differs exactly. Across the whole-second boundary, the previous second's
+// .999 and the next second's .000 each give their own `at` and exact at_ms.
 func TestEventRecordAtMSIsRawServerMilliseconds(t *testing.T) {
 	base := time.Date(2026, 11, 14, 3, 0, 7, 0, time.UTC).UnixMilli()
-	for _, ts := range []int64{base, base + 123, base + 987} {
-		ev := matrix.Event{EventID: "$e", Type: "m.room.message", Sender: "@bob:test.local", RoomID: "!r:test.local", OriginServerTS: ts}
+	for _, c := range []struct {
+		ts int64
+		at string
+	}{
+		{base - 1, "2026-11-14T03:00:06Z"},
+		{base, "2026-11-14T03:00:07Z"},
+		{base + 123, "2026-11-14T03:00:07Z"},
+		{base + 987, "2026-11-14T03:00:07Z"},
+		{base + 1000, "2026-11-14T03:00:08Z"},
+	} {
+		ev := matrix.Event{EventID: "$e", Type: "m.room.message", Sender: "@bob:test.local", RoomID: "!r:test.local", OriginServerTS: c.ts}
 		rec := eventRecord("message", "#proj", "!r:test.local", ev, "test.local", false)
-		if rec.AtMS != ts {
-			t.Fatalf("at_ms=%d, want the raw %d", rec.AtMS, ts)
+		if rec.AtMS != c.ts {
+			t.Fatalf("at_ms=%d, want the raw %d", rec.AtMS, c.ts)
 		}
-		if rec.At != "2026-11-14T03:00:07Z" {
-			t.Fatalf("at changed: %q", rec.At)
+		if rec.At != c.at {
+			t.Fatalf("ts=%d: at=%q, want %q", c.ts, rec.At, c.at)
 		}
 		data, err := json.Marshal(rec)
 		if err != nil {
@@ -68,26 +78,38 @@ func TestEventRecordAtMSIsRawServerMilliseconds(t *testing.T) {
 		if err := json.Unmarshal(data, &m); err != nil {
 			t.Fatal(err)
 		}
-		if got, ok := m["at_ms"].(float64); !ok || int64(got) != ts {
-			t.Fatalf("JSON at_ms=%v, want %d", m["at_ms"], ts)
+		if got, ok := m["at_ms"].(float64); !ok || int64(got) != c.ts {
+			t.Fatalf("JSON at_ms=%v, want %d", m["at_ms"], c.ts)
 		}
 	}
 }
 
-// Proves: an event without a server timestamp (0, or a negative value) has
-// NO at_ms in its JSON: absence stays unknown and is never replaced by the
-// current time or a derived value. Records that are not events (invite, gap)
-// carry no clock either. Limit: the existing `at` behaviour for such events
-// is unchanged and not asserted here.
-func TestEventRecordAtMSAbsentWhenUnknown(t *testing.T) {
-	for _, ts := range []int64{0, -1} {
+// Proves: only a zero origin_server_ts (the event carries none) omits
+// at_ms; it is never replaced by the current time or a derived value. Every
+// non-zero raw value, a negative one included, is emitted unchanged. Records
+// that are not events (invite, gap) carry no clock. Limit: the existing `at`
+// rendering of such values is unchanged and only asserted where it is used.
+func TestEventRecordAtMSAbsentOnlyWhenZero(t *testing.T) {
+	marshal := func(ts int64) string {
+		t.Helper()
 		ev := matrix.Event{EventID: "$e", Type: "m.room.message", Sender: "@bob:test.local", RoomID: "!r:test.local", OriginServerTS: ts}
 		data, err := json.Marshal(eventRecord("message", "#proj", "!r:test.local", ev, "test.local", false))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(data), `"at_ms"`) {
-			t.Fatalf("ts=%d produced an at_ms: %s", ts, data)
+		return string(data)
+	}
+	if out := marshal(0); strings.Contains(out, `"at_ms"`) {
+		t.Fatalf("ts=0 produced an at_ms: %s", out)
+	}
+	for _, ts := range []int64{-1, -1000} {
+		out := marshal(ts)
+		var m map[string]any
+		if err := json.Unmarshal([]byte(out), &m); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := m["at_ms"].(float64); !ok || int64(got) != ts {
+			t.Fatalf("negative raw ts=%d not preserved: %s", ts, out)
 		}
 	}
 	for _, rec := range []EventRecord{
