@@ -32,7 +32,9 @@ if [ "${1:-}" = "--cleanup" ]; then
 	listing=$(bounded 30 /usr/bin/security list-keychains -d user) || list_rc=$?
 	if [ "$list_rc" -ne 0 ]; then
 		status=1 search="unknown:$list_rc"
-	elif printf '%s\n' "$listing" | grep -q 'control.keychain-db'; then
+	elif [[ $listing == *control.keychain-db* ]]; then
+		# An in-shell match: no pipeline, so no SIGPIPE or matcher exit status
+		# can turn a listed fixture into "clean".
 		status=1 search=fixture-present
 	else
 		search=clean

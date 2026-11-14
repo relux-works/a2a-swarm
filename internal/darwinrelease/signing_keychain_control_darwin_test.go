@@ -410,10 +410,17 @@ func TestSigningKeychainAccessControl(t *testing.T) {
 
 	h6, h1, detail := matrixVerdict(results["absent/widened"], results["present/unchanged"], results["present/widened"])
 	t.Logf("SIGNING-CONTROL VERDICT H6=%s H1=%s: %s", h6, h1, detail)
-	if h6 == "INCONCLUSIVE" || h1 == "INCONCLUSIVE" {
-		t.Fatalf("SIGNING-CONTROL INCONCLUSIVE: H6=%s H1=%s", h6, h1)
+	if !admittedVerdict(h6) || !admittedVerdict(h1) {
+		t.Fatalf("SIGNING-CONTROL not admitted: H6=%s H1=%s", h6, h1)
 	}
 }
+
+// admittedVerdict is the closed set a component may end in for the control to
+// pass. REPRODUCED is the keeper rule's witness. NOT_REPRODUCED is the phase-1
+// brief's honest outcome (item 5), for a comparison arm that signs and verifies
+// in its observed state. Everything else, INCONCLUSIVE, an empty value or any
+// other string, fails the control.
+func admittedVerdict(v string) bool { return v == "REPRODUCED" || v == "NOT_REPRODUCED" }
 
 // aclClass reports whether a refusal is of the access-control class: the
 // headless key-use refusal that a missing partition entry produces.
@@ -454,6 +461,76 @@ func matrixVerdict(absentWidened, presentUnchanged, presentWidened arm) (string,
 	}
 	notFound := func(c string) bool { return c == "identity-not-found" }
 	return component(absentWidened, "absent", notFound), component(presentUnchanged, "present", aclClass), detail
+}
+
+// Proves the control's pass rule is a closed allowlist, not "anything but
+// INCONCLUSIVE": only REPRODUCED and NOT_REPRODUCED pass, and INCONCLUSIVE,
+// an empty value and unknown strings fail. Also proves matrixVerdict itself
+// emits only the three-value vocabulary, over a grid of arm outcomes.
+func TestSigningControlVerdictVocabulary(t *testing.T) {
+	for v, want := range map[string]bool{"REPRODUCED": true, "NOT_REPRODUCED": true, "INCONCLUSIVE": false, "": false, "PASS": false, "reproduced": false} {
+		if admittedVerdict(v) != want {
+			t.Fatalf("admittedVerdict(%q) = %v, want %v", v, !want, want)
+		}
+	}
+	good := step{ran: true, class: "none"}
+	var arms []arm
+	for _, list := range []string{"absent", "present", "unexpected", ""} {
+		for _, sign := range []step{good, {ran: true, exit: 1, class: "identity-not-found"}, {ran: true, exit: 1, class: "internal-component"}, {ran: true, exit: 1, class: "other"}, {ran: true, timeout: true, class: "timeout"}, {}} {
+			for _, verify := range []step{good, {ran: true, exit: 3, class: "other"}, {}} {
+				arms = append(arms, arm{list: list, sign: sign, verify: verify})
+			}
+		}
+	}
+	for _, a := range arms {
+		for _, b := range arms {
+			for _, c := range []arm{arms[0], arms[len(arms)/2], {list: "present", sign: good, verify: good}} {
+				h6, h1, _ := matrixVerdict(a, b, c)
+				for _, v := range []string{h6, h1} {
+					if v != "REPRODUCED" && v != "NOT_REPRODUCED" && v != "INCONCLUSIVE" {
+						t.Fatalf("matrixVerdict emitted %q outside the vocabulary", v)
+					}
+				}
+			}
+		}
+	}
+}
+
+// Proves the release import refuses an unusable P12 before it creates any
+// keychain, through both entry points, beside a valid-shape control that is
+// refused later. Order note: crypto/rand.Read never returns an error (Go
+// 1.24+), so generating the keychain password before the P12 decode leaves
+// no observable error-order change; p12-decode stays the first refusal.
+func TestSigningKeychainOpenRefusesBadP12First(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", "!!not-base64!!"} {
+		values := map[string]string{"MACOS_SIGN_P12": bad, "MACOS_SIGN_P12_PASSWORD": "x"}
+		path := filepath.Join(dir, "never.keychain-db")
+		if _, err := openSigningKeychain(path, values); err == nil || err.Error() != "p12-decode" {
+			t.Fatalf("openSigningKeychain(%q) = %v, want p12-decode", bad, err)
+		}
+		if _, err := openSigningKeychainWithPassword(path, values, "fixture"); err == nil || err.Error() != "p12-decode" {
+			t.Fatalf("openSigningKeychainWithPassword(%q) = %v, want p12-decode", bad, err)
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("a keychain was created for an unusable P12 %q", bad)
+		}
+	}
+	// Control: decodable bytes that are not a PKCS#12 pass the decode and
+	// are refused at import, so the test above is not refusing everything.
+	// The import creates (and deletes) a scratch keychain, so it runs only in
+	// the fixture job, keeping release-native-controls free of keychain work.
+	if os.Getenv(signingControlDirEnv) == "" {
+		t.Log("decode-passes control skipped: " + signingControlDirEnv + " not set")
+		return
+	}
+	values := map[string]string{"MACOS_SIGN_P12": base64.StdEncoding.EncodeToString([]byte("not a p12")), "MACOS_SIGN_P12_PASSWORD": "x"}
+	if _, err := openSigningKeychain(filepath.Join(dir, "control.keychain-db"), values); err == nil || err.Error() == "p12-decode" {
+		t.Fatalf("decodable non-P12 = %v, want a refusal after the decode", err)
+	}
 }
 
 // Proves the bounded error vocabulary: known codesign failures map to fixed
