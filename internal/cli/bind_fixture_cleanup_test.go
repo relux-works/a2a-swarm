@@ -3,12 +3,14 @@
 package cli
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -221,5 +223,80 @@ func TestRemoveBindFixtureDirRemovesCleanFixture(t *testing.T) {
 	}
 	if fixturePathExists(dir) {
 		t.Fatal("fixture not removed")
+	}
+}
+
+// recordingFS records every name the holder scan asks for, so a test can
+// prove which /proc files it touched.
+type recordingFS struct {
+	fs.FS
+	mu    sync.Mutex
+	names []string
+}
+
+func (r *recordingFS) note(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.names = append(r.names, name)
+}
+
+func (r *recordingFS) Open(name string) (fs.File, error) { r.note(name); return r.FS.Open(name) }
+func (r *recordingFS) Stat(name string) (fs.FileInfo, error) {
+	r.note(name)
+	return fs.Stat(r.FS, name)
+}
+func (r *recordingFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	r.note(name)
+	return fs.ReadDir(r.FS, name)
+}
+func (r *recordingFS) ReadFile(name string) ([]byte, error) {
+	r.note(name)
+	return fs.ReadFile(r.FS, name)
+}
+func (r *recordingFS) ReadLink(name string) (string, error) {
+	r.note(name)
+	return fs.ReadLink(r.FS, name)
+}
+func (r *recordingFS) Lstat(name string) (fs.FileInfo, error) {
+	r.note(name)
+	return fs.Lstat(r.FS, name)
+}
+
+// environNames returns every recorded name that is a process environ file.
+func (r *recordingFS) environNames() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var hits []string
+	for _, n := range r.names {
+		if n == "environ" || strings.HasSuffix(n, "/environ") {
+			hits = append(hits, n)
+		}
+	}
+	return hits
+}
+
+// Proves that the holder scan never opens or stats any process's environ
+// file: on a shared host that holds other agents' secrets. The same scan
+// still names a real cwd holder (the control that it ran), and the recorder
+// sees an environ read when one happens (the control that the detector
+// works). Linux only, where /proc exists.
+func TestBindFixtureHoldersNeverReadEnviron(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("no /proc")
+	}
+	held := t.TempDir()
+	_, holder := startSleeper(t, held)
+	rec := &recordingFS{FS: os.DirFS("/proc")}
+	got := bindFixtureHoldersIn(rec, held)
+	if want := "pid=" + strconv.Itoa(holder.PID) + " comm=sleep via=cwd"; !strings.Contains(got, want) {
+		t.Fatalf("scan did not name the cwd holder %q: %s", want, got)
+	}
+	if hits := rec.environNames(); len(hits) != 0 {
+		t.Fatalf("holder scan touched environ files: %v", hits)
+	}
+	probe := &recordingFS{FS: os.DirFS("/proc")}
+	_, _ = fs.ReadFile(probe, "self/environ")
+	if len(probe.environNames()) == 0 {
+		t.Fatal("detector control: an environ read was not recorded")
 	}
 }

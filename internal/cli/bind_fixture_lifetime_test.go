@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -284,7 +285,7 @@ func reclaimBindFixture(dir string, r bindFixtureRecord) error {
 
 // removeBindFixtureDir removes a reclaimed fixture once. It never retries: a
 // failure keeps the residue and reports the entry names left under dir and
-// the same-user processes that still point into it, so the writer is named.
+// the same-user processes whose cwd or open files point into it.
 func removeBindFixtureDir(dir string) error {
 	err := os.RemoveAll(dir)
 	if err == nil {
@@ -318,12 +319,21 @@ func bindFixtureInside(dir, path string) bool {
 	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
-// bindFixtureHolders names the same-user processes whose cwd, an open file,
-// or an A2A_CONFIG_DIR value points into dir, as "pid=N comm=C via=cwd,fd,env"
-// ("self" marks this test process). It reads /proc and is "unavailable"
-// without it. The environment is matched, never reported.
+// bindFixtureHolders names the same-user processes whose cwd or an open
+// file points into dir, as "pid=N comm=C via=cwd,fd" ("self" marks this test
+// process). It reads /proc and is "unavailable" without it.
 func bindFixtureHolders(dir string) string {
-	entries, err := os.ReadDir("/proc")
+	if _, err := os.Stat("/proc/self"); err != nil {
+		return "unavailable"
+	}
+	return bindFixtureHoldersIn(os.DirFS("/proc"), dir)
+}
+
+// bindFixtureHoldersIn reads only each process directory's owner, its cwd
+// and fd links, and comm. It never opens environ, cmdline or any other file
+// that may carry another process's secrets.
+func bindFixtureHoldersIn(proc fs.FS, dir string) string {
+	entries, err := fs.ReadDir(proc, ".")
 	if err != nil {
 		return "unavailable"
 	}
@@ -333,26 +343,21 @@ func bindFixtureHolders(dir string) string {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		proc := filepath.Join("/proc", entry.Name())
-		if s, err := os.Stat(proc); err != nil || s.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+		info, err := fs.Stat(proc, entry.Name())
+		if err != nil {
+			continue
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != uint32(os.Getuid()) {
 			continue
 		}
 		var via []string
-		if cwd, err := os.Readlink(filepath.Join(proc, "cwd")); err == nil && bindFixtureInside(dir, cwd) {
+		if cwd, err := fs.ReadLink(proc, entry.Name()+"/cwd"); err == nil && bindFixtureInside(dir, cwd) {
 			via = append(via, "cwd")
 		}
-		if fds, err := os.ReadDir(filepath.Join(proc, "fd")); err == nil {
+		if fds, err := fs.ReadDir(proc, entry.Name()+"/fd"); err == nil {
 			for _, fd := range fds {
-				if target, err := os.Readlink(filepath.Join(proc, "fd", fd.Name())); err == nil && bindFixtureInside(dir, target) {
+				if target, err := fs.ReadLink(proc, entry.Name()+"/fd/"+fd.Name()); err == nil && bindFixtureInside(dir, target) {
 					via = append(via, "fd")
-					break
-				}
-			}
-		}
-		if env, err := os.ReadFile(filepath.Join(proc, "environ")); err == nil {
-			for _, kv := range strings.Split(string(env), "\x00") {
-				if v, ok := strings.CutPrefix(kv, "A2A_CONFIG_DIR="); ok && bindFixtureInside(dir, filepath.Clean(v)) {
-					via = append(via, "env")
 					break
 				}
 			}
@@ -360,7 +365,7 @@ func bindFixtureHolders(dir string) string {
 		if len(via) == 0 {
 			continue
 		}
-		comm, _ := os.ReadFile(filepath.Join(proc, "comm"))
+		comm, _ := fs.ReadFile(proc, entry.Name()+"/comm")
 		h := fmt.Sprintf("pid=%d comm=%s via=%s", pid, strings.TrimSpace(string(comm)), strings.Join(via, ","))
 		if pid == os.Getpid() {
 			h += " self"
