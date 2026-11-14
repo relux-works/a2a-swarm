@@ -224,8 +224,14 @@ func TestQuiescentOwnerInitialAbsence(t *testing.T) {
 		}
 	})
 	t.Run("unknown-first-control", func(t *testing.T) {
+		// The lane goes quiescent after its first cycle (1 min reconcile), so
+		// the control waits on its owner ticks, not on further full cycles.
 		run, _ := initialAbsenceRun(t, errors.New("transient inspection failure"), false)
-		run.trace.nth(t, "cycle", 3, 20*time.Second)
+		first := run.trace.nth(t, "tick", 1, 20*time.Second)
+		time.Sleep(time.Until(first.Add(3 * time.Second)))
+		if n := run.trace.count("tick", first, time.Now()); n < 10 {
+			t.Fatalf("setup: the owner watch did not keep ticking (%d ticks in 3s)", n)
+		}
 		select {
 		case <-run.done:
 			t.Fatalf("an unknown first read stopped a live owner's consumer: %q", run.outcome)
