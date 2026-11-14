@@ -3,8 +3,9 @@
 This is a source implementation for Darwin arm64 `a2a` and the real Swift
 `a2a-keychain-status`, compiled from one exact reviewed main commit. It does not
 record an existing Developer ID image, native success, credential provisioning,
-tag, published release or installed adoption. `release/VERSION` proposes **0.1.0**
-for the first release; changing that file never creates a tag. The generic portable
+tag, published release or installed adoption. `release/VERSION` proposes **0.1.1**,
+the successor candidate. The first tag, v0.1.0, stays immutable and unreleased:
+its hosted release stopped at `binary-sign`. Changing that file never creates a tag. The generic portable
 build descriptor, installed runtime, item backend, daemon and ACL contracts remain
 unchanged. There is no optional unsigned tagged-release path or manual bypass.
 
@@ -13,8 +14,8 @@ unchanged. There is no optional unsigned tagged-release path or manual bypass.
 | Entry point | Purpose | Output |
 | --- | --- | --- |
 | `.scripts/release-config.sh` | Require all five nonempty fields without displaying values | Closed presence verdict; no native action |
-| `go run ./cmd/a2a-release admit v0.1.0` | Read signed Git objects and legitimate current GitHub policy/check/review records | Admission JSON on stdout |
-| Compiled `a2a-release release v0.1.0` | Owner-admitted tagged pipeline only; requires `RELEASE_ADMITTED_TAG_OBJECT` from admission | One archive, evidence, checksums and cosign signature/certificate in `$RUNNER_TEMP/a2a-release-output`; then qualified release assets |
+| `go run ./cmd/a2a-release admit v0.1.1` | Read signed Git objects and legitimate current GitHub policy/check/review records | Admission JSON on stdout |
+| Compiled `a2a-release release v0.1.1` | Owner-admitted tagged pipeline only; requires `RELEASE_ADMITTED_TAG_OBJECT` from admission | One archive, evidence, checksums and cosign signature/certificate in `$RUNNER_TEMP/a2a-release-output`; then qualified release assets |
 | `go run ./cmd/a2a-release verify PAYLOAD_DIR NEW_EVIDENCE_DIR` | Verify both final signatures/external predicates and exact full compiled DR | Complete extracted requirement text/binary and identities JSON; no CLI/item execution |
 | `go run ./cmd/a2a-release compare OLD_PAYLOAD NEW_PAYLOAD NEW_EVIDENCE_DIR` | Independently verify two pairs of actual images, then compare complete requirements and distinct hashes | Raw requirements for each image and comparison JSON; not item-access qualification |
 | `go test -race -count=1 -timeout=3m ./internal/darwinrelease` | Narrow nonsecret controls; native cases compile only on Darwin arm64/cgo | Actual test verdicts, not a release |

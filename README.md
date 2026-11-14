@@ -523,7 +523,9 @@ ACLs are retained; replacing the reader does not migrate them.
 
 The [Darwin release source contract](docs/darwin-release.md) provides one native
 arm64 CLI plus real Swift sibling archive path, explicit full designated requirements
-and nonsecret gate controls. The provisional first version is0.1.0; no tag, Apple
+and nonsecret gate controls. The successor candidate version is 0.1.1 (the
+v0.1.0 tag stays immutable and unreleased: its hosted release stopped at
+`binary-sign`); no new tag, Apple
 credentials, actual signing/notarization, native success, publication or installation
 is established by this source change. The portable build descriptor is unchanged.
 Direct owner scope approval is recorded; actual provisioning, native/N-to-N+1
