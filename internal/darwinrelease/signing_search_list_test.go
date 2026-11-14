@@ -269,3 +269,29 @@ func TestCodesignErrorClass(t *testing.T) {
 		}
 	}
 }
+
+// Proves the guard restores the original list when its signing call ends by
+// the per-call deadline (G14) or a parent cancellation (G13), with the state
+// carried through and the step not ok, beside a call that exits cleanly.
+func TestSigningSearchListRestoresAfterTimeoutAndCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
+	for _, c := range []struct {
+		name      string
+		ctx       context.Context
+		deadline  time.Duration
+		script    string
+		wantState string
+		wantOK    bool
+	}{
+		{"positive: clean exit", context.Background(), 10 * time.Second, "exit 0", "ran", true},
+		{"G14 deadline", context.Background(), 200 * time.Millisecond, "sleep 5", "timeout", false},
+		{"G13 parent cancellation", ctx, 10 * time.Second, "sleep 5", "cancelled", false},
+	} {
+		f := fakeSearchList{list: append([]string(nil), origList...)}
+		st := withSigningSearchList(&f, releaseKC, nil, func() signStatus { return shell(t, c.ctx, c.deadline, c.script) })
+		if st.State != c.wantState || st.ok() != c.wantOK || st.List != "ok" || !sameList(f.list, origList) {
+			t.Fatalf("%s: %+v ok=%v list=%q", c.name, st, st.ok(), f.list)
+		}
+	}
+}
