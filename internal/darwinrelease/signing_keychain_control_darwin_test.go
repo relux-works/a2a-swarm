@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -93,8 +94,13 @@ func run(t *testing.T, limit time.Duration, name string, args ...string) step {
 	return out
 }
 
-// runStdout is run with a bounded capture of stdout (at most 64 KiB), for
-// diagnostics that are parsed into closed classes and never logged raw.
+// stdoutCap bounds captured stdout. Output beyond it is never truncated into a
+// "complete" result: the step is refused as output-overflow.
+const stdoutCap = 64 << 10
+
+// runStdout is run with a bounded capture of stdout, for diagnostics that are
+// parsed into closed classes and never logged raw. Output over stdoutCap
+// makes the step not ok (class output-overflow) and returns no text.
 func runStdout(t *testing.T, limit time.Duration, name string, args ...string) (step, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
@@ -114,11 +120,10 @@ func runStdout(t *testing.T, limit time.Duration, name string, args ...string) (
 	} else if err != nil {
 		t.Fatalf("%s did not start: %v", filepath.Base(name), err)
 	}
-	text := stdout.String()
-	if len(text) > 64<<10 {
-		text = text[:64<<10]
+	if stdout.Len() > stdoutCap {
+		return step{ran: true, exit: -1, class: "output-overflow"}, ""
 	}
-	return out, text
+	return out, stdout.String()
 }
 
 // identityClass reports how `security find-identity -p codesigning` sees the
@@ -141,44 +146,119 @@ func identityClass(t *testing.T, keychain, selector string) string {
 	return "absent"
 }
 
-// userSearchList returns the current user keychain search list.
-func userSearchList(t *testing.T) []string {
-	t.Helper()
-	s, text := runStdout(t, 30*time.Second, "/usr/bin/security", "list-keychains", "-d", "user")
-	if !s.ok() {
-		t.Fatalf("SETUP: list-keychains: %s", s)
-	}
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		if p := strings.Trim(strings.TrimSpace(line), `"`); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+// listOps reads and replaces the user keychain search list. The native ops
+// use the security tool; the restore-contract test uses fakes.
+type listOps struct {
+	get func() ([]string, error)
+	set func([]string) error
 }
 
-func setUserSearchList(t *testing.T, list []string) step {
-	t.Helper()
-	return run(t, 30*time.Second, "/usr/bin/security", append([]string{"list-keychains", "-d", "user", "-s"}, list...)...)
+func nativeListOps(t *testing.T) listOps {
+	return listOps{
+		get: func() ([]string, error) {
+			s, text := runStdout(t, 30*time.Second, "/usr/bin/security", "list-keychains", "-d", "user")
+			if !s.ok() {
+				return nil, errors.New("list-keychains " + s.String())
+			}
+			var out []string
+			for _, line := range strings.Split(text, "\n") {
+				if p := strings.Trim(strings.TrimSpace(line), `"`); p != "" {
+					out = append(out, p)
+				}
+			}
+			return out, nil
+		},
+		set: func(list []string) error {
+			if s := run(t, 30*time.Second, "/usr/bin/security", append([]string{"list-keychains", "-d", "user", "-s"}, list...)...); !s.ok() {
+				return errors.New("list-keychains -s " + s.String())
+			}
+			return nil
+		},
+	}
+}
+
+func sameList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// armSearchList puts the search list into the arm's state and returns the
+// OBSERVED state plus a restore function that is valid on every path,
+// including a setter that fails after it changed the list. The caller defers
+// restore immediately. The target is derived from original, the list read
+// before any import, minus the fixture: "present" is the fixture first, then
+// that list; "absent" is that list alone. The observed state is "present" or
+// "absent" only when a readback after the set shows exactly that; otherwise
+// it is set-failed, unread or unexpected.
+func armSearchList(ops listOps, original []string, fixture string, present bool) (string, func() error) {
+	restore := func() error {
+		if err := ops.set(original); err != nil {
+			return err
+		}
+		got, err := ops.get()
+		if err != nil {
+			return err
+		}
+		if !sameList(got, original) {
+			return errors.New("search list not restored to the original")
+		}
+		return nil
+	}
+	var base []string
+	for _, p := range original {
+		if p != fixture {
+			base = append(base, p)
+		}
+	}
+	want := base
+	if present {
+		want = append([]string{fixture}, base...)
+	}
+	if err := ops.set(want); err != nil {
+		return "set-failed", restore
+	}
+	got, err := ops.get()
+	if err != nil {
+		return "unread", restore
+	}
+	if !sameList(got, want) {
+		return "unexpected", restore
+	}
+	if present {
+		return "present", restore
+	}
+	return "absent", restore
 }
 
 type arm struct {
-	identity     string
-	sign, verify step
+	list, identity string
+	sign, verify   step
 }
 
 func (a arm) String() string {
-	return "identity=" + a.identity + " sign=" + a.sign.String() + " verify=" + a.verify.String()
+	list := a.list
+	if list == "" {
+		list = "UNRUN"
+	}
+	return "list=" + list + " identity=" + a.identity + " sign=" + a.sign.String() + " verify=" + a.verify.String()
 }
 
 // signWithFixture runs one arm on fresh state: a new keychain created by the
 // release import path, a fresh copy of the same fixture executable, then
 // codesign with the release argv (signArgs) and a strict verification.
-// searchList puts ONLY this fixture keychain in front of the user search
-// list for the arm and restores the original list on every exit. partition
-// widens the imported key's partition list to apple-tool:,apple:.
-// timestamp=false swaps only --timestamp for --timestamp=none.
-func signWithFixture(t *testing.T, values map[string]string, binary string, searchList, partition, timestamp bool) arm {
+// Both search-list states are SET and read back (armSearchList), whatever the
+// import did to the list; the original list, read before any import, is
+// restored on every exit. partition widens the imported key's partition list
+// to apple-tool:,apple:. timestamp=false swaps only --timestamp for
+// --timestamp=none.
+func signWithFixture(t *testing.T, ops listOps, original []string, values map[string]string, binary string, searchList, partition, timestamp bool) arm {
 	t.Helper()
 	// Security reports the keychain's resolved path, and the import refuses a
 	// different directory; resolve the temp dir's symlinks (/var -> /private/var).
@@ -200,17 +280,18 @@ func signWithFixture(t *testing.T, values map[string]string, binary string, sear
 			t.Errorf("CLEANUP: fixture keychain: %v", err)
 		}
 	}()
-	if searchList {
-		original := userSearchList(t)
-		if s := setUserSearchList(t, append([]string{signer.path}, original...)); !s.ok() {
-			t.Fatalf("SETUP: add the fixture keychain to the user search list: %s", s)
-		}
-		defer func() {
-			if s := setUserSearchList(t, original); !s.ok() {
-				t.Errorf("CLEANUP: restore the user search list: %s", s)
-			}
-		}()
+	// Observation only: whether the import itself put the keychain on the list.
+	if got, err := ops.get(); err == nil {
+		t.Logf("SIGNING-CONTROL import_listed=%v", slices.Contains(got, signer.path))
+	} else {
+		t.Logf("SIGNING-CONTROL import_listed=unknown")
 	}
+	state, restore := armSearchList(ops, original, signer.path, searchList)
+	defer func() {
+		if err := restore(); err != nil {
+			t.Errorf("CLEANUP: restore the user search list: %v", err)
+		}
+	}()
 	if partition {
 		// Fixture only: the security tool takes this throwaway keychain's
 		// password in argv. The password is random per arm and never logged.
@@ -226,7 +307,7 @@ func signWithFixture(t *testing.T, values map[string]string, binary string, sear
 	if err := os.WriteFile(target, raw, 0755); err != nil {
 		t.Fatal(err)
 	}
-	out := arm{identity: identityClass(t, signer.path, signer.selector)}
+	out := arm{list: state, identity: identityClass(t, signer.path, signer.selector)}
 	// The self-signed fixture cannot satisfy the release Apple-anchored
 	// requirement, so the arms embed and verify a fixture requirement bound
 	// to the fixture leaf. The release requirement is not changed.
@@ -284,8 +365,31 @@ func TestSigningKeychainAccessControl(t *testing.T) {
 	if s := run(t, 120*time.Second, "/usr/bin/xcrun", "clang", "-arch", "arm64", "-o", binary, src); !s.ok() {
 		t.Fatalf("SETUP: fixture executable: %s", s)
 	}
-	before := userSearchList(t)
+	ops := nativeListOps(t)
+	// The original list is read before any import or mutation. A final
+	// t.Cleanup restores and re-reads it even if an arm stops the test.
+	before, err := ops.get()
+	if err != nil {
+		t.Fatalf("SETUP: read the original user search list: %v", err)
+	}
 	t.Logf("SIGNING-CONTROL search-list before: %d entries", len(before))
+	t.Cleanup(func() {
+		got, err := ops.get()
+		if err == nil && sameList(got, before) {
+			t.Logf("SIGNING-CONTROL search-list after: %d entries, restored=true", len(got))
+			return
+		}
+		if err := ops.set(before); err != nil {
+			t.Errorf("CLEANUP: final restore of the user search list: %v", err)
+			return
+		}
+		got, err = ops.get()
+		restored := err == nil && sameList(got, before)
+		t.Logf("SIGNING-CONTROL search-list after: restored=%v (after a final restore)", restored)
+		if !restored {
+			t.Errorf("CLEANUP: user search list not restored")
+		}
+	})
 
 	results := map[string]arm{}
 	for _, c := range []struct {
@@ -299,15 +403,9 @@ func TestSigningKeychainAccessControl(t *testing.T) {
 		{"present/unchanged/timestamp", true, false, true},
 		{"present/widened/timestamp", true, true, true},
 	} {
-		r := signWithFixture(t, values, binary, c.searchList, c.partition, c.timestamp)
+		r := signWithFixture(t, ops, before, values, binary, c.searchList, c.partition, c.timestamp)
 		results[c.name] = r
 		t.Logf("SIGNING-CONTROL arm=%s %s", c.name, r)
-	}
-	after := userSearchList(t)
-	restored := strings.Join(after, "\n") == strings.Join(before, "\n")
-	t.Logf("SIGNING-CONTROL search-list after: %d entries, restored=%v", len(after), restored)
-	if !restored {
-		t.Errorf("CLEANUP: user search list changed: %d entries before, %d after", len(before), len(after))
 	}
 
 	h6, h1, detail := matrixVerdict(results["absent/widened"], results["present/unchanged"], results["present/widened"])
@@ -331,7 +429,8 @@ func refusedAs(a arm, admit func(string) bool) bool {
 
 // matrixVerdict decides both components on the untimestamped arms. The
 // positive control (present+widened) must sign and verify, or both components
-// are INCONCLUSIVE. H6 compares absent+widened with the control: REPRODUCED
+// are INCONCLUSIVE. Each arm's search-list state must be the OBSERVED one it
+// stands for (absent or present), or that component is INCONCLUSIVE. H6 compares absent+widened with the control: REPRODUCED
 // if it is refused as identity-not-found, NOT_REPRODUCED if it signs and
 // verifies. H1 compares present+unchanged with the control: REPRODUCED if it
 // is refused with an access-control class, NOT_REPRODUCED if it signs and
@@ -339,11 +438,13 @@ func refusedAs(a arm, admit func(string) bool) bool {
 // without verification, is INCONCLUSIVE for that component.
 func matrixVerdict(absentWidened, presentUnchanged, presentWidened arm) (string, string, string) {
 	detail := "absent/widened " + absentWidened.String() + "; present/unchanged " + presentUnchanged.String() + "; present/widened " + presentWidened.String()
-	if !signedAndVerified(presentWidened) {
+	if presentWidened.list != "present" || !signedAndVerified(presentWidened) {
 		return "INCONCLUSIVE", "INCONCLUSIVE", "positive control failed; " + detail
 	}
-	component := func(a arm, admit func(string) bool) string {
+	component := func(a arm, list string, admit func(string) bool) string {
 		switch {
+		case a.list != list:
+			return "INCONCLUSIVE"
 		case signedAndVerified(a):
 			return "NOT_REPRODUCED"
 		case refusedAs(a, admit):
@@ -352,7 +453,7 @@ func matrixVerdict(absentWidened, presentUnchanged, presentWidened arm) (string,
 		return "INCONCLUSIVE"
 	}
 	notFound := func(c string) bool { return c == "identity-not-found" }
-	return component(absentWidened, notFound), component(presentUnchanged, aclClass), detail
+	return component(absentWidened, "absent", notFound), component(presentUnchanged, "present", aclClass), detail
 }
 
 // Proves the bounded error vocabulary: known codesign failures map to fixed
@@ -379,7 +480,9 @@ func TestSigningControlErrorClass(t *testing.T) {
 // absent+widened, and H1 only for an access-control refusal of
 // present+unchanged; a signed and verified arm is NOT_REPRODUCED. A refusal of
 // another class, a timeout, an UNRUN step and a sign without verification are
-// INCONCLUSIVE, and a failed positive control makes both INCONCLUSIVE.
+// INCONCLUSIVE, and a failed positive control makes both INCONCLUSIVE. An arm
+// whose observed search-list state is not the one it stands for is
+// INCONCLUSIVE for its component.
 func TestSigningControlMatrixVerdict(t *testing.T) {
 	good := step{ran: true, class: "none"}
 	refused := func(class string) step { return step{ran: true, exit: 1, class: class} }
@@ -408,7 +511,22 @@ func TestSigningControlMatrixVerdict(t *testing.T) {
 		{"H1 UNRUN with ACL class", pass, arm{sign: step{exit: 1, class: "internal-component"}}, pass, "NOT_REPRODUCED", "INCONCLUSIVE"},
 		{"H6 signs, verify fails", arm{sign: good, verify: refused("other")}, pass, pass, "INCONCLUSIVE", "NOT_REPRODUCED"},
 		{"H1 signs, verify UNRUN", pass, arm{sign: good}, pass, "NOT_REPRODUCED", "INCONCLUSIVE"},
+		{"H6 absent state unobserved", arm{list: "unexpected", sign: refused("identity-not-found")}, pass, pass, "INCONCLUSIVE", "NOT_REPRODUCED"},
+		{"H6 absent arm actually present", arm{list: "present", sign: refused("identity-not-found")}, pass, pass, "INCONCLUSIVE", "NOT_REPRODUCED"},
+		{"H1 present state unread", pass, arm{list: "unread", sign: refused("internal-component")}, pass, "NOT_REPRODUCED", "INCONCLUSIVE"},
+		{"positive control set failed", notFound, acl, arm{list: "set-failed", sign: good, verify: good}, "INCONCLUSIVE", "INCONCLUSIVE"},
 	} {
+		// Rows that do not name a search-list state get the one their arm
+		// stands for; rows that name one test a wrong or unobserved state.
+		if c.absentWidened.list == "" {
+			c.absentWidened.list = "absent"
+		}
+		if c.presentUnchanged.list == "" {
+			c.presentUnchanged.list = "present"
+		}
+		if c.presentWidened.list == "" {
+			c.presentWidened.list = "present"
+		}
 		h6, h1, _ := matrixVerdict(c.absentWidened, c.presentUnchanged, c.presentWidened)
 		if h6 != c.h6 || h1 != c.h1 {
 			t.Fatalf("%s: H6=%s H1=%s, want H6=%s H1=%s", c.name, h6, h1, c.h6, c.h1)
@@ -424,5 +542,101 @@ func TestSigningControlUnrunStep(t *testing.T) {
 	}
 	if ran := (step{ran: true, class: "none"}); !ran.ok() || ran.String() != "exit=0 class=none" {
 		t.Fatalf("executed exit 0 = ok:%v %q", ran.ok(), ran)
+	}
+}
+
+// fakeList is an in-memory search list whose setter can fail after it has
+// already changed the list, and whose getter can fail.
+type fakeList struct {
+	list           []string
+	setFailAfter   int // the Nth set call (1-based) mutates and then fails
+	setFailBefore  int // the Nth set call fails without mutating
+	getFail, calls int
+	getFailAlways  bool
+}
+
+func (f *fakeList) ops() listOps {
+	return listOps{
+		get: func() ([]string, error) {
+			if f.getFailAlways || f.getFail > 0 {
+				if f.getFail > 0 {
+					f.getFail--
+				}
+				return nil, errors.New("synthetic read failure")
+			}
+			return append([]string(nil), f.list...), nil
+		},
+		set: func(l []string) error {
+			f.calls++
+			if f.calls == f.setFailBefore {
+				return errors.New("synthetic set failure, unchanged")
+			}
+			f.list = append([]string(nil), l...)
+			if f.calls == f.setFailAfter {
+				return errors.New("synthetic set failure after mutation")
+			}
+			return nil
+		},
+	}
+}
+
+// Proves the search-list restore contract without touching a real keychain:
+// armSearchList reports only an OBSERVED absent/present state, and its
+// restore returns the list to the pre-import original on every path,
+// including a setter that fails after mutating it and an import that had
+// already listed the fixture. A restore whose set or readback fails, or whose
+// readback differs, reports an error rather than success.
+func TestSearchListRestoreContract(t *testing.T) {
+	original := []string{"/k/login.keychain-db"}
+	const fx = "/w/control.keychain-db"
+	for _, c := range []struct {
+		name       string
+		start      []string
+		fake       fakeList
+		present    bool
+		wantState  string
+		restoreErr bool
+	}{
+		{"present observed", original, fakeList{}, true, "present", false},
+		{"absent observed", original, fakeList{}, false, "absent", false},
+		{"absent although the import listed the fixture", []string{fx, "/k/login.keychain-db"}, fakeList{}, false, "absent", false},
+		{"setter fails after mutating", original, fakeList{setFailAfter: 1}, true, "set-failed", false},
+		{"setter fails without mutating", original, fakeList{setFailBefore: 1}, true, "set-failed", false},
+		{"readback fails", original, fakeList{getFail: 1}, true, "unread", false},
+		{"restore set fails", original, fakeList{setFailBefore: 2}, true, "present", true},
+		{"restore readback fails", original, fakeList{getFailAlways: true}, true, "unread", true},
+	} {
+		f := c.fake
+		f.list = append([]string(nil), c.start...)
+		state, restore := armSearchList(f.ops(), original, fx, c.present)
+		if state != c.wantState {
+			t.Fatalf("%s: state %q, want %q", c.name, state, c.wantState)
+		}
+		err := restore()
+		if (err != nil) != c.restoreErr {
+			t.Fatalf("%s: restore error %v, want error=%v", c.name, err, c.restoreErr)
+		}
+		if !c.restoreErr && !sameList(f.list, original) {
+			t.Fatalf("%s: list %q after restore, want the original %q", c.name, f.list, original)
+		}
+	}
+	// A restore whose readback differs from the original is an error.
+	f := fakeList{list: original}
+	ops := f.ops()
+	ops.set = func([]string) error { f.list = []string{"/other"}; return nil }
+	if _, restore := armSearchList(ops, original, fx, true); restore() == nil {
+		t.Fatal("a restore that leaves a different list reported success")
+	}
+}
+
+// Proves runStdout refuses output over its cap instead of returning a
+// truncated listing, beside a small output that is returned whole.
+func TestRunStdoutRefusesOverflow(t *testing.T) {
+	if s, text := runStdout(t, 30*time.Second, "/bin/echo", "small"); !s.ok() || text != "small\n" {
+		t.Fatalf("small output: %s %q", s, text)
+	}
+	big := strings.Repeat("x", stdoutCap)
+	if s, text := runStdout(t, 30*time.Second, "/bin/echo", big); s.ok() || s.class != "output-overflow" || text != "" {
+		t.Fatalf("overflow: %s, %d bytes returned", s, len(text))
 	}
 }
