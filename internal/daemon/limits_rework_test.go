@@ -213,6 +213,11 @@ func TestDaemonGlobalBusyWire(t *testing.T) {
 			t.Fatal("slots not entered")
 		}
 	}
+	// The counter the release wait below observes is the real admission
+	// accounting: it holds all 32 slots while saturated.
+	if n := serverInvocations(r.s); n != MaxInvocations {
+		t.Fatalf("saturated server holds %d invocation slots, want %d", n, MaxInvocations)
+	}
 	code, err := Client(context.Background(), r.path, "si", "identity", keys[8], Request{Argv: []string{"whoami"}}, io.Discard, io.Discard)
 	if code != 1 || err != Busy {
 		t.Fatal("global busy class", code, err)
@@ -227,6 +232,13 @@ func TestDaemonGlobalBusyWire(t *testing.T) {
 			t.Fatal("slot retained")
 		}
 	}
+	// A cancelled client returns before the server's handler has finished and
+	// released its slot, so wait for the server-side release, within the same
+	// bound, before the neighbor. Without this wait the neighbor could race a
+	// slot that is still held and see daemon_busy. Limit: this proves release
+	// after cancellation within LockReleaseBound, not release before the
+	// client returns.
+	awaitServerInvocations(t, r, 0)
 	// Exercise the released slot with a bounded command: the handler observes
 	// cancellation, but its admission is the valid neighbor after saturation.
 	neighborCtx, stop := context.WithCancel(context.Background())
@@ -342,4 +354,30 @@ func TestDaemonDirectoryCreatorRace(t *testing.T) {
 		t.Fatal("valid neighbor", err)
 	}
 	dir.Close()
+}
+
+// serverInvocations reads the server's global admission count under its lock.
+func serverInvocations(s *server) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.invocations
+}
+
+// awaitServerInvocations waits, within LockReleaseBound, until the server
+// holds exactly want invocation slots; it fails if the daemon stops first.
+func awaitServerInvocations(t *testing.T, r *running, want int) {
+	t.Helper()
+	timer := time.NewTimer(LockReleaseBound)
+	defer timer.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for serverInvocations(r.s) != want {
+		select {
+		case <-r.done:
+			t.Fatal("daemon stopped")
+		case <-timer.C:
+			t.Fatalf("server still holds %d invocation slots after %v, want %d", serverInvocations(r.s), LockReleaseBound, want)
+		case <-tick.C:
+		}
+	}
 }
