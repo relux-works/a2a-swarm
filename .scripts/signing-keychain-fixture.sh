@@ -12,13 +12,32 @@ set -euo pipefail
 bounded() {
 	/usr/bin/perl -e 'alarm shift; exec @ARGV or exit 127' "$@"
 }
+# The bound is checked on this runner before it is relied on: a known hang
+# must end with 142 inside its bound, and a quick command must return 0.
+bound_control() {
+	local hang=0 quick=0 started=$SECONDS
+	bounded 1 /bin/sleep 5 || hang=$?
+	bounded 5 /usr/bin/true || quick=$?
+	echo "bound control: hang=$hang quick=$quick elapsed=$((SECONDS - started))s"
+	[ "$hang" -eq 142 ] && [ "$quick" -eq 0 ] && [ $((SECONDS - started)) -lt 4 ]
+}
+bound_control
 if [ "${1:-}" = "--cleanup" ]; then
 	dir=${2:?usage: signing-keychain-fixture.sh --cleanup DIR}
 	status=0
 	rm -rf "$dir" || status=1
 	if [ -e "$dir" ]; then status=1; fi
-	if bounded 30 /usr/bin/security list-keychains -d user | grep -q 'control.keychain-db'; then status=1; fi
-	echo "fixture cleanup: status=$status dir_present=$([ -e "$dir" ] && echo yes || echo no)"
+	# Fail closed: an unreadable or timed-out search list is never "clean".
+	list_rc=0
+	listing=$(bounded 30 /usr/bin/security list-keychains -d user) || list_rc=$?
+	if [ "$list_rc" -ne 0 ]; then
+		status=1 search="unknown:$list_rc"
+	elif printf '%s\n' "$listing" | grep -q 'control.keychain-db'; then
+		status=1 search=fixture-present
+	else
+		search=clean
+	fi
+	echo "fixture cleanup: status=$status dir_present=$([ -e "$dir" ] && echo yes || echo no) search_list=$search"
 	exit $status
 fi
 dir=${1:?usage: signing-keychain-fixture.sh DIR}
