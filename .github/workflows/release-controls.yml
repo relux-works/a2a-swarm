@@ -52,8 +52,14 @@ jobs:
         with:
           go-version: '1.25.12'
           cache: false
+      - name: Toolchain
+        run: |
+          sw_vers; uname -m; xcodebuild -version; go version; /usr/bin/openssl version
+          shasum -a 256 .scripts/signing-keychain-fixture.sh internal/darwinrelease/native_darwin.go internal/darwinrelease/pipeline.go internal/darwinrelease/signing_keychain_control_darwin_test.go
       # A throwaway self-signed identity only; no release secret is available here.
       - run: .scripts/signing-keychain-fixture.sh "$RUNNER_TEMP/signing-keychain-fixture"
-      - run: go test -count=1 -v -timeout=10m -run '^TestSigningKeychainAccessControl$' ./internal/darwinrelease
+      - run: go test -count=1 -v -timeout=10m -run '^(TestSigningKeychainAccessControl|TestSigningControlErrorClass)$' ./internal/darwinrelease
         env:
           A2A_SIGNING_KEYCHAIN_CONTROL_DIR: ${{ runner.temp }}/signing-keychain-fixture
+      - if: always()
+        run: .scripts/signing-keychain-fixture.sh --cleanup "$RUNNER_TEMP/signing-keychain-fixture"
