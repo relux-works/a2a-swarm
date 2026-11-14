@@ -142,8 +142,11 @@ var (
 	// identity only after both canonical Birth probes succeed.
 	terminalRegistrationNativeFirst = true
 	// Calibration only: false runs registration's canonical Birth probes with
-	// the owner unwatched, as before review rev261 r4.
+	// the owner unwatched, as before the registration-exit fix.
 	terminalWatchOwnerDuringRegistration = true
+	// Calibration only: false returns from an ended registration probe without
+	// waiting for it, as before the probe-join fix.
+	terminalJoinRegistrationProbe = true
 )
 
 // errProcessGone is processStart's answer for a PID with no process.
@@ -227,21 +230,32 @@ func ownerReason(state ownerToken) string {
 // every min(Interval, 1s): definitive native evidence (absence, or a token
 // differing from the retained identity) or cancellation ends the probe and is
 // returned as "owner-replaced" or "cancelled". An unknown native read proves
-// nothing and the probe continues. The probe goroutine may outlive an early
-// return until its own context deadline; its result is then discarded.
+// nothing and the probe continues. Every path joins the probe before it
+// returns: an ended probe is cancelled first and then waited for, so its
+// canonical subprocess is gone (bounded by the cancellation) when
+// registration returns.
 func (a *App) watchedBirth(ctx, probe context.Context, policy config.TerminalBinding, owner *ownerIdentity) (string, error, string) {
 	type answer struct {
 		birth string
 		err   error
 	}
+	run, stop := context.WithCancel(probe)
+	defer stop()
 	done := make(chan answer, 1)
 	go func() {
-		birth, err := terminalBirth(probe, policy.OwnerPID)
+		birth, err := terminalBirth(run, policy.OwnerPID)
 		done <- answer{birth, err}
 	}()
 	if !terminalWatchOwnerDuringRegistration {
 		r := <-done
 		return r.birth, r.err, ""
+	}
+	end := func(reason string, err error) (string, error, string) {
+		stop()
+		if terminalJoinRegistrationProbe {
+			<-done
+		}
+		return "", err, reason
 	}
 	ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
 	defer ticker.Stop()
@@ -250,10 +264,10 @@ func (a *App) watchedBirth(ctx, probe context.Context, policy config.TerminalBin
 		case r := <-done:
 			return r.birth, r.err, ""
 		case <-ctx.Done():
-			return "", ctx.Err(), "cancelled"
+			return end("cancelled", ctx.Err())
 		case <-ticker.C:
 			if owner.replacedBy(terminalProcessStart(policy.OwnerPID)) {
-				return "", nil, "owner-replaced"
+				return end("owner-replaced", nil)
 			}
 		}
 	}

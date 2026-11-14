@@ -284,7 +284,13 @@ func registrationRun(t *testing.T, shape registrationShape) (*consumerRun, func(
 		}
 		inBracket.Store(false) // the bracket's second probe
 		if shape.slow {
-			time.Sleep(4 * time.Second)
+			timer := time.NewTimer(4 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-timer.C:
+			}
 			return tmuxwake.Birth(ctx, pid)
 		}
 		return "", errors.New("canonical inspection unavailable")
@@ -429,7 +435,7 @@ func registrationExitError(t *testing.T, probe int) error {
 	return stopWithin(run, killed, 3*time.Second, fmt.Sprintf("owner exit during registration probe %d", probe))
 }
 
-// Review rev261 r4 finding (owner-exit-blind-registration). The owner exits
+// Registration-exit regression (owner-exit-blind-registration). The owner exits
 // while either canonical Birth probe of a registration takes 4s: the owner
 // watch keeps running during the probe and the consumer stops within 3s.
 // Control: a live owner with the same 4s probe keeps running.
@@ -468,6 +474,102 @@ func TestQuiescentOwnerExitDuringRegistrationCalibration(t *testing.T) {
 		t.Run(fmt.Sprintf("probe-%d", probe), func(t *testing.T) {
 			err := registrationExitError(t, probe)
 			if err == nil || !strings.Contains(err.Error(), "not stopped within") {
+				t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
+			}
+		})
+	}
+}
+
+// joinedProbeRun drives a quiet lane whose registration Birth probe 1 (from
+// cycle 2 on) blocks until cancelled and then takes another second to finish,
+// like a canonical subprocess being killed and reaped. live counts probes
+// that have started and not yet returned.
+func joinedProbeRun(t *testing.T) (*consumerRun, *orphanDispatchFixture, chan struct{}, *atomic.Int64) {
+	t.Helper()
+	quiescentTiming(t, 0, time.Second, 20*time.Second, 100*time.Millisecond)
+	var trace atomic.Pointer[terminalTraceLog]
+	cycles := func() int {
+		if l := trace.Load(); l != nil {
+			return l.count("cycle", time.Time{}, time.Now().Add(time.Hour))
+		}
+		return 0
+	}
+	began := make(chan struct{})
+	var once sync.Once
+	var births, live atomic.Int64
+	processSeams(t, func(ctx context.Context, pid int) (string, error) {
+		if cycles() >= 2 && births.Add(1) == 1 {
+			live.Add(1)
+			defer live.Add(-1)
+			once.Do(func() { close(began) })
+			<-ctx.Done()
+			time.Sleep(time.Second)
+			return "", ctx.Err()
+		}
+		return tmuxwake.Birth(ctx, pid)
+	}, processStart)
+	f := newOrphanDispatchFixture(t)
+	run := startQuiescentConsumer(t, f, time.Second, nil)
+	trace.Store(run.trace)
+	return run, f, began, &live
+}
+
+// joinedProbeError ends a registration during its blocked probe, either by
+// the owner's exit or by cancelling the consumer, and reports whether the
+// probe was still running when the consumer returned.
+func joinedProbeError(t *testing.T, ending string) error {
+	t.Helper()
+	run, f, began, live := joinedProbeRun(t)
+	select {
+	case <-began:
+	case <-time.After(20 * time.Second):
+		t.Fatal("setup: the blocked registration probe never started")
+	}
+	from := time.Now()
+	if ending == "owner-exit" {
+		if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		run.cancel()
+	}
+	run.wait(t, 5*time.Second)
+	if n := live.Load(); n != 0 {
+		return fmt.Errorf("%s: registration probe not joined: %d still running at return", ending, n)
+	}
+	if ending == "owner-exit" && (run.outcome != "owner gone or replaced" || time.Since(from) > 3*time.Second) {
+		return fmt.Errorf("owner-exit: outcome=%q after %s", run.outcome, time.Since(from))
+	}
+	return nil
+}
+
+// Probe-join regression (registration-probe-not-joined). When an owner exit
+// or a cancellation ends a registration while its canonical probe runs, the
+// probe is cancelled and JOINED before registration returns: nothing of it
+// is still running when the consumer has returned. Limit: the probe is a
+// seam that honours cancellation and then takes 1s, standing in for killing
+// and reaping a real ps.
+func TestQuiescentRegistrationProbeJoined(t *testing.T) {
+	isolateBindTest(t)
+	for _, ending := range []string{"owner-exit", "cancelled"} {
+		t.Run(ending, func(t *testing.T) {
+			if err := joinedProbeError(t, ending); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// Calibration: returning without the join, the UNCHANGED witness must fail
+// on its intended assertion (probe still running at return) for both endings.
+func TestQuiescentRegistrationProbeJoinedCalibration(t *testing.T) {
+	isolateBindTest(t)
+	terminalJoinRegistrationProbe = false
+	t.Cleanup(func() { terminalJoinRegistrationProbe = true })
+	for _, ending := range []string{"owner-exit", "cancelled"} {
+		t.Run(ending, func(t *testing.T) {
+			err := joinedProbeError(t, ending)
+			if err == nil || !strings.Contains(err.Error(), "probe not joined") {
 				t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
 			}
 		})
