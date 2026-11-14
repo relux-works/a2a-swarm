@@ -58,8 +58,12 @@ jobs:
           shasum -a 256 .scripts/signing-keychain-fixture.sh internal/darwinrelease/native_darwin.go internal/darwinrelease/pipeline.go internal/darwinrelease/signing_keychain_control_darwin_test.go
       # A throwaway self-signed identity only; no release secret is available here.
       - run: .scripts/signing-keychain-fixture.sh "$RUNNER_TEMP/signing-keychain-fixture"
-      - run: go test -count=1 -v -timeout=10m -run '^(TestSigningKeychainAccessControl|TestSigningControlErrorClass|TestSigningControlVerdict|TestSigningControlUnrunStep)$' ./internal/darwinrelease
+        timeout-minutes: 3
+      - run: go test -count=1 -v -timeout=6m -run '^(TestSigningKeychainAccessControl|TestSigningControlErrorClass|TestSigningControlVerdict|TestSigningControlUnrunStep)$' ./internal/darwinrelease
+        timeout-minutes: 7
         env:
           A2A_SIGNING_KEYCHAIN_CONTROL_DIR: ${{ runner.temp }}/signing-keychain-fixture
+      # Bounded so that the job always completes and keeps its log.
       - if: always()
+        timeout-minutes: 3
         run: .scripts/signing-keychain-fixture.sh --cleanup "$RUNNER_TEMP/signing-keychain-fixture"

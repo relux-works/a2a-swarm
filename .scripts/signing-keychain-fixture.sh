@@ -6,16 +6,21 @@
 #                                              domain of this ephemeral runner only
 #   signing-keychain-fixture.sh --cleanup DIR  remove that trust setting and DIR
 set -euo pipefail
+# bounded SECONDS CMD...: run CMD, killed by SIGALRM after SECONDS, so that no
+# trust-settings or keychain call can hang the job (exit 142 on timeout).
+bounded() {
+	/usr/bin/perl -e 'alarm shift; exec @ARGV or exit 127' "$@"
+}
 if [ "${1:-}" = "--cleanup" ]; then
 	dir=${2:?usage: signing-keychain-fixture.sh --cleanup DIR}
-	status=0
+	status=0 trust=absent
 	if [ -f "$dir/cert.pem" ]; then
-		sudo /usr/bin/security remove-trusted-cert -d "$dir/cert.pem" || status=1
+		if bounded 60 sudo -n /usr/bin/security remove-trusted-cert -d "$dir/cert.pem"; then trust=removed; else trust="failed:$?"; status=1; fi
 	fi
 	rm -rf "$dir" || status=1
 	if [ -e "$dir" ]; then status=1; fi
-	if /usr/bin/security list-keychains -d user | grep -q 'control.keychain-db'; then status=1; fi
-	echo "fixture cleanup: status=$status dir_present=$([ -e "$dir" ] && echo yes || echo no)"
+	if bounded 30 /usr/bin/security list-keychains -d user | grep -q 'control.keychain-db'; then status=1; fi
+	echo "fixture cleanup: status=$status trust=$trust dir_present=$([ -e "$dir" ] && echo yes || echo no)"
 	exit $status
 fi
 dir=${1:?usage: signing-keychain-fixture.sh DIR}
@@ -38,6 +43,6 @@ CNF
 /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 1 -config fixture.cnf -keyout key.pem -out cert.pem 2>/dev/null
 /usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem -name fixture -passout file:identity.pass -out identity.p12
 rm -f key.pem
-sudo /usr/bin/security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain cert.pem
+bounded 60 sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain cert.pem
 echo "fixture: $(/usr/bin/openssl x509 -in cert.pem -noout -subject -enddate | tr '\n' ' ')"
 echo "fixture: p12 sha256 $(/usr/bin/shasum -a 256 identity.p12 | cut -d' ' -f1) size $(wc -c < identity.p12 | tr -d ' ')"
