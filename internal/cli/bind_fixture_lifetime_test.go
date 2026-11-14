@@ -227,56 +227,123 @@ func stopBindFixtureProcess(p bindFixtureProcess, signal syscall.Signal) {
 	}
 }
 
-// bindFixtureStateConsumer is the live process the fixture state names as its
-// consumer, matched by PID and the persisted birth only. It grants no signal
-// authority: cleanup waits for it, but signals only an identified daemon.
-// An absent, unreadable or foreign state names nothing.
-func bindFixtureStateConsumer(dir string) bindFixtureProcess {
+// bindFixtureObservation is one observation of a cleanup obligation.
+type bindFixtureObservation int
+
+const (
+	bindFixtureExited  bindFixtureObservation = iota // no such process, or its PID now names another process
+	bindFixtureLive                                  // the same process is still running
+	bindFixtureUnknown                               // it could not be observed
+)
+
+// observe classifies p. Only ESRCH from signal 0, or a readable identity that
+// differs, is exit evidence. A failed identity read is unknown, never exited.
+// The zero process is no obligation.
+func (p bindFixtureProcess) observe() bindFixtureObservation {
+	if p.PID == 0 || processGone(p.PID) {
+		return bindFixtureExited
+	}
+	current, err := bindFixtureIdentity(p.PID)
+	switch {
+	case err != nil:
+		return bindFixtureUnknown
+	case current == p:
+		return bindFixtureLive
+	}
+	return bindFixtureExited
+}
+
+// bindFixtureNamedConsumer observes the consumer the fixture state names, by
+// its PID and persisted birth only. It grants no signal authority: cleanup
+// waits for it but never signals it on that basis. Absent state, or state
+// that names no consumer, is no obligation; unreadable state is unknown.
+func bindFixtureNamedConsumer(dir string) (int, bindFixtureObservation) {
 	st, err := config.LoadState(config.Paths{Base: filepath.Join(dir, "config")}, "alice")
-	if err != nil || st.Terminal == nil || st.Terminal.DaemonPID <= 1 || st.Terminal.DaemonBirth == "" {
-		return bindFixtureProcess{}
+	if err != nil {
+		return 0, bindFixtureUnknown
 	}
-	p, err := bindFixtureIdentity(st.Terminal.DaemonPID)
-	if err != nil || p.Birth != st.Terminal.DaemonBirth {
-		return bindFixtureProcess{}
+	if st.Terminal == nil || st.Terminal.DaemonPID <= 1 || st.Terminal.DaemonBirth == "" {
+		return 0, bindFixtureExited
 	}
-	return p
+	pid := st.Terminal.DaemonPID
+	if processGone(pid) {
+		return pid, bindFixtureExited
+	}
+	current, err := bindFixtureIdentity(pid)
+	switch {
+	case err != nil:
+		return pid, bindFixtureUnknown
+	case current.Birth == st.Terminal.DaemonBirth:
+		return pid, bindFixtureLive
+	}
+	return pid, bindFixtureExited
+}
+
+// bindFixturePending names every obligation that is not yet observed exited.
+func bindFixturePending(dir string, r bindFixtureRecord, consumers []bindFixtureProcess) []string {
+	var pending []string
+	note := func(role string, pid int, obs bindFixtureObservation) {
+		switch obs {
+		case bindFixtureLive:
+			pending = append(pending, fmt.Sprintf("%s pid %d still live", role, pid))
+		case bindFixtureUnknown:
+			pending = append(pending, fmt.Sprintf("%s pid %d unobservable", role, pid))
+		}
+	}
+	note("fixture", r.Fixture.PID, r.Fixture.observe())
+	note("server", r.Server.PID, r.Server.observe())
+	for _, p := range consumers {
+		note("consumer", p.PID, p.observe())
+	}
+	pid, obs := bindFixtureNamedConsumer(dir)
+	switch {
+	case pid == 0 && obs == bindFixtureUnknown:
+		pending = append(pending, "fixture state unreadable")
+	case slices.ContainsFunc(consumers, func(p bindFixtureProcess) bool { return p.PID == pid }):
+		// Already an identified obligation, observed with its full identity.
+	default:
+		note("unidentified state consumer", pid, obs)
+	}
+	return pending
 }
 
 // Normal t.Cleanup and the stale sweep share the same narrowly owned cleanup.
 // Stop the request source first, then reread state to include a bind which was
 // still completing when its test owner died. Each signal rechecks PID/birth.
 //
-// A daemon that cannot be identified is never treated as gone: the recorded
-// identity is used when the state no longer matches, and removal also waits
-// for any live consumer the state still names. Removal starts only after
-// every one of them is observed gone; a removal failure names what remains.
+// Every consumer known to this fixture is a separate obligation: the one the
+// test owner recorded and each one the state later identifies. None replaces
+// another. Removal starts only after every obligation, and any live consumer
+// the state still names, is observed exited; an unobservable one is never
+// treated as exited. Past the bound, cleanup keeps the fixture and returns a
+// refusal that names what is pending.
 func reclaimBindFixture(dir string, r bindFixtureRecord) error {
 	recoverBindFixtureProcesses(dir, &r)
-	daemon := bindFixtureDaemon(dir, r)
-	if daemon.PID == 0 && r.Daemon.live() {
-		daemon = r.Daemon
+	var consumers []bindFixtureProcess
+	owe := func(p bindFixtureProcess) {
+		if p.PID != 0 && !slices.Contains(consumers, p) {
+			consumers = append(consumers, p)
+		}
 	}
+	owe(r.Daemon)
+	owe(bindFixtureDaemon(dir, r))
 	stopBindFixtureProcess(r.Fixture, syscall.SIGTERM)
 	stopBindFixtureProcess(r.Server, syscall.SIGTERM)
 	until := time.Now().Add(3 * time.Second)
 	for {
-		if next := bindFixtureDaemon(dir, r); next.PID != 0 {
-			daemon = next
+		owe(bindFixtureDaemon(dir, r))
+		for _, p := range consumers {
+			stopBindFixtureProcess(p, syscall.SIGTERM)
 		}
-		stopBindFixtureProcess(daemon, syscall.SIGTERM)
-		named := bindFixtureStateConsumer(dir)
-		if r.Fixture.gone() && r.Server.gone() && daemon.gone() && named.PID == 0 {
+		pending := bindFixturePending(dir, r, consumers)
+		if len(pending) == 0 {
 			break
 		}
 		if time.Now().After(until) {
-			for _, p := range []bindFixtureProcess{daemon, r.Fixture, r.Server} {
+			for _, p := range append(slices.Clone(consumers), r.Fixture, r.Server) {
 				stopBindFixtureProcess(p, syscall.SIGKILL)
 			}
-			if named.PID != 0 && named != daemon {
-				return fmt.Errorf("bind fixture did not terminate within cleanup bound: unidentified state consumer pid %d still live", named.PID)
-			}
-			return errors.New("bind fixture did not terminate within cleanup bound")
+			return fmt.Errorf("bind fixture did not terminate within cleanup bound: %s", strings.Join(pending, "; "))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

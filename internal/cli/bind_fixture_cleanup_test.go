@@ -65,6 +65,53 @@ func startSleeper(t *testing.T, dir string) (*exec.Cmd, bindFixtureProcess) {
 	return cmd, id
 }
 
+// startReaped starts cmd as an own child and reaps it as soon as it exits,
+// so cleanup can observe a signalled child as exited rather than as a zombie.
+func startReaped(t *testing.T, cmd *exec.Cmd) bindFixtureProcess {
+	t.Helper()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
+	id, err := bindFixtureIdentity(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("setup: child identity: %v", err)
+	}
+	return id
+}
+
+// exitedIdentity is the identity of an own child that has already exited.
+func exitedIdentity(t *testing.T) bindFixtureProcess {
+	t.Helper()
+	cmd, id := startSleeper(t, t.TempDir())
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	return id
+}
+
+// fakeConsumer starts an own child whose command line is exactly
+// "argv0 --as alice bind --run-generation gen", the shape bindFixtureDaemon
+// admits. gen doubles as the sleep duration, so it must be a number.
+func fakeConsumer(t *testing.T, argv0, gen string) bindFixtureProcess {
+	t.Helper()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash unavailable")
+	}
+	cmd := exec.Command("bash", "-c", `exec -a "$0 --as alice bind --run-generation" sleep "$1"`, argv0, gen)
+	id := startReaped(t, cmd)
+	want := argv0 + " --as alice bind --run-generation " + gen
+	until := time.Now().Add(2 * time.Second)
+	for bindFixtureCommand(id.PID) != want && time.Now().Before(until) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := bindFixtureCommand(id.PID); got != want {
+		t.Fatalf("setup: fake consumer command %q, want %q", got, want)
+	}
+	return id
+}
+
 func fixturePathExists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
@@ -79,8 +126,8 @@ func fixturePathExists(path string) bool {
 func TestReclaimBindFixtureWaitsForUnidentifiedConsumer(t *testing.T) {
 	cmd, id := startSleeper(t, t.TempDir())
 	dir := cleanupFixture(t, id.PID, id.Birth)
-	if got := bindFixtureStateConsumer(dir); got != id {
-		t.Fatalf("setup: the state must name the live sleeper, got %+v", got)
+	if pid, obs := bindFixtureNamedConsumer(dir); pid != id.PID || obs != bindFixtureLive {
+		t.Fatalf("setup: the state must name the live sleeper, got pid %d observation %d", pid, obs)
 	}
 	done := make(chan error, 1)
 	go func() { done <- reclaimBindFixture(dir, bindFixtureRecord{}) }()
@@ -117,8 +164,8 @@ func TestReclaimBindFixtureWaitsForUnidentifiedConsumer(t *testing.T) {
 func TestReclaimBindFixtureRefusesLiveUnidentifiedConsumer(t *testing.T) {
 	_, id := startSleeper(t, t.TempDir())
 	dir := cleanupFixture(t, id.PID, id.Birth)
-	if got := bindFixtureStateConsumer(dir); got != id {
-		t.Fatalf("setup: the state must name the live sleeper, got %+v", got)
+	if pid, obs := bindFixtureNamedConsumer(dir); pid != id.PID || obs != bindFixtureLive {
+		t.Fatalf("setup: the state must name the live sleeper, got pid %d observation %d", pid, obs)
 	}
 	err := reclaimBindFixture(dir, bindFixtureRecord{})
 	if err == nil || !strings.Contains(err.Error(), "unidentified state consumer pid "+strconv.Itoa(id.PID)+" still live") {
@@ -223,6 +270,130 @@ func TestRemoveBindFixtureDirRemovesCleanFixture(t *testing.T) {
 	}
 	if fixturePathExists(dir) {
 		t.Fatal("fixture not removed")
+	}
+}
+
+// Proves that a failed observation is not exit evidence (review R2). With
+// ps unavailable, neither a recorded nor a state-named live consumer can be
+// observed: cleanup keeps the fixture, returns the named "unobservable"
+// refusal, and does not signal the consumer. The working-observer control is
+// TestReclaimBindFixtureStopsRecordedConsumer.
+func TestReclaimBindFixtureUnobservableConsumerKeepsFixture(t *testing.T) {
+	for _, recorded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "state named", true: "recorded"}[recorded], func(t *testing.T) {
+			_, id := startSleeper(t, t.TempDir())
+			dir := cleanupFixture(t, id.PID, id.Birth)
+			var r bindFixtureRecord
+			if recorded {
+				r.Daemon = id
+			}
+			t.Setenv("PATH", t.TempDir())
+			err := reclaimBindFixture(dir, r)
+			if err == nil || !strings.Contains(err.Error(), "pid "+strconv.Itoa(id.PID)+" unobservable") {
+				t.Fatalf("got %v, want the named unobservable refusal", err)
+			}
+			if !fixturePathExists(dir) {
+				t.Fatal("fixture removed without exit evidence")
+			}
+			if processGone(id.PID) {
+				t.Fatal("an unobservable consumer was signalled")
+			}
+		})
+	}
+}
+
+// Positive controls with a working observer. A recorded consumer with no
+// state, one that the state also names (the same identity, a single
+// obligation), and one that has really exec'd since it was recorded (PID,
+// birth and start ticks unchanged), are each stopped through the recorded
+// identity, observed exited, and the fixture is removed. Limit: the exec is
+// sh into sleep, not the CLI's own re-exec.
+func TestReclaimBindFixtureStopsRecordedConsumer(t *testing.T) {
+	t.Run("no state", func(t *testing.T) {
+		id := startReaped(t, exec.Command("sleep", "30"))
+		dir := cleanupFixture(t, id.PID, id.Birth)
+		if err := os.Remove(filepath.Join(dir, "config", "state", "alice.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := reclaimBindFixture(dir, bindFixtureRecord{Daemon: id}); err != nil {
+			t.Fatal(err)
+		}
+		if fixturePathExists(dir) || !processGone(id.PID) {
+			t.Fatal("recorded consumer not stopped and fixture not removed")
+		}
+	})
+	t.Run("state names the same identity", func(t *testing.T) {
+		id := startReaped(t, exec.Command("sleep", "30"))
+		dir := cleanupFixture(t, id.PID, id.Birth)
+		if err := reclaimBindFixture(dir, bindFixtureRecord{Daemon: id}); err != nil {
+			t.Fatal(err)
+		}
+		if fixturePathExists(dir) || !processGone(id.PID) {
+			t.Fatal("recorded consumer not stopped and fixture not removed")
+		}
+	})
+	t.Run("exec after recording", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "read ready; exec sleep 30")
+		input, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := startReaped(t, cmd)
+		if _, err := input.Write([]byte("ready\n")); err != nil {
+			t.Fatal(err)
+		}
+		_ = input.Close()
+		until := time.Now().Add(2 * time.Second)
+		for bindFixtureCommand(before.PID) != "sleep 30" && time.Now().Before(until) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if after, err := bindFixtureIdentity(before.PID); bindFixtureCommand(before.PID) != "sleep 30" || err != nil || after != before {
+			t.Fatalf("setup: exec did not keep the identity: before=%+v after=%+v err=%v", before, after, err)
+		}
+		dir := cleanupFixture(t, before.PID, before.Birth)
+		if err := reclaimBindFixture(dir, bindFixtureRecord{Daemon: before}); err != nil {
+			t.Fatal(err)
+		}
+		if fixturePathExists(dir) || !processGone(before.PID) {
+			t.Fatal("re-executed recorded consumer not stopped and fixture not removed")
+		}
+	})
+}
+
+// Proves that a state-identified successor does not replace the recorded
+// consumer (review R3). The record holds an original live consumer while the
+// state admits a different live successor. Both are separate obligations:
+// cleanup stops both and removes the fixture only after both have exited.
+// Before this change the successor overwrote the record, and the fixture was
+// removed while the original was still running.
+func TestReclaimBindFixtureKeepsRecordedAndSuccessorConsumers(t *testing.T) {
+	argv0 := "/fixture/a2a"
+	original := fakeConsumer(t, argv0, "31")
+	successor := fakeConsumer(t, argv0, "30")
+	fixture, server := exitedIdentity(t), exitedIdentity(t)
+	dir := cleanupFixture(t, successor.PID, successor.Birth)
+	st := config.State{Terminal: &config.TerminalBinding{Generation: "30", SessionID: "bind-fixture", Host: machineLabel(),
+		OwnerPID: fixture.PID, OwnerBirth: fixture.Birth, DaemonPID: successor.PID, DaemonBirth: successor.Birth}}
+	st.Terminal.Target.Socket = filepath.Join(dir, "socket")
+	st.Terminal.Target.OwnerPID, st.Terminal.Target.OwnerBirth = fixture.PID, fixture.Birth
+	if err := config.SaveState(config.Paths{Base: filepath.Join(dir, "config")}, "alice", st); err != nil {
+		t.Fatal(err)
+	}
+	r := bindFixtureRecord{Fixture: fixture, Server: server, Daemon: original, Consumers: []string{argv0}}
+	if got := bindFixtureDaemon(dir, r); got != successor {
+		t.Fatalf("setup: the state must identify the successor, got %+v", got)
+	}
+	if err := reclaimBindFixture(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	if !processGone(original.PID) {
+		t.Fatal("fixture cleanup finished while the recorded original consumer is still live")
+	}
+	if !processGone(successor.PID) {
+		t.Fatal("fixture cleanup finished while the successor consumer is still live")
+	}
+	if fixturePathExists(dir) {
+		t.Fatal("fixture not removed after both consumers exited")
 	}
 }
 
