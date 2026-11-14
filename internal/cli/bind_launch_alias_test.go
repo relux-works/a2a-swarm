@@ -227,6 +227,16 @@ func startLaunchAliasBind(t *testing.T, custody, launch, paneCwd string, consume
 	st := awaitBinding(t, e.paths(), func(st config.State) bool {
 		return st.Terminal != nil && strings.HasPrefix(st.Terminal.Outcome, "armed:")
 	})
+	// Record the armed consumer, so cleanup can stop it even when a later
+	// state no longer identifies it.
+	if daemon, err := bindFixtureIdentity(st.Terminal.DaemonPID); err != nil || daemon.Birth != st.Terminal.DaemonBirth {
+		t.Fatalf("setup: armed consumer identity: %v", err)
+	} else {
+		owned.Daemon = daemon
+	}
+	if err := writeBindFixtureRecord(dir, owned); err != nil {
+		t.Fatal(err)
+	}
 	return &launchAliasBind{e: e, dir: dir, owned: owned, pid: st.Terminal.DaemonPID}
 }
 
