@@ -17,6 +17,10 @@ const releaseSignDeadline = 10 * time.Minute
 // stderrCap bounds the stderr bytes kept in memory for classification.
 const stderrCap = 64 << 10
 
+// executeWaitDelay bounds how long Run waits for output after the command
+// exits or is cancelled; descendants holding inherited pipes cannot extend it.
+const executeWaitDelay = 2 * time.Second
+
 // errSearchListUnsupported is returned by platforms that cannot sign at all.
 var errSearchListUnsupported = errors.New("search list unsupported")
 
@@ -30,7 +34,7 @@ type searchListOps interface {
 // signStatus is the bounded outcome of one signing step. It never carries
 // stderr, argv, a selector or a keychain path.
 //
-//	State: ran | timeout | cancelled | signaled | start-failed | unrun
+//	State: ran | timeout | cancelled | signaled | start-failed | wait-delay | unrun
 //	Exit:  the process exit code, meaningful only when State is ran
 //	Class: a closed codesignErrorClass token
 //	List:  ok, or a search-list-* code from withSigningSearchList
@@ -41,11 +45,14 @@ type signStatus struct {
 	List  string
 }
 
-// ok is true only for a process that ran, exited 0, did not overflow its
-// stderr bound, and whose search-list guard installed and restored cleanly.
-func (s signStatus) ok() bool {
-	return s.List == "ok" && s.State == "ran" && s.Exit == 0 && s.Class != "output-overflow"
+// commandOK is true only for a process that ran, exited 0 and did not
+// overflow its stderr bound. Release verification uses it directly.
+func (s signStatus) commandOK() bool {
+	return s.State == "ran" && s.Exit == 0 && s.Class != "output-overflow"
 }
+
+// ok is commandOK plus a search-list guard that installed and restored cleanly.
+func (s signStatus) ok() bool { return s.List == "ok" && s.commandOK() }
 
 // message renders the closed error shape for a step and a public binary name.
 func (s signStatus) message(step, name string) string {
@@ -176,18 +183,27 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 
 // executeClassified runs a command under its own deadline and returns only a
 // bounded status. stderr is held in memory up to stderrCap, mapped to a closed
-// class and discarded; stdout is discarded. A parent cancellation, the
-// deadline, a signal and a failed start are distinct states, and none of them
-// is reported as an exit code.
+// class and discarded; stdout is discarded.
+//
+// The command runs in its own process group (unix). Cancellation and the
+// deadline kill the whole group, and WaitDelay bounds the wait for output, so
+// a descendant holding an inherited pipe cannot hold Run open. Descendants
+// left in the group after the command exits are killed. A parent
+// cancellation, the deadline, a signal, a failed start and an output wait cut
+// by WaitDelay (wait-delay) are distinct states, and none is reported as an
+// exit code.
 func executeClassified(ctx context.Context, deadline time.Duration, dir, name string, args ...string) signStatus {
 	cctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	c := exec.CommandContext(cctx, name, args...)
 	c.Dir = dir
 	c.Env = cleanEnvironment()
+	ownProcessGroup(c)
+	c.WaitDelay = executeWaitDelay
 	stderr := &boundedBuffer{max: stderrCap}
 	c.Stdout, c.Stderr = io.Discard, stderr
 	err := c.Run()
+	reapOwnGroup(c)
 	switch {
 	case ctx.Err() != nil:
 		return signStatus{State: "cancelled"}
@@ -197,6 +213,8 @@ func executeClassified(ctx context.Context, deadline time.Duration, dir, name st
 	st := signStatus{State: "ran"}
 	var exit *exec.ExitError
 	switch {
+	case errors.Is(err, exec.ErrWaitDelay):
+		return signStatus{State: "wait-delay"}
 	case errors.As(err, &exit):
 		if !exit.Exited() {
 			return signStatus{State: "signaled"}

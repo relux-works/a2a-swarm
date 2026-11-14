@@ -189,7 +189,7 @@ func Prepare(ctx context.Context, root, tag, tagObject string) (out string, err 
 		if st := signOne(ctx, releaseSearchList(), signer.selector, signer.path, name, expr, path, root, releaseSignDeadline, nil); !st.ok() {
 			return "", signFailure(Binaries, i, st)
 		}
-		if st := executeClassified(ctx, releaseSignDeadline, root, "/usr/bin/codesign", "--verify", "--strict", "--verbose=4", "--test-requirement", "="+expr, path); st.State != "ran" || st.Exit != 0 || st.Class == "output-overflow" {
+		if st := executeClassified(ctx, releaseSignDeadline, root, "/usr/bin/codesign", "--verify", "--strict", "--verbose=4", "--test-requirement", "="+expr, path); !st.commandOK() {
 			st.List = "-"
 			return "", errors.New(st.message("binary-signature-check", name))
 		}

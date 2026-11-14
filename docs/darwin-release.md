@@ -160,11 +160,20 @@ mid-signing, the in-process restore cannot run. That residual is accepted on the
 ephemeral runner, and no recovery is claimed.
 
 Signing and verification failures have a closed shape:
-`binary-sign: name=<binary> state=<ran|timeout|cancelled|signaled|start-failed|unrun> exit=<n|-> class=<class> list=<ok|search-list-...>`.
+`binary-sign: name=<binary> state=<ran|timeout|cancelled|signaled|start-failed|wait-delay|unrun> exit=<n|-> class=<class> list=<ok|search-list-...>`.
 The class is mapped from codesign stderr, which is held in memory up to 64 KiB.
 Output over that limit is `output-overflow` and counts as a refusal. Raw stderr,
 argv, the selector and the keychain path never appear in the error. A failure on
 one binary reports the later binaries as `state=unrun`.
+
+Each codesign call runs in its own process group. The deadline or a
+cancellation kills that whole group. A 2 s `WaitDelay` bounds the wait for
+output, so a descendant holding an inherited pipe cannot keep the call open;
+if output does not finish in time, the state is `wait-delay`. Descendants left
+in the group after the command exits are killed. A descendant that leaves the
+group is not covered, but the bounded wait still applies. Security API errors
+are reduced to the fixed `search-list-*` codes; their numeric status is not
+reported.
 
 MACOS_SIGN_P12 is the base64 PKCS#12 container; its password is a nonempty
 string. ASC_KEY_P8 is the literal private PEM, never a local operator path.
