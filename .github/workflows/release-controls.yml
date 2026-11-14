@@ -59,7 +59,7 @@ jobs:
       # A throwaway self-signed identity only; no release secret is available here.
       - run: .scripts/signing-keychain-fixture.sh "$RUNNER_TEMP/signing-keychain-fixture"
         timeout-minutes: 3
-      - run: go test -count=1 -v -timeout=6m -run '^(TestSigningKeychainAccessControl|TestSigningControlErrorClass|TestSigningControlMatrixVerdict|TestSigningControlUnrunStep|TestSearchListRestoreContract|TestRunStdoutRefusesOverflow|TestSigningControlVerdictVocabulary|TestSigningKeychainOpenRefusesBadP12First)$' ./internal/darwinrelease
+      - run: go test -count=1 -v -timeout=6m -run '^(TestSigningKeychainAccessControl|TestSigningControlErrorClass|TestSigningControlMatrixVerdict|TestSigningControlUnrunStep|TestSearchListRestoreContract|TestRunStdoutRefusesOverflow|TestSigningControlVerdictVocabulary|TestSigningKeychainOpenRefusesBadP12First|TestReleasePathSigning)$' ./internal/darwinrelease
         timeout-minutes: 7
         env:
           A2A_SIGNING_KEYCHAIN_CONTROL_DIR: ${{ runner.temp }}/signing-keychain-fixture

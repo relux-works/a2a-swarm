@@ -136,6 +136,35 @@ also rejects ad-hoc flags, missing runtime/timestamp and any difference between 
 COMPLETE extracted compiled requirement and independently compiled approved predicate.
 Full requirement text/binary and raw nonsecret codesign output are retained.
 
+codesign does not find an identity in a private keychain that is absent from the
+user search list, even with `--keychain`. This was shown on hosted macos-15 by the
+`signing-keychain-control` job; it is the leading candidate for the first release's
+`binary-sign` stop, and is not proven for the real certificate. So each
+`codesign --sign` call runs inside `signOne`, which works as follows:
+- It reads the complete ordered user search list through
+  `SecKeychainCopyDomainSearchList`, and refuses before any change if the list is
+  unreadable or already names the private keychain.
+- It sets the private keychain first through `SecKeychainSetDomainSearchList` and
+  reads the list back.
+- It signs, then restores the original list and verifies it on every exit,
+  including a panic.
+- The precedence of failures, highest first, is: `search-list-restore`, then
+  `search-list-concurrent` (only after a verified install), then a setup refusal,
+  then the codesign status.
+
+`Prepare` succeeds only after every restore, so no list fault reaches
+notarization or publication. The signing path uses no `security` command and puts
+no password in any argv. If the process is killed or the runner lost
+mid-signing, the in-process restore cannot run. That residual is accepted on the
+ephemeral runner, and no recovery is claimed.
+
+Signing and verification failures have a closed shape:
+`binary-sign: name=<binary> state=<ran|timeout|cancelled|signaled|start-failed|unrun> exit=<n|-> class=<class> list=<ok|search-list-...>`.
+The class is mapped from codesign stderr, which is held in memory up to 64 KiB.
+Output over that limit is `output-overflow` and counts as a refusal. Raw stderr,
+argv, the selector and the keychain path never appear in the error. A failure on
+one binary reports the later binaries as `state=unrun`.
+
 MACOS_SIGN_P12 is the base64 PKCS#12 container; its password is a nonempty
 string. ASC_KEY_P8 is the literal private PEM, never a local operator path.
 The P8 is a0600 private runner file. Apple TN3147's supported `notarytool` interface
