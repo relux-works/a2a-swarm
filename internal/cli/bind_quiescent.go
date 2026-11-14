@@ -141,6 +141,9 @@ var (
 	// Calibration only: false compares a registration's native token with the
 	// identity only after both canonical Birth probes succeed.
 	terminalRegistrationNativeFirst = true
+	// Calibration only: false runs registration's canonical Birth probes with
+	// the owner unwatched, as before review rev261 r4.
+	terminalWatchOwnerDuringRegistration = true
 )
 
 // errProcessGone is processStart's answer for a PID with no process.
@@ -220,6 +223,50 @@ func ownerReason(state ownerToken) string {
 	return "owner"
 }
 
+// watchedBirth runs one canonical Birth probe while the owner stays watched
+// every min(Interval, 1s): definitive native evidence (absence, or a token
+// differing from the retained identity) or cancellation ends the probe and is
+// returned as "owner-replaced" or "cancelled". An unknown native read proves
+// nothing and the probe continues. The probe goroutine may outlive an early
+// return until its own context deadline; its result is then discarded.
+func (a *App) watchedBirth(ctx, probe context.Context, policy config.TerminalBinding, owner *ownerIdentity) (string, error, string) {
+	type answer struct {
+		birth string
+		err   error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		birth, err := terminalBirth(probe, policy.OwnerPID)
+		done <- answer{birth, err}
+	}()
+	if !terminalWatchOwnerDuringRegistration {
+		r := <-done
+		return r.birth, r.err, ""
+	}
+	ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
+	defer ticker.Stop()
+	for {
+		select {
+		case r := <-done:
+			return r.birth, r.err, ""
+		case <-ctx.Done():
+			return "", ctx.Err(), "cancelled"
+		case <-ticker.C:
+			if owner.replacedBy(terminalProcessStart(policy.OwnerPID)) {
+				return "", nil, "owner-replaced"
+			}
+		}
+	}
+}
+
+// ownerEndResult maps a watched probe's ending reason to the wait result.
+func ownerEndResult(reason string) quiescentResult {
+	if reason == "cancelled" {
+		return quiescentCancelled
+	}
+	return quiescentReconcile
+}
+
 // quiescentWriting serialises the exchange worker's State/mailbox write
 // phases with the waiting loop's own-file comparison, so an in-progress own
 // write is never mistaken for another writer's change.
@@ -265,13 +312,19 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 		return wake(quiescentReconcile, "owner-replaced")
 	}
 	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-	before, beforeErr := terminalBirth(probe, policy.OwnerPID)
+	defer cancel()
+	before, beforeErr, ended := a.watchedBirth(ctx, probe, policy, owner)
+	if ended != "" {
+		return wake(ownerEndResult(ended), ended)
+	}
 	start, startErr := terminalProcessStart(policy.OwnerPID)
 	if terminalRegistrationNativeFirst && owner.replacedBy(start, startErr) {
-		cancel()
 		return wake(quiescentReconcile, "owner-replaced")
 	}
-	after, afterErr := terminalBirth(probe, policy.OwnerPID)
+	after, afterErr, ended := a.watchedBirth(ctx, probe, policy, owner)
+	if ended != "" {
+		return wake(ownerEndResult(ended), ended)
+	}
 	cancel()
 	if beforeErr != nil || afterErr != nil || startErr != nil || before != after {
 		return wake(quiescentUnavailable, "owner registration")

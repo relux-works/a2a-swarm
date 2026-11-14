@@ -2383,8 +2383,8 @@ from that remembered token, is a known replacement and stops the consumer at onc
 unchanged. An inspection error is unknown: it proves nothing, never sets or clears the remembered token, and leaves the ordinary checks to
 decide. The owner's absence at the consumer's first read stops it at once. A replacement whose valid token is read before anything
 is remembered is left to the canonical birth check. When a quiescent wait registers the owner, the native token is compared with the
-remembered one before the canonical birth checks run, and again between them, so a failing or slow canonical check never hides or delays
-a known replacement. Any outstanding work returns the consumer to the per-interval loop. Hook pause,
+remembered one before the canonical birth checks run, and again between them, and the owner stays watched every `min(interval, 1s)`
+while each check runs, so a failing or slow canonical check never hides or delays a known replacement or the owner's exit. Any outstanding work returns the consumer to the per-interval loop. Hook pause,
 manual human/blocked/stopping gates and the hourly attempt limit retain mail. Fixed metadata outcomes are in `bind status`; the private 0600
 `state/NAME.binding.log` contains fixed errors and a `binding exit: REASON` line on each handled consumer exit, including vanished/replaced/stopped
 bindings, owner/target exit, cancellation and startup failure; it never contains captured screens or peer bodies. SIGKILL, a crash or host loss cannot

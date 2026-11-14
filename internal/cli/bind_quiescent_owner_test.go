@@ -5,8 +5,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -369,6 +372,101 @@ func TestQuiescentOwnerReplacementAtRegistrationCalibration(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := registrationError(t, c.name, c.shape)
+			if err == nil || !strings.Contains(err.Error(), "not stopped within") {
+				t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
+			}
+		})
+	}
+}
+
+// registrationExitRun drives a quiet lane whose registration canonical
+// Birth probe number probe (1 or 2 of the bracket, from cycle 2 on) takes
+// delay. began is closed when that slow probe starts.
+func registrationExitRun(t *testing.T, probe int, delay time.Duration) (*consumerRun, *orphanDispatchFixture, chan struct{}) {
+	t.Helper()
+	quiescentTiming(t, 0, time.Second, 20*time.Second, 100*time.Millisecond)
+	var trace atomic.Pointer[terminalTraceLog]
+	cycles := func() int {
+		if l := trace.Load(); l != nil {
+			return l.count("cycle", time.Time{}, time.Now().Add(time.Hour))
+		}
+		return 0
+	}
+	began := make(chan struct{})
+	var once sync.Once
+	var births atomic.Int64
+	processSeams(t, func(ctx context.Context, pid int) (string, error) {
+		if cycles() >= 2 && int((births.Add(1)-1)%2)+1 == probe {
+			once.Do(func() { close(began) })
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-timer.C:
+			}
+		}
+		return tmuxwake.Birth(ctx, pid)
+	}, processStart)
+	f := newOrphanDispatchFixture(t)
+	run := startQuiescentConsumer(t, f, time.Second, nil)
+	trace.Store(run.trace)
+	return run, f, began
+}
+
+func registrationExitError(t *testing.T, probe int) error {
+	t.Helper()
+	run, f, began := registrationExitRun(t, probe, 4*time.Second)
+	select {
+	case <-began:
+	case <-time.After(20 * time.Second):
+		t.Fatal("setup: the slow registration probe never started")
+	}
+	killed := time.Now()
+	if err := syscall.Kill(f.binding().OwnerPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	return stopWithin(run, killed, 3*time.Second, fmt.Sprintf("owner exit during registration probe %d", probe))
+}
+
+// Review rev261 r4 finding (owner-exit-blind-registration). The owner exits
+// while either canonical Birth probe of a registration takes 4s: the owner
+// watch keeps running during the probe and the consumer stops within 3s.
+// Control: a live owner with the same 4s probe keeps running.
+func TestQuiescentOwnerExitDuringRegistration(t *testing.T) {
+	isolateBindTest(t)
+	for _, probe := range []int{1, 2} {
+		t.Run(fmt.Sprintf("probe-%d", probe), func(t *testing.T) {
+			if err := registrationExitError(t, probe); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Run("live-owner-slow-probe-control", func(t *testing.T) {
+		run, _, began := registrationExitRun(t, 1, 4*time.Second)
+		select {
+		case <-began:
+		case <-time.After(20 * time.Second):
+			t.Fatal("setup: the slow registration probe never started")
+		}
+		time.Sleep(5 * time.Second)
+		select {
+		case <-run.done:
+			t.Fatalf("a slow probe with a live owner stopped the consumer: %q", run.outcome)
+		default:
+		}
+	})
+}
+
+// Calibration: with the owner unwatched during registration's probes, the
+// UNCHANGED witness must fail on its intended assertion for both probes.
+func TestQuiescentOwnerExitDuringRegistrationCalibration(t *testing.T) {
+	isolateBindTest(t)
+	terminalWatchOwnerDuringRegistration = false
+	t.Cleanup(func() { terminalWatchOwnerDuringRegistration = true })
+	for _, probe := range []int{1, 2} {
+		t.Run(fmt.Sprintf("probe-%d", probe), func(t *testing.T) {
+			err := registrationExitError(t, probe)
 			if err == nil || !strings.Contains(err.Error(), "not stopped within") {
 				t.Fatalf("witness did not fail on its intended assertion under the mutant: %v", err)
 			}
