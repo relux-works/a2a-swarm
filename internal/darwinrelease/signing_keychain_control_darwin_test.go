@@ -97,7 +97,12 @@ type arm struct{ sign, verify step }
 // --timestamp for --timestamp=none.
 func signWithFixture(t *testing.T, values map[string]string, binary string, partition, timestamp bool) arm {
 	t.Helper()
-	work := t.TempDir()
+	// Security reports the keychain's resolved path, and the import refuses a
+	// different directory; resolve the temp dir's symlinks (/var -> /private/var).
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
 		t.Fatal(err)
@@ -200,20 +205,46 @@ func TestSigningKeychainAccessControl(t *testing.T) {
 		t.Logf("SIGNING-CONTROL arm=%s sign=%s verify=%s", c.name, r.sign, r.verify)
 	}
 
-	unchanged, widened := results["unchanged/no-timestamp"], results["widened/no-timestamp"]
-	signedAndVerified := func(a arm) bool { return a.sign.ok() && a.verify.ok() }
-	switch {
-	case signedAndVerified(unchanged):
-		t.Logf("SIGNING-CONTROL VERDICT=H1_NOT_REPRODUCED: the unchanged import signs and verifies")
-	case !unchanged.sign.ok() && !unchanged.sign.timeout && signedAndVerified(widened):
-		t.Logf("SIGNING-CONTROL VERDICT=H1-REPRODUCED: unchanged refused (%s); widened partition list signs and verifies", unchanged.sign)
-	default:
-		t.Fatalf("SIGNING-CONTROL VERDICT=INCONCLUSIVE: unchanged sign=%s verify=%s; widened sign=%s verify=%s", unchanged.sign, unchanged.verify, widened.sign, widened.verify)
+	verdict, detail := controlVerdict(results["unchanged/no-timestamp"], results["widened/no-timestamp"])
+	if verdict == "INCONCLUSIVE" {
+		t.Fatalf("SIGNING-CONTROL VERDICT=INCONCLUSIVE: %s", detail)
 	}
+	t.Logf("SIGNING-CONTROL VERDICT=%s: %s", verdict, detail)
+}
+
+// aclClass reports whether a refusal is of the access-control class: the
+// headless key-use refusal that a missing partition entry produces.
+func aclClass(class string) bool {
+	return class == "internal-component" || class == "interaction-not-allowed"
+}
+
+// controlVerdict decides on the untimestamped pair. The widened arm is the
+// positive control and is checked first: unless it signs and verifies,
+// nothing else is admitted. Then the unchanged arm either signs and verifies
+// (H1_NOT_REPRODUCED), or is refused at signing with an access-control class
+// (H1-REPRODUCED). Any other refusal, a timeout, or a sign without a passing
+// verification is INCONCLUSIVE.
+func controlVerdict(unchanged, widened arm) (string, string) {
+	pair := "unchanged sign=" + unchanged.sign.String() + " verify=" + unchanged.verify.String() +
+		"; widened sign=" + widened.sign.String() + " verify=" + widened.verify.String()
+	if !widened.sign.ok() || !widened.verify.ok() {
+		return "INCONCLUSIVE", "positive control failed; " + pair
+	}
+	if unchanged.sign.ok() {
+		if unchanged.verify.ok() {
+			return "H1_NOT_REPRODUCED", pair
+		}
+		return "INCONCLUSIVE", "unchanged signed but did not verify; " + pair
+	}
+	if !unchanged.sign.timeout && aclClass(unchanged.sign.class) {
+		return "H1-REPRODUCED", pair
+	}
+	return "INCONCLUSIVE", "unchanged refusal is not of the access-control class; " + pair
 }
 
 // Proves the bounded error vocabulary: known codesign failures map to fixed
 // classes, empty stderr is "none", and unrecognised text never passes through.
+// Limit: the strings are representative codesign messages, not a complete set.
 func TestSigningControlErrorClass(t *testing.T) {
 	for in, want := range map[string]string{
 		"/x/a2a: errSecInternalComponent\n":                             "internal-component",
@@ -225,6 +256,41 @@ func TestSigningControlErrorClass(t *testing.T) {
 	} {
 		if got := errorClass(in); got != want {
 			t.Fatalf("errorClass(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Proves the verdict rule on synthetic arm results, independently of a run:
+// H1-REPRODUCED needs a healthy positive control AND an access-control-class
+// refusal of the unchanged arm; H1_NOT_REPRODUCED needs the positive control
+// AND a signed, verified unchanged arm. Every other combination, including a
+// non-ACL refusal, a timeout, a sign without verification and any failure of
+// the positive control, is INCONCLUSIVE.
+func TestSigningControlVerdict(t *testing.T) {
+	good := step{class: "none"}
+	acl := step{exit: 1, class: "internal-component"}
+	pass := arm{sign: good, verify: good}
+	for _, c := range []struct {
+		name               string
+		unchanged, widened arm
+		want               string
+	}{
+		{"valid H1 pair", arm{sign: acl}, pass, "H1-REPRODUCED"},
+		{"valid H1 pair, interaction class", arm{sign: step{exit: 1, class: "interaction-not-allowed"}}, pass, "H1-REPRODUCED"},
+		{"valid no-repro pair", pass, pass, "H1_NOT_REPRODUCED"},
+		{"chain refusal is not ACL", arm{sign: step{exit: 1, class: "chain-build"}}, pass, "INCONCLUSIVE"},
+		{"identity-not-found is not ACL", arm{sign: step{exit: 1, class: "identity-not-found"}}, pass, "INCONCLUSIVE"},
+		{"requirement refusal is not ACL", arm{sign: step{exit: 1, class: "requirement-unsatisfied"}}, pass, "INCONCLUSIVE"},
+		{"other refusal is not ACL", arm{sign: step{exit: 1, class: "other"}}, pass, "INCONCLUSIVE"},
+		{"refusal without stderr is not ACL", arm{sign: step{exit: 1, class: "none"}}, pass, "INCONCLUSIVE"},
+		{"timeout is not ACL", arm{sign: step{timeout: true, class: "timeout"}}, pass, "INCONCLUSIVE"},
+		{"unchanged signs, verify fails", arm{sign: good, verify: step{exit: 3, class: "requirement-unsatisfied"}}, pass, "INCONCLUSIVE"},
+		{"positive control sign fails, unchanged ACL", arm{sign: acl}, arm{sign: acl}, "INCONCLUSIVE"},
+		{"positive control verify fails, unchanged ACL", arm{sign: acl}, arm{sign: good, verify: step{exit: 3, class: "other"}}, "INCONCLUSIVE"},
+		{"positive control fails, unchanged passes", pass, arm{sign: acl}, "INCONCLUSIVE"},
+	} {
+		if got, _ := controlVerdict(c.unchanged, c.widened); got != c.want {
+			t.Fatalf("%s: verdict %s, want %s", c.name, got, c.want)
 		}
 	}
 }
