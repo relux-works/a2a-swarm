@@ -38,3 +38,22 @@ jobs:
       # Compile requirements and reject self-created ad-hoc fixtures only.
       # No real Developer ID/import/notary/user-Keychain operation.
       - run: go test -race -count=1 -timeout=3m ./internal/darwinrelease
+  signing-keychain-control:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.25.12'
+          cache: false
+      # A throwaway self-signed identity only; no release secret is available here.
+      - run: .scripts/signing-keychain-fixture.sh "$RUNNER_TEMP/signing-keychain-fixture"
+      - run: go test -count=1 -v -timeout=10m -run '^TestSigningKeychainAccessControl$' ./internal/darwinrelease
+        env:
+          A2A_SIGNING_KEYCHAIN_CONTROL_DIR: ${{ runner.temp }}/signing-keychain-fixture

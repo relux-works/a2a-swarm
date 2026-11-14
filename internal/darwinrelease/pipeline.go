@@ -33,6 +33,12 @@ func cleanEnvironment() []string {
 	return out
 }
 
+// signArgs is the exact codesign argv used to sign one release binary. The
+// native signing-keychain control uses the same function.
+func signArgs(selector, keychain, name, expr, path string) []string {
+	return []string{"--force", "--sign", selector, "--keychain", keychain, "--identifier", "works.relux." + name, "--options", "runtime", "--timestamp", "--requirements", "=designated => " + expr, path}
+}
+
 // execute never includes argv, stderr or subprocess error text in a returned
 // failure. Apple fields are stripped before every subprocess, including builds.
 func execute(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -178,7 +184,7 @@ func Prepare(ctx context.Context, root, tag, tagObject string) (out string, err 
 			return "", errors.New("requirement-policy-drift")
 		}
 		path := filepath.Join(work, name)
-		if _, e = execute(ctx, root, "/usr/bin/codesign", "--force", "--sign", signer.selector, "--keychain", signer.path, "--identifier", "works.relux."+name, "--options", "runtime", "--timestamp", "--requirements", "=designated => "+expr, path); e != nil {
+		if _, e = execute(ctx, root, "/usr/bin/codesign", signArgs(signer.selector, signer.path, name, expr, path)...); e != nil {
 			return "", errors.New("binary-sign")
 		}
 		if _, e = execute(ctx, root, "/usr/bin/codesign", "--verify", "--strict", "--verbose=4", "--test-requirement", "="+expr, path); e != nil {

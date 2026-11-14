@@ -137,15 +137,23 @@ type signingKeychain struct {
 }
 
 func openSigningKeychain(path string, values map[string]string) (*signingKeychain, error) {
+	random := make([]byte, 32)
+	if _, e := rand.Read(random); e != nil {
+		return nil, errors.New("keychain-random")
+	}
+	return openSigningKeychainWithPassword(path, values, hex.EncodeToString(random))
+}
+
+// openSigningKeychainWithPassword is openSigningKeychain with the keychain
+// password supplied by the caller. Release code always passes a fresh random
+// value; the native signing-keychain control passes a fixture value so that it
+// can compare keychain access settings on the same import path.
+func openSigningKeychainWithPassword(path string, values map[string]string, password string) (*signingKeychain, error) {
 	p12, e := base64.StdEncoding.DecodeString(values["MACOS_SIGN_P12"])
 	if e != nil || len(p12) == 0 {
 		return nil, errors.New("p12-decode")
 	}
-	random := make([]byte, 32)
-	if _, e = rand.Read(random); e != nil {
-		return nil, errors.New("keychain-random")
-	}
-	p, pw, pass := C.CString(path), C.CString(hex.EncodeToString(random)), C.CString(values["MACOS_SIGN_P12_PASSWORD"])
+	p, pw, pass := C.CString(path), C.CString(password), C.CString(values["MACOS_SIGN_P12_PASSWORD"])
 	defer C.free(unsafe.Pointer(p))
 	defer C.free(unsafe.Pointer(pw))
 	defer C.free(unsafe.Pointer(pass))

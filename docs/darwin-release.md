@@ -19,6 +19,7 @@ unchanged. There is no optional unsigned tagged-release path or manual bypass.
 | `go run ./cmd/a2a-release compare OLD_PAYLOAD NEW_PAYLOAD NEW_EVIDENCE_DIR` | Independently verify two pairs of actual images, then compare complete requirements and distinct hashes | Raw requirements for each image and comparison JSON; not item-access qualification |
 | `go test -race -count=1 -timeout=3m ./internal/darwinrelease` | Narrow nonsecret controls; native cases compile only on Darwin arm64/cgo | Actual test verdicts, not a release |
 | `.scripts/release-cleanup.sh` | Always-step cleanup of only this runner job's ephemeral signing directory/keychain | Nonzero if keychain deletion fails |
+| `.scripts/signing-keychain-fixture.sh DIR` then `A2A_SIGNING_KEYCHAIN_CONTROL_DIR=DIR go test -run '^TestSigningKeychainAccessControl$' ./internal/darwinrelease` | CI job `signing-keychain-control`: a throwaway self-signed identity, trusted for code signing on the runner only, imported through the release import path and signed with the release codesign argv, with and without a widened key partition list and timestamp | `SIGNING-CONTROL` lines and one VERDICT in the job log; INCONCLUSIVE fails; never a release credential |
 
 Go 1.25.12, native `CGO_ENABLED=1`, Security.framework/CoreFoundation, Xcode16.4,
 Swift6.1.2 and cosign2.6.1 are explicit release pins. GitHub-hosted `macos-15`
