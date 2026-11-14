@@ -1321,7 +1321,7 @@ This display binding and strict verification below share `matrix.CheckEventRoom`
 their content policies and explicit missing-room policies remain distinct.
 
 `--json` prints one JSON object per event instead (same selection and order):
-`{type, room, room_id, event_id, sender, at, kind, subtype, subject, topic, title, root, to, re, reply_by, trunk, sub_request, body, attachment}`. `type` is `topic` for a topic root,
+`{type, room, room_id, event_id, sender, at, at_ms, kind, subtype, subject, topic, title, root, to, re, reply_by, trunk, sub_request, body, attachment}`. `type` is `topic` for a topic root,
 otherwise `message`; `topic` is the slug; `root` is the thread root event id; `body` is the full text without the header lines.
 `read --json`'s `root` comes only from `ev.ThreadRoot()`: the explicit Matrix
 `m.thread` relation, never the a2a header's `topic` or a plain `m.in_reply_to`.
@@ -1329,7 +1329,10 @@ Delivery's `deliveryTopicRoot` also accepts a plain `m.in_reply_to` when its
 target has learned thread membership in the same room; it never uses the header.
 Projection origin metadata does not establish a local thread. These rules do
 not change `read --topic` relation-list selection or `post --re` routing validation.
-Empty fields are omitted.
+Empty fields are omitted. `at` is the server timestamp in whole seconds (RFC3339, UTC); `at_ms` is the same
+event's raw Matrix `origin_server_ts` as an integer number of milliseconds, unrounded and never derived from
+`at` or the local clock. `at_ms` is omitted when the event carries no server timestamp, and invite and gap
+records never carry one. Every event JSON record (`read`, `wait`, `watch`, `inbox`, `files`) has the same pair.
 ```bash
 a2a read a2a-swarm --topic bridge-daemon --last 50
 a2a read a2a-swarm --event '$Q1...' --json
@@ -1546,7 +1549,7 @@ arrives, and exits after printing one line per new entry:
 What it printed stays in the mailbox, marked shown: the next `wait` does not print it again, but `a2a inbox` does, and receipts it. After printing,
 `wait` says so on stderr: run `a2a inbox`, or `a2a ack <ids>` / `a2a ack all-shown`. An agent that follows the skill (hooks + `inbox`) never needs `ack`.
 
-With `--json`, each entry is one JSON object per line: `{type, room, room_id, event_id, sender, at, kind, subtype, subject, sub, topic, root, to, re, reply_by, trunk, sub_request, excerpt}`
+With `--json`, each entry is one JSON object per line: `{type, room, room_id, event_id, sender, at, at_ms, kind, subtype, subject, sub, topic, root, to, re, reply_by, trunk, sub_request, excerpt}`
 with `type` = `to`, `mention`, `sub`, `all`, `thread`, `invite` or `gap` (an invite has only `type`, `room`, `room_id`, `sender`; a gap has `event_id` = its
 gap id and the report as `excerpt`), and a timeout is `{"type":"timeout"}`.
 Fetch the full text with `a2a read <room_id> --event <event_id> --json`. Without `--json` the line format above is unchanged.

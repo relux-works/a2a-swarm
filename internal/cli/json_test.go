@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
 )
@@ -40,7 +41,7 @@ func TestReadEventJSON(t *testing.T) {
 		t.Fatalf("records = %d, want 1", len(recs))
 	}
 	r := recs[0]
-	want := EventRecord{Type: "message", Room: "#proj", RoomID: "!projRoomID", EventID: id, Sender: "@bob:test.local", At: r.At,
+	want := EventRecord{Type: "message", Room: "#proj", RoomID: "!projRoomID", EventID: id, Sender: "@bob:test.local", At: r.At, AtMS: r.AtMS,
 		Kind: "question", Topic: "alpha", Root: root, To: []string{"alice", "carol"}, Re: root,
 		ReplyBy: "2026-10-01T00:00:00Z", Trunk: "abcdef1", Body: "line one\n" + long}
 	if !reflect.DeepEqual(r, want) {
@@ -48,6 +49,10 @@ func TestReadEventJSON(t *testing.T) {
 	}
 	if r.At == "" {
 		t.Fatal("at missing")
+	}
+	// at_ms is the same server timestamp as at, at millisecond resolution.
+	if r.AtMS <= 0 || time.UnixMilli(r.AtMS).UTC().Format(time.RFC3339) != r.At {
+		t.Fatalf("at_ms=%d does not match at=%q", r.AtMS, r.At)
 	}
 
 	txt := e.as("alice", "read", "proj", "--event", id).ok(t).stdout
