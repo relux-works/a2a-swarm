@@ -30,11 +30,19 @@ type Target struct {
 	Runtime    string `json:"runtime"`
 }
 
+// birthWaitDelay bounds Birth after cancellation: ps is killed when ctx ends,
+// and Output then waits at most this long for its stdout pipe even if
+// another process inherited the pipe. Tests may set 0 to calibrate the
+// unbounded wait; production keeps the default.
+var birthWaitDelay = 500 * time.Millisecond
+
 func Birth(ctx context.Context, pid int) (string, error) {
 	if pid <= 0 {
 		return "", errors.New("invalid process")
 	}
-	b, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "uid=").Output()
+	cmd := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "uid=")
+	cmd.WaitDelay = birthWaitDelay
+	b, err := cmd.Output()
 	f := strings.Fields(string(b))
 	if err != nil || len(f) != 6 || f[5] != strconv.Itoa(os.Getuid()) {
 		return "", errors.New("own process unavailable")

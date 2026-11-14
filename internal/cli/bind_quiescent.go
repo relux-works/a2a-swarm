@@ -231,9 +231,11 @@ func ownerReason(state ownerToken) string {
 // differing from the retained identity) or cancellation ends the probe and is
 // returned as "owner-replaced" or "cancelled". An unknown native read proves
 // nothing and the probe continues. Every path joins the probe before it
-// returns: an ended probe is cancelled first and then waited for, so its
-// canonical subprocess is gone (bounded by the cancellation) when
-// registration returns.
+// returns: an ended probe is cancelled first and then waited for. The join
+// is bounded by the probe's own cancellation behaviour: tmuxwake.Birth kills
+// ps on cancellation and its WaitDelay bounds the wait for an inherited
+// stdout pipe, so its canonical subprocess is gone when registration returns.
+// A probe that ignored cancellation would make the join wait for it.
 func (a *App) watchedBirth(ctx, probe context.Context, policy config.TerminalBinding, owner *ownerIdentity) (string, error, string) {
 	type answer struct {
 		birth string
