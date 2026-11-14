@@ -1,0 +1,225 @@
+//go:build darwin || linux
+
+package cli
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/config"
+)
+
+// cleanupFixture is a fixture directory whose state names pid as alice's
+// consumer with the given birth, but matches no fixture record, so
+// bindFixtureDaemon cannot identify it (the PID 0 path).
+func cleanupFixture(t *testing.T, pid int, birth string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "fixture")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	p := config.Paths{Base: filepath.Join(dir, "config")}
+	if err := os.MkdirAll(filepath.Join(p.Base, "state"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	st := config.State{Terminal: &config.TerminalBinding{Generation: "unidentified", DaemonPID: pid, DaemonBirth: birth}}
+	if err := config.SaveState(p, "alice", st); err != nil {
+		t.Fatalf("setup: state: %v", err)
+	}
+	if got := bindFixtureDaemon(dir, bindFixtureRecord{}); got.PID != 0 {
+		t.Fatalf("setup: the planted consumer must be unidentifiable, got pid %d", got.PID)
+	}
+	return dir
+}
+
+// startSleeper starts an own child that the test alone stops.
+func startSleeper(t *testing.T, dir string) (*exec.Cmd, bindFixtureProcess) {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	cmd.Dir = dir
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	stop := func() {
+		if !stopped {
+			stopped = true
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}
+	t.Cleanup(stop)
+	id, err := bindFixtureIdentity(cmd.Process.Pid)
+	if err != nil {
+		stop()
+		t.Fatalf("setup: sleeper identity: %v", err)
+	}
+	return cmd, id
+}
+
+func fixturePathExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// Proves that reclaimBindFixture does not treat an unidentifiable consumer
+// as gone. While a live process the state names (by PID and birth) still
+// runs, the fixture stays and that process is not signalled. Once it exits,
+// the fixture is removed. Before this change, PID 0 counted as gone and
+// RemoveAll ran immediately, which is the absolute_alias cleanup race class.
+// Limit: only the alice state slot and the PID plus birth match are covered.
+func TestReclaimBindFixtureWaitsForUnidentifiedConsumer(t *testing.T) {
+	cmd, id := startSleeper(t, t.TempDir())
+	dir := cleanupFixture(t, id.PID, id.Birth)
+	if got := bindFixtureStateConsumer(dir); got != id {
+		t.Fatalf("setup: the state must name the live sleeper, got %+v", got)
+	}
+	done := make(chan error, 1)
+	go func() { done <- reclaimBindFixture(dir, bindFixtureRecord{}) }()
+	time.Sleep(500 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("reclaim finished while the named consumer was live: %v", err)
+	default:
+	}
+	if !fixturePathExists(dir) {
+		t.Fatal("fixture removed while the named consumer was live")
+	}
+	if processGone(id.PID) {
+		t.Fatal("the unidentified consumer was signalled")
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reclaim after the consumer exited: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reclaim did not finish after the consumer exited")
+	}
+	if fixturePathExists(dir) {
+		t.Fatal("fixture not removed after the consumer exited")
+	}
+}
+
+// Proves the bound: a named consumer that outlives the cleanup bound yields
+// the named refusal, the fixture is kept, and that process is not killed
+// (cleanup has no signal authority over an unidentified process).
+func TestReclaimBindFixtureRefusesLiveUnidentifiedConsumer(t *testing.T) {
+	_, id := startSleeper(t, t.TempDir())
+	dir := cleanupFixture(t, id.PID, id.Birth)
+	if got := bindFixtureStateConsumer(dir); got != id {
+		t.Fatalf("setup: the state must name the live sleeper, got %+v", got)
+	}
+	err := reclaimBindFixture(dir, bindFixtureRecord{})
+	if err == nil || !strings.Contains(err.Error(), "unidentified state consumer pid "+strconv.Itoa(id.PID)+" still live") {
+		t.Fatalf("got %v, want the named unidentified-consumer refusal", err)
+	}
+	if !fixturePathExists(dir) {
+		t.Fatal("fixture removed despite the refusal")
+	}
+	if processGone(id.PID) {
+		t.Fatal("the unidentified consumer was killed")
+	}
+}
+
+// Positive controls for the two refusals above: a named consumer that has
+// already exited, and one whose birth does not match the live PID, name
+// nothing, and the fixture is removed promptly.
+func TestReclaimBindFixtureRemovesWhenNamedConsumerGone(t *testing.T) {
+	exited := exec.Command("true")
+	if err := exited.Run(); err != nil {
+		t.Fatal(err)
+	}
+	_, live := startSleeper(t, t.TempDir())
+	for name, c := range map[string]struct {
+		pid   int
+		birth string
+	}{
+		"exited":         {exited.Process.Pid, live.Birth},
+		"birth mismatch": {live.PID, "not-" + live.Birth},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := cleanupFixture(t, c.pid, c.birth)
+			start := time.Now()
+			if err := reclaimBindFixture(dir, bindFixtureRecord{}); err != nil {
+				t.Fatal(err)
+			}
+			if fixturePathExists(dir) {
+				t.Fatal("fixture not removed")
+			}
+			if d := time.Since(start); d > 2*time.Second {
+				t.Fatalf("reclaim took %v, want prompt removal", d)
+			}
+		})
+	}
+	if processGone(live.PID) {
+		t.Fatal("a process with a mismatched birth was signalled")
+	}
+}
+
+// Proves that a removal failure is reported with what remains: the leftover
+// entry names, and on Linux the same-user process whose cwd is inside the
+// fixture. It also proves that there is no retry that would hide the residue.
+// The failure is planted with a 0500 directory, so it is skipped for root.
+func TestRemoveBindFixtureDirNamesResidue(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores the planted 0500 directory")
+	}
+	dir := filepath.Join(t.TempDir(), "fixture")
+	locked := filepath.Join(dir, "config", "state", "locked")
+	if err := os.MkdirAll(locked, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "x"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
+	_, holder := startSleeper(t, filepath.Join(dir, "config", "state"))
+	err := removeBindFixtureDir(dir)
+	if err == nil {
+		t.Fatal("removal of a planted unremovable fixture succeeded")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, filepath.Join("config", "state", "locked", "x")) {
+		t.Fatalf("leftover entry not named: %s", msg)
+	}
+	want := "holders=[unavailable]"
+	if runtime.GOOS == "linux" {
+		want = "pid=" + strconv.Itoa(holder.PID) + " comm=sleep via=cwd"
+	}
+	if !strings.Contains(msg, want) {
+		t.Fatalf("holder not reported as %q: %s", want, msg)
+	}
+	if !fixturePathExists(filepath.Join(locked, "x")) {
+		t.Fatal("residue changed after the failure")
+	}
+}
+
+// Positive control: a removable fixture with nested entries and no holder
+// is removed, and no error is reported.
+func TestRemoveBindFixtureDirRemovesCleanFixture(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "fixture")
+	if err := os.MkdirAll(filepath.Join(dir, "config", "state"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config", "state", "alice.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeBindFixtureDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if fixturePathExists(dir) {
+		t.Fatal("fixture not removed")
+	}
+}

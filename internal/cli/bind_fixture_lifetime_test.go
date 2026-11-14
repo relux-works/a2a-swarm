@@ -33,6 +33,10 @@ type bindFixtureRecord struct {
 	Owner   bindFixtureProcess
 	Server  bindFixtureProcess
 	Fixture bindFixtureProcess
+	// Daemon is the consumer the test owner last identified (PID, birth and
+	// start ticks). It survives an in-place re-exec, which keeps all three, and
+	// lets cleanup stop a consumer that the state can no longer identify.
+	Daemon bindFixtureProcess `json:",omitempty"`
 	// Launch is the command the fixture pane runs and Consumers the argv[0]
 	// values its detached consumer may carry; both default to dir/a2a.
 	Launch    string   `json:",omitempty"`
@@ -222,12 +226,36 @@ func stopBindFixtureProcess(p bindFixtureProcess, signal syscall.Signal) {
 	}
 }
 
+// bindFixtureStateConsumer is the live process the fixture state names as its
+// consumer, matched by PID and the persisted birth only. It grants no signal
+// authority: cleanup waits for it, but signals only an identified daemon.
+// An absent, unreadable or foreign state names nothing.
+func bindFixtureStateConsumer(dir string) bindFixtureProcess {
+	st, err := config.LoadState(config.Paths{Base: filepath.Join(dir, "config")}, "alice")
+	if err != nil || st.Terminal == nil || st.Terminal.DaemonPID <= 1 || st.Terminal.DaemonBirth == "" {
+		return bindFixtureProcess{}
+	}
+	p, err := bindFixtureIdentity(st.Terminal.DaemonPID)
+	if err != nil || p.Birth != st.Terminal.DaemonBirth {
+		return bindFixtureProcess{}
+	}
+	return p
+}
+
 // Normal t.Cleanup and the stale sweep share the same narrowly owned cleanup.
 // Stop the request source first, then reread state to include a bind which was
 // still completing when its test owner died. Each signal rechecks PID/birth.
+//
+// A daemon that cannot be identified is never treated as gone: the recorded
+// identity is used when the state no longer matches, and removal also waits
+// for any live consumer the state still names. Removal starts only after
+// every one of them is observed gone; a removal failure names what remains.
 func reclaimBindFixture(dir string, r bindFixtureRecord) error {
 	recoverBindFixtureProcesses(dir, &r)
 	daemon := bindFixtureDaemon(dir, r)
+	if daemon.PID == 0 && r.Daemon.live() {
+		daemon = r.Daemon
+	}
 	stopBindFixtureProcess(r.Fixture, syscall.SIGTERM)
 	stopBindFixtureProcess(r.Server, syscall.SIGTERM)
 	until := time.Now().Add(3 * time.Second)
@@ -236,18 +264,113 @@ func reclaimBindFixture(dir string, r bindFixtureRecord) error {
 			daemon = next
 		}
 		stopBindFixtureProcess(daemon, syscall.SIGTERM)
-		if r.Fixture.gone() && r.Server.gone() && daemon.gone() {
+		named := bindFixtureStateConsumer(dir)
+		if r.Fixture.gone() && r.Server.gone() && daemon.gone() && named.PID == 0 {
 			break
 		}
 		if time.Now().After(until) {
 			for _, p := range []bindFixtureProcess{daemon, r.Fixture, r.Server} {
 				stopBindFixtureProcess(p, syscall.SIGKILL)
 			}
+			if named.PID != 0 && named != daemon {
+				return fmt.Errorf("bind fixture did not terminate within cleanup bound: unidentified state consumer pid %d still live", named.PID)
+			}
 			return errors.New("bind fixture did not terminate within cleanup bound")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return os.RemoveAll(dir)
+	return removeBindFixtureDir(dir)
+}
+
+// removeBindFixtureDir removes a reclaimed fixture once. It never retries: a
+// failure keeps the residue and reports the entry names left under dir and
+// the same-user processes that still point into it, so the writer is named.
+func removeBindFixtureDir(dir string) error {
+	err := os.RemoveAll(dir)
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w; leftover=[%s] holders=[%s]", err, strings.Join(bindFixtureResidue(dir), " "), bindFixtureHolders(dir))
+}
+
+const bindFixtureResidueLimit = 32
+
+// bindFixtureResidue lists at most bindFixtureResidueLimit entry names under
+// dir, relative to it. It reads names only, never file contents.
+func bindFixtureResidue(dir string) []string {
+	var names []string
+	_ = filepath.WalkDir(dir, func(path string, _ os.DirEntry, err error) error {
+		if err != nil || path == dir {
+			return nil
+		}
+		if len(names) == bindFixtureResidueLimit {
+			names = append(names, "...")
+			return filepath.SkipAll
+		}
+		rel, _ := filepath.Rel(dir, path)
+		names = append(names, rel)
+		return nil
+	})
+	return names
+}
+
+func bindFixtureInside(dir, path string) bool {
+	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
+// bindFixtureHolders names the same-user processes whose cwd, an open file,
+// or an A2A_CONFIG_DIR value points into dir, as "pid=N comm=C via=cwd,fd,env"
+// ("self" marks this test process). It reads /proc and is "unavailable"
+// without it. The environment is matched, never reported.
+func bindFixtureHolders(dir string) string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return "unavailable"
+	}
+	var holders []string
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		proc := filepath.Join("/proc", entry.Name())
+		if s, err := os.Stat(proc); err != nil || s.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+			continue
+		}
+		var via []string
+		if cwd, err := os.Readlink(filepath.Join(proc, "cwd")); err == nil && bindFixtureInside(dir, cwd) {
+			via = append(via, "cwd")
+		}
+		if fds, err := os.ReadDir(filepath.Join(proc, "fd")); err == nil {
+			for _, fd := range fds {
+				if target, err := os.Readlink(filepath.Join(proc, "fd", fd.Name())); err == nil && bindFixtureInside(dir, target) {
+					via = append(via, "fd")
+					break
+				}
+			}
+		}
+		if env, err := os.ReadFile(filepath.Join(proc, "environ")); err == nil {
+			for _, kv := range strings.Split(string(env), "\x00") {
+				if v, ok := strings.CutPrefix(kv, "A2A_CONFIG_DIR="); ok && bindFixtureInside(dir, filepath.Clean(v)) {
+					via = append(via, "env")
+					break
+				}
+			}
+		}
+		if len(via) == 0 {
+			continue
+		}
+		comm, _ := os.ReadFile(filepath.Join(proc, "comm"))
+		h := fmt.Sprintf("pid=%d comm=%s via=%s", pid, strings.TrimSpace(string(comm)), strings.Join(via, ","))
+		if pid == os.Getpid() {
+			h += " self"
+		}
+		holders = append(holders, h)
+	}
+	if len(holders) == 0 {
+		return "none"
+	}
+	return strings.Join(holders, "; ")
 }
 
 func sweepBindFixtures(root string) error {
