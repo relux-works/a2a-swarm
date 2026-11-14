@@ -581,9 +581,15 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	var quietSince time.Time
 	// The owner's native identity is taken once, before the first cycle, and
 	// kept for this consumer's lifetime; an unknown read leaves it to the
-	// first successful read of a later wait.
+	// first successful read of a later wait. The owner's absence at that first
+	// read is a known end: a PID reused before the next canonical check must
+	// never become the baseline.
 	owner := &ownerIdentity{}
-	owner.observe(policy.OwnerPID)
+	if owner.observe(policy.OwnerPID) == ownerTokenReplaced && terminalInitialOwnerAbsenceStops {
+		if outcome, stopped := a.quiescentOwnerTeardown(ctx, s, generation, policy, true); stopped {
+			return outcome, nil
+		}
+	}
 	for ctx.Err() == nil {
 		cycleStart := time.Now()
 		quiet := false

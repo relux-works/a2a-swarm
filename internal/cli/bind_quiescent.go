@@ -135,6 +135,12 @@ var (
 	// Calibration only: true forgets the owner identity at every wait, the
 	// per-wait baseline that let a reused PID be adopted across cycles.
 	terminalOwnerIdentityPerWait = false
+	// Calibration only: false ignores the owner's absence at the consumer's
+	// first native read, as before review 5900358239.
+	terminalInitialOwnerAbsenceStops = true
+	// Calibration only: false compares a registration's native token with the
+	// identity only after both canonical Birth probes succeed.
+	terminalRegistrationNativeFirst = true
 )
 
 // errProcessGone is processStart's answer for a PID with no process.
@@ -192,6 +198,20 @@ func (o *ownerIdentity) observe(pid int) ownerToken {
 	return o.classify(terminalProcessStart(pid))
 }
 
+// replacedBy reports DEFINITIVE replacement evidence without seeding the
+// identity: the owner is absent, or a successful token differs from the
+// retained one. An unknown read, or no retained identity yet, is no evidence.
+func (o *ownerIdentity) replacedBy(current string, err error) bool {
+	switch {
+	case errors.Is(err, errProcessGone):
+		return true
+	case err != nil || !o.known:
+		return false
+	default:
+		return current != o.start && terminalKnownReplacementStops
+	}
+}
+
 // ownerReason maps a non-same owner state to its wake reason.
 func ownerReason(state ownerToken) string {
 	if state == ownerTokenReplaced {
@@ -236,9 +256,21 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	if !scope.OwnFilesRecorded() {
 		return wake(quiescentUnavailable, "own files unrecorded")
 	}
+	// Definitive native evidence is never discarded because a canonical Birth
+	// probe fails, nor delayed behind one: the retained identity is compared
+	// with a native read BEFORE the bracket, and again with the bracketed read
+	// before the second probe. Only the identity is seeded after the bracket.
+	owner.beginWait()
+	if terminalRegistrationNativeFirst && owner.replacedBy(terminalProcessStart(policy.OwnerPID)) {
+		return wake(quiescentReconcile, "owner-replaced")
+	}
 	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 	before, beforeErr := terminalBirth(probe, policy.OwnerPID)
 	start, startErr := terminalProcessStart(policy.OwnerPID)
+	if terminalRegistrationNativeFirst && owner.replacedBy(start, startErr) {
+		cancel()
+		return wake(quiescentReconcile, "owner-replaced")
+	}
 	after, afterErr := terminalBirth(probe, policy.OwnerPID)
 	cancel()
 	if beforeErr != nil || afterErr != nil || startErr != nil || before != after {
@@ -249,7 +281,6 @@ func (a *App) waitQuiescent(ctx context.Context, s *session, policy config.Termi
 	}
 	// Registration never re-baselines: a token differing from the identity
 	// this consumer already knows is a known replacement.
-	owner.beginWait()
 	if state := owner.classify(start, nil); state != ownerTokenSame {
 		return wake(quiescentReconcile, ownerReason(state))
 	}
