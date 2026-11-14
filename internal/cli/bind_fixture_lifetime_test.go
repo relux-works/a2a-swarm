@@ -256,27 +256,28 @@ func (p bindFixtureProcess) observe() bindFixtureObservation {
 // bindFixtureNamedConsumer observes the consumer the fixture state names, by
 // its PID and persisted birth only. It grants no signal authority: cleanup
 // waits for it but never signals it on that basis. Absent state, or state
-// that names no consumer, is no obligation; unreadable state is unknown.
-func bindFixtureNamedConsumer(dir string) (int, bindFixtureObservation) {
+// that names no consumer, is no obligation; unreadable state is unknown. It
+// returns the named PID and persisted birth with the observation.
+func bindFixtureNamedConsumer(dir string) (int, string, bindFixtureObservation) {
 	st, err := config.LoadState(config.Paths{Base: filepath.Join(dir, "config")}, "alice")
 	if err != nil {
-		return 0, bindFixtureUnknown
+		return 0, "", bindFixtureUnknown
 	}
 	if st.Terminal == nil || st.Terminal.DaemonPID <= 1 || st.Terminal.DaemonBirth == "" {
-		return 0, bindFixtureExited
+		return 0, "", bindFixtureExited
 	}
-	pid := st.Terminal.DaemonPID
+	pid, birth := st.Terminal.DaemonPID, st.Terminal.DaemonBirth
 	if processGone(pid) {
-		return pid, bindFixtureExited
+		return pid, birth, bindFixtureExited
 	}
 	current, err := bindFixtureIdentity(pid)
 	switch {
 	case err != nil:
-		return pid, bindFixtureUnknown
-	case current.Birth == st.Terminal.DaemonBirth:
-		return pid, bindFixtureLive
+		return pid, birth, bindFixtureUnknown
+	case current.Birth == birth:
+		return pid, birth, bindFixtureLive
 	}
-	return pid, bindFixtureExited
+	return pid, birth, bindFixtureExited
 }
 
 // bindFixturePending names every obligation that is not yet observed exited.
@@ -295,12 +296,13 @@ func bindFixturePending(dir string, r bindFixtureRecord, consumers []bindFixture
 	for _, p := range consumers {
 		note("consumer", p.PID, p.observe())
 	}
-	pid, obs := bindFixtureNamedConsumer(dir)
+	pid, birth, obs := bindFixtureNamedConsumer(dir)
 	switch {
 	case pid == 0 && obs == bindFixtureUnknown:
 		pending = append(pending, "fixture state unreadable")
-	case slices.ContainsFunc(consumers, func(p bindFixtureProcess) bool { return p.PID == pid }):
-		// Already an identified obligation, observed with its full identity.
+	case slices.ContainsFunc(consumers, func(p bindFixtureProcess) bool { return p.PID == pid && p.Birth == birth }):
+		// The same process (PID and birth) is already an obligation, observed
+		// with its full identity. A shared PID alone is not the same process.
 	default:
 		note("unidentified state consumer", pid, obs)
 	}

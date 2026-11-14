@@ -126,7 +126,7 @@ func fixturePathExists(path string) bool {
 func TestReclaimBindFixtureWaitsForUnidentifiedConsumer(t *testing.T) {
 	cmd, id := startSleeper(t, t.TempDir())
 	dir := cleanupFixture(t, id.PID, id.Birth)
-	if pid, obs := bindFixtureNamedConsumer(dir); pid != id.PID || obs != bindFixtureLive {
+	if pid, _, obs := bindFixtureNamedConsumer(dir); pid != id.PID || obs != bindFixtureLive {
 		t.Fatalf("setup: the state must name the live sleeper, got pid %d observation %d", pid, obs)
 	}
 	done := make(chan error, 1)
@@ -164,7 +164,7 @@ func TestReclaimBindFixtureWaitsForUnidentifiedConsumer(t *testing.T) {
 func TestReclaimBindFixtureRefusesLiveUnidentifiedConsumer(t *testing.T) {
 	_, id := startSleeper(t, t.TempDir())
 	dir := cleanupFixture(t, id.PID, id.Birth)
-	if pid, obs := bindFixtureNamedConsumer(dir); pid != id.PID || obs != bindFixtureLive {
+	if pid, _, obs := bindFixtureNamedConsumer(dir); pid != id.PID || obs != bindFixtureLive {
 		t.Fatalf("setup: the state must name the live sleeper, got pid %d observation %d", pid, obs)
 	}
 	err := reclaimBindFixture(dir, bindFixtureRecord{})
@@ -394,6 +394,75 @@ func TestReclaimBindFixtureKeepsRecordedAndSuccessorConsumers(t *testing.T) {
 	}
 	if fixturePathExists(dir) {
 		t.Fatal("fixture not removed after both consumers exited")
+	}
+}
+
+// Proves that only the same identity (PID and birth) merges the recorded and
+// the state-named obligations (review R4). A stale record that shares the
+// live consumer's PID but carries another birth is exited, and grants no
+// signal authority. The state-named live consumer stays a separate
+// obligation: the fixture is kept and the consumer is not signalled until it
+// exits, and only then is the fixture removed. Before this change the shared
+// PID alone discarded the live obligation and the fixture was removed at once.
+func TestReclaimBindFixtureStaleRecordSharingPIDKeepsStateObligation(t *testing.T) {
+	cmd, live := startSleeper(t, t.TempDir())
+	dir := cleanupFixture(t, live.PID, live.Birth)
+	stale := bindFixtureProcess{PID: live.PID, Birth: "stale " + live.Birth, Start: live.Start}
+	if stale.live() || stale.observe() != bindFixtureExited {
+		t.Fatal("setup: the stale record must observe as exited and grant no signal")
+	}
+	done := make(chan error, 1)
+	go func() { done <- reclaimBindFixture(dir, bindFixtureRecord{Daemon: stale}) }()
+	time.Sleep(500 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("reclaim finished while the state-named consumer was live: %v", err)
+	default:
+	}
+	if !fixturePathExists(dir) {
+		t.Fatal("fixture removed while the state-named consumer was live")
+	}
+	if processGone(live.PID) {
+		t.Fatal("the state-named consumer was signalled through a stale record")
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reclaim after the consumer exited: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reclaim did not finish after the consumer exited")
+	}
+	if fixturePathExists(dir) {
+		t.Fatal("fixture not removed after the consumer exited")
+	}
+}
+
+// Positive control for R4: a stale record (exited, another birth) with no
+// state names nothing live, so the fixture is removed promptly. The
+// same-identity merge is covered by TestReclaimBindFixtureStopsRecordedConsumer
+// ("state names the same identity").
+func TestReclaimBindFixtureStaleRecordWithoutStateRemoves(t *testing.T) {
+	_, live := startSleeper(t, t.TempDir())
+	dir := cleanupFixture(t, live.PID, live.Birth)
+	if err := os.Remove(filepath.Join(dir, "config", "state", "alice.json")); err != nil {
+		t.Fatal(err)
+	}
+	stale := bindFixtureProcess{PID: live.PID, Birth: "stale " + live.Birth, Start: live.Start}
+	start := time.Now()
+	if err := reclaimBindFixture(dir, bindFixtureRecord{Daemon: stale}); err != nil {
+		t.Fatal(err)
+	}
+	if fixturePathExists(dir) {
+		t.Fatal("fixture not removed")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("reclaim took %v, want prompt removal", d)
+	}
+	if processGone(live.PID) {
+		t.Fatal("a process sharing only the PID was signalled")
 	}
 }
 
