@@ -906,6 +906,21 @@ stages 3-4, Olm decrypt typed errors, authenticated sender/recipient/key conflic
 No persistent account/OTK/session mutation on any rejected attempt. Failure to
 persist safety accounting aborts the batch; it is not an incoming event refusal.
 
+U3r implements this tree and the to-device prefix as a pure library in
+`internal/e2ee` (`VerifyToDevice`, `VerifyRoomEvent`, `AcceptedEvent`,
+`Refusal`, `SessionRecord`, `RecordRefusal`), not wired into sync, mailbox or
+display. Stage 3 takes the caller's eligibility observation (`PeerObservation`,
+Q4 pending); context, key queries, retention admission and the journal commit
+remain U4. The to-device verifier forks the engine with the pickle key and
+mutates only the fork; the room verifier changes only the replay window of an
+accepted event. Megolm fields that are missing or mistyped after a supported
+algorithm is seen refuse as `e2ee_malformed_event` at stage 2, so an
+unsupported algorithm still wins over a missing session ID. A plaintext event
+in a plaintext-confirmed room is outside the verifier and returns an operation
+error, not a verdict. A state event in the encrypted DM is refused as
+`e2ee_plaintext_in_encrypted_room`; callers route control events to their own
+validators before admission.
+
 To-device events need no `event_id`: record `source:"to-device"`, nullable room/
 event ID and `refusal_id = SHA256(length-prefixed(binding,observed sender,type,
 exact raw content bytes))`. Malformed fields use empty components plus raw event
