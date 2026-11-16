@@ -30,10 +30,10 @@ const (
 	SnapshotFutureSkewSeconds = 0
 )
 
-// NameRecord is one name of the snapshot: the exact octets of its value, the
+// snapshotNameRecord is one name of the snapshot: the exact octets of its value, the
 // expiry the node evaluated at the tip, and the outpoint and block of its
 // last confirmed name operation.
-type NameRecord struct {
+type snapshotNameRecord struct {
 	Name    string
 	Value   []byte
 	Expired bool
@@ -41,8 +41,8 @@ type NameRecord struct {
 	Vout    uint32
 }
 
-// SealRecord is the state of one seal outpoint of the snapshot.
-type SealRecord struct {
+// snapshotSealRecord is the state of one seal outpoint of the snapshot.
+type snapshotSealRecord struct {
 	Outpoint Outpoint
 	State    SealState
 	// Confirmations and ScriptPubKey are transported for present states only.
@@ -51,13 +51,13 @@ type SealRecord struct {
 	ScriptPubKey  string
 }
 
-// SnapshotData is the parsed value of a snapshot file: everything the file
+// snapshotDataValue is the parsed value of a snapshot file: everything the file
 // states. All records share the one Tip. WrittenAt is POSIX seconds.
-type SnapshotData struct {
+type snapshotDataValue struct {
 	Consistency string
 	Network     string
-	Names       []NameRecord
-	Seals       []SealRecord
+	Names       []snapshotNameRecord
+	Seals       []snapshotSealRecord
 	Tip         Tip
 	WrittenAt   uint64
 }
@@ -112,6 +112,11 @@ func (c SnapshotConfig) valid() bool {
 // outpoints at one tip. It is valid for observation only. It cannot see a
 // seal spend that happens after it was written, so Live is false whatever its
 // label is, and a verdict made on it must not switch admission.
+//
+// Darwin does not check ACLs: its filesystem profile is weaker than the
+// contract and requires separate native qualification before installation.
+// Linux rejects POSIX ACL xattrs, but ENOTSUP is accepted: a filesystem without
+// the POSIX ACL xattr namespace is not checked for ACLs.
 type Snapshot struct {
 	name      NameView
 	seals     map[Outpoint]SealState
@@ -146,7 +151,7 @@ func newSnapshot(raw []byte, config SnapshotConfig) (*Snapshot, error) {
 	for _, name := range config.Names {
 		watchedNames[name] = true
 	}
-	var owner *NameRecord
+	var owner *snapshotNameRecord
 	for i := range data.Names {
 		if !watchedNames[data.Names[i].Name] {
 			return nil, ErrSnapshotInvalid

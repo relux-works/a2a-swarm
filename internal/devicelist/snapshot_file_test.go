@@ -9,7 +9,7 @@ import (
 )
 
 // snapshotText is the fixture snapshot spelled by hand, member by member, as
-// the chain gateway contract at 62a2fcf7 (section 5, part (B)) writes it. It does not come from the parser's encoder,
+// the chain gateway contract at d1cab6f8 (section 5, part (B)) writes it. It does not come from the parser's encoder,
 // so it pins the spelling of the file from outside.
 func snapshotText(value []byte) string {
 	a1, hash, block, txid := sealTxID, testTip.Hash, testOp.BlockHash, testOp.TxID
@@ -131,7 +131,7 @@ func TestSnapshotFileStrict(t *testing.T) {
 		if bytes.Equal(octets, raw) {
 			t.Fatalf("%s: mutation did not change the octets", name)
 		}
-		if parsed, err := parseSnapshotFile(octets); err != ErrSnapshotInvalid || !reflect.DeepEqual(parsed, SnapshotData{}) {
+		if parsed, err := parseSnapshotFile(octets); err != ErrSnapshotInvalid || !reflect.DeepEqual(parsed, snapshotDataValue{}) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
@@ -150,18 +150,18 @@ func TestSnapshotFileStrict(t *testing.T) {
 // Claim: name, seal and value bounds, numeric outpoint sorting and name-operation tip binding accept controls and reject violations.
 func TestSnapshotFileBounds(t *testing.T) {
 	list := mustParse(t, []byte(exampleList))
-	base := func() SnapshotData { return snapshotData(nameValue(pinOf(list)), list) }
-	names := func(n int) []NameRecord {
-		var out []NameRecord
+	base := func() snapshotDataValue { return snapshotData(nameValue(pinOf(list)), list) }
+	names := func(n int) []snapshotNameRecord {
+		var out []snapshotNameRecord
 		for i := 0; i < n; i++ {
-			out = append(out, NameRecord{Name: "id/n" + string(rune('a'+i)), Value: []byte{}, Op: testOp})
+			out = append(out, snapshotNameRecord{Name: "id/n" + string(rune('a'+i)), Value: []byte{}, Op: testOp})
 		}
 		return out
 	}
-	seals := func(n int) []SealRecord {
-		var out []SealRecord
+	seals := func(n int) []snapshotSealRecord {
+		var out []snapshotSealRecord
 		for i := 0; i < n; i++ {
-			out = append(out, SealRecord{Outpoint: Outpoint{TxID: sealTxID, Vout: uint32(i)}, State: SealUnspent, Confirmations: 1})
+			out = append(out, snapshotSealRecord{Outpoint: Outpoint{TxID: sealTxID, Vout: uint32(i)}, State: SealUnspent, Confirmations: 1})
 		}
 		return out
 	}
@@ -169,38 +169,38 @@ func TestSnapshotFileBounds(t *testing.T) {
 	cases := []struct {
 		name   string
 		valid  bool
-		change func(d *SnapshotData)
+		change func(d *snapshotDataValue)
 	}{
-		{"control", true, func(d *SnapshotData) {}},
-		{"16 names", true, func(d *SnapshotData) { d.Names = names(16) }},
-		{"17 names", false, func(d *SnapshotData) { d.Names = names(17) }},
-		{"no name", false, func(d *SnapshotData) { d.Names = nil }},
-		{"names out of order", false, func(d *SnapshotData) { n := names(2); d.Names = []NameRecord{n[1], n[0]} }},
-		{"name twice", false, func(d *SnapshotData) { n := names(1); d.Names = []NameRecord{n[0], n[0]} }},
-		{"256 seals", true, func(d *SnapshotData) { d.Seals = seals(256) }},
-		{"257 seals", false, func(d *SnapshotData) { d.Seals = seals(257) }},
-		{"no seal", false, func(d *SnapshotData) { d.Seals = nil }},
+		{"control", true, func(d *snapshotDataValue) {}},
+		{"16 names", true, func(d *snapshotDataValue) { d.Names = names(16) }},
+		{"17 names", false, func(d *snapshotDataValue) { d.Names = names(17) }},
+		{"no name", false, func(d *snapshotDataValue) { d.Names = nil }},
+		{"names out of order", false, func(d *snapshotDataValue) { n := names(2); d.Names = []snapshotNameRecord{n[1], n[0]} }},
+		{"name twice", false, func(d *snapshotDataValue) { n := names(1); d.Names = []snapshotNameRecord{n[0], n[0]} }},
+		{"256 seals", true, func(d *snapshotDataValue) { d.Seals = seals(256) }},
+		{"257 seals", false, func(d *snapshotDataValue) { d.Seals = seals(257) }},
+		{"no seal", false, func(d *snapshotDataValue) { d.Seals = nil }},
 		// 2 before 10 is the numeric order; as strings "10" sorts first.
-		{"vout 2 then 10", true, func(d *SnapshotData) { s := seals(11); d.Seals = []SealRecord{s[2], s[10]} }},
-		{"vout 10 then 2", false, func(d *SnapshotData) { s := seals(11); d.Seals = []SealRecord{s[10], s[2]} }},
-		{"txid ascending", true, func(d *SnapshotData) {
-			d.Seals = []SealRecord{{Outpoint: Outpoint{TxID: lower, Vout: 9}, State: SealUnspent, Confirmations: 1}, seals(1)[0]}
+		{"vout 2 then 10", true, func(d *snapshotDataValue) { s := seals(11); d.Seals = []snapshotSealRecord{s[2], s[10]} }},
+		{"vout 10 then 2", false, func(d *snapshotDataValue) { s := seals(11); d.Seals = []snapshotSealRecord{s[10], s[2]} }},
+		{"txid ascending", true, func(d *snapshotDataValue) {
+			d.Seals = []snapshotSealRecord{{Outpoint: Outpoint{TxID: lower, Vout: 9}, State: SealUnspent, Confirmations: 1}, seals(1)[0]}
 		}},
-		{"txid descending", false, func(d *SnapshotData) {
-			d.Seals = []SealRecord{seals(1)[0], {Outpoint: Outpoint{TxID: lower, Vout: 9}, State: SealUnspent, Confirmations: 1}}
+		{"txid descending", false, func(d *snapshotDataValue) {
+			d.Seals = []snapshotSealRecord{seals(1)[0], {Outpoint: Outpoint{TxID: lower, Vout: 9}, State: SealUnspent, Confirmations: 1}}
 		}},
-		{"empty value", true, func(d *SnapshotData) { d.Names[0].Value = []byte{} }},
-		{"value of 520 bytes", true, func(d *SnapshotData) { d.Names[0].Value = bytes.Repeat([]byte("x"), 520) }},
-		{"value of 521 bytes", false, func(d *SnapshotData) { d.Names[0].Value = bytes.Repeat([]byte("x"), 521) }},
-		{"tip of height 0", true, func(d *SnapshotData) {
+		{"empty value", true, func(d *snapshotDataValue) { d.Names[0].Value = []byte{} }},
+		{"value of 520 bytes", true, func(d *snapshotDataValue) { d.Names[0].Value = bytes.Repeat([]byte("x"), 520) }},
+		{"value of 521 bytes", false, func(d *snapshotDataValue) { d.Names[0].Value = bytes.Repeat([]byte("x"), 521) }},
+		{"tip of height 0", true, func(d *snapshotDataValue) {
 			d.Tip.Height = 0
 			d.Names[0].Op.Height, d.Names[0].Op.BlockHash = 0, d.Tip.Hash
 		}},
-		{"name in the tip block", true, func(d *SnapshotData) {
+		{"name in the tip block", true, func(d *snapshotDataValue) {
 			d.Names[0].Op.Height, d.Names[0].Op.BlockHash = d.Tip.Height, d.Tip.Hash
 		}},
-		{"name at the tip height in another block", false, func(d *SnapshotData) { d.Names[0].Op.Height = d.Tip.Height }},
-		{"expired name", true, func(d *SnapshotData) { d.Names[0].Expired = true }},
+		{"name at the tip height in another block", false, func(d *snapshotDataValue) { d.Names[0].Op.Height = d.Tip.Height }},
+		{"expired name", true, func(d *snapshotDataValue) { d.Names[0].Expired = true }},
 	}
 	for _, c := range cases {
 		data := base()
@@ -209,7 +209,7 @@ func TestSnapshotFileBounds(t *testing.T) {
 		if c.valid && (err != nil || !reflect.DeepEqual(parsed, data)) {
 			t.Fatalf("%s: control refused: %v", c.name, err)
 		}
-		if !c.valid && (err != ErrSnapshotInvalid || !reflect.DeepEqual(parsed, SnapshotData{})) {
+		if !c.valid && (err != ErrSnapshotInvalid || !reflect.DeepEqual(parsed, snapshotDataValue{})) {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 	}

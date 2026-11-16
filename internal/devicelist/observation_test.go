@@ -46,8 +46,8 @@ func TestOlderObservationDoesNotMutateJournal(t *testing.T) {
 		t.Run(map[bool]string{false: "non-older control", true: "older observation"}[older], func(t *testing.T) {
 			s := newScenario(t)
 			s.useAt(t, replaced(t, `"seq":5`, `"seq":6`), opAt(812310))
-			s.edit(t, func(d *SnapshotData) { d.Names[0].Op = opAt(812310); d.Tip.Height = 812350 })
-			wantAdmitted(t, s)
+			s.edit(t, func(d *snapshotDataValue) { d.Names[0].Op = opAt(812310); d.Tip.Height = 812350 })
+			wantObservedInstruct(t, s)
 			head, _ := s.journal.Head("main", "id/alisa")
 			observed := s.journal.owners[journalOwner{"main", "id/alisa"}].seenUnspent[sealE]
 			if observed.Height != 812350 || observed.Hash != testTip.Hash {
@@ -56,9 +56,9 @@ func TestOlderObservationDoesNotMutateJournal(t *testing.T) {
 			s.next()
 			s.use(t, []byte(exampleList), sealE)
 			if !older {
-				s.edit(t, func(d *SnapshotData) {
+				s.edit(t, func(d *snapshotDataValue) {
 					d.Tip.Height = 812351
-					d.Seals[2] = SealRecord{Outpoint: sealE, State: SealNotInUTXOSet}
+					d.Seals[2] = snapshotSealRecord{Outpoint: sealE, State: SealNotInUTXOSet}
 				})
 			}
 			wantRefused(t, s, DeviceRevoked, 8)
@@ -77,16 +77,20 @@ func TestOlderObservationDoesNotMutateJournal(t *testing.T) {
 	}
 }
 
-// Claim: stale views write no owners, replay keys, heads, seen-unspent records or closures, beside young-view controls.
-func TestStaleObservationWritesNothing(t *testing.T) {
+// Claim: stale instruct observations record replay pairs but no heads, seen-unspent entries or closures, beside young controls.
+func TestStaleObservationWritesOnlyReplay(t *testing.T) {
 	s := newScenario(t)
 	s.at.Now = now.Add(time.Minute)
-	wantAdmitted(t, s)
-	if len(s.journal.owners) != 0 || s.journal.replayCount != 0 {
-		t.Fatal("stale admission wrote journal state")
+	wantObservedInstruct(t, s)
+	staleState := s.journal.owners[journalOwner{"main", s.list.Owner()}]
+	if staleState == nil || staleState.hasHead || len(staleState.seenUnspent) != 0 || len(staleState.closedKeys) != 0 || len(staleState.closedSeals) != 0 || s.journal.replayCount != 1 {
+		t.Fatal("stale instruct wrote chain-derived state or lost replay pair")
 	}
+	wantRefused(t, s, Replay, 11)
 	s.at = at
-	wantAdmitted(t, s)
+	wantRefused(t, s, Replay, 11)
+	s.next()
+	wantObservedInstruct(t, s)
 	state := s.journal.owners[journalOwner{"main", "id/alisa"}]
 	head := state.head
 	seen := map[Outpoint]Tip{}
@@ -102,9 +106,9 @@ func TestStaleObservationWritesNothing(t *testing.T) {
 		t.Fatal("stale absence mutated journal")
 	}
 	s.chain = snapshotOf(t, s.list)
-	wantAdmitted(t, s)
-	if state.head != head || s.journal.replayCount != replays || !reflect.DeepEqual(state.seenUnspent, seen) {
-		t.Fatal("stale unspent mutated journal")
+	wantObservedInstruct(t, s)
+	if state.head != head || s.journal.replayCount != replays+1 || !reflect.DeepEqual(state.seenUnspent, seen) {
+		t.Fatal("stale unspent changed chain state or lost replay pair")
 	}
 	s.at = at
 	s.chain = snapshotOf(t, s.list, sealE)
@@ -117,7 +121,7 @@ func TestStaleObservationWritesNothing(t *testing.T) {
 // Claim: a newer seen-unspent observation independently guards closure when the name head is absent.
 func TestSeenObservationOrdersClosure(t *testing.T) {
 	s := newScenario(t)
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	state := s.journal.owners[journalOwner{"main", "id/alisa"}]
 	state.hasHead = false
 	tip := state.seenUnspent[sealE]
@@ -130,9 +134,9 @@ func TestSeenObservationOrdersClosure(t *testing.T) {
 		t.Fatal("older absence closed")
 	}
 	state.hasHead = false
-	s.edit(t, func(d *SnapshotData) {
+	s.edit(t, func(d *snapshotDataValue) {
 		d.Tip.Height = tip.Height
-		d.Seals[2] = SealRecord{Outpoint: sealE, State: SealNotInUTXOSet}
+		d.Seals[2] = snapshotSealRecord{Outpoint: sealE, State: SealNotInUTXOSet}
 	})
 	wantRefused(t, s, DeviceRevoked, 8)
 	if !isClosed(s, keyEdE, sealE) {
@@ -144,7 +148,7 @@ func TestSeenObservationOrdersClosure(t *testing.T) {
 func TestAllPinnedSealsAreObserved(t *testing.T) {
 	s := threeDevices(t)
 	seal2 := Outpoint{TxID: sealTxID, Vout: 3}
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	if !s.journal.SeenUnspent("main", "id/alisa", seal2) {
 		t.Fatal("other device seal not observed")
 	}
@@ -160,7 +164,7 @@ func TestAllPinnedSealsAreObserved(t *testing.T) {
 		t.Fatal("never-seen control closed")
 	}
 	control.chain = snapshotOf(t, control.list)
-	wantAdmitted(t, control)
+	wantObservedInstruct(t, control)
 }
 
 // Claim: transient seal states refuse only the command without closing or setting seen-unspent, and later unspent admits.
@@ -169,10 +173,10 @@ func TestTransientSealNeverCloses(t *testing.T) {
 		for _, primed := range []bool{false, true} {
 			s := newScenario(t)
 			if primed {
-				wantAdmitted(t, s)
+				wantObservedInstruct(t, s)
 				s.next()
 			}
-			s.edit(t, func(d *SnapshotData) {
+			s.edit(t, func(d *snapshotDataValue) {
 				d.Seals[2].State = state
 				if state == SealUnconfirmed {
 					d.Seals[2].Confirmations = 0
@@ -183,7 +187,7 @@ func TestTransientSealNeverCloses(t *testing.T) {
 				t.Fatalf("transient state journaled: %+v", r)
 			}
 			s.chain = snapshotOf(t, s.list)
-			wantAdmitted(t, s)
+			wantObservedInstruct(t, s)
 		}
 	}
 }
@@ -192,7 +196,7 @@ func maxSnapshotPayload(t testing.TB) []byte {
 	t.Helper()
 	list := mustParse(t, []byte(exampleList))
 	data := snapshotData(nameValue(pinOf(list)), list)
-	data.Seals = append(data.Seals, SealRecord{Outpoint: Outpoint{TxID: sealTxID, Vout: 3}, State: SealUnspent, Confirmations: 1})
+	data.Seals = append(data.Seals, snapshotSealRecord{Outpoint: Outpoint{TxID: sealTxID, Vout: 3}, State: SealUnspent, Confirmations: 1})
 	for i := range data.Seals {
 		data.Seals[i].ScriptPubKey = ""
 	}
@@ -223,7 +227,7 @@ func TestSealRecordSchema(t *testing.T) {
 	base.Seals = base.Seals[2:]
 	for _, state := range []SealState{SealUnspent, SealUnconfirmed, SealSpendPending, SealNotInUTXOSet} {
 		data := base
-		data.Seals = append([]SealRecord(nil), base.Seals...)
+		data.Seals = append([]snapshotSealRecord(nil), base.Seals...)
 		data.Seals[0].State = state
 		if state == SealUnconfirmed || state == SealNotInUTXOSet {
 			data.Seals[0].Confirmations = 0
@@ -268,7 +272,7 @@ func TestSealRecordSchema(t *testing.T) {
 func TestFutureTipTime(t *testing.T) {
 	for _, ahead := range []uint64{7200, 7201} {
 		s := newScenario(t)
-		s.edit(t, func(d *SnapshotData) { d.WrittenAt = uint64(now.Unix()); d.Tip.Time = uint64(now.Unix()) + ahead })
+		s.edit(t, func(d *snapshotDataValue) { d.WrittenAt = uint64(now.Unix()); d.Tip.Time = uint64(now.Unix()) + ahead })
 		tip := testTip
 		tip.Time = uint64(now.Unix()) + ahead
 		s.at = Check{Now: now, ClockTrusted: true, LiveTip: &tip}
@@ -285,13 +289,13 @@ func TestFutureTipTime(t *testing.T) {
 // Claim: a transient-closes source plant is detected by the ordinary transient-state test's closure assertions.
 func TestTransientPlantControl(t *testing.T) {
 	s := newScenario(t)
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s.next()
-	s.edit(t, func(d *SnapshotData) { d.Seals[2].State = SealSpendPending })
+	s.edit(t, func(d *snapshotDataValue) { d.Seals[2].State = SealSpendPending })
 	wantRefused(t, s, DeviceRevoked, 8)
 	if isClosed(s, keyEdE, sealE) {
 		t.Fatal("a transient state closed")
 	}
 	s.chain = snapshotOf(t, s.list)
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 }

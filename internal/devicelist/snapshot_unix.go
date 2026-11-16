@@ -38,7 +38,9 @@ var errSnapshotUnlinked = errors.New("devicelist: snapshot replaced during open"
 // snapshotStatSafe applies the profile of the chain gateway contract,
 // section 5: ancestors have no group/other write bits, the output parent is
 // exactly 0755, and the regular file is exactly 0644 with one link. All are
-// profile-owned and pass the platform ACL check.
+// profile-owned. Linux rejects POSIX ACL xattrs unless the filesystem returns
+// ENOTSUP (that filesystem's ACLs are not checked). Darwin does not check ACLs
+// and therefore has a weaker-than-contract profile.
 func snapshotStatSafe(f *os.File, profile snapshotProfile, directory, parent bool) error {
 	fd := int(f.Fd())
 	var st unix.Stat_t
@@ -143,6 +145,11 @@ func readSnapshotFile(profile snapshotProfile, path string) ([]byte, error) {
 //
 // The label is the one of this check only. Admit labels the view again at
 // every use, so a view that is kept does not stay young.
+//
+// Darwin does not check ACLs: its filesystem profile is weaker than the
+// contract and requires separate native qualification before installation.
+// Linux rejects POSIX ACL xattrs, but ENOTSUP is accepted: a filesystem without
+// the POSIX ACL xattr namespace is not checked for ACLs.
 func ReadSnapshot(config SnapshotConfig, at Check) (*Snapshot, Freshness, error) {
 	return readSnapshot(hostSnapshotProfile, config, at)
 }

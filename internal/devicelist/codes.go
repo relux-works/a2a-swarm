@@ -44,7 +44,7 @@ const (
 )
 
 // Operational failures. They are never a verdict about an event: Admit
-// returns them as an error with a zero Result, which admits nothing.
+// returns them as an error with Result{ObserveOnly: true} and no command verdict.
 var (
 	ErrInvalid             = errors.New("devicelist: invalid argument")
 	ErrChainView           = errors.New("devicelist: chain view unavailable")

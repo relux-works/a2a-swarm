@@ -50,7 +50,7 @@ const LevelL1 = 1
 // ActionInstruct is the action of a plain encrypted text (OM6).
 const ActionInstruct = "instruct"
 
-// Result is the verdict of Admit. No effect is executed on any outcome.
+// Result is the observe-only result of Admit. No outcome authorizes delivery.
 type Result struct {
 	Outcome Outcome
 	// Level and Action are set on OutcomeInstruct only: 1 and "instruct".
@@ -61,8 +61,8 @@ type Result struct {
 	// Step is 1 for OutcomeIgnored.
 	Code Code
 	Step int
-	// Live copies ChainView.Live. While it is false the verdict may feed an
-	// observe label only and must not switch admission.
+	// Live copies the trusted ChainView.Live claim. Even when true, the
+	// result is observe-only and must never gate delivery.
 	Live bool
 	// ObserveOnly is true on every Result that Admit returns, whatever Live
 	// says: the journal behind the verdict is observe-grade (ObserveJournal),
@@ -83,9 +83,11 @@ type Result struct {
 	ListSHA256 string
 }
 
-// Admitted reports an L1 instruct verdict.
-func (r Result) Admitted() bool {
-	return r.Outcome == OutcomeInstruct && r.Code == "" && r.Level == LevelL1 && r.Action == ActionInstruct
+// ObservedInstruct reports what an enforcing reader WOULD have decided:
+// L1 instruct, subject to all checks outside this package. It reports only
+// marked observe-only results and must never gate delivery.
+func (r Result) ObservedInstruct() bool {
+	return r.ObserveOnly && r.Outcome == OutcomeInstruct && r.Code == "" && r.Level == LevelL1 && r.Action == ActionInstruct
 }
 
 // sealState is the seal read of step 8 (O8.9). It is a variable only so that
@@ -118,8 +120,8 @@ var seenUnspentBefore = func(state *ownerJournal, seal Outpoint) bool { _, ok :=
 //	        pin's and the name's (DEVICE_LIST_MISMATCH). The head of step 4
 //	        is journaled here, before steps 6 to 11: the pin comes from the
 //	        protected view and the list hashes to it, so an event of an
-//	        unlisted key or a replay can also move the head. Stale or older
-//	        observations never write it.
+//	        unlisted key or a replay can also move the head. Stale, older or
+//	        equal-height different-hash observations never write it.
 //	step 6  one record has the event's key bytes (DEVICE_UNKNOWN) and the
 //	        alg matrix-ed25519 (DEVICE_ALG_UNSUPPORTED for a reserved alg,
 //	        DEVICE_ALG_MISMATCH otherwise).
@@ -127,14 +129,16 @@ var seenUnspentBefore = func(state *ownerJournal, seal Outpoint) bool { _, ok :=
 //	        (DEVICE_REVOKED), the owner's journal is not full (JOURNAL_FULL),
 //	        the view holds a statement about the seal (CHAIN_VIEW_UNAVAILABLE
 //	        with the label invalid), and the seal is positively unspent
-//	        (DEVICE_REVOKED). At each admission all positively unspent seals
-//	        of the pinned list are journaled. Transient unconfirmed and
-//	        spend_pending states refuse only the command and create no seal
-//	        journal records.
+//	        (DEVICE_REVOKED). At an unspent pass, all positively unspent seals
+//	        of the authenticated list are journaled atomically, even if the
+//	        event is later refused: the view is the evidence, not the event.
+//	        Transient unconfirmed and spend_pending states refuse only the
+//	        command and create no seal journal records.
 //	        An absent seal always refuses this event; it is journaled as a
 //	        observe-grade closure only when this journal saw that seal
-//	        unspent before at a non-newer tip. The absence of a seal never seen unspent journals
-//	        nothing, so the device is admitted once the seal is unspent.
+//	        unspent before at a lower height or the same height and hash.
+//	        Never-seen absence journals nothing, so a later unspent view can
+//	        produce an instruct observation.
 //	step 9  the record has no presence and ceiling exactly 1
 //	        (DEVICE_LIST_INVALID, OM1 and S29-17; section 11 names
 //	        LEVEL_ABOVE_DEVICE for a command above the ceiling, which a plain
@@ -148,8 +152,10 @@ var seenUnspentBefore = func(state *ownerJournal, seal Outpoint) bool { _, ok :=
 // no effect. at is the consumer's knowledge at this check: the age of the
 // view is judged here, at every use. A view labelled stale or unknown still
 // gives a verdict, with that label; no label makes the verdict more than an
-// observation. Stale views write no journal state. Older observation tips
-// also give per-command verdicts only, with no permanent changes.
+// observation. Stale, older and equal-height different-hash observations
+// write no chain-derived state (heads, seen-unspent entries or closures).
+// Successful instruct observations always record the consumer-side replay
+// pair, including under those views.
 //
 // An error means no verdict: an invalid argument or an unavailable chain
 // view. Everything else is a Result. Admit reads nothing but its arguments
@@ -203,15 +209,14 @@ func Admit(event Event, ownerRoom string, at Check, lists Lists, chain ChainView
 	}
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
+	state := journal.state(name.Network, name.Owner, false)
 	writable := result.Label != LabelStale
-	state := journal.state(name.Network, name.Owner, writable)
 	if state == nil {
-		if writable {
+		state = emptyOwnerJournal() // Allocate permanent state only when a write is needed.
+		if len(journal.owners) >= journal.maxOwners {
 			return refuse(4, JournalFull)
 		}
-		state = emptyOwnerJournal() // A stale view cannot even allocate permanent owner state.
-	}
-	if state.hasHead && olderObservation(name.Tip, state.head.ObservedAt) {
+	} else if state.hasHead && !observationCanFollow(name.Tip, state.head.ObservedAt) {
 		writable = false
 	}
 	if name.Expired || !name.HasPin || !name.Pin.valid() {
@@ -234,6 +239,7 @@ func Admit(event Event, ownerRoom string, at Check, lists Lists, chain ChainView
 	}
 	result.ListSeq, result.ListSHA256 = name.Pin.Seq, name.Pin.SHA256
 	if writable {
+		journal.owners[journalOwner{name.Network, name.Owner}] = state
 		if decision == headTake {
 			state.hasHead, state.head = true, Head{Seq: name.Pin.Seq, SHA256: name.Pin.SHA256, Op: name.Op, ObservedAt: name.Tip}
 		} else {
@@ -277,14 +283,16 @@ func Admit(event Event, ownerRoom string, at Check, lists Lists, chain ChainView
 	switch seal {
 	case SealUnspent:
 		if writable {
-			// Each admission observes every positively unspent seal of the list.
+			// The authenticated view is evidence even if step 9 or 11 refuses.
+			observations := make(map[Outpoint]Tip)
 			for _, device := range list.devices {
 				observed, readErr := sealState(chain, device.Seal)
 				if readErr == nil && observed == SealUnspent {
-					if journal.sawUnspent(state, device.Seal, name.Tip) != nil {
-						return refuse(8, JournalFull)
-					}
+					observations[device.Seal] = name.Tip
 				}
+			}
+			if journal.sawUnspentSet(state, observations) != nil {
+				return refuse(8, JournalFull)
 			}
 		}
 	case SealUnconfirmed, SealSpendPending:
@@ -295,7 +303,7 @@ func Admit(event Event, ownerRoom string, at Check, lists Lists, chain ChainView
 		// recorded, close marks the owner full, and nothing of the owner is
 		// admitted afterwards.
 		observed := state.seenUnspent[record.Seal]
-		if writable && !olderObservation(name.Tip, observed) && seenUnspentBefore(state, record.Seal) {
+		if writable && observationCanFollow(name.Tip, observed) && seenUnspentBefore(state, record.Seal) {
 			_ = journal.close(state, record.Key, record.Seal)
 		}
 		return refuse(8, DeviceRevoked)
@@ -314,10 +322,9 @@ func Admit(event Event, ownerRoom string, at Check, lists Lists, chain ChainView
 	if len(state.replay) >= journal.maxOwnerReplay || journal.replayCount >= journal.maxReplay {
 		return refuse(11, JournalFull)
 	}
-	if writable {
-		state.replay[replay] = true
-		journal.replayCount++
-	}
+	journal.owners[journalOwner{name.Network, name.Owner}] = state
+	state.replay[replay] = true
+	journal.replayCount++
 	result.Outcome, result.Level, result.Action = OutcomeInstruct, LevelL1, ActionInstruct
 	return result, nil
 }

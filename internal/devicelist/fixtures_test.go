@@ -101,16 +101,16 @@ func nameValue(pin Pin) []byte {
 // snapshotFor is the content of a snapshot file that watches one name, owner,
 // with the given value, and the seal of every device of the list: unspent,
 // except the ones named as absent.
-func snapshotFor(owner string, value []byte, list *List, absent ...Outpoint) SnapshotData {
-	data := SnapshotData{
+func snapshotFor(owner string, value []byte, list *List, absent ...Outpoint) snapshotDataValue {
+	data := snapshotDataValue{
 		Consistency: ConsistencyBracketed,
 		Network:     "main",
-		Names:       []NameRecord{{Name: owner, Value: value, Op: testOp}},
+		Names:       []snapshotNameRecord{{Name: owner, Value: value, Op: testOp}},
 		Tip:         testTip,
 		WrittenAt:   writtenAt,
 	}
 	for _, device := range list.Devices() {
-		record := SealRecord{Outpoint: device.Seal, State: SealUnspent, Confirmations: 1, ScriptPubKey: "51"}
+		record := snapshotSealRecord{Outpoint: device.Seal, State: SealUnspent, Confirmations: 1, ScriptPubKey: "51"}
 		for _, a := range absent {
 			if a == device.Seal {
 				record.State = SealNotInUTXOSet
@@ -127,13 +127,13 @@ func snapshotFor(owner string, value []byte, list *List, absent ...Outpoint) Sna
 }
 
 // snapshotData is snapshotFor the owner of the list.
-func snapshotData(value []byte, list *List, absent ...Outpoint) SnapshotData {
+func snapshotData(value []byte, list *List, absent ...Outpoint) snapshotDataValue {
 	return snapshotFor(list.Owner(), value, list, absent...)
 }
 
 // configOf is the host configuration whose watch set is exactly what the
 // data holds, serving the first name of the data.
-func configOf(data SnapshotData) SnapshotConfig {
+func configOf(data snapshotDataValue) SnapshotConfig {
 	config := SnapshotConfig{Path: "/var/lib/chain-snapshot/snapshot.json", Network: data.Network, Owner: data.Names[0].Name}
 	for _, name := range data.Names {
 		config.Names = append(config.Names, name.Name)
@@ -146,7 +146,7 @@ func configOf(data SnapshotData) SnapshotConfig {
 
 // viewOf makes the view through the one parser: the data is encoded as a
 // snapshot file and read back under its own watch set.
-func viewOf(t testing.TB, data SnapshotData) *Snapshot {
+func viewOf(t testing.TB, data snapshotDataValue) *Snapshot {
 	t.Helper()
 	view, err := newSnapshot(encodeSnapshotFile(data), configOf(data))
 	if err != nil {
@@ -233,12 +233,12 @@ func (s *scenario) use(t testing.TB, octets []byte, absent ...Outpoint) {
 func (s *scenario) useAt(t testing.TB, octets []byte, op NameOp) {
 	t.Helper()
 	s.use(t, octets)
-	s.edit(t, func(d *SnapshotData) { d.Names[0].Op = op })
+	s.edit(t, func(d *snapshotDataValue) { d.Names[0].Op = op })
 }
 
 // edit replaces the view by a snapshot of the scenario's list with one
 // change to its content.
-func (s *scenario) edit(t testing.TB, change func(*SnapshotData)) {
+func (s *scenario) edit(t testing.TB, change func(*snapshotDataValue)) {
 	t.Helper()
 	data := snapshotData(nameValue(pinOf(s.list)), s.list)
 	change(&data)

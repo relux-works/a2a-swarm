@@ -3,8 +3,9 @@
 `internal/devicelist` implements the Matrix device-list check of
 swarma-link-spec v0.1.51. LIP-0029 and LIP-0010 section 11 remain Drafts with
 co-author agreement pending. The snapshot target is swarma-chain-lab
-`CONTRACT.md` at **62a2fcf7**, sections 3–5. This is a library with no
-delivery-path caller, live adapter, network access, effect or persistence.
+`CONTRACT.md` at **d1cab6f81d14fc86dfa31a110a04d9f3b692850a**, sections 3–6.
+This is a library with no delivery-path caller, live adapter, network access,
+effect or persistence.
 
 ## API and decisions
 
@@ -28,7 +29,10 @@ Every returned `Result`, including refusals, closure-recording refusals,
 ignored events and error-path results, has **`ObserveOnly=true`**. An error
 has no command verdict and never admits. `Result.SealState` carries the
 actual step-8 answer, or is empty when no seal was read (including an
-already-journaled closure).
+already-journaled closure). `Result.ObservedInstruct()` reports what an
+enforcing reader WOULD have decided, subject to checks outside this package;
+it must never gate delivery. It recognizes only marked observe-only results.
+There is no admission accessor.
 
 `Code.IsLocal()` distinguishes `CHAIN_VIEW_UNAVAILABLE` and `JOURNAL_FULL`
 from the package's LIP-0029 codes. Neither local class is a specification
@@ -89,7 +93,10 @@ Seal shapes from contract section 3:
 Scripts are transported as lowercase even-length hex, 0–20000 characters.
 Present states with vout above 2147483647 are invalid. No expected script is
 defined by the pinned list format: **no seal-script validation is claimed**.
-Count caps do not promise that all combinations fit the byte bound.
+The parser validates confirmations and script bytes, then the public view
+retains only seal state. Its parser data and record types are private; no
+exported producer or metadata transport API is claimed. Count caps do not
+promise that all combinations fit the byte bound.
 
 `SnapshotConfig` comes from protected host configuration, never the snapshot
 or environment: one absolute clean physical path, network, owner and exact
@@ -103,8 +110,11 @@ ancestor is root-owned and has no group/other write bits (0711, 0700, 0750
 and 0555 are allowed if traversable); the containing directory is exactly
 0755. The regular file is root-owned, exactly 0644, single-link. Linux refuses
 all POSIX access/default ACLs, stricter than only refusing agent-writable
-ACLs. There is no writable/sticky-directory exception. On an opened inode
-with zero links, the reader reopens once relative to the validated parent;
+ACLs, except that `ENOTSUP` is accepted: a filesystem without the POSIX ACL
+xattr namespace is not checked for ACLs. Darwin does not check ACLs at all;
+its weaker-than-contract profile requires separate native qualification
+before installation. There is no writable/sticky-directory exception. On an
+opened inode with zero links, the reader reopens once relative to the validated parent;
 a second zero-link inode fails closed. It refuses effective UID zero and
 never creates or repairs the path. On macOS the configured path must be the
 physical path, with no symlink component.
@@ -132,9 +142,10 @@ unknown; future write or implausibly future tip invalid; age or lag stale;
 no independent live tip unknown; complete live-tip mismatch stale; otherwise
 fresh. A snapshot-only host never has a fresh label. `Admit` recalculates age
 at every use. Label combination never improves either input:
-**invalid > stale > unknown > fresh**. `ChainView.Freshness` remains a trusted
-adapter boundary: a foreign adapter can lie about its label. The package
-checks its closed set, not the honesty of foreign implementations.
+**invalid > stale > unknown > fresh**. All `ChainView` methods are a trusted
+adapter boundary: a foreign adapter can lie about its live flag, label, name
+or seal state. The package checks relevant shapes and closed sets, not the
+honesty of foreign implementations. A live claim never removes observe-only.
 
 ## Observe journal
 
@@ -146,18 +157,24 @@ All state is keyed by (network, owner). Nothing is evicted.
   Never-seen absence refuses only that command. A non-older absence after
   this reader journaled unspent creates an observe-grade closure by key and
   outpoint. Once recorded it is never lifted by any later view or head.
-  Errors create no closure. Each admission journals every seal of the pinned
-  list that the snapshot reports unspent, so another device's admission can
-  establish the observation preceding a device's own first event.
-- **Ordering:** a stale view writes nothing: no owner allocation, head,
-  seen-unspent entry, closure or replay key. It still gives its per-command
-  verdict with its label. The observing tip (height and hash) is retained
+  Errors create no closure. At an unspent step-8 pass, the reader journals
+  every seal of the authenticated pinned list that the view reports unspent,
+  even if the event is later refused for ceiling or replay: the evidence is
+  the view, not the event. This can precede another device's first event.
+  Capacity is checked for the complete set before the first seen-unspent
+  write; failure changes no seen entries or tips and marks the owner full.
+- **Ordering:** stale views write no head, seen-unspent entry or closure.
+  Replay pairs are consumer-side state, not chain-derived: every instruct
+  observation records its pair, even under a stale view, and duplicates
+  then observe `REPLAY` under stale or young views. Owner state may be
+  allocated for that pair. The observing tip (height and hash) is retained
   with the head and each seen-unspent entry. A lower observing height is
-  older: per-command verdict only, never a head decrease or closure. Equal
-  heights with different hashes cannot be temporally ordered by this format
-  and remain reorganisation candidates.
+  older. Equal heights with different hashes cannot be temporally ordered:
+  neither can close or overwrite the journaled head or seen tip. These
+  observations give per-command verdicts only, apart from recording replay
+  pairs. Equal height with the same hash can close after prior unspent.
 - **SH5 approximation:** once the pin/list bindings pass step 5, a usable
-  non-older view may move the head before later event refusals. The head
+  ordered view may move the head before later event refusals. The head
   contains sequence, pinned hash, earliest equal-pin name operation and most
   recent observation tip. A lower sequence at a higher operation height
   refuses `DEVICE_LIST_ROLLBACK`; a lower sequence at the same/lower operation
@@ -199,9 +216,17 @@ All state is keyed by (network, owner). Nothing is evicted.
   is unchanged. `swarma.owner_command` is not parsed: admitted events are
   plain L1 instruct. Lists enter only as supplied octets; no fetch path exists.
 - Exact shared fixtures are vendored as
-  `testdata/observations-62a2fcf7.json` and `testdata/vectors-62a2fcf7.json`
-  under the package. Tests drive all 21 label and 29 seal-history vectors,
-  every snapshot schema/size vector, plus independent parser, filesystem,
-  ordering, bounds and planted controls. Gateway request/response framing,
-  upstream two-read collection, retry and witness qualification are not
+  `testdata/observations-d1cab6f8.json` and `testdata/vectors-d1cab6f8.json`
+  under the package, with both full SHA-256 digests asserted in tests.
+  Tests assert all 21 labels, 29 seal histories (64 steps), 45 snapshot
+  schema and 3 size vectors, plus independent parser, filesystem, ordering,
+  bounds and planted controls. Size vectors exercise the real parser bound;
+  bounded non-JSON payloads still fail schema validation.
+  The seal-history oracle's `observe_closed` maps to the private observe
+  journal. `enforcement_closed` is always false: no such state exists here.
+  Its `refuse_command` flag means only that the current seal read is not
+  positively unspent (including read failure), independent of observe
+  closure. A false flag never authorizes admission; a retained closure may
+  still yield a refused consumer-check observation. Gateway request/response
+  framing, upstream two-read collection, retry and witness qualification are not
   implementations of this snapshot consumer and are not claimed here.

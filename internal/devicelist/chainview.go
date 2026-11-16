@@ -85,9 +85,11 @@ type Check struct {
 // Live reports whether the view sees the node's current state, mempool
 // included, at the time of the call. A view that is not live cannot see a
 // seal spend after it was made, so a verdict on it is for observation only.
-// Snapshot and UnavailableView are not live. Freshness is a trusted adapter
-// boundary: a foreign implementation can assert any label. Admit validates
-// its closed set, but cannot establish a foreign adapter's honesty.
+// Snapshot and UnavailableView are not live. ALL methods are a trusted
+// adapter boundary: a foreign implementation can assert the live flag, any
+// label, name or seal state. Admit validates the relevant shapes and closed
+// sets, but cannot establish a foreign adapter's honesty. No implementation's
+// Live claim can remove the observe-only marking of a Result.
 type ChainView interface {
 	// Name reads the owner's name. An error means the view is unavailable
 	// and no verdict can be made.

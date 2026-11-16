@@ -26,7 +26,7 @@ func refusedWith(s *scenario, code Code, step int) error {
 	if err != nil {
 		return fmt.Errorf("error instead of %s: %w", code, err)
 	}
-	if result.Admitted() {
+	if result.ObservedInstruct() {
 		return fmt.Errorf("admitted as L1 instruct instead of %s", code)
 	}
 	if result.Code != code || result.Step != step {
@@ -114,7 +114,7 @@ func assertSeenUnspentGate(t testing.TB) error {
 	}
 	s.chain = unspent
 	result, err := s.admit()
-	if err != nil || !result.Admitted() {
+	if err != nil || !result.ObservedInstruct() {
 		return named("assertSeenUnspentGate", fmt.Errorf("the device was not admitted once its seal was unspent: %+v %v", result, err))
 	}
 	return nil

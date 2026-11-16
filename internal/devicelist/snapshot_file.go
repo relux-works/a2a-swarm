@@ -8,7 +8,7 @@ import (
 )
 
 // The snapshot file is the root snapshot file of the chain gateway contract
-// (swarma-chain-lab CONTRACT.md at 62a2fcf7, section 5, part (B)).
+// (swarma-chain-lab CONTRACT.md at d1cab6f8, section 5, part (B)).
 // It is OBSERVE ONLY.
 //
 // One CG1 canonical object, at most 65536 bytes, no LF, keys in ascending
@@ -29,7 +29,7 @@ import (
 // parseSnapshotFile is the only entry. What a change of the contract touches
 // beyond this file depends on the change: a renamed member or another
 // spelling stays here; a new fact (as the tip time and the consistency were)
-// also changes SnapshotData, the view and the label function in snapshot.go.
+// also changes snapshotDataValue, the view and the label function in snapshot.go.
 type snapshotFile struct {
 	Consistency string             `json:"consistency"`
 	Mode        string             `json:"mode"`
@@ -86,29 +86,29 @@ var consistencyAccepted = func(value string) bool { return value == ConsistencyB
 // exponent, a sign, a leading zero, white space, a BOM, an LF and trailing
 // bytes all refuse. Every refusal is ErrSnapshotInvalid, but a file over the
 // size bound, which is ErrCapacity; both mean the label invalid.
-func parseSnapshotFile(raw []byte) (SnapshotData, error) {
+func parseSnapshotFile(raw []byte) (snapshotDataValue, error) {
 	if len(raw) > MaxSnapshotBytes {
-		return SnapshotData{}, ErrCapacity
+		return snapshotDataValue{}, ErrCapacity
 	}
 	var f snapshotFile
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&f); err != nil {
-		return SnapshotData{}, ErrSnapshotInvalid
+		return snapshotDataValue{}, ErrSnapshotInvalid
 	}
 	if f.Mode != snapshotFileMode || f.V != snapshotFileVersion || !validNetwork(f.Network) {
-		return SnapshotData{}, ErrSnapshotInvalid
+		return snapshotDataValue{}, ErrSnapshotInvalid
 	}
 	if !printable(f.Consistency) || !consistencyAccepted(f.Consistency) {
-		return SnapshotData{}, ErrSnapshotInvalid
+		return snapshotDataValue{}, ErrSnapshotInvalid
 	}
 	if !validHash(f.Tip.Hash) || f.Tip.Height > MaxSeq || f.Tip.Time > MaxSeq || f.WrittenAt > MaxSeq {
-		return SnapshotData{}, ErrSnapshotInvalid
+		return snapshotDataValue{}, ErrSnapshotInvalid
 	}
 	if len(f.Names) < 1 || len(f.Names) > MaxSnapshotNames || len(f.Seals) < 1 || len(f.Seals) > MaxSnapshotSeals {
-		return SnapshotData{}, ErrSnapshotInvalid
+		return snapshotDataValue{}, ErrSnapshotInvalid
 	}
-	data := SnapshotData{
+	data := snapshotDataValue{
 		Consistency: f.Consistency,
 		Network:     f.Network,
 		Tip:         Tip{Hash: f.Tip.Hash, Height: f.Tip.Height, Time: f.Tip.Time},
@@ -117,20 +117,20 @@ func parseSnapshotFile(raw []byte) (SnapshotData, error) {
 	for i, n := range f.Names {
 		// Sorted strictly by the name's ASCII bytes: also no duplicate.
 		if !validSnapshotName(n.Name) || (i > 0 && n.Name <= f.Names[i-1].Name) {
-			return SnapshotData{}, ErrSnapshotInvalid
+			return snapshotDataValue{}, ErrSnapshotInvalid
 		}
 		if !validHash(n.NameBlockHash) || !validHash(n.TxID) || n.Height > f.Tip.Height {
-			return SnapshotData{}, ErrSnapshotInvalid
+			return snapshotDataValue{}, ErrSnapshotInvalid
 		}
 		// An operation in the tip block is in the block the tip names.
 		if n.Height == f.Tip.Height && n.NameBlockHash != f.Tip.Hash {
-			return SnapshotData{}, ErrSnapshotInvalid
+			return snapshotDataValue{}, ErrSnapshotInvalid
 		}
 		value, err := base64.StdEncoding.Strict().DecodeString(n.ValueB64)
 		if err != nil || len(value) > MaxNameValue {
-			return SnapshotData{}, ErrSnapshotInvalid
+			return snapshotDataValue{}, ErrSnapshotInvalid
 		}
-		data.Names = append(data.Names, NameRecord{
+		data.Names = append(data.Names, snapshotNameRecord{
 			Name:    n.Name,
 			Value:   value,
 			Expired: n.Expired,
@@ -141,41 +141,41 @@ func parseSnapshotFile(raw []byte) (SnapshotData, error) {
 	for i, s := range f.Seals {
 		state := SealState(s.State)
 		if !validHash(s.TxID) {
-			return SnapshotData{}, ErrSnapshotInvalid
+			return snapshotDataValue{}, ErrSnapshotInvalid
 		}
-		record := SealRecord{Outpoint: Outpoint{TxID: s.TxID, Vout: s.Vout}, State: state}
+		record := snapshotSealRecord{Outpoint: Outpoint{TxID: s.TxID, Vout: s.Vout}, State: state}
 		switch state {
 		case SealUnspent, SealUnconfirmed, SealSpendPending:
 			if s.Confirmations == nil || s.ScriptPubKey == nil || *s.Confirmations > MaxSeq ||
 				!validScript(*s.ScriptPubKey) || s.Vout > 2147483647 {
-				return SnapshotData{}, ErrSnapshotInvalid
+				return snapshotDataValue{}, ErrSnapshotInvalid
 			}
 			if state == SealUnconfirmed {
 				if *s.Confirmations != 0 {
-					return SnapshotData{}, ErrSnapshotInvalid
+					return snapshotDataValue{}, ErrSnapshotInvalid
 				}
 			} else if *s.Confirmations == 0 || *s.Confirmations > f.Tip.Height+1 {
-				return SnapshotData{}, ErrSnapshotInvalid
+				return snapshotDataValue{}, ErrSnapshotInvalid
 			}
 			record.Confirmations, record.ScriptPubKey = *s.Confirmations, *s.ScriptPubKey
 		case SealNotInUTXOSet:
 			if s.Confirmations != nil || s.ScriptPubKey != nil {
-				return SnapshotData{}, ErrSnapshotInvalid
+				return snapshotDataValue{}, ErrSnapshotInvalid
 			}
 		default:
-			return SnapshotData{}, ErrSnapshotInvalid
+			return snapshotDataValue{}, ErrSnapshotInvalid
 		}
 		// Sorted strictly by txid, then by the numeric vout: also no duplicate.
 		if i > 0 {
 			previous := f.Seals[i-1]
 			if s.TxID < previous.TxID || (s.TxID == previous.TxID && s.Vout <= previous.Vout) {
-				return SnapshotData{}, ErrSnapshotInvalid
+				return snapshotDataValue{}, ErrSnapshotInvalid
 			}
 		}
 		data.Seals = append(data.Seals, record)
 	}
 	if !bytes.Equal(encodeSnapshotFile(data), raw) {
-		return SnapshotData{}, ErrSnapshotInvalid
+		return snapshotDataValue{}, ErrSnapshotInvalid
 	}
 	return data, nil
 }
@@ -185,7 +185,7 @@ func parseSnapshotFile(raw []byte) (SnapshotData, error) {
 // base64. The reader uses it for the identity check, and controls use it to
 // make fixtures without naming a member of the file. The caller has checked
 // that every string is printable ASCII.
-func encodeSnapshotFile(data SnapshotData) []byte {
+func encodeSnapshotFile(data snapshotDataValue) []byte {
 	b := append(make([]byte, 0, 1024), `{"consistency":`...)
 	b = appendString(b, data.Consistency)
 	b = append(b, `,"mode":`...)

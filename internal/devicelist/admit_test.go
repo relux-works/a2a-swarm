@@ -8,18 +8,18 @@ import (
 	"time"
 )
 
-func wantAdmitted(t testing.TB, s *scenario) Result {
+func wantObservedInstruct(t testing.TB, s *scenario) Result {
 	t.Helper()
 	r, err := s.admit()
-	if err != nil || !r.Admitted() {
-		t.Fatalf("valid control not admitted: %+v %v", r, err)
+	if err != nil || !r.ObservedInstruct() {
+		t.Fatalf("valid control did not observe instruct: %+v %v", r, err)
 	}
 	return r
 }
 func wantRefused(t testing.TB, s *scenario, code Code, step int) Result {
 	t.Helper()
 	r, err := s.admit()
-	if err != nil || r.Admitted() || r.Outcome != OutcomeRefused || r.Code != code || r.Step != step || r.Level != 0 || r.Action != "" {
+	if err != nil || r.ObservedInstruct() || r.Outcome != OutcomeRefused || r.Code != code || r.Step != step || r.Level != 0 || r.Action != "" {
 		t.Fatalf("want %s at step %d, got %+v %v", code, step, r, err)
 	}
 	return r
@@ -31,20 +31,24 @@ func isClosed(s *scenario, key string, seal Outpoint) bool {
 // Claim: a valid messenger event yields an L1 instruct observation naming its pin, tip and seal state.
 func TestAdmitL1Instruct(t *testing.T) {
 	s := newScenario(t)
-	r := wantAdmitted(t, s)
+	r := wantObservedInstruct(t, s)
 	want := Result{Outcome: OutcomeInstruct, Level: 1, Action: "instruct", ObserveOnly: true, Label: LabelUnknown, Tip: testTip, NameHeight: testOp.Height, ListSeq: 5, ListSHA256: exampleHash, SealState: SealUnspent}
 	if r != want {
 		t.Fatalf("got %+v, want %+v", r, want)
 	}
-	if (Result{}).Admitted() || (Result{Outcome: OutcomeInstruct}).Admitted() {
+	if (Result{}).ObservedInstruct() || (Result{Outcome: OutcomeInstruct}).ObservedInstruct() {
 		t.Fatal("incomplete result admits")
 	}
 }
 
-// Claim: admit, ordinary refusal, closure-recording refusal and ignored outcomes all remain ObserveOnly.
+// Claim: instruct, refusal, closure, ignored and error results remain observe-only, even from a view claiming to be live.
 func TestAllOutcomesObserveOnly(t *testing.T) {
 	s := newScenario(t)
-	admitted := wantAdmitted(t, s)
+	s.chain = liveClaimView{s.chain}
+	instruct := wantObservedInstruct(t, s)
+	if !instruct.Live {
+		t.Fatal("live-claim control missing")
+	}
 	refused := wantRefused(t, s, Replay, 11)
 	s.next()
 	s.chain = snapshotOf(t, s.list, sealE)
@@ -57,9 +61,35 @@ func TestAllOutcomesObserveOnly(t *testing.T) {
 	if err != nil || ignored.Outcome != OutcomeIgnored {
 		t.Fatalf("ignored: %+v %v", ignored, err)
 	}
-	for _, r := range []Result{admitted, refused, closed, ignored} {
+	errored, err := Admit(s.event, s.room, s.at, nil, s.chain, s.journal)
+	if err != ErrInvalid {
+		t.Fatal("missing error control:", err)
+	}
+	for _, r := range []Result{instruct, refused, closed, ignored, errored} {
 		if !r.ObserveOnly {
 			t.Fatalf("non-observe result %+v", r)
+		}
+	}
+}
+
+type liveClaimView struct{ ChainView }
+
+func (liveClaimView) Live() bool { return true }
+
+// Claim: only complete, observe-only instruct results satisfy ObservedInstruct; an unmarked or incomplete result does not.
+func TestObservedInstructMarking(t *testing.T) {
+	r := wantObservedInstruct(t, newScenario(t))
+	for _, change := range []func(*Result){
+		func(r *Result) { r.ObserveOnly = false },
+		func(r *Result) { r.Outcome = OutcomeRefused },
+		func(r *Result) { r.Code = Replay },
+		func(r *Result) { r.Level = 0 },
+		func(r *Result) { r.Action = "" },
+	} {
+		bad := r
+		change(&bad)
+		if bad.ObservedInstruct() || !r.ObservedInstruct() {
+			t.Fatalf("unexpected observation: %+v, control %+v", bad, r)
 		}
 	}
 }
@@ -78,10 +108,10 @@ func TestAdmitRefusals(t *testing.T) {
 		{"no source", func(s *scenario) { s.event.KeySource = "" }, MessengerUnauthenticated, 1},
 		{"other room", func(s *scenario) { s.event.Room = "!other:example.org" }, NotForMe, 2},
 		{"no pin", func(s *scenario) { s.chain = viewOf(t, snapshotData([]byte(`{}`), s.list)) }, DevicePinInvalid, 4},
-		{"expired", func(s *scenario) { s.edit(t, func(d *SnapshotData) { d.Names[0].Expired = true }) }, DevicePinInvalid, 4},
+		{"expired", func(s *scenario) { s.edit(t, func(d *snapshotDataValue) { d.Names[0].Expired = true }) }, DevicePinInvalid, 4},
 		{"cache miss", func(s *scenario) { s.lists = mustCache(t, 0) }, ListUnknown, 5},
 		{"wrong hash", func(s *scenario) { s.lists = fixedLists{mustParse(t, replaced(t, "phone P", "phone Q"))} }, DeviceListMismatch, 5},
-		{"wrong network", func(s *scenario) { s.edit(t, func(d *SnapshotData) { d.Network = "regtest" }) }, DeviceListMismatch, 5},
+		{"wrong network", func(s *scenario) { s.edit(t, func(d *snapshotDataValue) { d.Network = "regtest" }) }, DeviceListMismatch, 5},
 		{"wrong owner", func(s *scenario) {
 			l := mustParse(t, replaced(t, `"owner":"id/alisa"`, `"owner":"id/example"`))
 			s.lists = fixedLists{l}
@@ -109,7 +139,7 @@ func TestAdmitRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			wantAdmitted(t, newScenario(t))
+			wantObservedInstruct(t, newScenario(t))
 			s := newScenario(t)
 			c.change(s)
 			wantRefused(t, s, c.code, c.step)
@@ -117,7 +147,7 @@ func TestAdmitRefusals(t *testing.T) {
 	}
 	s := newScenario(t)
 	s.lists = fixedLists{tampered(s.list, func([]Record) {})}
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 }
 
 // Claim: plaintext is ignored without taking the encrypted event's replay key.
@@ -125,35 +155,35 @@ func TestPlaintextIgnored(t *testing.T) {
 	s := newScenario(t)
 	s.event.Plaintext = true
 	r, err := s.admit()
-	if err != nil || r.Outcome != OutcomeIgnored || r.Admitted() || r.Code != "" {
+	if err != nil || r.Outcome != OutcomeIgnored || r.ObservedInstruct() || r.Code != "" {
 		t.Fatalf("%+v %v", r, err)
 	}
 	s.event.Plaintext = false
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 }
 
 // Claim: replay keys distinguish session and index and a refused command consumes no replay key.
 func TestReplay(t *testing.T) {
 	s := newScenario(t)
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	wantRefused(t, s, Replay, 11)
 	s.next()
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s.event.SessionID = "another-session"
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s = newScenario(t)
 	lists := s.lists
 	s.lists = mustCache(t, 0)
 	wantRefused(t, s, ListUnknown, 5)
 	s.lists = lists
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 }
 
 // Claim: reserved algorithms parse but refuse messenger admission while an adjacent Matrix device admits.
 func TestReservedAlg(t *testing.T) {
 	s := newScenario(t)
 	s.use(t, listOctets(5, rec("matrix", AlgMatrixEd25519, keyEdE, false, 1, 2), rec("reserved", "ssh-ed25519", keyEd2, false, 1, 3)))
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s.as(t, keyEd2)
 	wantRefused(t, s, DeviceAlgUnsupported, 6)
 }
@@ -170,7 +200,7 @@ func TestUnknownAlgRefusesTheList(t *testing.T) {
 	}
 	s := newScenario(t)
 	s.use(t, listOctets(5, rec("device", AlgMatrixEd25519, keyEdE, false, 1, 2)))
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 }
 
 // Claim: the list parser refuses Matrix ceilings zero and two beside ceiling one.
@@ -198,7 +228,7 @@ func (brokenChain) Name() (NameView, error) {
 // Claim: a previously unspent then absent seal closes by key and outpoint, surviving later unspent views and list rotations.
 func TestSeenUnspentThenAbsentClosesForEver(t *testing.T) {
 	s := newScenario(t)
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	if !s.journal.SeenUnspent("main", "id/alisa", sealE) {
 		t.Fatal("not seen")
 	}
@@ -215,7 +245,7 @@ func TestSeenUnspentThenAbsentClosesForEver(t *testing.T) {
 		control := newScenario(t)
 		control.use(t, c.raw)
 		control.as(t, c.key)
-		wantAdmitted(t, control)
+		wantObservedInstruct(t, control)
 		control.journal = s.journal
 		control.next()
 		wantRefused(t, control, DeviceRevoked, 8)
@@ -232,7 +262,7 @@ func TestNeverSeenAbsentIsPerCommand(t *testing.T) {
 		t.Fatal("never-seen absence journaled")
 	}
 	s.chain = good
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s.next()
 	s.chain = snapshotOf(t, s.list, sealE)
 	wantRefused(t, s, DeviceRevoked, 8)
@@ -247,7 +277,7 @@ func TestNeverSeenAbsentIsPerCommand(t *testing.T) {
 func TestViewErrorsAreFixedClass(t *testing.T) {
 	for _, name := range []bool{false, true} {
 		s := newScenario(t)
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		s.next()
 		good := s.chain
 		if name {
@@ -256,11 +286,11 @@ func TestViewErrorsAreFixedClass(t *testing.T) {
 			s.chain = failingSeal{snapshotOf(t, s.list)}
 		}
 		r, err := s.admit()
-		if err != ErrChainView || strings.Contains(err.Error(), "sentinel") || r.Admitted() || !r.ObserveOnly || isClosed(s, keyEdE, sealE) {
+		if err != ErrChainView || strings.Contains(err.Error(), "sentinel") || r.ObservedInstruct() || !r.ObserveOnly || isClosed(s, keyEdE, sealE) {
 			t.Fatalf("%+v %v", r, err)
 		}
 		s.chain = good
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 	}
 }
 
@@ -269,7 +299,7 @@ func TestUnknownSealIsInvalid(t *testing.T) {
 	for _, stale := range []bool{false, true} {
 		s := newScenario(t)
 		good := s.chain
-		s.edit(t, func(d *SnapshotData) { d.Seals = d.Seals[:2] })
+		s.edit(t, func(d *snapshotDataValue) { d.Seals = d.Seals[:2] })
 		if stale {
 			s.at.Now = now.Add(time.Minute)
 		}
@@ -278,7 +308,7 @@ func TestUnknownSealIsInvalid(t *testing.T) {
 			t.Fatalf("%+v", r)
 		}
 		s.chain = good
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 	}
 }
 
@@ -326,13 +356,13 @@ func TestHeadApproximation(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := newScenario(t)
 			s.useAt(t, six, journaled)
-			wantAdmitted(t, s)
+			wantObservedInstruct(t, s)
 			s.next()
 			s.useAt(t, c.raw, c.op)
 			if c.rollback {
 				wantRefused(t, s, DeviceListRollback, 4)
 			} else {
-				wantAdmitted(t, s)
+				wantObservedInstruct(t, s)
 			}
 			head, ok := s.journal.Head("main", "id/alisa")
 			hash := exampleHash
@@ -344,7 +374,7 @@ func TestHeadApproximation(t *testing.T) {
 			}
 			s.next()
 			s.useAt(t, six, journaled)
-			wantAdmitted(t, s)
+			wantObservedInstruct(t, s)
 		})
 	}
 }
@@ -352,11 +382,11 @@ func TestHeadApproximation(t *testing.T) {
 // Claim: equal sequence with a different pin hash refuses rollback while equal sequence/hash at greater height keeps the earliest operation.
 func TestEqualSequencePinConflict(t *testing.T) {
 	s := newScenario(t)
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	original, _ := s.journal.Head("main", "id/alisa")
 	s.next()
 	s.useAt(t, []byte(exampleList), opAt(812320))
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s.next()
 	s.useAt(t, replaced(t, "phone P", "phone Q"), opAt(812320))
 	wantRefused(t, s, DeviceListRollback, 4)
@@ -370,7 +400,7 @@ func TestReorganisationKeepsClosures(t *testing.T) {
 	for _, closed := range []bool{false, true} {
 		s := newScenario(t)
 		s.useAt(t, replaced(t, `"seq":5`, `"seq":6`), opAt(812310))
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		if closed {
 			s.next()
 			s.chain = snapshotOf(t, s.list, sealE)
@@ -381,7 +411,7 @@ func TestReorganisationKeepsClosures(t *testing.T) {
 		if closed {
 			wantRefused(t, s, DeviceRevoked, 8)
 		} else {
-			wantAdmitted(t, s)
+			wantObservedInstruct(t, s)
 		}
 		if head, _ := s.journal.Head("main", "id/alisa"); head.Seq != 5 {
 			t.Fatalf("head %+v", head)
@@ -393,7 +423,7 @@ func TestReorganisationKeepsClosures(t *testing.T) {
 func TestJournalKeyedByOwner(t *testing.T) {
 	s := newScenario(t)
 	s.useAt(t, replaced(t, `"seq":5`, `"seq":6`), testOp)
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	if err := s.journal.Close("main", "id/alisa", keyEdE, sealE); err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +431,7 @@ func TestJournalKeyedByOwner(t *testing.T) {
 	b.event.SessionID = s.event.SessionID
 	b.event.Index = s.event.Index
 	b.journal = s.journal
-	wantAdmitted(t, b)
+	wantObservedInstruct(t, b)
 	wantRefused(t, s, DeviceRevoked, 8)
 	rolled := newScenario(t)
 	rolled.journal = s.journal
@@ -414,7 +444,7 @@ func TestClosureJournalFullFailsClosed(t *testing.T) {
 	for _, capacity := range []int{1, 2} {
 		s := threeDevices(t)
 		s.journal.maxClosures = capacity
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		s.chain = snapshotOf(t, s.list, sealE, Outpoint{TxID: sealTxID, Vout: 3})
 		wantRefused(t, s.as(t, keyEdE), DeviceRevoked, 8)
 		wantRefused(t, s.as(t, keyEd2), DeviceRevoked, 8)
@@ -431,7 +461,7 @@ func TestClosureJournalFullFailsClosed(t *testing.T) {
 				t.Fatal("control full")
 			}
 			wantRefused(t, s.as(t, keyEd2), DeviceRevoked, 8)
-			wantAdmitted(t, s.as(t, keyEd3))
+			wantObservedInstruct(t, s.as(t, keyEd3))
 		}
 	}
 }
@@ -449,8 +479,8 @@ func TestJournalBoundsFailClosed(t *testing.T) {
 				}
 				wantRefused(t, s.as(t, keyEd2), JournalFull, 8)
 			} else {
-				wantAdmitted(t, s)
-				wantAdmitted(t, s.as(t, keyEd2))
+				wantObservedInstruct(t, s)
+				wantObservedInstruct(t, s.as(t, keyEd2))
 			}
 		}
 	})
@@ -458,30 +488,30 @@ func TestJournalBoundsFailClosed(t *testing.T) {
 		for _, capacity := range []int{1, 2} {
 			s := newScenario(t)
 			s.journal.maxOwners = capacity
-			wantAdmitted(t, s)
+			wantObservedInstruct(t, s)
 			b := bobScenario(t)
 			b.journal = s.journal
 			if capacity == 1 {
 				wantRefused(t, b, JournalFull, 4)
 			} else {
-				wantAdmitted(t, b)
+				wantObservedInstruct(t, b)
 			}
 			s.next()
-			wantAdmitted(t, s)
+			wantObservedInstruct(t, s)
 		}
 	})
 	t.Run("total replay", func(t *testing.T) {
 		for _, capacity := range []int{1, 2} {
 			s := newScenario(t)
 			s.journal.maxReplay = capacity
-			wantAdmitted(t, s)
+			wantObservedInstruct(t, s)
 			s.next()
 			if capacity == 1 {
 				wantRefused(t, s, JournalFull, 11)
 				s.event.Index = 0
 				wantRefused(t, s, Replay, 11)
 			} else {
-				wantAdmitted(t, s)
+				wantObservedInstruct(t, s)
 			}
 		}
 	})
@@ -492,14 +522,14 @@ func TestReplayOwnerIsolation(t *testing.T) {
 	s := newScenario(t)
 	s.journal.maxOwnerReplay = 2
 	s.journal.maxReplay = 3
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s.next()
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 	s.next()
 	wantRefused(t, s, JournalFull, 11)
 	b := bobScenario(t)
 	b.journal = s.journal
-	wantAdmitted(t, b)
+	wantObservedInstruct(t, b)
 	b.next()
 	wantRefused(t, b, JournalFull, 11)
 	b.event.Index = 0
@@ -530,7 +560,7 @@ func TestCloseValidatesItsArguments(t *testing.T) {
 func TestStepOrder(t *testing.T) {
 	t.Run("key source before room", func(t *testing.T) {
 		s := newScenario(t)
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		s.next()
 		s.event.Room = "!other:example.org"
 		wantRefused(t, s, NotForMe, 2)
@@ -539,7 +569,7 @@ func TestStepOrder(t *testing.T) {
 	})
 	t.Run("unknown device before absent seal", func(t *testing.T) {
 		s := newScenario(t)
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		s.next()
 		s.chain = snapshotOf(t, s.list, sealE)
 		wantRefused(t, s, DeviceRevoked, 8)
@@ -548,7 +578,7 @@ func TestStepOrder(t *testing.T) {
 	})
 	t.Run("closure before replay", func(t *testing.T) {
 		s := newScenario(t)
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		wantRefused(t, s, Replay, 11)
 		if err := s.journal.Close("main", "id/alisa", keyEdE, sealE); err != nil {
 			t.Fatal(err)
@@ -557,7 +587,7 @@ func TestStepOrder(t *testing.T) {
 	})
 	t.Run("invalid view before pin", func(t *testing.T) {
 		s := newScenario(t)
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		s.next()
 		s.chain = viewOf(t, snapshotData([]byte(`{}`), s.list))
 		wantRefused(t, s, DevicePinInvalid, 4)
@@ -567,7 +597,7 @@ func TestStepOrder(t *testing.T) {
 	t.Run("rollback before cache", func(t *testing.T) {
 		s := newScenario(t)
 		s.use(t, replaced(t, `"seq":5`, `"seq":6`))
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		s.next()
 		s.lists = mustCache(t, 0)
 		wantRefused(t, s, ListUnknown, 5)
@@ -590,7 +620,7 @@ func TestViewAgeIsCheckedAtUse(t *testing.T) {
 		if c.label == LabelInvalid {
 			r = wantRefused(t, s, ChainViewUnavailable, 4)
 		} else {
-			r = wantAdmitted(t, s)
+			r = wantObservedInstruct(t, s)
 		}
 		if r.Label != c.label {
 			t.Fatalf("%+v", r)
@@ -602,7 +632,7 @@ func TestViewAgeIsCheckedAtUse(t *testing.T) {
 func TestUnavailableView(t *testing.T) {
 	for _, absent := range []bool{true, false} {
 		s := newScenario(t)
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 		s.next()
 		s.chain = UnavailableView{Absent: absent}
 		for i := 0; i < 2; i++ {
@@ -616,7 +646,7 @@ func TestUnavailableView(t *testing.T) {
 			}
 		}
 		s.chain = snapshotOf(t, s.list)
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 	}
 }
 
@@ -627,20 +657,20 @@ func TestOperationalFailures(t *testing.T) {
 		good := s.event
 		change(&s.event)
 		r, err := s.admit()
-		if err != ErrInvalid || r.Admitted() || !r.ObserveOnly {
+		if err != ErrInvalid || r.ObservedInstruct() || !r.ObserveOnly {
 			t.Fatalf("%+v %v", r, err)
 		}
 		s.event = good
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 	}
 	s := newScenario(t)
 	for _, call := range []func() (Result, error){func() (Result, error) { return Admit(s.event, "", s.at, s.lists, s.chain, s.journal) }, func() (Result, error) { return Admit(s.event, s.room, s.at, nil, s.chain, s.journal) }, func() (Result, error) { return Admit(s.event, s.room, s.at, s.lists, nil, s.journal) }, func() (Result, error) { return Admit(s.event, s.room, s.at, s.lists, s.chain, nil) }} {
 		r, err := call()
-		if err != ErrInvalid || r.Admitted() || !r.ObserveOnly {
+		if err != ErrInvalid || r.ObservedInstruct() || !r.ObserveOnly {
 			t.Fatalf("%+v %v", r, err)
 		}
 	}
-	wantAdmitted(t, s)
+	wantObservedInstruct(t, s)
 }
 
 // Claim: under concurrent cache traffic one repeated pair admits once and 32 distinct pairs all admit on the same journal.
@@ -673,7 +703,7 @@ func TestConcurrentAdmit(t *testing.T) {
 			if errs[i] != nil {
 				t.Fatal(errs[i])
 			}
-			if r.Admitted() {
+			if r.ObservedInstruct() {
 				admitted++
 			} else if r.Code == Replay {
 				replayed++

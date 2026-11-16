@@ -69,7 +69,7 @@ func TestReadSnapshotSafety(t *testing.T) {
 		}
 		s := newScenario(t)
 		s.chain = v
-		wantAdmitted(t, s)
+		wantObservedInstruct(t, s)
 	}
 	if v, label, err := read(); err != ErrSnapshotUnavailable || v != nil || label != LabelUnknown {
 		t.Fatalf("absent: %q %v", label, err)

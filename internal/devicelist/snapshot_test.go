@@ -57,16 +57,17 @@ func TestSnapshotView(t *testing.T) {
 func TestSnapshotBindings(t *testing.T) {
 	list := mustParse(t, []byte(exampleList))
 	data := snapshotData(nameValue(pinOf(list)), list)
-	data.Names = append(data.Names, NameRecord{Name: "id/bob", Value: []byte(`{}`), Op: testOp})
+	const otherOwner = "id/other"
+	data.Names = append(data.Names, snapshotNameRecord{Name: otherOwner, Value: []byte(`{}`), Op: testOp})
 	raw := encodeSnapshotFile(data)
-	for _, owner := range []string{"id/alisa", "id/bob"} {
+	for _, owner := range []string{list.Owner(), otherOwner} {
 		config := configOf(data)
 		config.Owner = owner
 		view, err := newSnapshot(raw, config)
 		if err != nil {
 			t.Fatal("control:", owner, err)
 		}
-		if name, _ := view.Name(); name.Owner != owner || name.HasPin != (owner == "id/alisa") {
+		if name, _ := view.Name(); name.Owner != owner || name.HasPin != (owner == list.Owner()) {
 			t.Fatalf("control: the view of %s: %+v", owner, name)
 		}
 	}

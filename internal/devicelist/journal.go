@@ -22,7 +22,8 @@ type journalOwner struct {
 }
 
 // Head is the observed list pin, its earliest name operation and the tip at
-// which the reader most recently observed that head (LIP-0010 SH5 approximation).
+// which the reader most recently recorded an ordered observation of that head
+// (LIP-0010 SH5 approximation).
 type Head struct {
 	Seq        uint64
 	SHA256     string
@@ -51,9 +52,11 @@ type ownerJournal struct {
 // per (network, owner), with separate per-owner and total replay bounds. It has
 // no persistence, serialized form or closure-export API. Per-command bracketed
 // observations are not continuous O8.3 observation and must never feed enforcement.
-// A stale or older observation produces only a per-command verdict and writes
-// nothing. A closure is recorded only after a non-older confirmed-set absence
-// following this reader's own unspent observation; transient states create none.
+// Stale, older and equal-height different-hash observations write no
+// chain-derived state. Consumer-side replay pairs are recorded for every
+// instruct observation, even under such views. A closure requires a later
+// height or the same height and hash as this reader's unspent observation;
+// transient states create none.
 // Lost closure/seen-unspent capacity marks that owner full for the journal's
 // lifetime. Replay exhaustion refuses new pairs, without eviction. A new owner
 // beyond MaxJournalOwners refuses at step 4.
@@ -164,18 +167,24 @@ func (j *ObserveJournal) close(state *ownerJournal, key string, seal Outpoint) e
 	return nil
 }
 
-func (j *ObserveJournal) sawUnspent(state *ownerJournal, seal Outpoint, tip Tip) error {
-	if observed, ok := state.seenUnspent[seal]; ok {
-		if !olderObservation(tip, observed) {
-			state.seenUnspent[seal] = tip
+// sawUnspentSet checks capacity for the complete set before changing any
+// seen-unspent entry, including the tips of entries already present.
+func (j *ObserveJournal) sawUnspentSet(state *ownerJournal, observations map[Outpoint]Tip) error {
+	additional := 0
+	for seal := range observations {
+		if _, ok := state.seenUnspent[seal]; !ok {
+			additional++
 		}
-		return nil
 	}
-	if len(state.seenUnspent) >= j.maxSeen {
+	if len(state.seenUnspent)+additional > j.maxSeen {
 		state.full = true
 		return ErrJournalFull
 	}
-	state.seenUnspent[seal] = tip
+	for seal, tip := range observations {
+		if observed, ok := state.seenUnspent[seal]; !ok || observationCanFollow(tip, observed) {
+			state.seenUnspent[seal] = tip
+		}
+	}
 	return nil
 }
 
@@ -185,9 +194,12 @@ func (s *ownerJournal) closed(key string, seal Outpoint) bool {
 	return hasKey || hasSeal
 }
 
-// olderObservation cannot order competing hashes at the same height: those
-// remain reorganisation candidates. The complete hash is retained with height.
-func olderObservation(tip, observed Tip) bool { return tip.Height < observed.Height }
+// observationCanFollow excludes older heights and unordered competing hashes
+// at equal height. Repeated observations at the same height and hash can follow
+// one another (for example after a mempool change).
+func observationCanFollow(tip, observed Tip) bool {
+	return tip.Height > observed.Height || (tip.Height == observed.Height && tip.Hash == observed.Hash)
+}
 
 type headDecision int
 
@@ -198,8 +210,8 @@ const (
 )
 
 // decideHead applies the contract's height approximation only after the caller
-// excludes older observation tips. Equal sequences with different pinned hashes
-// are conflicts, never reorganisation candidates. Equal pins at greater name
+// excludes older or equal-height different-hash tips. Equal sequences with
+// different pinned hashes are conflicts, never reorganisation candidates. Equal pins at greater name
 // heights retain the earliest operation. Closures are untouched by head changes.
 func decideHead(state *ownerJournal, pin Pin, op NameOp) headDecision {
 	if !state.hasHead {
