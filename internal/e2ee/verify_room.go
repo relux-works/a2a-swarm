@@ -9,11 +9,12 @@ import (
 // RoomEventRequest is one timeline event with the authenticated local context
 // the caller admits it under. Sessions holds the provenance record of every
 // admitted inbound Megolm session. Replay (per session) and Events (this
-// room's event-ID identity) are the replay state the caller persists; both
-// change only on acceptance. Working is never mutated: decryption runs on a
-// copy of the inbound session. Retained maps refusal IDs to their saved reason
-// within the retention window; Retention supplies the per-room digest filter
-// and retired-session tombstones.
+// room's event-ID identity) are the replay state the caller persists
+// (Snapshot.Replay and Snapshot.Events); both change only on a first
+// acceptance, never on a refusal or an exact reread. Working is never
+// mutated: decryption runs on a copy of the inbound session. Retained maps
+// refusal IDs to their saved reason within the retention window; Retention
+// supplies the per-room digest filter and retired-session tombstones.
 type RoomEventRequest struct {
 	Binding   string
 	Raw       json.RawMessage
@@ -159,11 +160,20 @@ func VerifyRoomEvent(req RoomEventRequest) (*AcceptedEvent, *Refusal, error) {
 	if reason = stage4(obs, mxid); reason != "" {
 		return refuse("4", reason, device)
 	}
-	// Stage 5: key availability and origin.
+	// Stage 5: key availability and origin. Expiry comes first, as section 7
+	// lists it: a retired session, then the replay floor.
 	if req.Retention != nil {
 		if rr := req.Retention.Rooms[TupleHash(room)]; rr != nil && rr.Retired[TupleHash(content.SessionID)] {
 			return refuse("5", ErrExpired, device)
 		}
+	}
+	// Replay floor: the index is read from the unauthenticated group-message
+	// header before decryption. It needs no provenance and can only refuse
+	// here; the authenticated index is compared to it after decryption.
+	window := req.Replay[content.SessionID]
+	headerIndex, headerOK := megolmHeaderIndex(ciphertext)
+	if headerOK && window.HasFloor && headerIndex <= window.Floor {
+		return refuse("5", ErrExpired, device)
 	}
 	if req.Working.inbound[content.SessionID] == nil {
 		return refuse("5", ErrUndecryptable, device)
@@ -190,14 +200,6 @@ func VerifyRoomEvent(req RoomEventRequest) (*AcceptedEvent, *Refusal, error) {
 	keys := obs.device.Keys.Keys
 	if keys["ed25519:"+device] != record.Ed25519 || keys["curve25519:"+device] != record.Curve25519 {
 		return refuse("5", ErrKeyProvenanceUnverified, device)
-	}
-	// Stage 5, replay floor: the index is read from the unauthenticated
-	// group-message header before decryption. It can only refuse here; the
-	// authenticated index is compared to it after decryption.
-	window := req.Replay[content.SessionID]
-	headerIndex, headerOK := megolmHeaderIndex(ciphertext)
-	if headerOK && window.HasFloor && headerIndex <= window.Floor {
-		return refuse("5", ErrExpired, device)
 	}
 	// Stage 6: decrypt on a copy of the session (never committed) and bind.
 	plain, index, err := req.Working.PeekMegolm(id.SessionID(content.SessionID), []byte(ciphertext))
@@ -232,46 +234,72 @@ func VerifyRoomEvent(req RoomEventRequest) (*AcceptedEvent, *Refusal, error) {
 	if !isMember(req.Context, record.Originator) {
 		return refuse("6", ErrSenderMismatch, device)
 	}
-	// Inner content structure (invalid decrypted structure is stage 6).
+	// Stage 7, inner type first: an inner event that is not m.room.message is
+	// unsupported content whatever its content object holds, so its content is
+	// never read against the m.room.message schema.
+	if inner.Type != TypeRoomMessage {
+		return refuse("7", ErrContentUnsupported, device)
+	}
+	// Stage 6, for m.room.message only: its content must decode as the
+	// message schema (invalid decrypted structure, including a case-folded
+	// member name).
 	var message innerMessage
 	if lenientJSON(inner.Content, &message, MaxWireEvent) != nil {
 		return refuse("6", ErrMalformedEvent, device)
 	}
 	// Stage 7: inner payload.
-	if inner.Type != TypeRoomMessage || message.MsgType != MsgTypeText || message.Body == nil || len(message.URL) > 0 || len(message.File) > 0 || len(message.Info) > 0 || len(message.NewContent) > 0 || (message.RelatesTo != nil && message.RelatesTo.RelType == RelationReplace) {
+	if message.MsgType != MsgTypeText || message.Body == nil || len(message.URL) > 0 || len(message.File) > 0 || len(message.Info) > 0 || len(message.NewContent) > 0 || (message.RelatesTo != nil && message.RelatesTo.RelType == RelationReplace) {
 		return refuse("7", ErrContentUnsupported, device)
 	}
-	// Stage 8: replay, by session index and by event ID. An exact retained
-	// reread (same event, digest, index in both identities) is the prior
-	// outcome; the same index under another event ID or digest, or the same
-	// event ID under another session, index or digest, is a replay; an index
-	// evicted while being reserved is expired. Nothing is reserved on refusal.
+	// Stage 8: replay, by session index and by event ID. The session window
+	// holds the retained mapping index -> (event ID, digest); an exact match
+	// there is the reread and returns the prior outcome without touching
+	// either identity, also when the room's event-ID map has already evicted
+	// that ID (the two bounds differ: per session and per room). The same
+	// index under another event ID or digest, or the same event ID under
+	// another session, index or digest, is a replay; a fresh index that the
+	// full window would evict at once is expired. Nothing is reserved on a
+	// refusal or on a reread.
 	prior, retained := window.Entries[uint64(index)]
-	if retained && (prior.Event != event || prior.Digest != digest) {
+	exact := retained && prior.Event == event && prior.Digest == digest
+	if retained && !exact {
 		return refuse("8", ErrReplay, device)
 	}
-	seen, err := req.Events.Check(event, content.SessionID, uint64(index), digest)
-	if err == ErrReplay {
-		return refuse("8", ErrReplay, device)
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	if retained != seen {
-		// The two replay identities disagree: corrupted replay state, never
-		// a verdict about this event.
-		return nil, nil, ErrConflict
-	}
-	if !retained {
+	if !exact {
+		// A retained exact match wins even if its event ID was evicted and
+		// reused: only fresh deliveries consult the room's event-ID map.
+		seen, err := req.Events.Check(event, content.SessionID, uint64(index), digest)
+		if err == ErrReplay {
+			return refuse("8", ErrReplay, device)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		if seen && !retained {
+			// The room map holds this exact reference but the session window does
+			// not hold its index. An index leaves the window only by eviction,
+			// which puts it at or below the floor (refused at stage 5), so this is
+			// corrupted replay state, never a verdict about this event.
+			return nil, nil, ErrConflict
+		}
+		// Both identities are checked before the first in-place write: the
+		// event ID above, the window here. Entries is the caller's map, so
+		// Reserve must not be the one to find out that the index expires.
+		if window.expires(uint64(index)) {
+			return refuse("8", ErrExpired, device)
+		}
 		switch err := window.Reserve(uint64(index), event, digest); err {
 		case nil:
 		case ErrExpired:
+			// Already answered by expires above; kept so that a disagreement
+			// between the two stays a refusal (Reserve's own expiry leaves
+			// the map as it was).
 			return refuse("8", ErrExpired, device)
 		default:
-			// Reserve's ErrReplay is unreachable here: a retained entry that
-			// differs was refused by the explicit collision check above and a
-			// matching one skips Reserve. Any other result is an invariant
-			// failure of the replay state, not a verdict about this event.
+			// Second guard. Reserve's ErrReplay means a retained entry that
+			// differs reached this branch, which the explicit collision check
+			// above refuses first. It is an invariant failure of the replay
+			// state, not a verdict about this event, and never an acceptance.
 			return nil, nil, ErrConflict
 		}
 		if err := req.Events.Reserve(event, content.SessionID, uint64(index), digest); err != nil {
@@ -290,7 +318,7 @@ func VerifyRoomEvent(req RoomEventRequest) (*AcceptedEvent, *Refusal, error) {
 	return &AcceptedEvent{
 		content: append([]byte(nil), inner.Content...), room: room, event: event, digest: digest,
 		originator: record.Originator, device: record.Device, ed25519: ed, curve25519: curve,
-		source: record.Source, session: content.SessionID, index: index, reread: retained,
+		source: record.Source, session: content.SessionID, index: index, reread: exact,
 	}, nil, nil
 }
 

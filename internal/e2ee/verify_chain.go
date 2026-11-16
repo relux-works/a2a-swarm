@@ -15,7 +15,9 @@ type observedDevice struct {
 // stage3 applies the section 7 stage 3 table to one (mxid, device) lookup.
 // A missing peer is an unanchored root (device_unverified). An incomplete
 // required query is a batch abort (ErrKeyQueryUnavailable), never a verdict.
-// A tombstone wins over absence from the current device list.
+// A tombstone wins over absence from the current device list. A refusal on
+// the label of a listed device still names that device (id only), so the
+// verdict reports which device it is about; no other refusal names one.
 func stage3(peers map[string]*PeerObservation, mxid, device string) (observedDevice, Code, error) {
 	peer := peers[mxid]
 	if peer == nil {
@@ -33,14 +35,14 @@ func stage3(peers map[string]*PeerObservation, mxid, device string) (observedDev
 	}
 	switch obs.Status {
 	case EligibilityChanged:
-		return observedDevice{}, ErrDeviceChanged, nil
+		return observedDevice{id: device}, ErrDeviceChanged, nil
 	case EligibilityTombstoned, EligibilityUnverified:
-		return observedDevice{}, ErrDeviceUnverified, nil
+		return observedDevice{id: device}, ErrDeviceUnverified, nil
 	case EligibilityEligible:
 		return observedDevice{peer, obs, device}, "", nil
 	}
 	// An unknown label is not eligibility.
-	return observedDevice{}, ErrDeviceUnverified, nil
+	return observedDevice{id: device}, ErrDeviceUnverified, nil
 }
 
 // stage3BySenderKey applies stage 3 when the lookup key is the outer
@@ -48,8 +50,9 @@ func stage3(peers map[string]*PeerObservation, mxid, device string) (observedDev
 // root, complete query) come first, as in stage3; then the hint must resolve
 // to exactly one device in the completed list. Two devices publishing the
 // same Curve25519 key is a known-changed key set: e2ee_device_changed,
-// deterministically, before any per-device label. No match after a complete
-// query is e2ee_device_unknown. The hint only selects the lookup; Olm
+// deterministically, before any per-device label, and names neither device.
+// No match after a complete query is e2ee_device_unknown. A single match
+// refused on its label is reported with that device's ID. The hint only selects the lookup; Olm
 // authentication confirms the key afterwards.
 func stage3BySenderKey(peers map[string]*PeerObservation, mxid, senderKey string) (observedDevice, Code, error) {
 	peer := peers[mxid]

@@ -1,5 +1,7 @@
 package e2ee
 
+import "math"
+
 // validateBounds rejects persisted violations; loading never silently prunes or
 // repairs replay floors, tombstones or protected evidence from a buggy writer.
 func (s Snapshot) validateBounds() error {
@@ -17,6 +19,27 @@ func (s Snapshot) validateBounds() error {
 			if (window.HasFloor && index <= window.Floor) || !text(entry.Event, 255) || !hexSize(entry.Digest, 32) {
 				return ErrCodec
 			}
+		}
+	}
+	// Event-ID identity: at most one map per admitted room, each within the
+	// replay limit, every entry well formed, and eviction order intact (Seq
+	// unique and never ahead of the room's counter).
+	if len(s.Events) > MaxRooms {
+		return ErrCapacity
+	}
+	for hash, events := range s.Events {
+		if !hexSize(hash, 32) {
+			return ErrCodec
+		}
+		if len(events.Entries) > ReplayLimit {
+			return ErrCapacity
+		}
+		sequences := make(map[uint64]bool, len(events.Entries))
+		for event, ref := range events.Entries {
+			if !eventID(event) || !text(ref.Session, 255) || ref.Index > math.MaxUint32 || !hexSize(ref.Digest, 32) || ref.Seq > events.Next || sequences[ref.Seq] {
+				return ErrCodec
+			}
+			sequences[ref.Seq] = true
 		}
 	}
 	r := s.Retention

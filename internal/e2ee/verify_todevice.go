@@ -124,7 +124,8 @@ func VerifyToDevice(req ToDeviceRequest) (*ToDeviceAdmission, *Refusal, error) {
 	}
 	// Stage 3: the sender_key hint must resolve to exactly one device in the
 	// completed list, in stage-3 order; its eligibility label decides.
-	// Stage 4: the chain must verify.
+	// Stage 4: the chain must verify. A label refusal carries the matched
+	// device ID; the ambiguous and no-match refusals carry none.
 	obs, reason, err := stage3BySenderKey(req.Peers, wire.Sender, content.SenderKey)
 	if err != nil {
 		return nil, nil, err
@@ -204,8 +205,16 @@ func VerifyToDevice(req ToDeviceRequest) (*ToDeviceAdmission, *Refusal, error) {
 		return refuse("room", ErrSenderNotEligible, wire.Sender, wire.Type, wire.Content, device)
 	}
 	if req.Retention != nil {
+		// A closed room is outside the active set of DMs, whatever its
+		// sessions: the same reason as any room outside the reconciled joined
+		// DM, and checked first so that it is never reported as an expired
+		// replay window.
+		if rr := req.Retention.Rooms[TupleHash(key.RoomID)]; rr != nil && rr.Closed {
+			return refuse("room", ErrSenderNotEligible, wire.Sender, wire.Type, wire.Content, device)
+		}
 		// A retired session is a no-reimport tombstone: the same reason the room
-		// side gives a retired session at stage 5.
+		// side gives a retired session at stage 5. CanImport's only remaining
+		// ErrRefused is that tombstone.
 		switch err := req.Retention.CanImport(TupleHash(key.RoomID), TupleHash(key.SessionID)); err {
 		case nil:
 		case ErrRefused:

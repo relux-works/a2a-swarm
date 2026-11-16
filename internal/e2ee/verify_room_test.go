@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"testing"
 )
 
@@ -269,6 +270,195 @@ func TestRoomEventReplay(t *testing.T) {
 	}
 }
 
+// The exact reread is decided by the session window, not by the room's
+// event-ID map. After another session's reservations pushed "$1" out of the
+// room map (a real eviction through EventReplay.Reserve; the control asserts
+// that it happened while the session window still holds index 0), rereading
+// the same event returns the prior outcome: no operation error, Reread true,
+// and Events.Next, the room map and the session window are all unchanged, so
+// the evicted ID is not reserved again. Beside it, the same ciphertext under
+// another event ID at that retained index is still e2ee_replay at stage 8 and
+// also changes nothing. Control before the eviction: "$1" was a fresh
+// acceptance that reserved both identities.
+func TestRoomEventRereadAfterEventIDEviction(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	first := e.megolm(e.peer, e.sid, "$1", nil, nil, nil)
+	req := e.room(adm, first)
+	accepted, refusal, err := VerifyRoomEvent(req)
+	if err != nil || refusal != nil || !accepted.Populated() || accepted.Reread() || accepted.Index() != 0 {
+		t.Fatal("first delivery control", err, refusal)
+	}
+	if _, ok := req.Events.Entries["$1"]; !ok || len(req.Replay[e.sid].Entries) != 1 {
+		t.Fatal("first delivery did not reserve both identities")
+	}
+	filler := TupleHash("another session's event")
+	for i := uint64(0); i < ReplayLimit; i++ {
+		if err := req.Events.Reserve(fmt.Sprintf("$other-%d", i), "another-session", i, filler); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := req.Events.Entries["$1"]; ok || len(req.Events.Entries) != ReplayLimit || len(req.Replay[e.sid].Entries) != 1 {
+		t.Fatal("eviction control: the ID must have left the room map only")
+	}
+	next, events, window := req.Events.Next, maps.Clone(req.Events.Entries), maps.Clone(req.Replay[e.sid].Entries)
+	unchanged := func() bool {
+		return req.Events.Next == next && maps.Equal(req.Events.Entries, events) && maps.Equal(req.Replay[e.sid].Entries, window)
+	}
+	if err := checkExactReread(req); err != nil {
+		t.Fatal("reread after event-ID eviction: ", err)
+	}
+	if !unchanged() {
+		t.Fatal("reread after event-ID eviction changed replay state")
+	}
+	// Same index, other event ID: still a replay, and still no write.
+	var wire map[string]any
+	_ = json.Unmarshal(first, &wire)
+	wire["event_id"] = "$2"
+	renamed, _ := json.Marshal(wire)
+	collision := req
+	collision.Raw = renamed
+	if err := checkReplayRefused(collision, ErrReplay); err != nil {
+		t.Fatal("same index other event after eviction: ", err)
+	}
+	if !unchanged() {
+		t.Fatal("collision after event-ID eviction changed replay state")
+	}
+}
+
+// An exact retained reread wins after event-ID eviction/reuse; both payload rereads leave both identities unchanged.
+func TestRoomEventRereadAfterEventIDReuse(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	first := e.megolm(e.peer, e.sid, "$A", nil, nil, nil)
+	req := e.room(adm, first)
+	original, refusal, err := VerifyRoomEvent(req)
+	if err != nil || refusal != nil || !original.Populated() || original.Reread() || original.Index() != 0 {
+		t.Fatal("first delivery control", err, refusal)
+	}
+	for i := uint64(0); i < ReplayLimit; i++ {
+		if err := req.Events.Reserve(fmt.Sprintf("$filler-%d", i), "another-session", i, TupleHash("filler")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := req.Events.Entries["$A"]; ok || len(req.Events.Entries) != ReplayLimit || len(req.Replay[e.sid].Entries) != 1 {
+		t.Fatal("eviction control: only the room map must forget the original")
+	}
+	second := e.megolm(e.peer, e.sid, "$A", map[string]any{"msgtype": MsgTypeText, "body": "second payload"}, nil, nil)
+	req.Raw = second
+	reused, refusal, err := VerifyRoomEvent(req)
+	if err != nil || refusal != nil || !reused.Populated() || reused.Reread() || reused.Index() != 1 || reused.CiphertextDigest() == original.CiphertextDigest() {
+		t.Fatal("evicted event ID reuse control", err, refusal)
+	}
+	if ref := req.Events.Entries["$A"]; ref.Session != e.sid || ref.Index != 1 || ref.Digest != reused.CiphertextDigest() || len(req.Replay[e.sid].Entries) != 2 {
+		t.Fatal("reuse did not reserve the second payload in both identities")
+	}
+	next, events := req.Events.Next, maps.Clone(req.Events.Entries)
+	window := req.Replay[e.sid]
+	entries := maps.Clone(window.Entries)
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want *AcceptedEvent
+	}{
+		{"original-after-reuse", first, original},
+		{"control-second-payload", second, reused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req.Raw = tc.raw
+			accepted, refusal, err := VerifyRoomEvent(req)
+			if err != nil || refusal != nil || !accepted.Populated() || !accepted.Reread() {
+				t.Fatal("retained payload must be a reread", err, refusal)
+			}
+			if accepted.EventID() != tc.want.EventID() || accepted.Session() != tc.want.Session() || accepted.Index() != tc.want.Index() || accepted.CiphertextDigest() != tc.want.CiphertextDigest() || !bytes.Equal(accepted.Content(), tc.want.Content()) {
+				t.Fatal("reread did not return the prior payload")
+			}
+			if after := req.Replay[e.sid]; req.Events.Next != next || !maps.Equal(req.Events.Entries, events) || len(req.Replay) != 1 || after.Floor != window.Floor || after.HasFloor != window.HasFloor || !maps.Equal(after.Entries, entries) {
+				t.Fatal("reread changed replay identities")
+			}
+		})
+	}
+}
+
+// checkExactReread is the killer assertion of the reread plants: an event the
+// session window retains exactly must come back as the prior outcome, never
+// as an operation error or a refusal.
+func checkExactReread(req RoomEventRequest) error {
+	accepted, refusal, err := VerifyRoomEvent(req)
+	if err != nil {
+		return fmt.Errorf("want the prior outcome, got operation error %v", err)
+	}
+	if refusal != nil {
+		return fmt.Errorf("want the prior outcome, got stage %s %s", refusal.Stage, refusal.Reason)
+	}
+	if !accepted.Populated() || !accepted.Reread() {
+		return fmt.Errorf("want Reread, got a fresh acceptance")
+	}
+	return nil
+}
+
+// The room map holding an exact reference whose index the session window
+// does not hold (and that is above the floor) cannot arise from the verifier:
+// it is corrupted replay state. It is an operation error (e2ee_conflict), not
+// an acceptance and not a verdict, and it reserves nothing in either
+// identity. Control: the same event with an empty room map is a fresh
+// acceptance.
+func TestRoomEventReplayIdentitiesDisagree(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	raw := e.megolm(e.peer, e.sid, "$1", nil, nil, nil)
+	var wire roomWire
+	_ = json.Unmarshal(raw, &wire)
+	req := e.room(adm, raw)
+	if err := req.Events.Reserve("$1", e.sid, 0, rawDigest(wire.Content)); err != nil {
+		t.Fatal(err)
+	}
+	events := maps.Clone(req.Events.Entries)
+	accepted, refusal, err := VerifyRoomEvent(req)
+	if err != ErrConflict || accepted != nil || refusal != nil {
+		t.Fatal("seen but not retained: want e2ee_conflict, got", err, refusal, accepted != nil)
+	}
+	if len(req.Replay[e.sid].Entries) != 0 || req.Events.Next != 1 || !maps.Equal(req.Events.Entries, events) {
+		t.Fatal("conflict reserved replay state")
+	}
+	control := e.room(adm, raw)
+	if accepted, refusal, err := VerifyRoomEvent(control); err != nil || refusal != nil || !accepted.Populated() || accepted.Reread() || accepted.Index() != 0 {
+		t.Fatal("empty room map control", err, refusal)
+	}
+}
+
+// A fresh index that a full window of higher indices would evict at once is
+// e2ee_replay_window_expired at stage 8, and the refusal leaves the caller's
+// window map, its floor and the room's event-ID identity exactly as they
+// were. The assertions pin the verdict and the unchanged state; they do not
+// tell which of the two expiry checks (the read-only one or Reserve's own)
+// produced it. Control: with one slot free the same event is accepted and
+// reserves both identities.
+func TestRoomEventFullWindowExpiryWritesNothing(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	req := e.room(adm, e.megolm(e.peer, e.sid, "$low", nil, nil, nil))
+	entries := make(map[uint64]ReplayEntry, ReplayLimit)
+	for i := uint64(1); i <= ReplayLimit; i++ {
+		entries[i] = ReplayEntry{Event: fmt.Sprintf("$higher-%d", i), Digest: TupleHash("higher")}
+	}
+	req.Replay[e.sid] = ReplayWindow{Entries: entries}
+	before := maps.Clone(entries)
+	if err := checkReplayRefused(req, ErrExpired); err != nil {
+		t.Fatal("index below a full window: ", err)
+	}
+	if after := req.Replay[e.sid]; after.HasFloor || after.Floor != 0 || !maps.Equal(after.Entries, before) || len(req.Events.Entries) != 0 || req.Events.Next != 0 {
+		t.Fatal("expired refusal changed replay state")
+	}
+	delete(entries, ReplayLimit)
+	if accepted, refusal, err := VerifyRoomEvent(req); err != nil || refusal != nil || !accepted.Populated() || accepted.Index() != 0 {
+		t.Fatal("free slot control", err, refusal)
+	}
+	if _, ok := req.Events.Entries["$low"]; !ok || len(req.Replay[e.sid].Entries) != ReplayLimit || req.Replay[e.sid].Entries[0].Event != "$low" {
+		t.Fatal("free slot control did not reserve both identities")
+	}
+}
+
 // checkReplayRefused is the killer assertion of the replay plant: a replayed
 // or expired index must refuse at stage 8 with the given reason.
 func checkReplayRefused(req RoomEventRequest, want Code) error {
@@ -329,9 +519,44 @@ func TestRoomEventFloorBeforeDecrypt(t *testing.T) {
 	}
 }
 
-// checkFloorRefused is the killer assertion of the floor-stage plant: an
-// index below the floor must be e2ee_replay_window_expired at stage 5, ahead
-// of the stage 6 and 7 faults the same event carries.
+// Inside stage 5 the replay floor is judged next to the retired check, ahead
+// of provenance: under a session record without direct provenance (source
+// "forwarded") an index below the floor and the index exactly at the floor
+// are e2ee_replay_window_expired, not e2ee_key_provenance_unverified, and
+// reserve nothing. Controls at the boundary: the index one above the floor
+// under the same record is the provenance refusal (so the floor, not the
+// record, produced the expiry), and under the genuine record it is accepted.
+func TestRoomEventFloorBeforeProvenance(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	below := e.megolm(e.peer, e.sid, "$i0", nil, nil, nil)
+	atFloor := e.megolm(e.peer, e.sid, "$i1", nil, nil, nil)
+	above := e.megolm(e.peer, e.sid, "$i2", nil, nil, nil)
+	withFloor := func(raw json.RawMessage, source KeySource) RoomEventRequest {
+		req := e.room(adm, raw)
+		rec := req.Sessions[e.sid]
+		rec.Source = source
+		req.Sessions[e.sid] = rec
+		req.Replay[e.sid] = ReplayWindow{HasFloor: true, Floor: 1}
+		return req
+	}
+	for name, raw := range map[string]json.RawMessage{"below the floor": below, "at the floor": atFloor} {
+		req := withFloor(raw, "forwarded")
+		if err := checkFloorRefused(req); err != nil {
+			t.Fatal(name, "under a mismatched record: ", err)
+		}
+		noReplayState(t, req)
+	}
+	_, refusal, err := VerifyRoomEvent(withFloor(above, "forwarded"))
+	expectRefusal(t, refusal, err, "5", ErrKeyProvenanceUnverified)
+	if accepted, refusal, err := VerifyRoomEvent(withFloor(above, KeySourceDirectOlm)); err != nil || refusal != nil || !accepted.Populated() || accepted.Index() != 2 {
+		t.Fatal("above the floor with direct provenance", err, refusal)
+	}
+}
+
+// checkFloorRefused is the killer assertion of the floor-stage plants: an
+// index at or below the floor must be e2ee_replay_window_expired at stage 5,
+// ahead of any later stage 5, 6 or 7 fault the same event carries.
 func checkFloorRefused(req RoomEventRequest) error {
 	accepted, refusal, err := VerifyRoomEvent(req)
 	if err != nil {
@@ -346,9 +571,14 @@ func checkFloorRefused(req RoomEventRequest) error {
 // B2: VerifyRoomEvent never mutates Working. Decryption runs on a copy of the
 // inbound session that is never committed, so a refusal at stage 6 (foreign
 // outer sender), 7 (m.replace) and 8 (replayed index) leaves Checkpoint
-// byte-identical; the accepted control also leaves it byte-identical and is
-// still decryptable afterwards, and a later index decrypts after the earlier
-// ones (the stored ratchet stays at its import position).
+// byte-identical, and so does the accepted control. Only the checkpoint
+// comparison proves that nothing was committed: the fixture never shows index
+// 0 to the verifier, so a live decrypt of any verified index would advance
+// the stored ratchet and change those bytes. The acceptance of a further
+// index at the end is a liveness control, not evidence for that claim (the
+// library decrypts any index at or above the import position either way).
+// The stage 6 and 7 refusals reserve nothing; the stage 8 refusal leaves the
+// planted window entry alone and reserves no event ID.
 func TestRoomEventRefusalLeavesWorkingUnchanged(t *testing.T) {
 	e := newEnv(t)
 	adm := e.admit()
@@ -378,6 +608,8 @@ func TestRoomEventRefusalLeavesWorkingUnchanged(t *testing.T) {
 		}
 		if tc.name != "8" {
 			noReplayState(t, tc.req)
+		} else if len(tc.req.Events.Entries) != 0 || len(tc.req.Replay[e.sid].Entries) != 1 || tc.req.Replay[e.sid].Entries[3].Event != "$earlier" {
+			t.Fatal("stage 8 refusal changed replay state")
 		}
 	}
 	accepted := e.room(adm, e.megolm(e.peer, e.sid, "$ok", nil, nil, nil))
@@ -525,8 +757,13 @@ func TestRoomEventWireShape(t *testing.T) {
 
 // Stage 7 inner payload: an edit relation (m.replace / m.new_content), a
 // media msgtype, a text message carrying url/file/info, and an inner type
-// other than m.room.message are e2ee_content_unsupported; a text message with
-// a thread relation or a formatted body beside them is accepted.
+// other than m.room.message are e2ee_content_unsupported. The inner type is
+// judged before the content is read as a message: an m.sticker whose body is
+// an object is still stage 7, while the same object body inside an
+// m.room.message is e2ee_malformed_event at stage 6 (so the object body is a
+// real stage 6 fault that the type check outranks). A plaintext that is not
+// an event object and an inner room conflict are stage 6. A well-formed
+// m.room.message with a thread relation or a formatted body is accepted.
 func TestRoomEventInnerContentUnsupported(t *testing.T) {
 	e := newEnv(t)
 	adm := e.admit()
@@ -552,6 +789,18 @@ func TestRoomEventInnerContentUnsupported(t *testing.T) {
 	raw := e.megolm(e.peer, e.sid, "$sticker", nil, func(m map[string]any) { m["ciphertext"] = string(ciphertext) }, nil)
 	_, refusal, err := VerifyRoomEvent(e.room(adm, raw))
 	expectRefusal(t, refusal, err, "7", ErrContentUnsupported)
+	// Inner type first: a sticker whose content would not decode as a message
+	// (body is an object) is unsupported content, not a malformed event.
+	objectBody := map[string]any{"k": "v"}
+	sticker, _ = json.Marshal(map[string]any{"type": "m.sticker", "content": map[string]any{"body": objectBody, "url": "mxc://example.test/s"}, "room_id": dmRoom})
+	ciphertext, err = e.peer.w.EncryptMegolm(idSession(e.sid), sticker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, refusal, err = VerifyRoomEvent(e.room(adm, e.megolm(e.peer, e.sid, "$sticker-object", nil, func(m map[string]any) { m["ciphertext"] = string(ciphertext) }, nil)))
+	expectRefusal(t, refusal, err, "7", ErrContentUnsupported)
+	_, refusal, err = VerifyRoomEvent(e.room(adm, e.megolm(e.peer, e.sid, "$message-object", map[string]any{"msgtype": MsgTypeText, "body": objectBody}, nil, nil)))
+	expectRefusal(t, refusal, err, "6", ErrMalformedEvent)
 	// Inner plaintext that is not an event object.
 	notEvent, _ := json.Marshal([]any{"text"})
 	ciphertext, _ = e.peer.w.EncryptMegolm(idSession(e.sid), notEvent)
@@ -578,7 +827,10 @@ func TestRoomEventInnerContentUnsupported(t *testing.T) {
 // in order as the previous fault is repaired (0 -> 0a -> 1 -> ... -> 7, where
 // 7 wins over the pending stage 8 collision); a second event then fails stage
 // 8 and finally is accepted. Refused steps reserve no replay state. Swapping
-// any two adjacent stages from 0 to 8 changes at least one of these verdicts.
+// any two adjacent stages from 0a to 8 changes at least one of these
+// verdicts. A 0/0a swap is not shown by this walk: the malformed raw has its
+// own refusal ID, which is not the retained one, so either order reports
+// stage 0 for it.
 func TestRoomEventStagePrecedence(t *testing.T) {
 	e := newEnv(t)
 	adm := e.admit()

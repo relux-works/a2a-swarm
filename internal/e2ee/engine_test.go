@@ -134,7 +134,7 @@ func TestEngineMegolmPersistenceAndIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, index, err := restored.DecryptMegolm(sid, ciphertext)
+	got, index, err := restored.decryptMegolm(sid, ciphertext)
 	if err != nil || index != 0 || !bytes.Equal(got, raw) {
 		t.Fatal("lossless decrypt", err)
 	}
@@ -144,10 +144,10 @@ func TestEngineMegolmPersistenceAndIntegrity(t *testing.T) {
 	}
 	binary[len(binary)-1] ^= 1
 	corrupted := []byte(base64.RawStdEncoding.EncodeToString(binary))
-	if _, _, err = restored.DecryptMegolm(sid, corrupted); err != ErrIntegrity {
+	if _, _, err = restored.decryptMegolm(sid, corrupted); err != ErrIntegrity {
 		t.Fatalf("signature control missed: %v", err)
 	}
-	if _, _, err = restored.DecryptMegolm("unknown", ciphertext); err != ErrUnavailable {
+	if _, _, err = restored.decryptMegolm("unknown", ciphertext); err != ErrUnavailable {
 		t.Fatalf("unknown session: %v", err)
 	}
 	if _, err = engine.Restore(checkpoint, bytes.Repeat([]byte{2}, 32)); err != ErrIntegrity {

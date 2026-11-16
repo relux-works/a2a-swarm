@@ -12,8 +12,10 @@ import (
 // stage 6 malformed), the Olm plaintext's nested keys object (ED25519), the
 // outer room wire (Sender), the U2a queried master and device objects
 // (USER_ID, DEVICE_ID: published conflict) and a strict record (Cursor TOKEN).
-// Controls beside each: the exact names decode, and unknown members that fold
-// to no field (origin_server_ts, extra) stay ignored.
+// Controls beside each: the exact names decode (for the outer wire, the very
+// event the folded member was planted into is accepted without it), and
+// unknown members that fold to no field (origin_server_ts, extra) stay
+// ignored.
 func TestCaseFoldedMemberNamesRefused(t *testing.T) {
 	e := newEnv(t)
 	adm := e.admit()
@@ -43,6 +45,9 @@ func TestCaseFoldedMemberNamesRefused(t *testing.T) {
 	}
 	_, refusal, err := VerifyRoomEvent(e.room(adm, folded))
 	expectRefusal(t, refusal, err, "0", ErrMalformedEvent)
+	if accepted, refusal, err := VerifyRoomEvent(e.room(adm, good)); err != nil || refusal != nil || !accepted.Populated() {
+		t.Fatal("same event without the folded member", err, refusal)
+	}
 	// Olm plaintext, nested keys object.
 	e.budget = &AttemptBudget{}
 	nested := e.olmEvent(e.peer, e.roomKeyPlaintext(func(p map[string]any) { p["keys"] = map[string]any{"ED25519": e.peer.ed} }), nil)

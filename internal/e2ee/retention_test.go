@@ -125,3 +125,65 @@ func TestRefusalFilterNonclearing(t *testing.T) {
 		t.Fatal("saturation cleared", err)
 	}
 }
+
+// EventReplay holds at most ReplayLimit event IDs per room and evicts by
+// reservation order: the lowest Seq leaves first, whatever its index (here
+// the oldest reservation has the highest index). An exact repeat reserves
+// nothing; the same ID under another session, index or digest is a replay and
+// reserves nothing. There is no floor: an evicted ID is forgotten and can be
+// reserved again for another payload. Controls: the filled map is exactly at
+// the bound with nothing evicted, and the survivors of each eviction remain.
+func TestEventReplayEvictionOrder(t *testing.T) {
+	var e EventReplay
+	digest := TupleHash("event")
+	name := func(i int) string { return fmt.Sprintf("$e-%d", i) }
+	for i := 0; i < ReplayLimit; i++ {
+		if err := e.Reserve(name(i), "session", uint64(ReplayLimit-i), digest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(e.Entries) != ReplayLimit || e.Next != ReplayLimit || e.Entries[name(0)].Seq != 1 || e.Entries[name(ReplayLimit-1)].Seq != ReplayLimit {
+		t.Fatal("fill control: bound reached without eviction")
+	}
+	if seen, err := e.Check(name(0), "session", ReplayLimit, digest); err != nil || !seen {
+		t.Fatal("exact reference not reported as retained", err)
+	}
+	if err := e.Reserve(name(0), "session", ReplayLimit, digest); err != nil || e.Next != ReplayLimit || len(e.Entries) != ReplayLimit {
+		t.Fatal("exact repeat reserved again", err)
+	}
+	for label, other := range map[string]EventReference{
+		"session": {Session: "other", Index: ReplayLimit, Digest: digest},
+		"index":   {Session: "session", Index: 1, Digest: digest},
+		"digest":  {Session: "session", Index: ReplayLimit, Digest: TupleHash("altered")},
+	} {
+		if _, err := e.Check(name(0), other.Session, other.Index, other.Digest); err != ErrReplay {
+			t.Fatal("collision not reported by Check:", label, err)
+		}
+		if err := e.Reserve(name(0), other.Session, other.Index, other.Digest); err != ErrReplay || e.Next != ReplayLimit || e.Entries[name(0)].Seq != 1 {
+			t.Fatal("collision reserved:", label, err)
+		}
+	}
+	has := func(id string) bool {
+		_, ok := e.Entries[id]
+		return ok
+	}
+	if err := e.Reserve("$new-1", "session", ReplayLimit+1, digest); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Entries) != ReplayLimit || e.Next != ReplayLimit+1 || has(name(0)) || !has(name(1)) || !has(name(ReplayLimit-1)) || !has("$new-1") {
+		t.Fatal("first eviction did not remove exactly the oldest reservation")
+	}
+	if err := e.Reserve("$new-2", "session", ReplayLimit+2, digest); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Entries) != ReplayLimit || has(name(1)) || !has(name(2)) || !has("$new-1") || !has("$new-2") {
+		t.Fatal("second eviction did not remove the next oldest reservation")
+	}
+	// No floor: the evicted ID is unknown again, for any payload.
+	if seen, err := e.Check(name(0), "other", 7, TupleHash("other")); err != nil || seen {
+		t.Fatal("evicted ID still remembered", err)
+	}
+	if err := e.Reserve(name(0), "other", 7, TupleHash("other")); err != nil || !has(name(0)) || has(name(2)) {
+		t.Fatal("evicted ID could not be reserved again", err)
+	}
+}

@@ -62,6 +62,25 @@ func (w *ReplayWindow) Reserve(index uint64, event, digest string) error {
 	return nil
 }
 
+// expires reports, without mutating, whether Reserve would refuse a fresh
+// (not retained) index as expired: the index is at or below the floor, or the
+// window is full of higher indices, so the new entry would itself be the one
+// evicted. Callers that must not write on refusal ask this before Reserve.
+func (w *ReplayWindow) expires(index uint64) bool {
+	if w.HasFloor && index <= w.Floor {
+		return true
+	}
+	if len(w.Entries) < ReplayLimit {
+		return false
+	}
+	for i := range w.Entries {
+		if i < index {
+			return false
+		}
+	}
+	return true
+}
+
 // EventReference is what one room event ID was accepted as: the session,
 // the authenticated index and the ciphertext digest. Seq orders eviction.
 type EventReference struct {
@@ -75,9 +94,12 @@ type EventReference struct {
 // per-session ReplayWindow: a homeserver assigns event IDs, so the same ID
 // must never name two different accepted payloads, within or across sessions.
 // It is bounded by ReplayLimit entries per room; the oldest reservation is
-// evicted first. An evicted ID is forgotten (the session index window still
-// bounds that payload), so this bound trades memory for ID uniqueness only
-// within the window, as the index window does.
+// evicted first. An evicted ID is forgotten: there is no floor, so the same ID
+// can be reserved again later for another payload. Event-ID uniqueness
+// therefore holds only among the latest ReplayLimit accepted IDs of the room.
+// The session index window is bounded separately (per session, with a floor)
+// and can still hold the index of an event whose ID was evicted here. The map
+// is persisted in Snapshot.Events under the room hash.
 type EventReplay struct {
 	Next    uint64                    `json:"next"`
 	Entries map[string]EventReference `json:"entries"`

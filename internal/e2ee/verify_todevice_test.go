@@ -200,8 +200,12 @@ func TestToDeviceRefusesNonEligibleDevice(t *testing.T) {
 // A room key for a room that is not the reconciled joined two-member DM with
 // the authenticated sender refuses as sender_not_eligible: an unknown room, a
 // room with a third joined member, a plaintext-confirmed room and a DM with a
-// different peer. A retired-session tombstone refuses as history blocked.
-// The DM room beside them admits.
+// different peer. A retired-session tombstone refuses as
+// e2ee_replay_window_expired. A closed room is not an expired replay window:
+// it refuses as sender_not_eligible (the prefix reason for a room outside the
+// reconciled joined DM), also when the session is retired as well, so the
+// closed check comes first. The DM room beside them, admitted and open in the
+// retention state, admits.
 func TestToDeviceRefusesDifferentRoom(t *testing.T) {
 	e := newEnv(t)
 	e.admit()
@@ -234,6 +238,32 @@ func TestToDeviceRefusesDifferentRoom(t *testing.T) {
 	expectRefusal(t, refusal, err, "room", ErrExpired)
 	if adm != nil {
 		t.Fatal("retired session readmitted")
+	}
+	var closed Retention
+	if err := closed.AdmitRoom(TupleHash(dmRoom)); err != nil {
+		t.Fatal(err)
+	}
+	e.budget = &AttemptBudget{}
+	req = e.toDevice(dmKey)
+	req.Retention = &closed
+	if adm, refusal, err := VerifyToDevice(req); err != nil || refusal != nil || adm == nil {
+		t.Fatal("open admitted room control", err, refusal)
+	}
+	if err := closed.CloseRoom(TupleHash(dmRoom)); err != nil {
+		t.Fatal(err)
+	}
+	if err := retention.CloseRoom(TupleHash(dmRoom)); err != nil {
+		t.Fatal(err)
+	}
+	for name, state := range map[string]*Retention{"closed": &closed, "closed and retired": &retention} {
+		e.budget = &AttemptBudget{}
+		req = e.toDevice(dmKey)
+		req.Retention = state
+		adm, refusal, err = VerifyToDevice(req)
+		expectRefusal(t, refusal, err, "room", ErrSenderNotEligible)
+		if adm != nil {
+			t.Fatal(name, "room admitted a key")
+		}
 	}
 	e.budget = &AttemptBudget{}
 	e.admit()
@@ -343,7 +373,10 @@ func TestToDevicePrefixOrderAndBudget(t *testing.T) {
 	// Algorithm wins over the tombstoned device; with a good algorithm the
 	// tombstone is the verdict.
 	e.rejected(badAlgorithm, "algorithm", ErrUnsupportedAlgorithm)
-	e.rejected(e.roomKeyEvent(), "3", ErrDeviceUnverified)
+	// The label refusal names the one device the hint matched.
+	if r := e.rejected(e.roomKeyEvent(), "3", ErrDeviceUnverified); r.Device != peerDev {
+		t.Fatal("stage 3 label refusal does not name the matched device")
+	}
 	// Identity budget: 100 attempts across peers in one minute.
 	e.peers = map[string]*PeerObservation{peerMXID: e.peer.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, peerMXID)})}
 	var b AttemptBudget
@@ -362,8 +395,9 @@ func TestToDevicePrefixOrderAndBudget(t *testing.T) {
 // M1: the sender_key hint must resolve to exactly one device. Two listed
 // devices publishing the same Curve25519 key refuse deterministically as
 // e2ee_device_changed at stage 3, whether the second is eligible or
-// tombstoned and whichever map order the lookup visits; removing the
-// duplicate admits the same event.
+// tombstoned and whichever map order the lookup visits, and the refusal names
+// neither device. With the duplicate removed, the very same event is
+// admitted.
 func TestToDeviceAmbiguousSenderKey(t *testing.T) {
 	e := newEnv(t)
 	raw := e.roomKeyEvent()
@@ -383,11 +417,14 @@ func TestToDeviceAmbiguousSenderKey(t *testing.T) {
 	}
 	e.peers = map[string]*PeerObservation{peerMXID: e.peer.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, peerMXID)})}
 	e.budget = &AttemptBudget{}
-	e.admit()
+	if adm, refusal, err := VerifyToDevice(e.toDevice(raw)); err != nil || refusal != nil || adm == nil {
+		t.Fatal("same event without the duplicate device", err, refusal)
+	}
 }
 
 // checkAmbiguousSenderKeyRefused is the killer assertion of the ambiguity
-// plant: a hint matching two devices must be e2ee_device_changed at stage 3.
+// plant: a hint matching two devices must be e2ee_device_changed at stage 3,
+// with no claimed device.
 func checkAmbiguousSenderKeyRefused(req ToDeviceRequest) error {
 	req.Budget = &AttemptBudget{}
 	adm, refusal, err := VerifyToDevice(req)
@@ -396,6 +433,9 @@ func checkAmbiguousSenderKeyRefused(req ToDeviceRequest) error {
 	}
 	if adm != nil || refusal == nil || refusal.Stage != "3" || refusal.Reason != ErrDeviceChanged {
 		return fmt.Errorf("want stage 3 %s, got %v", ErrDeviceChanged, refusal)
+	}
+	if refusal.Device != "" {
+		return fmt.Errorf("ambiguous sender key named a device")
 	}
 	return nil
 }

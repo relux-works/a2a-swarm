@@ -340,7 +340,12 @@ func (w *Working) EncryptMegolm(sid id.SessionID, raw []byte) ([]byte, error) {
 	}
 	return out, nil
 }
-func (w *Working) DecryptMegolm(sid id.SessionID, ciphertext []byte) ([]byte, uint, error) {
+
+// decryptMegolm decrypts on the live inbound session: goolm advances the
+// stored ratchet and sets the signing-key-verified flag. It is not for
+// ingress (use PeekMegolm, which never commits) and is unexported so that no
+// caller outside this package can reach it; the engine round-trip tests use it.
+func (w *Working) decryptMegolm(sid id.SessionID, ciphertext []byte) ([]byte, uint, error) {
 	s := w.inbound[string(sid)]
 	if s == nil {
 		return nil, 0, ErrUnavailable
@@ -363,8 +368,8 @@ func (w *Working) DecryptMegolm(sid id.SessionID, ciphertext []byte) ([]byte, ui
 // every decrypt, refused or not. The copy is sound because Ratchet and
 // InitialRatchet are held by value; the shared signing key is read-only. The
 // stored ratchet therefore stays at its import position for the session's
-// life (U3r design decision: never commit), and each decrypt advances a copy
-// from there. Typed errors are the same as DecryptMegolm.
+// life. Design decision: never commit (docs/e2ee.md §7). Each decrypt advances
+// a copy from there. Typed errors are the same as decryptMegolm.
 func (w *Working) PeekMegolm(sid id.SessionID, ciphertext []byte) ([]byte, uint, error) {
 	s := w.inbound[string(sid)]
 	if s == nil {

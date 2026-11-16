@@ -126,13 +126,18 @@ func (l *LockedStore) ReadSealed(c *Codec, b Binding) ([]byte, error) {
 }
 
 type Snapshot struct {
-	Version   int                     `json:"v"`
-	Revision  uint64                  `json:"revision"`
-	Engine    EngineState             `json:"engine"`
-	Pins      []PinRecord             `json:"pins"`
-	Replay    map[string]ReplayWindow `json:"replay"`
-	Retention Retention               `json:"retention"`
-	Prepared  *Prepared               `json:"prepared,omitempty"`
+	Version  int                     `json:"v"`
+	Revision uint64                  `json:"revision"`
+	Engine   EngineState             `json:"engine"`
+	Pins     []PinRecord             `json:"pins"`
+	Replay   map[string]ReplayWindow `json:"replay"`
+	// Events is the per-room event-ID replay identity, keyed by room hash
+	// (TupleHash of the room ID, the key form Retention.Rooms uses). The
+	// member is additive: a snapshot written without it decodes as an empty
+	// map, and it is bounded on load and save by validateBounds.
+	Events    map[string]EventReplay `json:"events"`
+	Retention Retention              `json:"retention"`
+	Prepared  *Prepared              `json:"prepared,omitempty"`
 	// Identity is the U2a cross-signing bootstrap record; nil before init.
 	Identity *IdentityEvidence `json:"identity,omitempty"`
 }

@@ -919,25 +919,58 @@ position and every decrypt advances a copy from there; a refusal at any stage
 and an acceptance alike leave the engine checkpoint byte-identical. The only
 state it changes, and only on acceptance, is the replay state: the per-session
 index window and the per-room event-ID identity (`EventReplay`: room event ID
--> session, index, ciphertext digest, bounded by the same 4096-entry limit as
-the index window, oldest reservation evicted first). Stage 8 refuses the same
-index under another event ID or digest and the same event ID under another
-session, index or digest, within and across sessions. The stage 5 replay floor
+-> session, index, ciphertext digest; at most 4096 entries per room, oldest
+reservation evicted first). Both are part of the sealed snapshot: the windows
+in `replay`, keyed by session, and the event-ID identity in `events`, keyed by
+room hash, with load-time bounds of 32 rooms and 4096 entries per room; a
+snapshot written without `events` loads as an empty identity.
+Downgrade fails closed: older binaries reject the always-emitted `events`
+member as an unknown field, even when it is null.
+Worst-case size estimate for `events` alone at 32 × 4096 entries with maximum-length
+identifiers and JSON escaping is about 400 MiB, so the existing 56 MiB base-snapshot
+budget can refuse a save with `ErrCapacity` rather than prune replay state.
+Stage 8 refuses the same index under another event ID or digest and the same
+event ID under another session, index or digest, within and across sessions.
+The exact reread is decided by the session window's retained mapping (same index, event ID and
+digest): it returns the prior outcome and changes neither identity, also when
+the room's event-ID map has already evicted that ID and reused it for another
+payload; an exact reread never consults that map. The two bounds differ on
+purpose and are not equivalent. The index window is per session and monotonic:
+eviction raises a floor and an evicted index is never accepted again. The
+event-ID identity is per room and has no floor: an evicted ID is forgotten.
+Event-ID uniqueness therefore holds only among the latest 4096 accepted event
+IDs of a room; once an ID has left that set, a homeserver can attach it to a
+new genuine message, and two accepted events then carry the same event ID with
+different ciphertext digests. The consumer of accepted events MUST therefore
+deduplicate its mailbox on the pair (event ID, ciphertext digest): an entry
+with the same event ID and the same digest is the same event; an entry with
+the same event ID and a different digest is a different event and MUST NOT be
+collapsed into, or overwrite, the stored one. Within stage 5, expiry is
+evaluated first, in the order the table lists it: a retired session, then the
+replay floor, then key availability and provenance. The replay floor
 is read from the unauthenticated group-message header before decryption and
 can only refuse; the authenticated index must equal it afterwards. In the
 to-device prefix a `sender_key` hint must resolve to exactly one device of the
 completed list; two devices publishing the same Curve25519 key refuse as
 `e2ee_device_changed` ahead of any per-device label, and a hint matching no
 device follows the stage 3 order (unanchored root first, then
-`e2ee_device_unknown`). A retired-session tombstone on a to-device key is
+`e2ee_device_unknown`). A hint that matches one device whose label refuses
+reports that device as the claimed device; the ambiguous and no-match
+refusals name none. A to-device key for a closed room is
+`e2ee_sender_not_eligible`, the prefix reason for a room outside the
+reconciled joined DM, and is checked before the tombstone. A retired-session
+tombstone on a to-device key is
 `e2ee_replay_window_expired`, the same reason as a retired session at stage 5.
 Both JSON decoders refuse a member name that case-folds to a known field but
 is not that name, at any depth, so `encoding/json`'s case-insensitive match
 cannot pick a member a case-sensitive reader would not. Megolm fields that are
 missing or mistyped after a supported algorithm is seen refuse as
 `e2ee_malformed_event` at stage 2, so an unsupported algorithm still wins over
-a missing session ID; invalid decrypted structure, including the inner content
-object, is `e2ee_malformed_event` at stage 6. A session originator who is no
+a missing session ID. An inner event whose type is not `m.room.message` is
+`e2ee_content_unsupported` at stage 7 whatever its content holds: the inner
+type is checked before the content is read against the message schema.
+Invalid decrypted structure, including the content object of an inner
+`m.room.message`, is `e2ee_malformed_event` at stage 6. A session originator who is no
 longer a joined member of the reconciled room is `e2ee_sender_mismatch` at
 stage 6. A plaintext event in a plaintext-confirmed room is outside the
 verifier and returns an operation error, not a verdict. A state event in the
@@ -961,6 +994,11 @@ event after repair. Store/command failures are separate fixed codes:
 `e2ee_recipient_unverified`, `e2ee_peer_not_joined`, `e2ee_operation_unsupported`,
 `e2ee_key_query_unavailable` (retryable query failure, never a final refusal).
 Preserve pending mail/receipts/cursor on failure; no alternate backend fallback.
+
+### Limits
+
+- Room-side closed-room enforcement is out of scope: `VerifyRoomEvent` does
+  not check the room's `Closed` tombstone, unlike the to-device prefix.
 
 ## 8. CLI, refusal presentation and exact acceptance path
 
