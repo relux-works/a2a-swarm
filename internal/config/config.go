@@ -637,7 +637,7 @@ func (s *State) AddThread(root string) bool {
 }
 
 // LoadState reads state/<name>.json. An attached consumer cache may supply an
-// independent decoded clone for an unchanged known stamp. A missing file
+// independent decoded clone after a known stamp and exact fresh bytes match. A missing file
 // yields an empty state; file checks and caller authority guards are unchanged.
 func LoadState(p Paths, name string) (State, error) {
 	globalStateStats.loadStateCalls.Add(1)
@@ -658,13 +658,10 @@ func LoadState(p Paths, name string) (State, error) {
 		}
 		return cached, nil
 	}
-	globalStateStats.stateReadAttempts.Add(1)
-	data, err := os.ReadFile(path)
+	data, err := readStateFile(path)
 	if err != nil {
-		globalStateStats.stateReadErrors.Add(1)
 		return State{}, err
 	}
-	globalStateStats.stateReadBytes.Add(int64(len(data)))
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(data, &envelope) == nil {
 		// Match every spelling accepted by the typed JSON decoder. A later
@@ -686,6 +683,18 @@ func LoadState(p Paths, name string) (State, error) {
 	}
 	p.readCache.rememberState(name, path, stamp, s, false)
 	return s, nil
+}
+
+// readStateFile counts byte reads, including cache-hit and no-op confirmations.
+func readStateFile(path string) ([]byte, error) {
+	globalStateStats.stateReadAttempts.Add(1)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		globalStateStats.stateReadErrors.Add(1)
+		return nil, err
+	}
+	globalStateStats.stateReadBytes.Add(int64(len(data)))
+	return data, nil
 }
 
 // SaveState writes state/<name>.json atomically (temp file + rename) with mode 0600.

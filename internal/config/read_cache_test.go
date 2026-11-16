@@ -73,7 +73,7 @@ func cacheReplace(t *testing.T, path string, raw []byte) {
 	}
 }
 
-// TestReadCacheReplacement proves same-size, exact-mtime State and mailbox renames miss, beside unchanged-stamp decode-free hits.
+// TestReadCacheReplacement proves same-size, exact-mtime State and mailbox renames miss even with identical bytes, beside unchanged-stamp decode-free hits.
 func TestReadCacheReplacement(t *testing.T) {
 	p := cachedPaths(t)
 	cacheMailSeed(t, p)
@@ -85,6 +85,19 @@ func TestReadCacheReplacement(t *testing.T) {
 	after := ReadStateDecodeStats()
 	if after.UnmarshalStatePasses != before.UnmarshalStatePasses || after.MailboxDecodes != before.MailboxDecodes {
 		t.Fatal("unchanged control decoded")
+	}
+	for _, path := range []string{p.StateFile("fixture"), p.MailboxFile("fixture")} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cacheReplace(t, path, raw)
+	}
+	cachedLoad(t, p)
+	cachedMail(t, p)
+	after = ReadStateDecodeStats()
+	if after.UnmarshalStatePasses-before.UnmarshalStatePasses != 1 || after.MailboxDecodes-before.MailboxDecodes != 1 {
+		t.Fatal("same-byte new-inode replacements did not miss exactly once")
 	}
 	for _, tc := range []struct{ path, old, next string }{{p.StateFile("fixture"), "s0", "s1"}, {p.MailboxFile("fixture"), "one", "two"}} {
 		raw, err := os.ReadFile(tc.path)
@@ -110,6 +123,176 @@ func TestReadCacheReplacement(t *testing.T) {
 	}
 }
 
+func cacheRestamp(t *testing.T, path string, raw []byte) {
+	t.Helper()
+	before := StampFile(path)
+	if !before.Known || before.Size != int64(len(raw)) {
+		t.Fatal("same-stamp control requires a known stamp and equal size")
+	}
+	// Overwrite the incumbent inode, simulating a foreign version with a
+	// colliding stamp without depending on filesystem inode reuse timing.
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.Write(raw); err != nil || n != len(raw) {
+		f.Close()
+		t.Fatalf("same-stamp write: n=%d err=%v", n, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Unix(0, before.ModNS)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	if !before.Equal(StampFile(path)) {
+		t.Fatal("overwrite did not preserve every stamp field, including inode and exact mtime")
+	}
+}
+
+// TestReadCacheByteConfirmation proves same-inode, same-size, exact-mtime byte changes miss for State and mailbox, beside decode-free unchanged-byte hits.
+func TestReadCacheByteConfirmation(t *testing.T) {
+	for _, name := range []string{"state", "mailbox"} {
+		t.Run(name, func(t *testing.T) {
+			p := cachedPaths(t)
+			cacheMailSeed(t, p)
+			path, old, next := p.StateFile("fixture"), "s0", "s1"
+			read := func() string { return cachedLoad(t, p).NextBatch }
+			decodes := func() int64 { return ReadStateDecodeStats().UnmarshalStatePasses }
+			if name == "mailbox" {
+				path, old, next = p.MailboxFile("fixture"), "one", "two"
+				read = func() string {
+					var event struct{ Content struct{ Body string } }
+					entry := cachedMail(t, p).live["$one"]
+					if entry == nil {
+						t.Fatal("mailbox entry is missing")
+					}
+					if err := json.Unmarshal(entry.Event, &event); err != nil {
+						t.Fatal(err)
+					}
+					return event.Content.Body
+				}
+				decodes = func() int64 { return ReadStateDecodeStats().MailboxDecodes }
+			}
+			if read() != old {
+				t.Fatal("initial content differs")
+			}
+			before := decodes()
+			if read() != old || decodes() != before {
+				t.Fatal("unchanged-byte hit control decoded or returned different content")
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			needle, replacement := []byte(old), []byte(next)
+			if name == "mailbox" {
+				needle, replacement = []byte(`"body":"one"`), []byte(`"body":"two"`)
+			}
+			changed := bytes.ReplaceAll(raw, needle, replacement)
+			if bytes.Equal(raw, changed) {
+				t.Fatal("same-stamp replacement did not change bytes")
+			}
+			cacheRestamp(t, path, changed)
+			if read() != next || decodes()-before != 1 {
+				t.Fatal("same-stamp byte change did not miss and decode the fresh content exactly once")
+			}
+			before = decodes()
+			if read() != next || decodes() != before {
+				t.Fatal("refreshed unchanged-byte hit control decoded or returned stale content")
+			}
+		})
+	}
+}
+
+// TestReadCacheByteConfirmationOnUpdate proves a locked update sees a same-stamp foreign sealed change without inheriting own-write durability, beside an own durable no-op.
+func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
+	p := cachedPaths(t)
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(s *State) error {
+		if s.NextBatch != "s0" {
+			t.Fatal("own durable control loaded different content")
+		}
+		return nil
+	}); err != nil || len(rec.files) != 0 || len(rec.dirs) != 0 {
+		t.Fatalf("own durable control: %v, syncs=%+v", err, rec)
+	}
+	foreign := cachedLoad(t, p)
+	foreign.NextBatch = "s1"
+	raw, err := sealedState(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheRestamp(t, p.StateFile("fixture"), append(raw, '\n'))
+	got, err := UpdateState(p, "fixture", func(s *State) error {
+		if s.NextBatch != "s1" {
+			t.Fatal("locked update loaded stale cached State")
+		}
+		return nil
+	})
+	if err != nil || got.NextBatch != "s1" || !got.Writer.ForeignSeen.IsZero() || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("same-stamp compatible foreign change: err=%v State=%q syncs=%+v durable=%v", err, got.NextBatch, rec, p.readCache.durable)
+	}
+}
+
+// TestReadCacheDurableByteConfirmation proves the own-durable shortcut rejects changed disk bytes even when the stamp and typed arguments still match, beside an unchanged-byte control.
+func TestReadCacheDurableByteConfirmation(t *testing.T) {
+	p := cachedPaths(t)
+	old := cachedLoad(t, p)
+	path := p.StateFile("fixture")
+	if !p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("own durable unchanged-byte control missed")
+	}
+	cacheRestamp(t, path, bytes.ReplaceAll(old.rawState, []byte("s0"), []byte("s1")))
+	if p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("own durable shortcut trusted a stamp collision without byte confirmation")
+	}
+}
+
+// TestReadCacheByteReadFailure proves candidate hits fail closed when the byte read is denied after the stamp pre-check, beside readable controls before and after.
+func TestReadCacheByteReadFailure(t *testing.T) {
+	p := cachedPaths(t)
+	cacheMailSeed(t, p)
+	cachedLoad(t, p)
+	cachedMail(t, p)
+	for _, mail := range []bool{false, true} {
+		path := p.StateFile("fixture")
+		if mail {
+			path = p.MailboxFile("fixture")
+		}
+		stamp := StampFile(path)
+		hit := func() bool {
+			if mail {
+				_, ok := p.readCache.mailboxHit("fixture", path, stamp)
+				return ok
+			}
+			_, ok := p.readCache.stateHit("fixture", path, stamp)
+			return ok
+		}
+		if !hit() {
+			t.Fatal("readable candidate control missed")
+		}
+		if err := os.Chmod(path, 0000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(path, 0600) })
+		if _, err := os.ReadFile(path); !errors.Is(err, os.ErrPermission) {
+			t.Fatal("permission control did not deny the byte read", err)
+		}
+		if hit() {
+			t.Fatal("unreadable candidate returned cached success")
+		}
+		if err := os.Chmod(path, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if !hit() {
+			t.Fatal("restored readable control missed")
+		}
+	}
+}
+
 // TestReadCacheClone proves mutated State and mailbox results cannot alter later hits, while real writes remain visible.
 func TestReadCacheClone(t *testing.T) {
 	p := cachedPaths(t)
@@ -117,11 +300,12 @@ func TestReadCacheClone(t *testing.T) {
 	original := cachedLoad(t, p)
 	want, _ := cloneState(&original)
 	first := cachedLoad(t, p)
+	before := ReadStateDecodeStats()
 	first.Threads[0] = "$mutated"
 	first.Terminal.Generation = "mutated"
 	first.rawState[0] = '!'
-	if got := cachedLoad(t, p); !reflect.DeepEqual(got, want) {
-		t.Fatal("State cache shares mutable data")
+	if got := cachedLoad(t, p); !reflect.DeepEqual(got, want) || ReadStateDecodeStats().UnmarshalStatePasses != before.UnmarshalStatePasses {
+		t.Fatal("State cache shares mutable data or decoded after caller mutation")
 	}
 	cachedMail(t, p) // Populate the snapshot before mutating a hit result.
 	mail := cachedMail(t, p)
@@ -149,7 +333,7 @@ func TestReadCacheClone(t *testing.T) {
 	}
 }
 
-// TestReadCacheStampUncertainty proves each stamp dimension and unknown/stat-error stamps miss, beside a known-stamp hit and recoverable filesystem errors.
+// TestReadCacheStampUncertainty proves changed/unknown/stat-error stamps miss beside a known-stamp hit, and directory permission failures are refused by the public read guards.
 func TestReadCacheStampUncertainty(t *testing.T) {
 	p := cachedPaths(t)
 	cacheMailSeed(t, p)

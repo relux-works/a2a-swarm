@@ -126,8 +126,22 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 	defer f.Close()
 	globalStateStats.mailboxDecodes.Add(1)
 	r := bufio.NewReader(f)
+	var raw []byte
+	retainRaw := stamp.Known && stamp.Size <= mailboxCacheMaxInput
+	if retainRaw {
+		raw = make([]byte, 0, int(stamp.Size))
+	}
 	for n := 1; ; n++ {
 		line, err := r.ReadBytes('\n')
+		// Retain exactly the parsed input (including a torn tail), bounded even
+		// if an unlocked append grows the file beyond its initial stamp.
+		if retainRaw {
+			if len(raw)+len(line) > mailboxCacheMaxInput {
+				raw, retainRaw = nil, false
+			} else {
+				raw = append(raw, line...)
+			}
+		}
 		if len(line) > 0 {
 			complete := line[len(line)-1] == '\n'
 			var l mailLine
@@ -146,7 +160,7 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 			return nil, fmt.Errorf("mailbox: %w", err)
 		}
 	}
-	p.readCache.rememberMailbox(name, m.path, stamp, m)
+	p.readCache.rememberMailbox(name, m.path, stamp, raw, m)
 	return m, nil
 }
 

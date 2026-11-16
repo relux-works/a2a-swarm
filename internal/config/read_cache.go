@@ -2,16 +2,16 @@ package config
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"reflect"
 	"sync"
 )
 
 // ReadCache belongs to one consumer and identity. It retains at most one State
-// and one mailbox, never errors or absent files. Stamps validate data reuse,
-// not authority: callers still run every connection, migration, seal and fence
-// check. It assumes cooperative atomic State replacements and mailbox writes;
-// an in-place edit that restores every stamp field is outside this contract.
+// and one mailbox, never errors or absent files. Stamps only pre-check reuse:
+// every hit also reads and compares the exact file bytes, without decoding.
+// Callers still run every connection, migration, seal and fence check.
 // Paths without an explicitly attached cache retain the ordinary read path.
 // Cache admission limits retained data, never accepted input.
 type ReadCache struct {
@@ -23,6 +23,7 @@ type ReadCache struct {
 	durable      bool
 	mailboxPath  string
 	mailboxStamp FileStamp
+	mailboxRaw   []byte
 	mailbox      *Mailbox
 }
 
@@ -41,6 +42,10 @@ func (c *ReadCache) stateHit(name, path string, stamp FileStamp) (State, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if path != c.statePath || !stamp.Equal(c.stateStamp) {
+		return State{}, false
+	}
+	raw, err := readStateFile(path)
+	if err != nil || !bytes.Equal(raw, c.state.rawState) {
 		return State{}, false
 	}
 	return cloneState(&c.state)
@@ -95,7 +100,7 @@ func (c *ReadCache) rememberWrittenState(p Paths, name string, s State, data []b
 }
 
 // unchangedDurable skips even encoding/sync only for our own completed durable
-// write, with a still-matching stamp and separately verified seal under this
+// write, with a still-matching stamp, bytes and separately verified seal under this
 // state lock. A foreign compatible seal alone is not durability evidence.
 // Unsupported schema, unknown stamps and any typed difference fall back to
 // the existing writer, including its durability and strict Host-v2 fences.
@@ -107,6 +112,10 @@ func (c *ReadCache) unchangedDurable(name, path string, old, next State) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.durable || path != c.statePath || !stamp.Equal(c.stateStamp) || !bytes.Equal(old.rawState, c.state.rawState) || old.Writer == nil || next.Writer == nil {
+		return false
+	}
+	raw, err := readStateFile(path)
+	if err != nil || !bytes.Equal(raw, c.state.rawState) {
 		return false
 	}
 	w := *next.Writer
@@ -146,20 +155,35 @@ func (c *ReadCache) mailboxHit(name, path string, stamp FileStamp) (*Mailbox, bo
 	if c.mailbox == nil || path != c.mailboxPath || !stamp.Equal(c.mailboxStamp) {
 		return nil, false
 	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	// One extra byte detects growth without retaining an unbounded append.
+	raw := make([]byte, len(c.mailboxRaw)+1)
+	n, err := io.ReadFull(f, raw)
+	if (err != io.EOF && err != io.ErrUnexpectedEOF) || !bytes.Equal(raw[:n], c.mailboxRaw) {
+		return nil, false
+	}
 	return cloneMailbox(c.mailbox), true
 }
 
-func (c *ReadCache) rememberMailbox(name, path string, before FileStamp, m *Mailbox) {
+const mailboxCacheMaxInput = 8 << 20
+
+func (c *ReadCache) rememberMailbox(name, path string, before FileStamp, raw []byte, m *Mailbox) {
 	if c == nil || name != c.identity {
 		return
 	}
 	after := StampFile(path)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !before.Present || !before.Equal(after) || before.Size > 8<<20 {
+	if !before.Present || !before.Equal(after) || before.Size > mailboxCacheMaxInput || before.Size != int64(len(raw)) {
 		c.mailbox = nil
+		c.mailboxRaw = nil
 		c.mailboxPath = ""
 		return
 	}
 	c.mailboxPath, c.mailboxStamp, c.mailbox = path, before, cloneMailbox(m)
+	c.mailboxRaw = cloneBytes(raw)
 }

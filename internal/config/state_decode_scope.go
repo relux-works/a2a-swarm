@@ -394,8 +394,10 @@ func writerWorkingCopy(p Paths, name string, old *State) (State, error) {
 
 // StateDecodeStats are process-wide diagnostic counts of State reads, actual
 // typed decodes/encodes, writer verification, mailbox file parses and bytes
-// written. StateWriteBytes covers successful ordinary atomic replacements;
-// MailboxWriteBytes covers appends and compaction. They control nothing.
+// written. StateWriteBytes covers ordinary replacement payloads after rename;
+// MailboxWriteBytes covers appends and compaction. Bytes are credited before
+// final durability syncs, so failed-but-written attempts can count too.
+// They control nothing.
 type StateDecodeStats struct {
 	LoadStateCalls, StateReadAttempts, StateReadErrors, StateReadBytes int64
 	UnmarshalStatePasses, UnmarshalStateBytes                          int64

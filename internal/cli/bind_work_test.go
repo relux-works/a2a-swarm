@@ -123,7 +123,7 @@ func terminalWorkDelta(before, after config.StateDecodeStats) terminalWorkCounts
 	return terminalWorkCounts{after.UnmarshalStatePasses - before.UnmarshalStatePasses, after.StateEncodes - before.StateEncodes, after.StateDigests - before.StateDigests, after.MailboxDecodes - before.MailboxDecodes, after.StateWriteBytes + after.MailboxWriteBytes - before.StateWriteBytes - before.MailboxWriteBytes}
 }
 
-// TestTerminalCycleWork bounds State decodes, encodes, digests, mailbox parses and written bytes for one warmed full cycle and exchange.
+// TestTerminalCycleWork bounds warmed cycle/exchange work and requires the quiescent exchange to load State and verify a writer seal.
 func TestTerminalCycleWork(t *testing.T) {
 	f := newTerminalWorkFixture(t)
 	f.full(t)
@@ -134,8 +134,14 @@ func TestTerminalCycleWork(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			before := config.ReadStateDecodeStats()
 			tc.run(t)
-			got := terminalWorkDelta(before, config.ReadStateDecodeStats())
-			t.Logf("work: %+v", got)
+			after := config.ReadStateDecodeStats()
+			got := terminalWorkDelta(before, after)
+			loads := after.LoadStateCalls - before.LoadStateCalls
+			checks := after.WriterSealChecks - before.WriterSealChecks
+			t.Logf("work: %+v; State loads=%d seal checks=%d", got, loads, checks)
+			if tc.name == "quiescent" && (loads < 1 || checks < 1) {
+				t.Fatalf("quiescent exchange did not reach State load and seal verification: loads=%d checks=%d", loads, checks)
+			}
 			limit := terminalWorkBudget(tc.name)
 			if err := checkTerminalWork(got, limit); err != nil {
 				t.Fatal(err)
