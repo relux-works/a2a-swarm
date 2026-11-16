@@ -37,7 +37,7 @@ func OwnerSignatureOnMaster(pin HostPin, mxid string, evidence IdentityEvidence,
 		return "", ErrPublishedConflict
 	}
 	var master SignedKey
-	if err := json.Unmarshal(queried, &master); err != nil {
+	if err := lenientJSON(queried, &master, MaxPin); err != nil {
 		return "", ErrPublishedConflict
 	}
 	expected, err := evidence.MasterKeyObject(mxid)
@@ -105,7 +105,7 @@ func VerifyStoredOwnerSignature(pin HostPin, mxid string, evidence IdentityEvide
 // replacement root.
 func SameMasterKey(evidence IdentityEvidence, mxid string, queried json.RawMessage) error {
 	var master SignedKey
-	if len(queried) == 0 || len(queried) > MaxPin || json.Unmarshal(queried, &master) != nil {
+	if lenientJSON(queried, &master, MaxPin) != nil {
 		return ErrPublishedConflict
 	}
 	if master.UserID != mxid || len(master.Keys) != 1 || master.Keys[evidence.MasterKeyID] != evidence.MasterPublicKey || len(master.Usage) != 1 || master.Usage[0] != UsageMaster {
@@ -118,7 +118,7 @@ func SameMasterKey(evidence IdentityEvidence, mxid string, queried json.RawMessa
 // device's Ed25519 and Curve25519 keys.
 func SameDeviceKeys(evidence IdentityEvidence, mxid, device string, queried json.RawMessage) error {
 	var d DeviceKeys
-	if len(queried) == 0 || len(queried) > MaxPin || json.Unmarshal(queried, &d) != nil {
+	if lenientJSON(queried, &d, MaxPin) != nil {
 		return ErrPublishedConflict
 	}
 	if d.UserID != mxid || d.DeviceID != device || d.Keys["ed25519:"+device] != evidence.DeviceEd25519 || d.Keys["curve25519:"+device] != evidence.DeviceCurve25519 {

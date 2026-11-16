@@ -43,20 +43,40 @@ func stage3(peers map[string]*PeerObservation, mxid, device string) (observedDev
 	return observedDevice{}, ErrDeviceUnverified, nil
 }
 
-// deviceBySenderKey resolves the outer sender_key hint to a device in the
-// peer's completed list. The hint only selects the lookup; it is confirmed
-// by Olm authentication (to-device) or session provenance (room events).
-func deviceBySenderKey(peers map[string]*PeerObservation, mxid, senderKey string) (string, bool) {
+// stage3BySenderKey applies stage 3 when the lookup key is the outer
+// sender_key hint rather than a device ID. The peer-level checks (anchored
+// root, complete query) come first, as in stage3; then the hint must resolve
+// to exactly one device in the completed list. Two devices publishing the
+// same Curve25519 key is a known-changed key set: e2ee_device_changed,
+// deterministically, before any per-device label. No match after a complete
+// query is e2ee_device_unknown. The hint only selects the lookup; Olm
+// authentication confirms the key afterwards.
+func stage3BySenderKey(peers map[string]*PeerObservation, mxid, senderKey string) (observedDevice, Code, error) {
 	peer := peers[mxid]
 	if peer == nil {
-		return "", false
+		return observedDevice{}, ErrDeviceUnverified, nil
 	}
+	if !peer.QueryComplete {
+		return observedDevice{}, "", ErrKeyQueryUnavailable
+	}
+	if _, err := publicBase64(peer.AnchoredMaster, 32); err != nil {
+		return observedDevice{}, ErrDeviceUnverified, nil
+	}
+	matches := 0
+	device := ""
 	for id, obs := range peer.Devices {
 		if obs.Keys.Keys["curve25519:"+id] == senderKey {
-			return id, true
+			matches++
+			device = id
 		}
 	}
-	return "", false
+	if matches > 1 {
+		return observedDevice{}, ErrDeviceChanged, nil
+	}
+	if matches == 0 {
+		return observedDevice{}, ErrDeviceUnknown, nil
+	}
+	return stage3(peers, mxid, device)
 }
 
 // stage4 verifies the chain for an eligible observed device (section 3 check
@@ -130,6 +150,9 @@ func lenientJSON(raw []byte, dst any, max int) error {
 		return ErrCodec
 	}
 	if _, err := scanJSON(raw, 0); err != nil {
+		return err
+	}
+	if err := caseFoldCheck(raw, dst); err != nil {
 		return err
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {

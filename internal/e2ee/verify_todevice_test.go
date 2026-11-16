@@ -3,6 +3,7 @@ package e2ee
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -230,7 +231,7 @@ func TestToDeviceRefusesDifferentRoom(t *testing.T) {
 	req := e.toDevice(dmKey)
 	req.Retention = &retention
 	adm, refusal, err := VerifyToDevice(req)
-	expectRefusal(t, refusal, err, "room", ErrRefused)
+	expectRefusal(t, refusal, err, "room", ErrExpired)
 	if adm != nil {
 		t.Fatal("retired session readmitted")
 	}
@@ -285,11 +286,13 @@ func TestToDeviceAuthenticatedBindings(t *testing.T) {
 }
 
 // The to-device prefix is evaluated in exact order: a malformed event wins
-// over an ineligible sender; an ineligible sender wins over an exhausted
-// budget; the budget wins over an unsupported algorithm; the algorithm wins
-// over a device fault; and the 21st attempt by one peer within a minute is
-// rate limited while the next minute admits again. Malformed events carry an
-// identity built from empty components and the raw digest.
+// over an ineligible sender; an ineligible sender wins over a budget that is
+// already exhausted for every peer and for the identity (and that exhausted
+// budget does refuse an eligible peer); the budget wins over an unsupported
+// algorithm; the algorithm wins over a device fault; the 21st attempt by one
+// peer within a minute is rate limited while the next minute admits again.
+// Malformed events carry an identity built from empty components and the raw
+// digest.
 func TestToDevicePrefixOrderAndBudget(t *testing.T) {
 	e := newEnv(t)
 	e.admit()
@@ -300,12 +303,23 @@ func TestToDevicePrefixOrderAndBudget(t *testing.T) {
 	}
 	noContent, _ := json.Marshal(map[string]any{"type": TypeEncrypted, "sender": peerMXID, "content": "text"})
 	e.rejected(noContent, "malformed", ErrMalformedEvent)
-	// Ineligible sender with an exhausted budget and a bad algorithm: sender wins.
+	// Ineligible sender with an exhausted budget and a bad algorithm: sender
+	// wins. The budget is exhausted in place for this minute, for the stranger,
+	// the peer and the identity; the peer's own event proves it is live.
 	stranger := e.olmEvent(e.peer, e.roomKeyPlaintext(nil), func(w map[string]any) {
 		w["sender"] = impostorMXID
 		contentOf(w)["algorithm"] = "m.olm.v2"
 	})
-	e.rejected(stranger, "sender", ErrSenderNotEligible)
+	exhausted := &AttemptBudget{WindowMS: 60_000, Peers: map[string]int{impostorMXID: MaxAttemptsPeer, peerMXID: MaxAttemptsPeer}, Identity: MaxAttemptsLocal}
+	req := e.toDevice(stranger)
+	req.Budget = exhausted
+	if _, refusal, err := VerifyToDevice(req); err != nil || refusal == nil || refusal.Reason != ErrSenderNotEligible || refusal.Stage != "sender" {
+		t.Fatal("stranger under exhausted budget", err, refusal)
+	}
+	req.Raw = e.roomKeyEvent()
+	if _, refusal, err := VerifyToDevice(req); err != nil || refusal == nil || refusal.Reason != ErrRateLimited || refusal.Stage != "budget" {
+		t.Fatal("exhausted budget control", err, refusal)
+	}
 	// Budget before algorithm and device: exhaust the peer, then a bad
 	// algorithm from a tombstoned device is still rate_limited.
 	e.budget = &AttemptBudget{}
@@ -321,7 +335,7 @@ func TestToDevicePrefixOrderAndBudget(t *testing.T) {
 	if _, refusal, err := VerifyToDevice(e.toDevice(badAlgorithm)); err != nil || refusal == nil || refusal.Reason != ErrRateLimited || refusal.Stage != "budget" {
 		t.Fatal("21st attempt not rate limited", err, refusal)
 	}
-	req := e.toDevice(badAlgorithm)
+	req = e.toDevice(badAlgorithm)
 	req.NowMS = 120_000
 	if _, refusal, err := VerifyToDevice(req); err != nil || refusal == nil || refusal.Reason != ErrUnsupportedAlgorithm {
 		t.Fatal("new minute did not reset the budget", err, refusal)
@@ -343,6 +357,47 @@ func TestToDevicePrefixOrderAndBudget(t *testing.T) {
 	}
 	e.budget = &AttemptBudget{}
 	e.admit()
+}
+
+// M1: the sender_key hint must resolve to exactly one device. Two listed
+// devices publishing the same Curve25519 key refuse deterministically as
+// e2ee_device_changed at stage 3, whether the second is eligible or
+// tombstoned and whichever map order the lookup visits; removing the
+// duplicate admits the same event.
+func TestToDeviceAmbiguousSenderKey(t *testing.T) {
+	e := newEnv(t)
+	raw := e.roomKeyEvent()
+	for _, status := range []EligibilityStatus{EligibilityEligible, EligibilityTombstoned} {
+		for round := 0; round < 8; round++ {
+			obs := e.peer.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, peerMXID)})
+			twin := obs.Devices[peerDev]
+			twin.Status = status
+			twin.Keys.DeviceID = "TWINDEV"
+			twin.Keys.Keys = map[string]string{"ed25519:TWINDEV": e.peer.ed, "curve25519:TWINDEV": e.peer.curve}
+			obs.Devices["TWINDEV"] = twin
+			e.peers = map[string]*PeerObservation{peerMXID: obs}
+			if err := checkAmbiguousSenderKeyRefused(e.toDevice(raw)); err != nil {
+				t.Fatal(status, err)
+			}
+		}
+	}
+	e.peers = map[string]*PeerObservation{peerMXID: e.peer.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, peerMXID)})}
+	e.budget = &AttemptBudget{}
+	e.admit()
+}
+
+// checkAmbiguousSenderKeyRefused is the killer assertion of the ambiguity
+// plant: a hint matching two devices must be e2ee_device_changed at stage 3.
+func checkAmbiguousSenderKeyRefused(req ToDeviceRequest) error {
+	req.Budget = &AttemptBudget{}
+	adm, refusal, err := VerifyToDevice(req)
+	if err != nil {
+		return err
+	}
+	if adm != nil || refusal == nil || refusal.Stage != "3" || refusal.Reason != ErrDeviceChanged {
+		return fmt.Errorf("want stage 3 %s, got %v", ErrDeviceChanged, refusal)
+	}
+	return nil
 }
 
 // A second Olm message (type 1) is tried only against the sessions indexed

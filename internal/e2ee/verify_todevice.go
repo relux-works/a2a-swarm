@@ -122,22 +122,17 @@ func VerifyToDevice(req ToDeviceRequest) (*ToDeviceAdmission, *Refusal, error) {
 	if !ok || body.Type == nil || (*body.Type != 0 && *body.Type != 1) || !text(body.Body, MaxWireEvent) {
 		return refuse("malformed", ErrMalformedEvent, wire.Sender, wire.Type, wire.Content, "")
 	}
-	// Stage 3: the sender_key hint selects a device in the completed list;
-	// its eligibility label decides. Stage 4: the chain must verify.
-	device, found := deviceBySenderKey(req.Peers, wire.Sender, content.SenderKey)
-	if !found {
-		if !peer.QueryComplete {
-			return nil, nil, ErrKeyQueryUnavailable
-		}
-		return refuse("3", ErrDeviceUnknown, wire.Sender, wire.Type, wire.Content, "")
-	}
-	obs, reason, err := stage3(req.Peers, wire.Sender, device)
+	// Stage 3: the sender_key hint must resolve to exactly one device in the
+	// completed list, in stage-3 order; its eligibility label decides.
+	// Stage 4: the chain must verify.
+	obs, reason, err := stage3BySenderKey(req.Peers, wire.Sender, content.SenderKey)
 	if err != nil {
 		return nil, nil, err
 	}
 	if reason != "" {
-		return refuse("3", reason, wire.Sender, wire.Type, wire.Content, device)
+		return refuse("3", reason, wire.Sender, wire.Type, wire.Content, obs.id)
 	}
+	device := obs.id
 	if reason = stage4(obs, wire.Sender); reason != "" {
 		return refuse("4", reason, wire.Sender, wire.Type, wire.Content, device)
 	}
@@ -209,10 +204,12 @@ func VerifyToDevice(req ToDeviceRequest) (*ToDeviceAdmission, *Refusal, error) {
 		return refuse("room", ErrSenderNotEligible, wire.Sender, wire.Type, wire.Content, device)
 	}
 	if req.Retention != nil {
+		// A retired session is a no-reimport tombstone: the same reason the room
+		// side gives a retired session at stage 5.
 		switch err := req.Retention.CanImport(TupleHash(key.RoomID), TupleHash(key.SessionID)); err {
 		case nil:
 		case ErrRefused:
-			return refuse("room", ErrRefused, wire.Sender, wire.Type, wire.Content, device)
+			return refuse("room", ErrExpired, wire.Sender, wire.Type, wire.Content, device)
 		default:
 			return nil, nil, err
 		}

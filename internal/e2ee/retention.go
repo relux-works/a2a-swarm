@@ -62,6 +62,67 @@ func (w *ReplayWindow) Reserve(index uint64, event, digest string) error {
 	return nil
 }
 
+// EventReference is what one room event ID was accepted as: the session,
+// the authenticated index and the ciphertext digest. Seq orders eviction.
+type EventReference struct {
+	Session string `json:"session"`
+	Index   uint64 `json:"index"`
+	Digest  string `json:"digest"`
+	Seq     uint64 `json:"seq"`
+}
+
+// EventReplay is the per-room event-ID replay identity kept beside the
+// per-session ReplayWindow: a homeserver assigns event IDs, so the same ID
+// must never name two different accepted payloads, within or across sessions.
+// It is bounded by ReplayLimit entries per room; the oldest reservation is
+// evicted first. An evicted ID is forgotten (the session index window still
+// bounds that payload), so this bound trades memory for ID uniqueness only
+// within the window, as the index window does.
+type EventReplay struct {
+	Next    uint64                    `json:"next"`
+	Entries map[string]EventReference `json:"entries"`
+}
+
+// Check reports an exact retained reread (true, nil), a fresh ID (false,
+// nil) or a collision: the same event ID with another session, index or
+// digest is ErrReplay. It never mutates.
+func (e *EventReplay) Check(event, session string, index uint64, digest string) (bool, error) {
+	if event == "" || len(event) > 255 || !text(session, 255) || !hexSize(digest, 32) {
+		return false, ErrInvalid
+	}
+	ref, ok := e.Entries[event]
+	if !ok {
+		return false, nil
+	}
+	if ref.Session != session || ref.Index != index || ref.Digest != digest {
+		return false, ErrReplay
+	}
+	return true, nil
+}
+
+// Reserve records a fresh event ID after Check reported no collision,
+// evicting the oldest reservation beyond ReplayLimit.
+func (e *EventReplay) Reserve(event, session string, index uint64, digest string) error {
+	if retained, err := e.Check(event, session, index, digest); err != nil || retained {
+		return err
+	}
+	if e.Entries == nil {
+		e.Entries = map[string]EventReference{}
+	}
+	e.Next++
+	e.Entries[event] = EventReference{Session: session, Index: index, Digest: digest, Seq: e.Next}
+	if len(e.Entries) > ReplayLimit {
+		oldest, oldestSeq := "", ^uint64(0)
+		for id, ref := range e.Entries {
+			if ref.Seq < oldestSeq {
+				oldest, oldestSeq = id, ref.Seq
+			}
+		}
+		delete(e.Entries, oldest)
+	}
+	return nil
+}
+
 type Verdict struct {
 	ID        string `json:"id"`
 	TimeMS    int64  `json:"time_ms"`

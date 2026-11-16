@@ -236,6 +236,11 @@ func strictJSON(data []byte, dst any, max int) error {
 	if _, e := d.Token(); e != io.EOF {
 		return ErrCodec
 	}
+	// A member that case-folds to a known field but differs would be matched
+	// by the decoder below and silently win; refuse it at every depth.
+	if e := caseFoldCheck(data, dst); e != nil {
+		return e
+	}
 	d = json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if e := d.Decode(dst); e != nil {

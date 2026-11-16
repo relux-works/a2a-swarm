@@ -912,14 +912,37 @@ U3r implements this tree and the to-device prefix as a pure library in
 display. Stage 3 takes the caller's eligibility observation (`PeerObservation`,
 Q4 pending); context, key queries, retention admission and the journal commit
 remain U4. The to-device verifier forks the engine with the pickle key and
-mutates only the fork; the room verifier changes only the replay window of an
-accepted event. Megolm fields that are missing or mistyped after a supported
-algorithm is seen refuse as `e2ee_malformed_event` at stage 2, so an
-unsupported algorithm still wins over a missing session ID. A plaintext event
-in a plaintext-confirmed room is outside the verifier and returns an operation
-error, not a verdict. A state event in the encrypted DM is refused as
-`e2ee_plaintext_in_encrypted_room`; callers route control events to their own
-validators before admission.
+mutates only the fork. The room verifier never mutates `Working`: it decrypts
+on a shallow copy of the inbound Megolm session (`Working.PeekMegolm`) and
+never commits the advanced copy, so the stored ratchet stays at its import
+position and every decrypt advances a copy from there; a refusal at any stage
+and an acceptance alike leave the engine checkpoint byte-identical. The only
+state it changes, and only on acceptance, is the replay state: the per-session
+index window and the per-room event-ID identity (`EventReplay`: room event ID
+-> session, index, ciphertext digest, bounded by the same 4096-entry limit as
+the index window, oldest reservation evicted first). Stage 8 refuses the same
+index under another event ID or digest and the same event ID under another
+session, index or digest, within and across sessions. The stage 5 replay floor
+is read from the unauthenticated group-message header before decryption and
+can only refuse; the authenticated index must equal it afterwards. In the
+to-device prefix a `sender_key` hint must resolve to exactly one device of the
+completed list; two devices publishing the same Curve25519 key refuse as
+`e2ee_device_changed` ahead of any per-device label, and a hint matching no
+device follows the stage 3 order (unanchored root first, then
+`e2ee_device_unknown`). A retired-session tombstone on a to-device key is
+`e2ee_replay_window_expired`, the same reason as a retired session at stage 5.
+Both JSON decoders refuse a member name that case-folds to a known field but
+is not that name, at any depth, so `encoding/json`'s case-insensitive match
+cannot pick a member a case-sensitive reader would not. Megolm fields that are
+missing or mistyped after a supported algorithm is seen refuse as
+`e2ee_malformed_event` at stage 2, so an unsupported algorithm still wins over
+a missing session ID; invalid decrypted structure, including the inner content
+object, is `e2ee_malformed_event` at stage 6. A session originator who is no
+longer a joined member of the reconciled room is `e2ee_sender_mismatch` at
+stage 6. A plaintext event in a plaintext-confirmed room is outside the
+verifier and returns an operation error, not a verdict. A state event in the
+encrypted DM is refused as `e2ee_plaintext_in_encrypted_room`; callers route
+control events to their own validators before admission.
 
 To-device events need no `event_id`: record `source:"to-device"`, nullable room/
 event ID and `refusal_id = SHA256(length-prefixed(binding,observed sender,type,

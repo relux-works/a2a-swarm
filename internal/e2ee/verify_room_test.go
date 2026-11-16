@@ -178,10 +178,14 @@ func TestRoomEventTamperedCiphertext(t *testing.T) {
 	}
 }
 
-// Stage 8 replay: an index at or below the session floor is
-// e2ee_replay_window_expired; the same index under a different event ID, and
-// the same event ID with a different valid ciphertext at that index, are
-// e2ee_replay; the first delivery and a later index are accepted.
+// Stage 8 replay, both identities. By session index: the same index under a
+// different event ID, and the same event ID with a different valid ciphertext
+// at that index, are e2ee_replay. By event ID: an already accepted ID reused
+// by the homeserver for the next genuine index of the same session, and for
+// a genuine event of another admitted session, is e2ee_replay; so is an
+// accepted ID whose stored index or session differs. The first delivery, an
+// exact reread (Reread true, no second reservation) and a later index under a
+// fresh ID are accepted; no refusal reserves either identity.
 func TestRoomEventReplay(t *testing.T) {
 	e := newEnv(t)
 	adm := e.admit()
@@ -196,14 +200,12 @@ func TestRoomEventReplay(t *testing.T) {
 	forkParty.w = peerFork
 	sameIndexOtherBody := e.megolm(&forkParty, e.sid, "$1", map[string]any{"msgtype": MsgTypeText, "body": "other body at index zero"}, nil, nil)
 	req := e.room(adm, first)
-	expired := e.room(adm, first)
-	expired.Replay[e.sid] = ReplayWindow{HasFloor: true, Floor: 3}
-	if err := checkReplayRefused(expired, ErrExpired); err != nil {
-		t.Fatal("below floor", err)
-	}
 	accepted, refusal, err := VerifyRoomEvent(req)
 	if err != nil || refusal != nil || !accepted.Populated() || accepted.Index() != 0 {
 		t.Fatal("first delivery control", err, refusal)
+	}
+	if len(req.Events.Entries) != 1 || req.Events.Entries["$1"].Index != 0 || req.Events.Entries["$1"].Session != e.sid {
+		t.Fatal("event identity not reserved")
 	}
 	// Same ciphertext, different event ID.
 	var wire map[string]any
@@ -220,10 +222,50 @@ func TestRoomEventReplay(t *testing.T) {
 	if err := checkReplayRefused(sameEvent, ErrReplay); err != nil {
 		t.Fatal("same event other digest", err)
 	}
+	// B1: the homeserver reuses "$1" for the peer's next genuine message.
+	reusedID := req
+	reusedID.Raw = e.megolm(e.peer, e.sid, "$1", map[string]any{"msgtype": MsgTypeText, "body": "second genuine message"}, nil, nil)
+	if err := checkEventIDReplayRefused(reusedID); err != nil {
+		t.Fatal("event ID reused for next index", err)
+	}
+	// B1 across sessions: a second admitted session from the same peer, whose
+	// genuine first message the homeserver also labels "$1".
+	sid2, shared2, err := e.peer.w.NewOutboundMegolm()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.Prepared.AcceptDirectMegolm(shared2); err != nil {
+		t.Fatal(err)
+	}
+	rec2 := adm.Session
+	rec2.SessionID = string(sid2)
+	req.Sessions[string(sid2)] = rec2
+	crossSession := req
+	crossSession.Raw = e.megolm(e.peer, string(sid2), "$1", nil, nil, nil)
+	if err := checkEventIDReplayRefused(crossSession); err != nil {
+		t.Fatal("event ID reused across sessions", err)
+	}
+	if len(req.Replay[string(sid2)].Entries) != 0 || len(req.Replay[e.sid].Entries) != 1 || len(req.Events.Entries) != 1 {
+		t.Fatal("a refusal reserved replay state")
+	}
+	// Exact reread: prior outcome, no second reservation.
+	again, refusal, err := VerifyRoomEvent(req)
+	if err != nil || refusal != nil || !again.Populated() || !again.Reread() || req.Events.Next != 1 {
+		t.Fatal("exact reread", err, refusal)
+	}
+	// Controls: the same genuine messages under fresh IDs are accepted.
 	next := req
 	next.Raw = e.megolm(e.peer, e.sid, "$3", nil, nil, nil)
-	if accepted, refusal, err := VerifyRoomEvent(next); err != nil || refusal != nil || !accepted.Populated() || accepted.Index() != 1 {
+	if accepted, refusal, err := VerifyRoomEvent(next); err != nil || refusal != nil || !accepted.Populated() || accepted.Index() != 2 {
 		t.Fatal("next index control", err, refusal)
+	}
+	other := req
+	other.Raw = e.megolm(e.peer, string(sid2), "$4", nil, nil, nil)
+	if accepted, refusal, err := VerifyRoomEvent(other); err != nil || refusal != nil || !accepted.Populated() || accepted.Session() != string(sid2) {
+		t.Fatal("other session control", err, refusal)
+	}
+	if len(req.Events.Entries) != 3 {
+		t.Fatal("accepted IDs not all reserved")
 	}
 }
 
@@ -236,6 +278,161 @@ func checkReplayRefused(req RoomEventRequest, want Code) error {
 	}
 	if refusal == nil || refusal.Reason != want || refusal.Stage != "8" || accepted != nil {
 		return want
+	}
+	return nil
+}
+
+// checkEventIDReplayRefused is the killer assertion of the event-ID replay
+// plant: a genuine payload under an already accepted event ID must be
+// e2ee_replay at stage 8, whatever its session or index.
+func checkEventIDReplayRefused(req RoomEventRequest) error {
+	return checkReplayRefused(req, ErrReplay)
+}
+
+// The replay floor is applied at stage 5 from the unauthenticated header: an
+// index at or below the floor is e2ee_replay_window_expired even when the same
+// event also carries a stage 6 fault (foreign outer sender) and a stage 7
+// fault (m.replace); the header index must equal the authenticated index; the
+// floor-free control is accepted and reserves nothing on the expired paths.
+func TestRoomEventFloorBeforeDecrypt(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	impostor := newParty(t, impostorMXID, impostorDev)
+	e.peers[impostorMXID] = impostor.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, impostorMXID)})
+	edit := map[string]any{"msgtype": MsgTypeText, "body": "* edit", "m.relates_to": map[string]any{"rel_type": RelationReplace, "event_id": "$1"}}
+	faulty := e.megolm(e.peer, e.sid, "$f", edit, nil, func(w map[string]any) { w["sender"] = impostorMXID })
+	req := e.room(adm, faulty)
+	req.Replay[e.sid] = ReplayWindow{HasFloor: true, Floor: 3}
+	if err := checkFloorRefused(req); err != nil {
+		t.Fatal(err)
+	}
+	// The header reader sees the index goolm will authenticate (0 here).
+	var w roomWire
+	var c megolmContent
+	_ = json.Unmarshal(faulty, &w)
+	_ = json.Unmarshal(w.Content, &c)
+	var ct string
+	_ = json.Unmarshal(c.Ciphertext, &ct)
+	if index, ok := megolmHeaderIndex(ct); !ok || index != 0 {
+		t.Fatal("header index control", ok, index)
+	}
+	noReplayState(t, req)
+	clean := e.room(adm, e.megolm(e.peer, e.sid, "$ok", nil, nil, nil))
+	if accepted, refusal, err := VerifyRoomEvent(clean); err != nil || refusal != nil || !accepted.Populated() || accepted.Index() != 1 {
+		t.Fatal("floor-free control", err, refusal)
+	}
+	// The next genuine message is index 2: exactly at a floor of 2 it expires.
+	clean.Replay[e.sid] = ReplayWindow{HasFloor: true, Floor: 2, Entries: map[uint64]ReplayEntry{}}
+	clean.Raw = e.megolm(e.peer, e.sid, "$at-floor", nil, nil, nil)
+	if _, refusal, err := VerifyRoomEvent(clean); err != nil || refusal == nil || refusal.Stage != "5" || refusal.Reason != ErrExpired {
+		t.Fatal("index at the floor admitted", err, refusal)
+	}
+}
+
+// checkFloorRefused is the killer assertion of the floor-stage plant: an
+// index below the floor must be e2ee_replay_window_expired at stage 5, ahead
+// of the stage 6 and 7 faults the same event carries.
+func checkFloorRefused(req RoomEventRequest) error {
+	accepted, refusal, err := VerifyRoomEvent(req)
+	if err != nil {
+		return err
+	}
+	if refusal == nil || refusal.Reason != ErrExpired || refusal.Stage != "5" || accepted != nil {
+		return fmt.Errorf("want stage 5 %s, got %v", ErrExpired, refusal)
+	}
+	return nil
+}
+
+// B2: VerifyRoomEvent never mutates Working. Decryption runs on a copy of the
+// inbound session that is never committed, so a refusal at stage 6 (foreign
+// outer sender), 7 (m.replace) and 8 (replayed index) leaves Checkpoint
+// byte-identical; the accepted control also leaves it byte-identical and is
+// still decryptable afterwards, and a later index decrypts after the earlier
+// ones (the stored ratchet stays at its import position).
+func TestRoomEventRefusalLeavesWorkingUnchanged(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	impostor := newParty(t, impostorMXID, impostorDev)
+	e.peers[impostorMXID] = impostor.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, impostorMXID)})
+	// Index 0 is never shown to the verifier, so every verified index is
+	// above the stored ratchet position and a live decrypt would advance it.
+	if _, err := e.peer.w.EncryptMegolm(idSession(e.sid), []byte(`{"type":"m.room.message","content":{},"room_id":"!dm:example.test"}`)); err != nil {
+		t.Fatal(err)
+	}
+	before := checkpoint(t, adm.Prepared, e.local.key)
+	edit := map[string]any{"msgtype": MsgTypeText, "body": "* edit", "m.relates_to": map[string]any{"rel_type": RelationReplace, "event_id": "$1"}}
+	stage6 := e.room(adm, e.megolm(e.peer, e.sid, "$6", nil, nil, func(w map[string]any) { w["sender"] = impostorMXID }))
+	stage7 := e.room(adm, e.megolm(e.peer, e.sid, "$7", edit, nil, nil))
+	stage8 := e.room(adm, e.megolm(e.peer, e.sid, "$8", nil, nil, nil))
+	stage8.Replay[e.sid] = ReplayWindow{Entries: map[uint64]ReplayEntry{3: {Event: "$earlier", Digest: TupleHash("x")}}}
+	for _, tc := range []struct {
+		name   string
+		req    RoomEventRequest
+		stage  string
+		reason Code
+	}{{"6", stage6, "6", ErrSenderMismatch}, {"7", stage7, "7", ErrContentUnsupported}, {"8", stage8, "8", ErrReplay}} {
+		_, refusal, err := VerifyRoomEvent(tc.req)
+		expectRefusal(t, refusal, err, tc.stage, tc.reason)
+		if err := checkWorkingUnchanged(before, adm.Prepared, e.local.key); err != nil {
+			t.Fatal("stage", tc.name, err)
+		}
+		if tc.name != "8" {
+			noReplayState(t, tc.req)
+		}
+	}
+	accepted := e.room(adm, e.megolm(e.peer, e.sid, "$ok", nil, nil, nil))
+	if got, refusal, err := VerifyRoomEvent(accepted); err != nil || refusal != nil || !got.Populated() || got.Index() != 4 {
+		t.Fatal("accepted control", err, refusal)
+	}
+	if err := checkWorkingUnchanged(before, adm.Prepared, e.local.key); err != nil {
+		t.Fatal("acceptance", err)
+	}
+	// A further genuine index under a fresh replay state still decrypts from
+	// the unchanged stored ratchet.
+	further := stage6
+	further.Raw = e.megolmSameIndexAt(t, e.peer, e.sid, "$again")
+	if got, refusal, err := VerifyRoomEvent(further); err != nil || refusal != nil || !got.Populated() || got.Index() != 5 {
+		t.Fatal("further index decryptable", err, refusal)
+	}
+	if err := checkWorkingUnchanged(before, adm.Prepared, e.local.key); err != nil {
+		t.Fatal("further acceptance", err)
+	}
+}
+
+// L2: a session of a former peer does not follow the DM to its next member.
+// With the reconciled room now {local, impostor}, a genuine event under the
+// peer's direct-olm session (outer sender peer, equal to the record) is
+// e2ee_sender_mismatch at stage 6; the same event with the peer joined is
+// accepted.
+func TestRoomEventFormerPeerSession(t *testing.T) {
+	e := newEnv(t)
+	adm := e.admit()
+	raw := e.megolm(e.peer, e.sid, "$1", nil, nil, nil)
+	moved := e.room(adm, raw)
+	moved.Context = dmContext(localMXID, impostorMXID)
+	_, refusal, err := VerifyRoomEvent(moved)
+	expectRefusal(t, refusal, err, "6", ErrSenderMismatch)
+	noReplayState(t, moved)
+	if accepted, refusal, err := VerifyRoomEvent(e.room(adm, raw)); err != nil || refusal != nil || !accepted.Populated() {
+		t.Fatal("joined peer control", err, refusal)
+	}
+}
+
+// megolmSameIndexAt renders a genuine text event at the party's current index
+// through a fork, leaving the party's live session where it is.
+func (e *env) megolmSameIndexAt(t *testing.T, from *party, sid, eventID string) json.RawMessage {
+	return e.megolmSameIndex(t, from, sid, eventID, nil, nil, nil)
+}
+
+// checkWorkingUnchanged is the killer assertion of the copy-decrypt plant: a
+// verified event must not change the engine checkpoint bytes.
+func checkWorkingUnchanged(before EngineState, w *Working, key []byte) error {
+	after, err := w.Checkpoint(key)
+	if err != nil {
+		return err
+	}
+	if !sameState(before, after) {
+		return ErrIntegrity
 	}
 	return nil
 }
@@ -375,11 +572,13 @@ func TestRoomEventInnerContentUnsupported(t *testing.T) {
 	}
 }
 
-// A multi-failure fixture pins stage precedence: one event that fails stages
-// 1, 2, 3, 4, 5, 6 and 7 at once reports stage 1; repairing each stage in turn
-// moves the verdict to exactly the next failing stage; a second event then
-// fails stage 8 and finally is accepted. Any reordering of the stages changes
-// at least one of these verdicts.
+// A multi-failure fixture pins stage precedence: one event that is malformed,
+// then (repaired) retained in refusal history, then fails stages 1, 2, 3, 4,
+// 5, 6 and 7 at once with a replay collision at its index, reports each stage
+// in order as the previous fault is repaired (0 -> 0a -> 1 -> ... -> 7, where
+// 7 wins over the pending stage 8 collision); a second event then fails stage
+// 8 and finally is accepted. Refused steps reserve no replay state. Swapping
+// any two adjacent stages from 0 to 8 changes at least one of these verdicts.
 func TestRoomEventStagePrecedence(t *testing.T) {
 	e := newEnv(t)
 	adm := e.admit()
@@ -387,8 +586,13 @@ func TestRoomEventStagePrecedence(t *testing.T) {
 	e.peers[impostorMXID] = impostor.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, impostorMXID)})
 	edit := map[string]any{"msgtype": MsgTypeText, "body": "* edit", "m.relates_to": map[string]any{"rel_type": RelationReplace, "event_id": "$1"}}
 	multi := e.megolm(e.peer, e.sid, "$multi", edit, func(m map[string]any) { m["algorithm"] = "m.megolm.v2.aes-sha2" }, func(w map[string]any) { w["sender"] = impostorMXID })
-	req := e.room(adm, multi)
+	var wire roomWire
+	_ = json.Unmarshal(multi, &wire)
+	multiID := RoomRefusalID(dmRoom, "$multi", rawDigest(wire.Content))
+	malformed := json.RawMessage(`{"type":"m.room.encrypted","type":"m.room.encrypted","sender":"@peer:example.test","room_id":"!dm:example.test","event_id":"$multi","content":{}}`)
+	req := e.room(adm, malformed)
 	req.Context = RoomContext{State: ContextUnknown}
+	req.Retained[multiID] = ErrDeviceChanged
 	tomb := e.peer.observation(t, map[string]RoomContext{dmRoom: dmContext(localMXID, peerMXID)})
 	tomb.Devices[peerDev] = DeviceObservation{EligibilityTombstoned, tomb.Devices[peerDev].Keys}
 	tomb.SelfSigning = nil
@@ -396,7 +600,11 @@ func TestRoomEventStagePrecedence(t *testing.T) {
 	rec := req.Sessions[e.sid]
 	rec.Source = "forwarded"
 	req.Sessions[e.sid] = rec
+	// The forked renders below all sit at index 1; a collision waits there.
+	req.Replay[e.sid] = ReplayWindow{Entries: map[uint64]ReplayEntry{1: {Event: "$earlier", Digest: TupleHash("x")}}}
 	steps := []precedenceStep{
+		{"0", ErrMalformedEvent, func() { req.Raw = multi }},
+		{"0a", ErrDeviceChanged, func() { delete(req.Retained, multiID) }},
 		{"1", ErrContextUnknown, func() { req.Context = dmContext(localMXID, peerMXID) }},
 		{"2", ErrUnsupportedAlgorithm, func() {
 			req.Raw = e.megolmSameIndex(t, e.peer, e.sid, "$multi", edit, nil, func(w map[string]any) { w["sender"] = impostorMXID })
@@ -413,15 +621,17 @@ func TestRoomEventStagePrecedence(t *testing.T) {
 		{"6", ErrSenderMismatch, func() {
 			req.Raw = e.megolmSameIndex(t, e.peer, e.sid, "$multi", edit, nil, nil)
 		}},
+		// Stage 7 fault plus the stage 8 collision at index 1: 7 wins.
 		{"7", ErrContentUnsupported, nil},
 	}
 	if err := checkPrecedence(&req, steps); err != nil {
 		t.Fatal(err)
 	}
-	// Stage 8 and acceptance on a second event.
-	second := e.megolm(e.peer, e.sid, "$second", nil, nil, nil)
-	req.Raw = second
-	req.Replay[e.sid] = ReplayWindow{Entries: map[uint64]ReplayEntry{1: {Event: "$earlier", Digest: TupleHash("x")}}}
+	if len(req.Replay[e.sid].Entries) != 1 || len(req.Events.Entries) != 0 {
+		t.Fatal("a refused step reserved replay state")
+	}
+	// Stage 8 and acceptance on a second genuine event at the colliding index.
+	req.Raw = e.megolm(e.peer, e.sid, "$second", nil, nil, nil)
 	if err := checkPrecedence(&req, []precedenceStep{{"8", ErrReplay, func() { req.Replay[e.sid] = ReplayWindow{} }}}); err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +738,7 @@ func TestRoomEventOwnOutboundEcho(t *testing.T) {
 	own := SessionRecord{SessionID: string(osid), RoomID: dmRoom, Originator: localMXID, Device: localDev, Ed25519: e.local.ed, Curve25519: e.local.curve, Source: KeySourceOwnOutbound}
 	echo := e.megolm(e.local, string(osid), "$echo", nil, nil, nil)
 	req := RoomEventRequest{Binding: testBinding, Raw: echo, Context: dmContext(localMXID, peerMXID), Local: e.local.local(), Peers: e.peers,
-		Sessions: map[string]SessionRecord{string(osid): own}, Working: e.local.w, Replay: map[string]ReplayWindow{}, Retained: map[string]Code{}}
+		Sessions: map[string]SessionRecord{string(osid): own}, Working: e.local.w, Replay: map[string]ReplayWindow{}, Events: &EventReplay{}, Retained: map[string]Code{}}
 	accepted, refusal, err := VerifyRoomEvent(req)
 	if err != nil || refusal != nil || !accepted.Populated() || accepted.KeySource() != KeySourceOwnOutbound {
 		t.Fatal("own echo control", err, refusal)

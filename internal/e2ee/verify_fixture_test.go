@@ -217,7 +217,21 @@ func (e *env) room(adm *ToDeviceAdmission, raw json.RawMessage) RoomEventRequest
 	return RoomEventRequest{
 		Binding: testBinding, Raw: raw, Context: dmContext(localMXID, peerMXID), Local: e.local.local(), Peers: e.peers,
 		Sessions: map[string]SessionRecord{adm.Session.SessionID: adm.Session}, Working: adm.Prepared,
-		Replay: map[string]ReplayWindow{}, Retained: map[string]Code{},
+		Replay: map[string]ReplayWindow{}, Events: &EventReplay{}, Retained: map[string]Code{},
+	}
+}
+
+// noReplayState asserts that a refusal reserved neither a session-index entry
+// nor an event-ID entry.
+func noReplayState(t testing.TB, req RoomEventRequest) {
+	t.Helper()
+	for _, w := range req.Replay {
+		if len(w.Entries) != 0 {
+			t.Fatal("refusal reserved a session index")
+		}
+	}
+	if len(req.Events.Entries) != 0 {
+		t.Fatal("refusal reserved an event ID")
 	}
 }
 

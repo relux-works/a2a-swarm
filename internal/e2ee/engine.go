@@ -356,6 +356,32 @@ func (w *Working) DecryptMegolm(sid id.SessionID, ciphertext []byte) ([]byte, ui
 	w.engine.secrets.Register(raw)
 	return raw, index, nil
 }
+
+// PeekMegolm decrypts on a shallow copy of the inbound session and never
+// commits it: goolm's Decrypt advances the live ratchet and sets the
+// signing-key-verified flag, so the stored session would otherwise change on
+// every decrypt, refused or not. The copy is sound because Ratchet and
+// InitialRatchet are held by value; the shared signing key is read-only. The
+// stored ratchet therefore stays at its import position for the session's
+// life (U3r design decision: never commit), and each decrypt advances a copy
+// from there. Typed errors are the same as DecryptMegolm.
+func (w *Working) PeekMegolm(sid id.SessionID, ciphertext []byte) ([]byte, uint, error) {
+	s := w.inbound[string(sid)]
+	if s == nil {
+		return nil, 0, ErrUnavailable
+	}
+	if len(ciphertext) == 0 || len(ciphertext) > 1<<20 {
+		return nil, 0, ErrCapacity
+	}
+	scratch := *s
+	raw, index, err := scratch.Decrypt(ciphertext)
+	if err != nil {
+		return nil, 0, engineError(err)
+	}
+	w.engine.secrets.Register(raw)
+	return raw, index, nil
+}
+
 func engineError(err error) error {
 	if err == nil {
 		return nil
