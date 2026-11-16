@@ -80,6 +80,7 @@ func unmarshalState(data []byte, s *State) error {
 }
 
 func marshalState(s State) ([]byte, error) {
+	globalStateStats.stateEncodes.Add(1)
 	compact := s.HostEnrollment != nil && s.HostEnrollment.Version == 2
 	if len(s.opaque) == 0 {
 		return encodeStateJSON(s, compact)

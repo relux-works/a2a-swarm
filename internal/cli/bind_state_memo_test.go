@@ -91,6 +91,10 @@ type cycleCounts struct {
 // returns per-cycle counter deltas between the end of cycle 1 and cycle n.
 func runFixtureCycles(t *testing.T, memo bool, n int) cycleCounts {
 	t.Helper()
+	// Isolate the older exact-byte memo comparison from stamp-based reads.
+	oldCache := terminalReadCache
+	terminalReadCache = false
+	defer func() { terminalReadCache = oldCache }()
 	prev := terminalStateMemo
 	terminalStateMemo = memo
 	defer func() { terminalStateMemo = prev }()
@@ -175,6 +179,9 @@ func TestTerminalStateMemoFixtureCycleCounters(t *testing.T) {
 // runs and closed before the timer wait and after return; a closed scope
 // decodes ordinarily.
 func TestTerminalStateMemoEpochClosedBeforeWait(t *testing.T) {
+	oldCache := terminalReadCache
+	terminalReadCache = false
+	defer func() { terminalReadCache = oldCache }()
 	target, _, _ := usabilityTarget(t, "codex")
 	e, a, s := memoSession(t)
 	initial := config.TerminalBinding{Generation: "own", SessionID: "own", Host: machineLabel(), OwnerPID: target.OwnerPID, OwnerBirth: target.OwnerBirth, Target: target, Interval: 300 * time.Millisecond, RetryMax: time.Second, MaxWakes: 6}

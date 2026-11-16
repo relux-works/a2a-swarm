@@ -1,0 +1,397 @@
+package config
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func cachedPaths(t *testing.T) Paths {
+	t.Helper()
+	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache("fixture"))
+	if err := SaveState(p, "fixture", State{NextBatch: "s0", Threads: []string{"$root"}, Terminal: &TerminalBinding{Generation: "fixture"}}); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+func cachedLoad(t *testing.T, p Paths) State {
+	t.Helper()
+	s, err := LoadState(p, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+func cachedMail(t *testing.T, p Paths) *Mailbox {
+	t.Helper()
+	m, err := OpenMailbox(p, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+func cacheMailSeed(t *testing.T, p Paths) {
+	t.Helper()
+	m := cachedMail(t, p)
+	if _, err := m.Append([]MailEntry{{ID: "$one", Kind: MailEvent, Room: "!fixture", Event: json.RawMessage(`{"type":"m.room.message","content":{"body":"one"}}`)}}); err != nil {
+		t.Fatal(err)
+	}
+}
+func cacheReplace(t *testing.T, path string, raw []byte) {
+	t.Helper()
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	before, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := path + ".replacement"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tmp, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatal("replacement control did not preserve size and exact mtime with a new inode")
+	}
+}
+
+// TestReadCacheReplacement proves same-size, exact-mtime State and mailbox renames miss, beside unchanged-stamp decode-free hits.
+func TestReadCacheReplacement(t *testing.T) {
+	p := cachedPaths(t)
+	cacheMailSeed(t, p)
+	cachedLoad(t, p)
+	cachedMail(t, p)
+	before := ReadStateDecodeStats()
+	cachedLoad(t, p)
+	cachedMail(t, p)
+	after := ReadStateDecodeStats()
+	if after.UnmarshalStatePasses != before.UnmarshalStatePasses || after.MailboxDecodes != before.MailboxDecodes {
+		t.Fatal("unchanged control decoded")
+	}
+	for _, tc := range []struct{ path, old, next string }{{p.StateFile("fixture"), "s0", "s1"}, {p.MailboxFile("fixture"), "one", "two"}} {
+		raw, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed := bytes.ReplaceAll(raw, []byte(tc.old), []byte(tc.next))
+		if bytes.Equal(raw, changed) {
+			t.Fatal("replacement did not change content")
+		}
+		cacheReplace(t, tc.path, changed)
+	}
+	before = ReadStateDecodeStats()
+	if cachedLoad(t, p).NextBatch != "s1" {
+		t.Fatal("stale State after rename")
+	}
+	if pending := cachedMail(t, p).Pending(); len(pending) != 1 || !strings.Contains(string(pending[0].Event), "two") {
+		t.Fatal("stale mailbox after rename")
+	}
+	after = ReadStateDecodeStats()
+	if after.UnmarshalStatePasses-before.UnmarshalStatePasses != 1 || after.MailboxDecodes-before.MailboxDecodes != 1 {
+		t.Fatal("changed stamps did not decode exactly once")
+	}
+}
+
+// TestReadCacheClone proves mutated State and mailbox results cannot alter later hits, while real writes remain visible.
+func TestReadCacheClone(t *testing.T) {
+	p := cachedPaths(t)
+	cacheMailSeed(t, p)
+	original := cachedLoad(t, p)
+	want, _ := cloneState(&original)
+	first := cachedLoad(t, p)
+	first.Threads[0] = "$mutated"
+	first.Terminal.Generation = "mutated"
+	first.rawState[0] = '!'
+	if got := cachedLoad(t, p); !reflect.DeepEqual(got, want) {
+		t.Fatal("State cache shares mutable data")
+	}
+	cachedMail(t, p) // Populate the snapshot before mutating a hit result.
+	mail := cachedMail(t, p)
+	mail.live["$one"].Event[0] = '!'
+	mail.live["$one"].Shown = true
+	mail.recv["$other"] = true
+	mail.redacted[Redaction{"!fixture", "$one"}] = true
+	mail.order[0] = "$other"
+	mail.SetPendingFilter(func(MailEntry) bool { return false })
+	got := cachedMail(t, p)
+	if len(got.Pending()) != 1 || got.live["$one"].Shown || !json.Valid(got.live["$one"].Event) || got.recv["$other"] || len(got.redacted) != 0 {
+		t.Fatal("mailbox cache shares mutable data or a pending filter")
+	}
+	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Threads[0] = "$written"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if cachedLoad(t, p).Threads[0] != "$written" {
+		t.Fatal("real State write hidden")
+	}
+	if _, err := got.Receive([]string{"$one"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(cachedMail(t, p).Pending()) != 0 {
+		t.Fatal("real mailbox append hidden")
+	}
+}
+
+// TestReadCacheStampUncertainty proves each stamp dimension and unknown/stat-error stamps miss, beside a known-stamp hit and recoverable filesystem errors.
+func TestReadCacheStampUncertainty(t *testing.T) {
+	p := cachedPaths(t)
+	cacheMailSeed(t, p)
+	cachedLoad(t, p)
+	cachedMail(t, p)
+	c := p.readCache
+	for _, mail := range []bool{false, true} {
+		path := p.StateFile("fixture")
+		if mail {
+			path = p.MailboxFile("fixture")
+		}
+		stamp := StampFile(path)
+		hit := func(s FileStamp) bool {
+			if mail {
+				_, ok := c.mailboxHit("fixture", path, s)
+				return ok
+			}
+			_, ok := c.stateHit("fixture", path, s)
+			return ok
+		}
+		if !hit(stamp) {
+			t.Fatal("known-stamp control missed")
+		}
+		variants := []FileStamp{stamp, stamp, stamp, stamp, stamp, {}, stampFile(path, func(string) (os.FileInfo, error) { return nil, os.ErrPermission })}
+		variants[0].Dev++
+		variants[1].Ino++
+		variants[2].Size++
+		variants[3].ModNS++
+		variants[4].Mode = 0644
+		for i, s := range variants {
+			if hit(s) {
+				t.Fatalf("stamp uncertainty %d returned stale data", i)
+			}
+		}
+	}
+	dir := filepath.Join(p.Base, "state")
+	if err := os.Chmod(dir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
+	if _, err := LoadState(p, "fixture"); err == nil {
+		t.Error("State stat error returned stale success")
+	}
+	if _, err := OpenMailbox(p, "fixture"); err == nil {
+		t.Error("mailbox stat error returned stale success")
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cachedLoad(t, p)
+	cachedMail(t, p)
+}
+
+// TestReadCacheWriteRefresh proves a successful changed write refreshes decoded State without a following decode, and a failed callback changes neither disk nor cache.
+func TestReadCacheWriteRefresh(t *testing.T) {
+	p := cachedPaths(t)
+	if _, err := UpdateState(p, "fixture", func(s *State) error { s.NextBatch = "s1"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before := ReadStateDecodeStats()
+	if cachedLoad(t, p).NextBatch != "s1" {
+		t.Fatal("write did not refresh")
+	}
+	if ReadStateDecodeStats().UnmarshalStatePasses != before.UnmarshalStatePasses {
+		t.Fatal("post-write read decoded")
+	}
+	sentinel := errors.New("rollback")
+	if _, err := UpdateState(p, "fixture", func(s *State) error { s.NextBatch = "s2"; return sentinel }); !errors.Is(err, sentinel) {
+		t.Fatal(err)
+	}
+	if cachedLoad(t, p).NextBatch != "s1" {
+		t.Fatal("failed write poisoned cache")
+	}
+	plain := p.WithReadCache(nil)
+	if cachedLoad(t, plain).NextBatch != "s1" {
+		t.Fatal("failed callback changed disk")
+	}
+}
+
+// TestReadCacheDurableNoop proves an own durable no-op preserves inode, mtime and bytes without encoding or syncing, beside one changed atomic replacement.
+func TestReadCacheDurableNoop(t *testing.T) {
+	p := cachedPaths(t)
+	path := p.StateFile("fixture")
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	first, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	before := ReadStateDecodeStats()
+	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Terminal.Generation = "fixture"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	after := ReadStateDecodeStats()
+	same, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(first, same) || !first.ModTime().Equal(same.ModTime()) || !bytes.Equal(raw, data) || after.StateEncodes != before.StateEncodes || after.StateWriteBytes != before.StateWriteBytes || len(rec.files) != 0 || len(rec.dirs) != 0 {
+		t.Fatal("durable no-op performed write work")
+	}
+	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Terminal.Generation = "changed"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = ReadStateDecodeStats()
+	if os.SameFile(first, changed) || after.SealedStates-before.SealedStates != 1 || after.StateWriteBytes-before.StateWriteBytes != changed.Size() || cachedLoad(t, p).Terminal.Generation != "changed" {
+		t.Fatal("one-field change did not replace State exactly once")
+	}
+	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".*.tmp")); err != nil || len(matches) != 0 {
+		t.Fatal("completed write left temporary files")
+	}
+}
+
+// TestReadCacheForeignDurability proves a cold compatible State still takes the existing sync path before any own-write durability shortcut.
+func TestReadCacheForeignDurability(t *testing.T) {
+	p := cachedPaths(t).WithReadCache(NewReadCache("fixture"))
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	cachedLoad(t, p)
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 1 || len(rec.dirs) != 2 {
+		t.Fatal("foreign compatible seal was treated as proof of a completed fsync")
+	}
+	if _, err := UpdateState(p, "fixture", func(s *State) error { s.LastInbox = "written"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	rec = syncRecord{}
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 0 || len(rec.dirs) != 0 {
+		t.Fatal("own durable control did not skip sync")
+	}
+}
+
+// TestReadCacheWrittenInode proves a same-byte replacement cannot inherit another inode's durable-write evidence, beside a matching written-inode control.
+func TestReadCacheWrittenInode(t *testing.T) {
+	p := cachedPaths(t)
+	path := p.StateFile("fixture")
+	s := cachedLoad(t, p)
+	stamp := StampFile(path)
+	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, stamp)
+	if !p.readCache.durable {
+		t.Fatal("matching written-inode control lost durability evidence")
+	}
+	cacheReplace(t, path, s.rawState)
+	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, stamp)
+	if p.readCache.durable {
+		t.Fatal("replacement inherited a different inode's durability evidence")
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 1 {
+		t.Fatal("replacement skipped the ordinary durability check")
+	}
+}
+
+// TestReadCacheStrictRefresh proves a strict Host write refreshes decoded data without granting the ordinary durable-noop shortcut, beside an ordinary write that does.
+func TestReadCacheStrictRefresh(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		p, name := hostElisionNeighbour(t, version)
+		p = p.WithReadCache(NewReadCache(name))
+		if _, err := UpdateState(p, name, func(s *State) error { s.LastInbox = "written"; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		before := ReadStateDecodeStats()
+		s, err := LoadState(p, name)
+		if err != nil || s.LastInbox != "written" || ReadStateDecodeStats().UnmarshalStatePasses != before.UnmarshalStatePasses {
+			t.Fatalf("version %d post-write cache: %v", version, err)
+		}
+		if p.readCache.durable != (version == 1) {
+			t.Fatalf("version %d used the wrong durability provenance", version)
+		}
+	}
+}
+
+// TestReadCacheMonitorRefusal proves a cached foreign State still refuses monitor admission, beside successful admission of compatible cached State.
+func TestReadCacheMonitorRefusal(t *testing.T) {
+	p := monitorSeed(t).WithReadCache(NewReadCache("a"))
+	monitorLoad(t, p)
+	monitorLoad(t, p)
+	called := false
+	if err := monitorRun(p, MonitorAutomatic, func(*MonitorGeneration) error { called = true; return nil }); err != nil || !called {
+		t.Fatalf("compatible cached control: %v, called=%v", err, called)
+	}
+	monitorOldWrite(t, p, func(m map[string]json.RawMessage) { m["next_batch"] = json.RawMessage(`"foreign"`) })
+	monitorLoad(t, p)
+	monitorLoad(t, p)
+	called = false
+	if err := monitorRun(p, MonitorAutomatic, func(*MonitorGeneration) error { called = true; return nil }); !errors.Is(err, ErrIncompatibleWriter) || called {
+		t.Fatalf("foreign cached admission: %v, called=%v", err, called)
+	}
+}
+
+// TestReadCacheFenceOnHit proves cached reads do not skip per-transaction seal verification or fencing of foreign State, beside a valid unfenced control.
+func TestReadCacheFenceOnHit(t *testing.T) {
+	p := cachedPaths(t)
+	cachedLoad(t, p)
+	before := ReadStateDecodeStats()
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if ReadStateDecodeStats().WriterSealChecks-before.WriterSealChecks != 1 || !cachedLoad(t, p).Writer.ForeignSeen.IsZero() {
+		t.Fatal("valid cached control skipped verification or was fenced")
+	}
+	raw, err := os.ReadFile(p.StateFile("fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheReplace(t, p.StateFile("fixture"), bytes.ReplaceAll(raw, []byte("s0"), []byte("s1")))
+	cachedLoad(t, p) // Prime the foreign input itself, not only the earlier State.
+	before = ReadStateDecodeStats()
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got := cachedLoad(t, p)
+	if ReadStateDecodeStats().WriterSealChecks-before.WriterSealChecks != 1 || got.Writer.ForeignSeen.IsZero() || !validWriterSeal(got) || got.NextBatch != "s1" {
+		t.Fatal("foreign cached input escaped the writer fence")
+	}
+	if time.Since(got.Writer.ForeignSeen) > time.Minute {
+		t.Fatal("fence did not record this transaction")
+	}
+}

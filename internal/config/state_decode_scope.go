@@ -33,8 +33,9 @@ var frozenStateMemoLimits = stateMemoLimits{
 
 // StateDecodeScope reuses immutable parsed State data for exact fresh input
 // bytes within one explicitly opened epoch of its owning terminal consumer.
-// It owns no authority: every LoadState still performs its complete file read
-// and every caller guard, and every writer still verifies seals and fences
+// It owns no authority: without a separate ReadCache, every LoadState still
+// performs its complete file read. Every caller guard still runs, and every
+// writer still verifies seals and fences
 // under its own lock. A lookup matches only the identical state path and the
 // complete identical bytes; the hash is only an index. A hit returns an
 // independent typed copy, never the stored frame.
@@ -370,17 +371,21 @@ func (sc *StateDecodeScope) admitLocked(f *stateFrame) bool {
 // whenever the clone cannot cover old, it is the ordinary decode of those bytes.
 func writerWorkingCopy(p Paths, name string, old *State) (State, error) {
 	sc := p.stateDecode
-	if sc.active(name) {
+	if sc.active(name) || p.readCache != nil && name == p.readCache.identity {
 		if s, ok := cloneState(old); ok {
-			sc.mu.Lock()
-			sc.stats.WriterClones++
-			sc.mu.Unlock()
+			if sc != nil {
+				sc.mu.Lock()
+				sc.stats.WriterClones++
+				sc.mu.Unlock()
+			}
 			globalStateStats.writerClones.Add(1)
 			return s, nil
 		}
-		sc.mu.Lock()
-		sc.stats.FallbackWriterClone++
-		sc.mu.Unlock()
+		if sc != nil {
+			sc.mu.Lock()
+			sc.stats.FallbackWriterClone++
+			sc.mu.Unlock()
+		}
 	}
 	var s State
 	err := unmarshalState(old.rawState, &s)
@@ -388,12 +393,15 @@ func writerWorkingCopy(p Paths, name string, old *State) (State, error) {
 }
 
 // StateDecodeStats are process-wide diagnostic counts of State reads, actual
-// typed decodes and writer verification work. They control nothing.
+// typed decodes/encodes, writer verification, mailbox file parses and bytes
+// written. StateWriteBytes covers successful ordinary atomic replacements;
+// MailboxWriteBytes covers appends and compaction. They control nothing.
 type StateDecodeStats struct {
 	LoadStateCalls, StateReadAttempts, StateReadErrors, StateReadBytes int64
 	UnmarshalStatePasses, UnmarshalStateBytes                          int64
 	ScopeHits, ScopeMisses, ScopeFallbacks, WriterClones               int64
 	StateDigests, CanonicalStates, SealedStates, WriterSealChecks      int64
+	StateEncodes, MailboxDecodes, StateWriteBytes, MailboxWriteBytes   int64
 }
 
 type stateStatCounters struct {
@@ -401,6 +409,7 @@ type stateStatCounters struct {
 	unmarshalPasses, unmarshalBytes                                    atomic.Int64
 	scopeHits, scopeMisses, scopeFallbacks, writerClones               atomic.Int64
 	stateDigests, canonicalStates, sealedStates, writerSealChecks      atomic.Int64
+	stateEncodes, mailboxDecodes, stateWriteBytes, mailboxWriteBytes   atomic.Int64
 }
 
 var globalStateStats stateStatCounters
@@ -415,6 +424,8 @@ func ReadStateDecodeStats() StateDecodeStats {
 		ScopeHits: g.scopeHits.Load(), ScopeMisses: g.scopeMisses.Load(), ScopeFallbacks: g.scopeFallbacks.Load(),
 		WriterClones: g.writerClones.Load(), StateDigests: g.stateDigests.Load(), CanonicalStates: g.canonicalStates.Load(),
 		SealedStates: g.sealedStates.Load(), WriterSealChecks: g.writerSealChecks.Load(),
+		StateEncodes: g.stateEncodes.Load(), MailboxDecodes: g.mailboxDecodes.Load(),
+		StateWriteBytes: g.stateWriteBytes.Load(), MailboxWriteBytes: g.mailboxWriteBytes.Load(),
 	}
 }
 
@@ -448,7 +459,7 @@ func (sc *StateDecodeScope) noteOwnFiles(p Paths, name string, before ownFileSta
 }
 
 // ClearForeignWrites consumes recorded foreign-write evidence. The consumer
-// calls it only when a full cycle starts, which reads everything afresh.
+// calls it only when a full cycle starts, which revalidates versions and guards.
 func (sc *StateDecodeScope) ClearForeignWrites() {
 	if sc == nil {
 		return

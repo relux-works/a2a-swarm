@@ -22,7 +22,7 @@ import (
 
 // This inert private Unix socket is never accepted/dialed. The executable is a
 // read-only command fixture, not a real tmux server, pane or provider.
-func usabilityTarget(t *testing.T, runtime string) (tmuxwake.Target, string, string) {
+func usabilityTarget(t testing.TB, runtime string) (tmuxwake.Target, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	socket := filepath.Join(dir, "s")

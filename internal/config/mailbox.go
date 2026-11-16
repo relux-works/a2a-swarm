@@ -112,11 +112,19 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 		}
 		return nil, fmt.Errorf("mailbox: %w", err)
 	}
+	var stamp FileStamp
+	if p.readCache != nil {
+		stamp = StampFile(m.path)
+	}
+	if cached, ok := p.readCache.mailboxHit(name, m.path, stamp); ok {
+		return cached, nil
+	}
 	f, err := os.OpenFile(m.path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
 		return nil, fmt.Errorf("mailbox: %w", err)
 	}
 	defer f.Close()
+	globalStateStats.mailboxDecodes.Add(1)
 	r := bufio.NewReader(f)
 	for n := 1; ; n++ {
 		line, err := r.ReadBytes('\n')
@@ -138,6 +146,7 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 			return nil, fmt.Errorf("mailbox: %w", err)
 		}
 	}
+	p.readCache.rememberMailbox(name, m.path, stamp, m)
 	return m, nil
 }
 
@@ -499,6 +508,7 @@ func (m *Mailbox) compact() error {
 	if err := writeSecretAtomic(m.path, filepath.Base(m.path), buf.Bytes()); err != nil {
 		return err
 	}
+	globalStateStats.mailboxWriteBytes.Add(int64(buf.Len()))
 	m.order = order
 	m.dead = (len(m.received) + 999) / 1000
 	if len(shown) > 0 {
@@ -547,7 +557,9 @@ func (m *Mailbox) write(data []byte) error {
 		f.Close()
 		return fmt.Errorf("mailbox: %s has mode %04o, want 0600; refusing to use it", m.path, perm)
 	}
-	if _, err := f.Write(data); err != nil {
+	n, err := f.Write(data)
+	globalStateStats.mailboxWriteBytes.Add(int64(n))
+	if err != nil {
 		f.Close()
 		return fmt.Errorf("append mailbox: %w", err)
 	}

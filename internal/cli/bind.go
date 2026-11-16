@@ -553,6 +553,9 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 // production code, flags and environment never change it.
 var terminalStateMemo = true
 
+// terminalReadCache is a package-private comparison seam, never a runtime option.
+var terminalReadCache = true
+
 func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
 	return a.runTerminalLoop(ctx, s, generation, initial, refresh, nil)
 }
@@ -561,6 +564,11 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 // state behind refresh; a pending candidate keeps the active schedule.
 func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func(), view terminalRefreshView) (string, error) {
 	policy := initial
+	// Attach before starting the alarm worker; the bounded cache lives with
+	// this consumer's session, across full cycles and quiescent exchanges.
+	if terminalReadCache && s.paths.ReadCache() == nil {
+		s.paths = s.paths.WithReadCache(config.NewReadCache(s.name))
+	}
 	// This consumer's private State decode memo. It is attached once, before
 	// the alarm worker starts, and holds data only inside one cycle's epoch:
 	// opened before the first guard/read, closed before the timer wait and on
@@ -594,8 +602,8 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 		cycleStart := time.Now()
 		quiet := false
 		a.traceTerminal("cycle")
-		// A full cycle reads everything afresh, so earlier foreign-write
-		// evidence is consumed here and nowhere else.
+		// A full cycle revalidates file versions and every caller guard, so
+		// earlier foreign-write evidence is consumed here and nowhere else.
 		memo.ClearForeignWrites()
 		memo.Open()
 		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
@@ -881,40 +889,36 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			// Only an aged empty observation disproves continuous presence. A redraw
 			// inside the recovery window must retain lost-ACK typing authority.
 			if observation == "empty" && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) {
+				exhausted := b.Typed && len(b.AttemptIDs) < b.NoticeCount
+				// These resets previously took the same State lock twice with no
+				// external effect between them. Preserve the persisted reset and
+				// local-snapshot semantics in one transaction.
 				if err := a.terminalUpdate(s, generation, func(current *config.TerminalBinding) {
 					current.NoticeOrigin = nil
 					current.NoticePosition = nil
 					current.TypingStarted = false
+					if exhausted {
+						current.Typed = false
+						current.AttemptIDs = nil
+						current.Notice = ""
+						current.NoticeCount = 0
+						current.AttemptAt = time.Time{}
+						current.Retried = false
+						current.Idle = nil
+					}
 				}); err != nil {
 					return err
 				}
 				b.NoticeOrigin = nil
 				b.NoticePosition = nil
 				b.TypingStarted = false
-			}
-			if observation == "empty" && b.Typed && !a.Now().Before(b.AttemptAt.Add(max(2*b.Interval, b.RetryMax))) && len(b.AttemptIDs) < b.NoticeCount {
-				if err := a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+				if exhausted {
 					b.Typed = false
 					b.AttemptIDs = nil
 					b.Notice = ""
 					b.NoticeCount = 0
-					b.NoticeOrigin = nil
-					b.NoticePosition = nil
-					b.TypingStarted = false
-					b.AttemptAt = time.Time{}
-					b.Retried = false
 					b.Idle = nil
-				}); err != nil {
-					return err
 				}
-				b.Typed = false
-				b.AttemptIDs = nil
-				b.Notice = ""
-				b.NoticeCount = 0
-				b.NoticeOrigin = nil
-				b.NoticePosition = nil
-				b.TypingStarted = false
-				b.Idle = nil
 			}
 			if len(b.AttemptIDs) > 0 || b.NoticeOrigin != nil && b.Notice != "" {
 				return a.recoverTerminal(ctx, s, generation, *b, readiness)

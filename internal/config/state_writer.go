@@ -77,17 +77,24 @@ func syncStateDirectory(path string) error {
 // or rollback is claimed. The Host v2 route retains its stronger pinned-root
 // writer and existing uncertainty taxonomy.
 func writeOrdinaryStateAtomic(path, name string, data []byte, syncDir func(string) error) error {
+	_, err := writeOrdinaryStateAtomicStamped(path, name, data, syncDir)
+	return err
+}
+
+func writeOrdinaryStateAtomicStamped(path, name string, data []byte, syncDir func(string) error) (FileStamp, error) {
 	dir := filepath.Dir(path)
 	if err := syncDir(filepath.Dir(dir)); err != nil {
-		return err
+		return FileStamp{}, err
 	}
-	if err := writeSecretAtomic(path, name, data); err != nil {
-		return err
+	stamp, err := writeSecretAtomicStamped(path, name, data)
+	if err != nil {
+		return FileStamp{}, err
 	}
+	globalStateStats.stateWriteBytes.Add(int64(len(data)))
 	if err := syncDir(dir); err != nil {
-		return ErrStateWriteUncertain
+		return FileStamp{}, ErrStateWriteUncertain
 	}
-	return nil
+	return stamp, nil
 }
 
 // canonicalState seals every member except writer.seal, including writer

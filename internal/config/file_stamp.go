@@ -3,8 +3,9 @@ package config
 import "os"
 
 // FileStamp identifies one observed version of a path without reading it:
-// presence, file identity, size, modification time and mode. Equal stamps are
-// a wake hint only. They never stand in for a read, a guard or a lock.
+// presence, device/inode identity, size, nanosecond modification time and mode.
+// Consumers may reuse decoded data for an equal stamp; equality never replaces
+// authority checks, writer-seal verification or locking.
 type FileStamp struct {
 	Known   bool // false: the platform cannot identify files; never equal
 	Present bool
@@ -40,6 +41,10 @@ func stampFile(path string, stat func(string) (os.FileInfo, error)) FileStamp {
 	if err != nil {
 		return FileStamp{}
 	}
+	return stampInfo(info)
+}
+
+func stampInfo(info os.FileInfo) FileStamp {
 	dev, ino, ok := fileIdentity(info)
 	if !ok {
 		return FileStamp{}

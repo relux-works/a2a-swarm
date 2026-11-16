@@ -68,6 +68,7 @@ type Paths struct {
 	// stateDecode is the owning terminal consumer's private decode memo; nil
 	// for every resolved Paths value. It changes no path or routing result.
 	stateDecode *StateDecodeScope
+	readCache   *ReadCache
 }
 
 // ResolvePaths returns the base directory from A2A_CONFIG_DIR or ~/.config/a2a-swarm.
@@ -635,7 +636,9 @@ func (s *State) AddThread(root string) bool {
 	return true
 }
 
-// LoadState reads state/<name>.json. A missing file yields an empty state.
+// LoadState reads state/<name>.json. An attached consumer cache may supply an
+// independent decoded clone for an unchanged known stamp. A missing file
+// yields an empty state; file checks and caller authority guards are unchanged.
 func LoadState(p Paths, name string) (State, error) {
 	globalStateStats.loadStateCalls.Add(1)
 	path := p.StateFile(name)
@@ -644,6 +647,16 @@ func LoadState(p Paths, name string) (State, error) {
 			return State{}, nil
 		}
 		return State{}, err
+	}
+	var stamp FileStamp
+	if p.readCache != nil {
+		stamp = StampFile(path)
+	}
+	if cached, ok := p.readCache.stateHit(name, path, stamp); ok {
+		if err := cached.validateHostNotifications(); err != nil {
+			return State{}, err
+		}
+		return cached, nil
 	}
 	globalStateStats.stateReadAttempts.Add(1)
 	data, err := os.ReadFile(path)
@@ -671,6 +684,7 @@ func LoadState(p Paths, name string) (State, error) {
 	if err := s.validateHostNotifications(); err != nil {
 		return State{}, err
 	}
+	p.readCache.rememberState(name, path, stamp, s, false)
 	return s, nil
 }
 
@@ -711,8 +725,10 @@ func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monito
 // persistStateLocked is saveStateLocked with one ordinary-transaction option.
 // inputSealed reports that the caller verified old's compatible-writer seal
 // under this same lock (ordinaryWriterFenceSealed). After every refusal below
-// has passed, an ordinary non-Host-v2 save whose sealed bytes would equal that
-// verified input is not replaced when elideUnchangedOrdinaryState establishes
+// has passed, a still-stamped own durable write may skip an equal typed update
+// without encoding or syncing again. Otherwise, an ordinary non-Host-v2 save
+// whose sealed bytes would equal that verified input is not replaced when
+// elideUnchangedOrdinaryState establishes
 // the replacement's postconditions on the existing file: same path, mode and
 // bytes, file content synced, directory entries synced. Any other outcome
 // runs the ordinary replacement or returns its directory sync error taxonomy.
@@ -748,6 +764,9 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	}
 	// Caller-supplied writer metadata never erases an observed fence.
 	s.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
+	if inputSealed && !strict && p.readCache.unchangedDurable(name, path, old, s) {
+		return old, nil
+	}
 	if inputSealed && !strict && unchangedSealedState(old, s) {
 		elided, err := elideUnchangedOrdinaryState(path, old.rawState, ordinaryStateSync)
 		if err != nil {
@@ -763,20 +782,23 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	if err != nil {
 		return old, err
 	}
+	var writtenStamp FileStamp
 	if strict {
 		err = writeHostStateAtomic(p, name, append(data, '\n'))
 	} else {
-		err = writeOrdinaryStateAtomic(path, name, append(data, '\n'), syncStateDirectory)
+		writtenStamp, err = writeOrdinaryStateAtomicStamped(path, name, append(data, '\n'), syncStateDirectory)
 	}
 	if err != nil {
 		return old, err
 	}
 	// Return only the representation that successfully persisted, including its
 	// fresh seal/input. A failed save makes no durable-fence claim.
+	written := append(data, '\n')
 	saved, err := decodeFreshState(p, name, path, data)
 	if err != nil {
 		return old, err
 	}
+	p.readCache.rememberWrittenState(p, name, saved, written, writtenStamp)
 	return saved, nil
 }
 
@@ -784,33 +806,46 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 // directory, forced to mode 0600, synced, then renamed over path. A reader sees
 // either the old or the new content, never a partial file, and the mode is never wider than 0600.
 func writeSecretAtomic(path, name string, data []byte) error {
+	_, err := writeSecretAtomicStamped(path, name, data)
+	return err
+}
+
+// writeSecretAtomicStamped also identifies the actual synced temporary inode,
+// so a cache cannot attribute a later writer's replacement to this write.
+func writeSecretAtomicStamped(path, name string, data []byte) (FileStamp, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+name+".*.tmp")
 	if err != nil {
-		return err
+		return FileStamp{}, err
 	}
 	tmpName := tmp.Name()
 	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
 	if err := tmp.Chmod(SecretFileMode); err != nil {
 		cleanup()
-		return err
+		return FileStamp{}, err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
-		return err
+		return FileStamp{}, err
 	}
 	if err := tmp.Sync(); err != nil {
 		cleanup()
-		return err
+		return FileStamp{}, err
 	}
+	info, err := tmp.Stat()
+	if err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	stamp := stampInfo(info)
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return err
+		return FileStamp{}, err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
-		return err
+		return FileStamp{}, err
 	}
-	return nil
+	return stamp, nil
 }
 
 // ErrUnchanged is returned by an UpdateCredentials callback to skip the write.
