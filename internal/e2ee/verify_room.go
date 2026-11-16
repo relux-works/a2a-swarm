@@ -265,12 +265,14 @@ func VerifyRoomEvent(req RoomEventRequest) (*AcceptedEvent, *Refusal, error) {
 	if !retained {
 		switch err := window.Reserve(uint64(index), event, digest); err {
 		case nil:
-		case ErrReplay:
-			return refuse("8", ErrReplay, device)
 		case ErrExpired:
 			return refuse("8", ErrExpired, device)
 		default:
-			return nil, nil, err
+			// Reserve's ErrReplay is unreachable here: a retained entry that
+			// differs was refused by the explicit collision check above and a
+			// matching one skips Reserve. Any other result is an invariant
+			// failure of the replay state, not a verdict about this event.
+			return nil, nil, ErrConflict
 		}
 		if err := req.Events.Reserve(event, content.SessionID, uint64(index), digest); err != nil {
 			return nil, nil, err

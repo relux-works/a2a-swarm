@@ -82,6 +82,21 @@ func TestCaseFoldedMemberNamesRefused(t *testing.T) {
 	if err := SameDeviceKeys(ev, agentMXID, agentDev, extra); err != nil {
 		t.Fatal("unrelated unknown member refused", err)
 	}
+	// The check looks at names only: a value the decoders accept but Go cannot
+	// represent (an overflowing number) passes through both decoders unchanged.
+	var opaque json.RawMessage
+	if err := strictJSON([]byte(`[1e9999, {"a": 1e9999}]`), &opaque, 1024); err != nil {
+		t.Fatal("overflowing number refused by strictJSON", err)
+	}
+	var numbered struct {
+		A json.Number `json:"a"`
+	}
+	if err := lenientJSON([]byte(`{"a": 1e9999, "b": 1e9999}`), &numbered, 1024); err != nil || numbered.A != "1e9999" {
+		t.Fatal("overflowing number refused by lenientJSON", err)
+	}
+	if err := lenientJSON([]byte(`{"A": 1e9999}`), &numbered, 1024); err != ErrCodec {
+		t.Fatal("folded member beside an overflowing value admitted", err)
+	}
 	// Strict record decoder.
 	var c Cursor
 	if err := strictJSON([]byte(`{"token":"a","revision":0,"batch":"","TOKEN":"b"}`), &c, 20000); err != ErrCodec {

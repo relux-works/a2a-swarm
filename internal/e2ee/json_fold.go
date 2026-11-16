@@ -1,6 +1,7 @@
 package e2ee
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -11,66 +12,86 @@ import (
 // typed decoder would reach. encoding/json matches field names without case
 // and lets the last member win, so without this check `"M.RELATES_TO"` would
 // populate the `m.relates_to` field while a case-sensitive consumer of the
-// same bytes sees a different member. Opaque RawMessage members are left to
-// their own later decode; unknown members that fold to nothing are untouched.
+// same bytes sees a different member. It walks tokens and looks at member
+// names only: values are never decoded, so it cannot change which values the
+// surrounding decoder accepts (numbers stay json.Number, never float64).
+// Opaque RawMessage members and subtrees of unknown type are consumed without
+// checks. Grammar and depth were validated by the caller before this walk.
 func caseFoldCheck(raw []byte, dst any) error {
-	var generic any
-	if json.Unmarshal(raw, &generic) != nil {
-		return ErrCodec
-	}
-	if !foldWalk(generic, reflect.TypeOf(dst)) {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	if !foldValue(d, reflect.TypeOf(dst)) {
 		return ErrCodec
 	}
 	return nil
 }
 
-func foldWalk(v any, t reflect.Type) bool {
+// foldValue consumes one JSON value from d, checking object member names
+// against the fields of t. A nil or opaque t consumes without checking.
+func foldValue(d *json.Decoder, t reflect.Type) bool {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t == nil || t == rawJSONType {
+	if t == rawJSONType {
+		t = nil
+	}
+	tok, err := d.Token()
+	if err != nil {
+		return false
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
 		return true
 	}
-	switch t.Kind() {
-	case reflect.Struct:
-		obj, ok := v.(map[string]any)
-		if !ok {
-			return true
+	switch delim {
+	case '{':
+		var fields map[string]reflect.Type
+		var elem reflect.Type
+		if t != nil {
+			switch t.Kind() {
+			case reflect.Struct:
+				fields = foldFields(t)
+			case reflect.Map:
+				elem = t.Elem()
+			}
 		}
-		fields := foldFields(t)
-		for key, val := range obj {
-			for name, ft := range fields {
-				if name == key {
-					if !foldWalk(val, ft) {
+		for d.More() {
+			k, err := d.Token()
+			key, ok := k.(string)
+			if err != nil || !ok {
+				return false
+			}
+			child := elem
+			if fields != nil {
+				child = nil
+				for name, ft := range fields {
+					if name == key {
+						child = ft
+					} else if strings.EqualFold(name, key) {
 						return false
 					}
-				} else if strings.EqualFold(name, key) {
-					return false
 				}
 			}
-		}
-	case reflect.Map:
-		obj, ok := v.(map[string]any)
-		if !ok {
-			return true
-		}
-		for _, val := range obj {
-			if !foldWalk(val, t.Elem()) {
+			if !foldValue(d, child) {
 				return false
 			}
 		}
-	case reflect.Slice, reflect.Array:
-		arr, ok := v.([]any)
-		if !ok {
-			return true
+		end, err := d.Token()
+		return err == nil && end == json.Delim('}')
+	case '[':
+		var elem reflect.Type
+		if t != nil && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
+			elem = t.Elem()
 		}
-		for _, el := range arr {
-			if !foldWalk(el, t.Elem()) {
+		for d.More() {
+			if !foldValue(d, elem) {
 				return false
 			}
 		}
+		end, err := d.Token()
+		return err == nil && end == json.Delim(']')
 	}
-	return true
+	return false
 }
 
 // foldFields lists the JSON member names a struct type decodes, as
