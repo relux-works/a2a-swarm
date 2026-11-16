@@ -19,6 +19,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/envelopeobserve"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/redact"
+	"github.com/relux-works/a2a-swarm/internal/signedpost"
 	"github.com/relux-works/a2a-swarm/internal/voice"
 	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
@@ -34,7 +35,18 @@ const (
 // App carries the process environment so tests can run commands in-process.
 type App struct {
 	// Test-only host-file loader; production always validates protected ownership.
-	loadEnvelopeRoster       func(string) (*envelopeobserve.Observer, error)
+	loadEnvelopeRoster func(string) (*envelopeobserve.Observer, error)
+	// postSigner is the one signer seam. No implementation is linked: production
+	// leaves it nil and `post --sign` refuses with signer_unconfigured.
+	postSigner signedpost.Signer
+	// postAudience is the signed `aud` value; it belongs to the signer
+	// configuration and is empty in production.
+	postAudience string
+	// postQualified stands for attestation verification under the purpose-5 pin.
+	// No pin exists: production leaves it nil and a signed post ends in
+	// signer_unqualified. Tests only.
+	postQualified func(signedpost.Identity) bool
+
 	wakeRequiredVersion      string                                       // Immutable process-start admission; never read from a daemon request or ambient selector.
 	wakeContext              context.Context                              // Bounded terminal dispatch copy; never changes ambient command cleanup.
 	terminalFixture          func(config.TerminalBinding) terminalEffects // Isolated tests only; production always uses the bound terminal.

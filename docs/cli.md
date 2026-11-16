@@ -825,6 +825,7 @@ does not repair #169's thread-read completeness or relations pagination.
 | `--subtype` | - | only with `--kind system`: landing, window, incident, blocker, ownership, budget (protocol rule 24); queue (readiness claims, slot requests); redline, redline-closed (rule 28); impact-start, impact-end (rule 31) |
 | `--subject` | - | what the message is about, 1-128 chars of `[A-Za-z0-9#._/:@-]`, e.g. `relux-works/skill-project-management@main`, `BUG-260928-2qon2t`, `PR#12` |
 | `--envelope` | - | `@file`: carry the exact bytes of the file as a swarm envelope next to the text ([below](#carrying-a-swarm-envelope---envelope-file)) |
+| `--sign` | false | sign the post through the configured signer; refused when it cannot be signed (always, as released: no signer is linked), never sent unsigned ([below](#signed-posts---sign)) |
 
 With `--re`, the CLI reads the target through the selected session's
 authenticated endpoint in the resolved room. Local room-scoped redaction
@@ -962,6 +963,82 @@ name or anything the envelope claims. Signing, hashing and verification belong t
   rather than an envelope code.
   Usage errors (exit 2): `--envelope` without a `@file` operand, repeated, combined with `--voice`, or without
   exactly one text argument.
+
+#### Signed posts (`--sign`)
+
+```bash
+a2a post <room> --topic T --sign 'human-readable text'
+```
+
+`--sign` asks one signer seam (`internal/signedpost`, interface `Signer`) for the author identity and a
+signature, and publishes only what the sender verified itself. The two-sided contract is
+[signed-post-contract.md](signed-post-contract.md).
+
+**As released, every `post --sign` is refused and nothing is sent.** No signer implementation is linked
+(`signer_unconfigured`), and no purpose-5 pin exists, so even with a signer the command ends in
+`signer_unqualified` before it builds a signing input. A refused signed post is never sent unsigned: remove
+`--sign` to send an ordinary post. The path behind those two states is implemented and tested with a fake
+signer behind the seam:
+
+1. The recipient rule, before any signer call. Exactly one recipient: the signed `to` is its full user id.
+   Zero or several: `to` is the room id and the ordered list of full ids is the signed `arguments.to`.
+2. Identity: the author key, the attestation id and the attestation. The key must be a valid `bip340:` key,
+   the id a `sha256:` content id, the attestation 1..8192 bytes, and the content id of the attestation
+   (the pinned module's content id of its `attestation/1` body, which its own `id` member must state) must
+   equal the attestation id.
+3. The body: type `message/1`, the configured audience, a 16-byte random nonce, `iat` = now, `exp` = now +
+   120 s, the room id, `to`, `body_sha256` of the exact event body, `author`, `author_attestation`, action
+   `a2a.post/1`, the fixed target `{"id":"a2a/post","kind":"station"}` and `arguments` =
+   `{kind, topic, re, to}`: the header's kind, thread root and `--re` target (empty text when absent) and the
+   mentioned full ids. The signing input is the pinned module's signing preimage of that body.
+4. One signature request with exactly that preimage. A retryable signer failure repeats the same preimage,
+   at most twice more and only before `exp`.
+5. The returned key must equal the identity key and the signature must verify over the preimage; both are
+   checked once. Then the envelope is assembled once (`id` = the module's content id of the body) and sent
+   in `works.relux.swarm.envelope`, beside the attestation described below. All other event content is
+   identical to the unsigned post.
+6. When the send fails it is repeated once: before `exp` with the identical envelope bytes under the same
+   transaction id, after `exp` with a newly signed envelope (new nonce, `iat`, `exp`).
+
+The attestation travels in the Matrix event content member `works.relux.swarm.author_attestation`:
+a string containing unpadded canonical base64url of its exact raw bytes (1..8192 bytes). It is outside
+the envelope and the signed bytes; the signature binds its content id through `body.author_attestation`.
+When the member is present the receiver compares that module-defined content id with the signed id;
+a mismatch, malformed encoding or oversize value is `invalid: attestation_mismatch`. When absent, the
+host roster decides as before. The carried issuer is not verified: no purpose-5 pin exists yet.
+
+- **Refusals** print `a2a: signed post refused: <code>` or `<code> (<fixed detail>)` (exit 1). The code is
+  one of `signer_unconfigured`, `signer_unavailable`, `signer_unqualified`, `signer_refused`,
+  `signer_result_invalid`, `recipients_too_many`. A detail is fixed local text or the holder's code name,
+  never a key, attestation bytes or received text.
+  - `signer_unconfigured`: no signer, or no audience, is configured. This is what the released command
+    prints, before any request.
+  - `recipients_too_many`: more than 64 recipients, a duplicate recipient, a recipient id over 255 bytes or
+    not a printable ASCII full MXID, or a signing input over 24576 bytes. The recipient rule is decided before any
+    signer call; the list is never truncated or split.
+  - `signer_unavailable` (retryable), `signer_refused` (not retryable): the signer's own failure, mapped to
+    this closed vocabulary.
+  - `signer_result_invalid`: a reply that is not one of the signer's typed errors, a returned key that
+    differs from the identity key, or a signature that does not verify over the exact preimage.
+  - `signer_unqualified`: the author key is not a well-formed `bip340:` key, the attestation id is not a
+    `sha256:` content id, the attestation is empty, over 8192 bytes, malformed or has another content id,
+    or (always, as released) no purpose-5 pin is configured.
+- **Usage errors** (exit 2): `--sign` with `--envelope`, with `--voice`, with `--operation-id`, or without
+  exactly one text argument.
+- **Daemon route.** The local daemon's request allowlist does not admit `--sign`; such a request is refused
+  there and nothing is sent.
+
+Not in this version:
+
+- the key-holder client (socket, peer pins, hello, identity and sign requests) and any real key;
+- the attestation's own verification under the per-host purpose-5 pin: only its content id is compared.
+  Until that verification exists no signed post is published outside tests;
+- a configuration surface for the signer and the audience;
+- the roster writer, and refusing unsigned senders.
+
+The receive side of a signed post (room-addressed recipients, metadata binding, the labels
+`recipient_not_addressed`, `metadata_mismatch` and `attestation_mismatch`) is described in
+[envelope-observe.md](envelope-observe.md#signed-posts).
 
 ### `a2a attach <room> --topic <slug|$event_id> <file> [--kind K] [--to a,b] [--pin] [caption|@file|-]`
 Shares a file through the homeserver's media repository. The file must be a regular, non-empty file whose base name is a safe file name

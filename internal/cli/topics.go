@@ -422,6 +422,7 @@ type postFlags struct {
 	subtype     *string
 	subject     *string
 	envelopeArg *string
+	sign        *bool
 }
 
 func postFlagSet() (*flag.FlagSet, postFlags) {
@@ -440,12 +441,13 @@ func postFlagSet() (*flag.FlagSet, postFlags) {
 	subtype := fs.String("subtype", "", "system subtype (only with --kind system)")
 	subject := fs.String("subject", "", "structured subject (repo@branch, board id, PR#12)")
 	envelopeArg := fs.String("envelope", "", "carry the exact bytes of @file as a swarm envelope in the event; the text becomes the exact event body")
-	return fs, postFlags{result: result, to: &to, operationID: operationID, withVoice: withVoice, topic: topic, kind: kind, re: re, replyMain: replyMain, replyBy: replyBy, trunk: trunk, subtype: subtype, subject: subject, envelopeArg: envelopeArg}
+	sign := fs.Bool("sign", false, "sign the post through the configured signer; refused when it cannot be signed, never sent unsigned")
+	return fs, postFlags{result: result, to: &to, operationID: operationID, withVoice: withVoice, topic: topic, kind: kind, re: re, replyMain: replyMain, replyBy: replyBy, trunk: trunk, subtype: subtype, subject: subject, envelopeArg: envelopeArg, sign: sign}
 }
 
 // cmdPost: a2a post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--reply-main] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
 func cmdPost(ctx context.Context, a *App, args []string) error {
-	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--reply-main] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] <text|@file|->"
+	const use = "usage: a2a post <room> [--topic <slug|$event_id>] [--kind K] [--re $event] [--reply-main] [--to a,b] [--reply-by RFC3339] [--trunk OID] [--subtype S] [--subject X] [--voice] [--envelope @file] [--sign] <text|@file|->"
 	fs, opts := postFlagSet()
 	result, to := opts.result, opts.to
 	operationID := opts.operationID
@@ -476,7 +478,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		return usagef(use)
 	}
 	if flagPresent(fs, "operation-id") {
-		if !config.ValidPostOperationID(*operationID) || !matrix.ValidVerificationID(pos[0], '!') || !matrix.ValidVerificationID(*topic, '$') || flagPresent(fs, "re") || flagPresent(fs, "reply-main") || flagPresent(fs, "voice") || flagPresent(fs, "envelope") || flagPresent(fs, "json") || flagPresent(fs, "id-file") {
+		if !config.ValidPostOperationID(*operationID) || !matrix.ValidVerificationID(pos[0], '!') || !matrix.ValidVerificationID(*topic, '$') || flagPresent(fs, "re") || flagPresent(fs, "reply-main") || flagPresent(fs, "voice") || flagPresent(fs, "envelope") || flagPresent(fs, "sign") || flagPresent(fs, "json") || flagPresent(fs, "id-file") {
 			return usagef("durable post requires an operation ID, exact room and topic root, plain text and its own result; excluded modes refused")
 		}
 	}
@@ -489,6 +491,11 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	fs.Visit(func(f *flag.Flag) { envelopeMode = envelopeMode || f.Name == "envelope" })
 	if envelopeMode {
 		if err := envelopePostSelection(args, *envelopeArg, *withVoice, len(pos)); err != nil {
+			return err
+		}
+	}
+	if *opts.sign {
+		if err := signedPostSelection(a, envelopeMode, *withVoice, len(pos)); err != nil {
 			return err
 		}
 	}
@@ -579,9 +586,13 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		At: now.Format(time.RFC3339), Re: *re, Kind: *kind, ReplyBy: rb, Trunk: *trunk,
 		Subtype: *subtype, Subject: *subject}
 	var id string
-	if envelopeMode {
+	switch {
+	case *opts.sign:
+		// A signed post is sent signed or not at all: every error returns here.
+		id, err = s.sendSignedPost(ctx, roomID, label, h, text, mentions)
+	case envelopeMode:
 		id, err = s.sendThreadEnvelope(ctx, roomID, label, h, text, encodedEnvelope, mentions)
-	} else {
+	default:
 		id, err = s.sendThreadMessage(ctx, roomID, label, h, text, mentions)
 	}
 	if err != nil {

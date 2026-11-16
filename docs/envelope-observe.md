@@ -126,6 +126,58 @@ bound observation. Oversized carried content is labelled `content_too_large`
 and still delivered. Invalid base64url, duplicate keys, malformed UTF-8 and
 body aliases cannot become verified. Input remains untrusted after labelling.
 
+## Signed posts
+
+A signed post is an envelope whose signed `action` is `a2a.post/1` (send side:
+the "Signed posts" section of [cli.md](cli.md); two-sided contract:
+[signed-post-contract.md](signed-post-contract.md)). Envelopes with any other
+action keep the existing recipient and metadata rules. For a signed post the
+observer adds two steps, and the host roster still decides who the author is:
+
+1. **Recipient.** The envelope is verified first with `Delivery.to` = the
+   reader's own full user id. Only when that result is
+   `message_recipient_mismatch`, AND the signed `to` starts with `!`, AND it
+   equals the selected room id, it is verified once more with `Delivery.to` =
+   that room id. There is no other fallback: a post signed for another user or
+   another room stays `invalid: message_recipient_mismatch`.
+2. **Metadata.** After the verifier accepts, the signed metadata is compared
+   with the event: the signed `arguments` must be exactly `{kind, topic, re,
+   to}`; `kind`, `topic` and `re` must equal the event header's values (an
+   absent header member is the empty text); `to` must equal the event's
+   `m.mentions.user_ids` in order (absent is the empty list), hold at most 64
+   distinct ids, and be exactly the signed `to` for a post to one user; the
+   signed target must be the fixed `{"id":"a2a/post","kind":"station"}`. A
+   missing header and a case variant of `ai.relux.a2a` or `m.mentions` also
+   differ. Any difference is `invalid: metadata_mismatch`.
+
+A room-addressed post is then `verified` only when the reader's own id is in
+the signed list or the list is empty (a room broadcast); otherwise it is
+`invalid: recipient_not_addressed`.
+
+For any verified envelope, a present `works.relux.swarm.author_attestation`
+content member must be a string containing canonical unpadded base64url of
+1..8192 raw bytes. The observer uses the pinned module's `record.ContentID`
+for the parsed `attestation/1` body, also checking the record's own `id`, and
+compares it with signed `body.author_attestation`. A mismatch, malformed value
+or oversize value is `invalid: attestation_mismatch`. This member is outside
+the envelope and signed bytes; its binding is the signed content id. An absent
+member preserves roster-only verification.
+
+Named limits:
+
+- **Read time.** The verifier runs at read time, so a signed post read more
+  than 120 seconds after it was signed is labelled `invalid: expired`
+  (observed in `TestObserveSignedPost/expired` and
+  `TestPostSignReadAfterLifetime`). Observe mode still delivers it.
+- **Roster only; carried issuer not verified.** The author is decided by the
+  host roster and its protected facts, never by the carried attestation. Only
+  the carried content id is compared: no purpose-5 issuer pin exists yet, so
+  the carried attestation adds no purpose-5 expiry or revocation evidence.
+  A withdrawn key stays valid until the roster changes.
+- **Mentions carry the recipients.** The header's `to` holds display names
+  (`all`, local names), so the signed recipient list is compared with the full
+  ids in `m.mentions`, not with the header's `to`.
+
 ## Tools and validation
 
 The repository requires Go >=1.26.8; the pinned module requires >=1.26.0.
