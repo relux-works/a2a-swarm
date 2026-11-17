@@ -43,7 +43,7 @@ func briefInboxInline(items []waitItem, s *session) []bool {
 		if !ok || (h.Kind != "request" && h.Kind != "question" && h.Kind != "decision") {
 			continue
 		}
-		rel, _, _ := classify(*it.ev, it.rec.RoomID, s.creds.UserID, s.name, config.State{}, nil)
+		rel, _, _ := classify(*it.ev, it.rec.RoomID, s.creds.UserID, s.name, config.State{}, nil, nil)
 		inline[i] = rel == relTo || rel == relMention
 	}
 	return inline

@@ -87,7 +87,7 @@ func TestMutedRoomSubscriptionClassify(t *testing.T) {
 			if r == "" {
 				r = room
 			}
-			rel, learned, ids := classify(ev, r, "@alice:test.local", "alice", state, tc.subs)
+			rel, learned, ids := classify(ev, r, "@alice:test.local", "alice", state, nil, tc.subs)
 			if rel != tc.rel || learned != "" || !reflect.DeepEqual(ids, tc.ids) {
 				t.Fatalf("classify = (%q, %q, %v), want (%q, empty, %v)", rel, learned, ids, tc.rel, tc.ids)
 			}
@@ -95,7 +95,7 @@ func TestMutedRoomSubscriptionClassify(t *testing.T) {
 	}
 	for _, kind := range []string{"system", "owner-needed"} {
 		t.Run(kind, func(t *testing.T) {
-			if rel, _, ids := classify(mutedSubscriptionEvent("$muted", kind), room, "@alice:test.local", "alice", state, []Sub{roomSub}); rel != "" || len(ids) != 0 {
+			if rel, _, ids := classify(mutedSubscriptionEvent("$muted", kind), room, "@alice:test.local", "alice", state, nil, []Sub{roomSub}); rel != "" || len(ids) != 0 {
 				t.Fatalf("muted %s delivered: %q %v", kind, rel, ids)
 			}
 		})
@@ -149,7 +149,7 @@ func TestMutedRoomSubscriptionUntilKind(t *testing.T) {
 				if err := json.Unmarshal(raw, &resp); err != nil {
 					t.Fatal(err)
 				}
-				b, err := s.collectBatch(context.Background(), resp, "before", config.State{Muted: []string{"$muted"}}, subs, all, map[string]string{room: "#room"})
+				b, err := s.collectBatch(context.Background(), resp, "before", config.State{Muted: []string{"$muted"}}, nil, subs, all, map[string]string{room: "#room"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -315,7 +315,7 @@ func TestMutedSenderSubscriptionHeaderless(t *testing.T) {
 			if _, ok := decodeHeader(ev.Message().A2A); ok || ev.Message().Mentions != nil || strings.Contains(ev.Message().Body, "@alice") {
 				t.Fatal("fixture must be a headerless, unmentioned client message")
 			}
-			rel, _, ids := classify(ev, room, "@alice:test.local", "alice", config.State{Muted: []string{"$muted"}}, []Sub{sub})
+			rel, _, ids := classify(ev, room, "@alice:test.local", "alice", config.State{Muted: []string{"$muted"}}, nil, []Sub{sub})
 			if tc.want {
 				if rel != relSub || !reflect.DeepEqual(ids, []string{"sender"}) {
 					t.Fatalf("sender delivery lost: %q %v", rel, ids)
@@ -363,7 +363,7 @@ func TestMutedSubscriptionRealProjection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, state := range []config.State{{}, {Muted: []string{"$muted"}}} {
-				rel, learned, ids := classify(ev, "!system:test.local", "@alice:test.local", "alice", state, tc.subs)
+				rel, learned, ids := classify(ev, "!system:test.local", "@alice:test.local", "alice", state, nil, tc.subs)
 				want := relevance("")
 				if len(tc.ids) > 0 {
 					want = relSub

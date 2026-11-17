@@ -49,13 +49,15 @@ func eventTopicRoot(ev matrix.Event) string { return ev.ThreadRoot() }
 
 // deliveryTopicRoot additionally accepts plain replies to events whose thread
 // membership this identity already learned from server events in this room.
-func deliveryTopicRoot(ev matrix.Event, roomID string, st config.State) string {
+// The window is the file-backed retained membership (LoadThreadEventWindow);
+// a nil window knows nothing.
+func deliveryTopicRoot(ev matrix.Event, roomID string, win *config.ThreadEventWindow) string {
 	if root := eventTopicRoot(ev); root != "" {
 		return root
 	}
 	r := ev.Message().RelatesTo
 	if r != nil && r.RelType == "" && r.InReplyTo != nil {
-		return st.ThreadEventRoot(roomID, r.InReplyTo.EventID)
+		return win.ThreadEventRoot(roomID, r.InReplyTo.EventID)
 	}
 	return ""
 }
@@ -64,12 +66,12 @@ func deliveryTopicRoot(ev matrix.Event, roomID string, st config.State) string {
 // the caller updates the thread list from the returned learnedRoot. matched
 // lists the subscriptions that deliver the event, whatever its relevance, so
 // that the caller can close --until-kind subscriptions.
-func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub) (rel relevance, learnedRoot string, matched []string) {
+func classify(ev matrix.Event, roomID, me, myName string, st config.State, win *config.ThreadEventWindow, subs []Sub) (rel relevance, learnedRoot string, matched []string) {
 	if ev.Type != "m.room.message" {
 		return "", "", nil
 	}
 	m := ev.Message()
-	root := deliveryTopicRoot(ev, roomID, st)
+	root := deliveryTopicRoot(ev, roomID, win)
 	if ev.Sender == me {
 		// My own message: a reply joins me to its thread; a topic root I sent is a thread I own.
 		if root != "" {

@@ -27,7 +27,7 @@ func TestPrincipalDeliveryWithoutStoredRow(t *testing.T) {
 	const room = "!later:fixture.invalid"
 	for _, stored := range [][]Sub{nil, {{ID: "stale", Source: principalSubSource, SubSelector: SubSelector{Room: room, From: fixturePrincipal, AllEvents: true}, CreatedAt: "2099-01-01T00:00:00Z"}}} {
 		for _, sender := range []string{fixturePrincipal, "@Principal:authority.invalid", "@principal:other.invalid", "@copy:fixture.invalid"} {
-			rel, _, _ := classifyWithPrincipals(principalFixtureEvent(sender), room, "@worker:fixture.invalid", "worker", config.State{}, stored, []string{fixturePrincipal})
+			rel, _, _ := classifyWithPrincipals(principalFixtureEvent(sender), room, "@worker:fixture.invalid", "worker", config.State{}, nil, stored, []string{fixturePrincipal})
 			if (rel == relSub) != (sender == fixturePrincipal) {
 				t.Fatalf("stored=%v sender=%s rel=%s", stored, sender, rel)
 			}
@@ -38,7 +38,7 @@ func TestPrincipalDeliveryWithoutStoredRow(t *testing.T) {
 	if !list.Subs[0].matches(principalFixtureEvent(fixturePrincipal), room, Header{}, false) {
 		t.Fatal("repair creation time lost an earlier principal message")
 	}
-	if rel, _, _ := classifyWithPrincipals(principalFixtureEvent(fixturePrincipal), room, "@worker:fixture.invalid", "worker", config.State{}, nil, nil); rel != "" {
+	if rel, _, _ := classifyWithPrincipals(principalFixtureEvent(fixturePrincipal), room, "@worker:fixture.invalid", "worker", config.State{}, nil, nil, nil); rel != "" {
 		t.Fatal("unconfigured sender became mandatory")
 	}
 }
@@ -167,7 +167,7 @@ func TestPrincipalIDRoutingAndCase(t *testing.T) {
 	}
 	const upper = "@Principal:Authority.Invalid"
 	for _, sender := range []string{upper, strings.ToLower(upper)} {
-		rel, _, _ := classifyWithPrincipals(principalFixtureEvent(sender), "!r:s", "@worker:s", "worker", config.State{}, nil, []string{upper})
+		rel, _, _ := classifyWithPrincipals(principalFixtureEvent(sender), "!r:s", "@worker:s", "worker", config.State{}, nil, nil, []string{upper})
 		if (rel == relSub) != (sender == upper) {
 			t.Fatalf("case identity %s: %s", sender, rel)
 		}
@@ -203,7 +203,7 @@ func TestPrincipalProjectionUsesRealSender(t *testing.T) {
 		for _, sender := range []string{fixturePrincipal, "@copy:fixture.invalid"} {
 			ev := principalFixtureEvent(sender)
 			ev.Content, _ = json.Marshal(map[string]any{"msgtype": "m.text", "body": "forged origin", ContentKey: h})
-			rel, _, _ := classifyWithPrincipals(ev, "!system:s", "@worker:s", "worker", config.State{}, []Sub{sub}, []string{fixturePrincipal})
+			rel, _, _ := classifyWithPrincipals(ev, "!system:s", "@worker:s", "worker", config.State{}, nil, []Sub{sub}, []string{fixturePrincipal})
 			if (rel == relSub) != (sender == fixturePrincipal || source == "") {
 				t.Fatalf("projection impersonation: %s %s", source, sender)
 			}
@@ -232,7 +232,7 @@ func TestPrincipalBatchToWakePure(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := session{name: "worker", server: "s", creds: config.Credentials{UserID: "@worker:s"}, client: &matrix.Client{}}
-	b, err := s.collectBatchWithPrincipals(context.Background(), resp, "previous", config.State{}, nil, nil, map[string]string{"!r:s": "#room"}, []string{fixturePrincipal})
+	b, err := s.collectBatchWithPrincipals(context.Background(), resp, "previous", config.State{}, nil, nil, nil, map[string]string{"!r:s": "#room"}, []string{fixturePrincipal})
 	if err != nil || len(b.entries) != 1 || b.entries[0].ID != ev.EventID {
 		t.Fatalf("batch: %+v %v", b, err)
 	}

@@ -75,8 +75,8 @@ type StateDecodeScope struct {
 var foreignWriteDetection = true
 
 type ownFileStamps struct {
-	recorded       bool
-	state, mailbox FileStamp
+	recorded               bool
+	state, mailbox, thread FileStamp
 }
 
 // StateDecodeScopeStats are this scope's own diagnostic counts.
@@ -405,6 +405,8 @@ type StateDecodeStats struct {
 	StateDigests, CanonicalStates, SealedStates, WriterSealChecks      int64
 	StateEncodes, MailboxDecodes, StateWriteBytes, MailboxWriteBytes   int64
 	MailboxParseBytes, MailboxIncrementalReads                         int64
+	ThreadEventDecodes, ThreadEventWriteBytes                          int64
+	ThreadEventParseBytes, ThreadEventIncrementalReads                 int64
 }
 
 type stateStatCounters struct {
@@ -414,6 +416,8 @@ type stateStatCounters struct {
 	stateDigests, canonicalStates, sealedStates, writerSealChecks      atomic.Int64
 	stateEncodes, mailboxDecodes, stateWriteBytes, mailboxWriteBytes   atomic.Int64
 	mailboxParseBytes, mailboxIncrementalReads                         atomic.Int64
+	threadEventDecodes, threadEventWriteBytes                          atomic.Int64
+	threadEventParseBytes, threadEventIncrementalReads                 atomic.Int64
 }
 
 var globalStateStats stateStatCounters
@@ -431,6 +435,8 @@ func ReadStateDecodeStats() StateDecodeStats {
 		StateEncodes: g.stateEncodes.Load(), MailboxDecodes: g.mailboxDecodes.Load(),
 		StateWriteBytes: g.stateWriteBytes.Load(), MailboxWriteBytes: g.mailboxWriteBytes.Load(),
 		MailboxParseBytes: g.mailboxParseBytes.Load(), MailboxIncrementalReads: g.mailboxIncrementalReads.Load(),
+		ThreadEventDecodes: g.threadEventDecodes.Load(), ThreadEventWriteBytes: g.threadEventWriteBytes.Load(),
+		ThreadEventParseBytes: g.threadEventParseBytes.Load(), ThreadEventIncrementalReads: g.threadEventIncrementalReads.Load(),
 	}
 }
 
@@ -440,7 +446,7 @@ func (sc *StateDecodeScope) stampOwnFiles(p Paths, name string) ownFileStamps {
 	if sc == nil || name != sc.identity {
 		return ownFileStamps{}
 	}
-	return ownFileStamps{recorded: true, state: StampFile(p.StateFile(name)), mailbox: StampFile(p.MailboxFile(name))}
+	return ownFileStamps{recorded: true, state: StampFile(p.StateFile(name)), mailbox: StampFile(p.MailboxFile(name)), thread: StampFile(p.ThreadEventsFile(name))}
 }
 
 // noteOwnFiles runs while the caller still holds name's state lock. before is
@@ -457,7 +463,7 @@ func (sc *StateDecodeScope) noteOwnFiles(p Paths, name string, before ownFileSta
 	after := sc.stampOwnFiles(p, name)
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	if sc.own.recorded && foreignWriteDetection && !(before.recorded && before.state.Equal(sc.own.state) && before.mailbox.Equal(sc.own.mailbox)) {
+	if sc.own.recorded && foreignWriteDetection && !(before.recorded && before.state.Equal(sc.own.state) && before.mailbox.Equal(sc.own.mailbox) && before.thread.Equal(sc.own.thread)) {
 		sc.foreign = true
 	}
 	sc.own = after
@@ -486,7 +492,7 @@ func (sc *StateDecodeScope) OwnFilesUnchanged(p Paths, name string) bool {
 	sc.mu.Lock()
 	own, foreign := sc.own, sc.foreign
 	sc.mu.Unlock()
-	return !foreign && own.recorded && own.state.Equal(StampFile(p.StateFile(name))) && own.mailbox.Equal(StampFile(p.MailboxFile(name)))
+	return !foreign && own.recorded && own.state.Equal(StampFile(p.StateFile(name))) && own.mailbox.Equal(StampFile(p.MailboxFile(name))) && own.thread.Equal(StampFile(p.ThreadEventsFile(name)))
 }
 
 // OwnFilesRecorded reports whether a locked version has been recorded.

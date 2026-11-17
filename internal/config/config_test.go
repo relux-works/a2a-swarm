@@ -332,24 +332,25 @@ func TestHumanCredentials(t *testing.T) {
 // observation or accept empty components, and grants no follow/unmute status.
 // Valid same-ID observations in two rooms are the independent controls.
 func TestThreadEventMembershipScopeAndRetention(t *testing.T) {
-	var st State
+	win := NewThreadEventWindow()
 	for _, e := range []ThreadEvent{{EventID: "$child", Root: "$root"}, {Room: "!room", Root: "$root"}, {Room: "!room", EventID: "$child"}} {
-		st.RememberThreadEvent(e)
+		win.RememberThreadEvent(e)
 	}
-	if len(st.ThreadEvents) != 0 {
+	if win.Len() != 0 {
 		t.Fatal("invalid membership retained")
 	}
+	var st State
 	st.Mute("$root")
-	st.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: "$child", Root: "$root"})
-	st.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: "$child", Root: "$replacement"})
-	st.RememberThreadEvent(ThreadEvent{Room: "!other", EventID: "$child", Root: "$other-root"})
-	if len(st.ThreadEvents) != 2 || st.ThreadEventRoot("!room", "$child") != "$root" || st.ThreadEventRoot("!other", "$child") != "$other-root" || st.ThreadEventRoot("!unknown", "$child") != "" || st.HasThread("$root") || !st.IsMuted("$root") {
-		t.Fatalf("membership altered scope or follow/mute policy: %+v", st)
+	win.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: "$child", Root: "$root"})
+	win.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: "$child", Root: "$replacement"})
+	win.RememberThreadEvent(ThreadEvent{Room: "!other", EventID: "$child", Root: "$other-root"})
+	if win.Len() != 2 || win.ThreadEventRoot("!room", "$child") != "$root" || win.ThreadEventRoot("!other", "$child") != "$other-root" || win.ThreadEventRoot("!unknown", "$child") != "" || st.HasThread("$root") || !st.IsMuted("$root") {
+		t.Fatalf("membership altered scope or follow/mute policy: %+v", win.Entries())
 	}
 	for i := 0; i < 2000; i++ {
-		st.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: fmt.Sprintf("$event-%d", i), Root: "$root"})
+		win.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: fmt.Sprintf("$event-%d", i), Root: "$root"})
 	}
-	if len(st.ThreadEvents) != 2000 || st.ThreadEventRoot("!room", "$child") != "" || st.ThreadEventRoot("!other", "$child") != "" || st.ThreadEventRoot("!room", "$event-0") != "$root" || st.ThreadEventRoot("!room", "$event-1999") != "$root" {
+	if win.Len() != 2000 || win.ThreadEventRoot("!room", "$child") != "" || win.ThreadEventRoot("!other", "$child") != "" || win.ThreadEventRoot("!room", "$event-0") != "$root" || win.ThreadEventRoot("!room", "$event-1999") != "$root" {
 		t.Fatal("membership retention did not evict only the oldest entries")
 	}
 }

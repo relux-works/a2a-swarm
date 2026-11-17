@@ -26,6 +26,11 @@ type ReadCache struct {
 	mailboxRaw   []byte
 	mailbox      *Mailbox
 	mailboxInc   *mailboxIncState
+	threadPath   string
+	threadStamp  FileStamp
+	threadRaw    []byte
+	thread       *ThreadEventWindow
+	threadInc    *threadIncState
 }
 
 // mailboxIncState is one consumer's incremental mailbox snapshot: the parsed
@@ -247,6 +252,111 @@ func (c *ReadCache) mailboxHit(name, path string, stamp FileStamp) (*Mailbox, bo
 }
 
 const mailboxCacheMaxInput = 8 << 20
+
+// threadIncState is one consumer's incremental thread-window snapshot, the
+// counterpart of mailboxIncState: the parsed window after the complete
+// lines in file[:offset], the digest of that prefix, and the digest and
+// size of the whole file as read. visible, when non-nil, is base with a
+// valid unterminated final line applied.
+type threadIncState struct {
+	path      string
+	dev, ino  uint64
+	offset    int64
+	prefixSum [32]byte
+	fileSize  int64
+	fileSum   [32]byte
+	base      *ThreadEventWindow
+	visible   *ThreadEventWindow
+}
+
+func (c *ReadCache) threadIncSnapshot(name, path string) *threadIncState {
+	if c == nil || name != c.identity {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.threadInc == nil || c.threadInc.path != path {
+		return nil
+	}
+	return c.threadInc
+}
+
+func (c *ReadCache) rememberThreadInc(name string, inc *threadIncState) {
+	if c == nil || name != c.identity || inc == nil {
+		return
+	}
+	c.mu.Lock()
+	c.threadInc = inc
+	c.mu.Unlock()
+}
+
+// updateThreadRaw extends the exact-byte thread cache after an incremental
+// read, mirroring updateRawAfterIncremental.
+func (c *ReadCache) updateThreadRaw(name, path string, stamp FileStamp, inc *threadIncState, appended []byte, w *ThreadEventWindow, total int64) {
+	if c == nil || name != c.identity {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if total > mailboxCacheMaxInput {
+		if c.threadPath == path {
+			c.thread = nil
+			c.threadRaw = nil
+			c.threadPath = ""
+		}
+		return
+	}
+	if c.threadPath != path || int64(len(c.threadRaw)) != inc.fileSize {
+		return
+	}
+	raw := make([]byte, 0, total)
+	raw = append(raw, c.threadRaw[:inc.offset]...)
+	raw = append(raw, appended...)
+	if int64(len(raw)) != total {
+		return
+	}
+	c.threadPath, c.threadStamp, c.thread = path, stamp, cloneThreadWindow(w)
+	c.threadRaw = raw
+}
+
+func (c *ReadCache) threadHit(name, path string, stamp FileStamp) (*ThreadEventWindow, bool) {
+	if c == nil || name != c.identity || !stamp.Present {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.thread == nil || path != c.threadPath || !stamp.Equal(c.threadStamp) {
+		return nil, false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	raw := make([]byte, len(c.threadRaw)+1)
+	n, err := io.ReadFull(f, raw)
+	if (err != io.EOF && err != io.ErrUnexpectedEOF) || !bytes.Equal(raw[:n], c.threadRaw) {
+		return nil, false
+	}
+	return cloneThreadWindow(c.thread), true
+}
+
+func (c *ReadCache) rememberThread(name, path string, before FileStamp, raw []byte, w *ThreadEventWindow) {
+	if c == nil || name != c.identity {
+		return
+	}
+	after := StampFile(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !before.Present || !before.Equal(after) || before.Size > mailboxCacheMaxInput || before.Size != int64(len(raw)) {
+		c.thread = nil
+		c.threadRaw = nil
+		c.threadPath = ""
+		return
+	}
+	c.threadPath, c.threadStamp, c.thread = path, before, cloneThreadWindow(w)
+	c.threadRaw = cloneBytes(raw)
+}
 
 func (c *ReadCache) rememberMailbox(name, path string, before FileStamp, raw []byte, m *Mailbox) {
 	if c == nil || name != c.identity {

@@ -91,7 +91,7 @@ func TestPrincipalRepairAndPlainMessages(t *testing.T) {
 		if got := list.Subs[1].matches(ev, room, Header{}, false); got != (sender == fixturePrincipal) {
 			t.Fatalf("plain signed message sender %s matched = %v", sender, got)
 		}
-		rel, _, matched := classify(ev, room, "@worker:fixture.invalid", "worker", config.State{}, list.Subs)
+		rel, _, matched := classify(ev, room, "@worker:fixture.invalid", "worker", config.State{}, nil, list.Subs)
 		if sender == fixturePrincipal {
 			if rel != relSub || !reflect.DeepEqual(matched, []string{list.Subs[1].ID}) {
 				t.Fatalf("principal plain message was not relevant: %s %v", rel, matched)

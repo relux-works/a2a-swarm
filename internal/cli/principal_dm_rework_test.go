@@ -565,7 +565,7 @@ func TestPrincipalDMFutureAndInboundExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	collect := func() (batch, error) {
-		return s.collectBatchWithPrincipals(context.Background(), response, "prior", config.State{}, principalSubs(t, e).Subs, nil, map[string]string{d.Room: "dm"}, nil)
+		return s.collectBatchWithPrincipals(context.Background(), response, "prior", config.State{}, nil, principalSubs(t, e).Subs, nil, map[string]string{d.Room: "dm"}, nil)
 	}
 	b, err := collect()
 	if err != nil || len(b.entries) != 1 || b.entries[0].Rel != string(relSub) {

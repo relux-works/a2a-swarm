@@ -241,8 +241,8 @@ func removeAllSubscriptions(list *SubList, configured []string) (removed []strin
 
 // Host coverage has no subscription ID: it is a local delivery policy, not an
 // account-data row. Manual selectors keep their existing projection semantics.
-func classifyWithPrincipals(ev matrix.Event, room, me, name string, st config.State, subs []Sub, configured []string) (relevance, string, []string) {
-	rel, root, matched := classify(ev, room, me, name, st, subs)
+func classifyWithPrincipals(ev matrix.Event, room, me, name string, st config.State, win *config.ThreadEventWindow, subs []Sub, configured []string) (relevance, string, []string) {
+	rel, root, matched := classify(ev, room, me, name, st, win, subs)
 	if rel == "" && ev.Sender != me && mandatoryPrincipal(ev, configured) {
 		return relSub, "", nil
 	}

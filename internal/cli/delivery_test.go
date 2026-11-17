@@ -67,6 +67,25 @@ func (e *env) mailbox(name string) *config.Mailbox {
 // received reports whether id left name's mailbox by a receipt.
 func (e *env) received(name, id string) bool { return e.mailbox(name).Received(id) }
 
+// threadWindow loads name's retained thread membership as delivery sees it:
+// the thread-event file unioned with any unmigrated State member.
+func (e *env) threadWindow(name string) *config.ThreadEventWindow {
+	e.t.Helper()
+	win, err := config.LoadThreadEventWindow(e.paths(), name, e.state(name))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return win
+}
+
+// seedThreadEvents durably appends retained thread membership for name.
+func (e *env) seedThreadEvents(name string, entries ...config.ThreadEvent) {
+	e.t.Helper()
+	if _, err := config.AppendThreadEvents(e.paths(), name, entries); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
 // pendingEntry returns the unreceived mailbox entry id (ok false when there is none).
 func (e *env) pendingEntry(name, id string) (config.MailEntry, bool) {
 	for _, en := range e.mailbox(name).Pending() {

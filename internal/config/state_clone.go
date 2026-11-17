@@ -53,7 +53,7 @@ func cloneState(src *State) (State, bool) {
 	s.LegacyPending = cloneRaw(src.LegacyPending)
 	s.LegacyAcked = cloneStrings(src.LegacyAcked)
 	s.Threads = cloneStrings(src.Threads)
-	s.ThreadEvents = cloneValues(src.ThreadEvents)
+	s.legacyThreadEvents = cloneValues(src.legacyThreadEvents)
 	s.Muted = cloneStrings(src.Muted)
 	if src.LegacySubscriptions != nil {
 		m := make(map[string][]string, len(src.LegacySubscriptions))
@@ -252,7 +252,7 @@ func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
 // A new or changed field anywhere in that graph changes the signature: the
 // scoped decode memo and the writer working-copy clone are then disabled (the
 // ordinary decoder runs) until the clone is reviewed and this pin updated.
-const stateCloneSchemaPin = "b6cec874ebccbdf4cf3ddace8c47daafe42219b66d6f528b958020c3a03e95fd"
+const stateCloneSchemaPin = "3e1c990eefb96f44b688a9365d0d8f900e2c07c2ed46c09cc0a31b9d9714b9d2"
 
 var stateCloneSchemaOK = stateSchemaReviewed(reflect.TypeFor[State](), stateCloneSchemaPin)
 

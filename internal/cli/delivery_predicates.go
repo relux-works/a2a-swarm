@@ -115,7 +115,7 @@ func (p deliveryPredicates) matches(e config.MailEntry) bool {
 		return false
 	}
 	if p.toMe {
-		rel, _, _ := classify(ev, e.Room, p.me, p.name, config.State{}, nil)
+		rel, _, _ := classify(ev, e.Room, p.me, p.name, config.State{}, nil, nil)
 		if rel != relTo && rel != relMention {
 			return false
 		}
