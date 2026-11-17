@@ -16,7 +16,7 @@ import (
 	"github.com/relux-works/swarma-envelope/record"
 )
 
-// RosterInputVersion names the only accepted operator input document.
+// RosterInputVersion names the default version 1 operator input document.
 const RosterInputVersion = "a2a-roster-input/1"
 
 const (
@@ -85,6 +85,9 @@ func HostRosterProtection() RosterProtection { return hostRosterProtection{} }
 func (o *Observer) Authors() []RosterAuthor {
 	if o == nil {
 		return nil
+	}
+	if o.byAuthor != nil {
+		return o.publisherAuthors()
 	}
 	rows := make([]RosterAuthor, 0, len(o.authors))
 	for sender, key := range o.authors {
@@ -292,17 +295,18 @@ func syncRosterDir(dir string) error {
 	return err
 }
 
-// rosterWriter holds the seam and the in-package fault points. encode,
+// rosterWriter holds the seam and the in-package fault points. The encoders,
 // beforeRename and syncDir are replaced only by tests of this package.
 type rosterWriter struct {
 	protection   RosterProtection
 	encode       func(map[string]string) ([]byte, error)
+	encodeV2     func([]rosterKeyEntry) ([]byte, error)
 	beforeRename func() error
 	syncDir      func(string) error
 }
 
 func newRosterWriter(p RosterProtection) rosterWriter {
-	return rosterWriter{protection: p, encode: encodeRoster, syncDir: syncRosterDir}
+	return rosterWriter{protection: p, encode: encodeRoster, encodeV2: encodeRosterV2, syncDir: syncRosterDir}
 }
 
 // WriteRoster builds the roster from one input document and publishes it at
@@ -367,11 +371,10 @@ func checkExistingRosterFacts(path string) error {
 	if err != nil {
 		return refuseRoster("out_unreadable")
 	}
-	value, err := record.Parse(raw, maxRosterBytes, 16)
+	doc, err := decodeRosterDocument(raw)
 	if err != nil {
 		return nil
 	}
-	doc, _ := value.(map[string]any)
 	facts, _ := doc["facts"].(map[string]any)
 	if len(facts) != 0 {
 		return refuseRoster("existing_facts")

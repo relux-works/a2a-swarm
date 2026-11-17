@@ -19,8 +19,9 @@ const UnknownAuthor = "unknown-author"
 // Observer contains a snapshot supplied by the host, never by the event.
 // A verdict is observation only. No returned verifier plan is persisted or used.
 type Observer struct {
-	authors map[string]string // exact Matrix sender -> exact author key
-	context verifier.Context
+	authors  map[string]string           // version 1: exact Matrix sender -> exact author key
+	byAuthor map[string]rosterKeyBinding // version 2: exact signed author key -> host binding
+	context  verifier.Context
 }
 
 func invalid(reason string) string { return "invalid: " + reason }
@@ -84,13 +85,6 @@ func (o *Observer) Observe(ev matrix.Event, room, recipient string, now time.Tim
 	if o == nil {
 		return UnknownAuthor
 	}
-	expected, known := o.authors[ev.Sender]
-	if !known {
-		return UnknownAuthor
-	}
-	if expected != author {
-		return invalid("author_mismatch")
-	}
 	text, ok := m["body"].(string)
 	if !ok {
 		return invalid("message_text_unavailable")
@@ -104,10 +98,49 @@ func (o *Observer) Observe(ev matrix.Event, room, recipient string, now time.Tim
 	if ev.IsRedacted() {
 		return invalid("event_redacted")
 	}
+	code := o.checkEnvelope(raw, m, body, text, room, recipient, now)
+	if code != "accept" {
+		// An unadmitted key stays unresolved, never a successful verification.
+		if code == "signer_unknown" && o.byAuthor != nil {
+			if _, known := o.byAuthor[author]; !known {
+				return UnknownAuthor
+			}
+		}
+		return invalid(code)
+	}
+	return o.authorDecision(ev.Sender, author)
+}
+
+// authorDecision runs only after verification and every carried-content check.
+func (o *Observer) authorDecision(sender, author string) string {
+	if o.byAuthor != nil {
+		binding, known := o.byAuthor[author]
+		if !known {
+			return UnknownAuthor
+		}
+		if !binding.Publishers[sender] {
+			return invalid("publisher_mismatch")
+		}
+		return "verified: " + binding.Author
+	}
+	expected, known := o.authors[sender]
+	if !known {
+		return UnknownAuthor
+	}
+	if expected != author {
+		return invalid("author_mismatch")
+	}
+	return "verified: " + sender
+}
+
+// checkEnvelope preserves the verifier, carried-attestation, metadata and
+// room-recipient order before either roster version can label an author.
+func (o *Observer) checkEnvelope(raw []byte, m, body map[string]any, text, room, recipient string, now time.Time) string {
 	c := o.context
+	var err error
 	c.Now, err = verifier.Present(now.UTC().Format("2006-01-02T15:04:05Z"))
 	if err != nil {
-		return invalid("time_unavailable")
+		return "time_unavailable"
 	}
 	verify := func(to string) string {
 		delivery, err := verifier.Present(map[string]any{"room": room, "to": to, "text": []byte(text)})
@@ -129,34 +162,34 @@ func (o *Observer) Observe(ev matrix.Event, room, recipient string, now time.Tim
 		}
 	}
 	if code != "accept" {
-		return invalid(code)
+		return code
 	}
 	// Carried evidence binds to the signed content id, never to an event-supplied issuer.
 	// An absent member leaves the host roster's decision unchanged.
 	if value, present := m[signedpost.AttestationContentKey]; present {
 		encoded, ok := value.(string)
 		if !ok {
-			return invalid("attestation_mismatch")
+			return "attestation_mismatch"
 		}
 		attestation, err := signedpost.DecodeAttestation(encoded)
 		if err != nil {
-			return invalid("attestation_mismatch")
+			return "attestation_mismatch"
 		}
 		id, err := signedpost.AttestationID(attestation)
 		if err != nil || id != body["author_attestation"] {
-			return invalid("attestation_mismatch")
+			return "attestation_mismatch"
 		}
 	}
 	if post {
 		list, ok := postMetadata(m, body)
 		if !ok {
-			return invalid("metadata_mismatch")
+			return "metadata_mismatch"
 		}
 		if viaRoom && len(list) > 0 && !listed(list, recipient) {
-			return invalid("recipient_not_addressed")
+			return "recipient_not_addressed"
 		}
 	}
-	return "verified: " + ev.Sender
+	return "accept"
 }
 
 // headerContentKey and mentionsContentKey are the event-content members that

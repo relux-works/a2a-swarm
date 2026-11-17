@@ -9,7 +9,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/envelopeobserve"
 )
 
-const hostRosterUsage = "usage: a2a host roster build --from FILE --out ABSOLUTE_PATH | a2a host roster show [--check]"
+const hostRosterUsage = "usage: a2a host roster build --from FILE --out ABSOLUTE_PATH [--version 1|2] | a2a host roster show [--check]"
 
 // The input bound matches the strict parser's entity limit; one more byte is
 // read so an oversized document is refused instead of silently truncated.
@@ -28,20 +28,25 @@ func cmdHostRoster(a *App, args []string) error {
 	switch args[0] {
 	case "build":
 		fs := newFlagSet("host roster build")
-		from := fs.String("from", "", "a2a-roster-input/1 document")
+		from := fs.String("from", "", "a2a-roster-input/1 or a2a-roster-input/2 document")
 		out := fs.String("out", "", "absolute path of the roster to publish")
+		version := fs.Int("version", 1, "roster version to build: 1 or 2")
 		pos, err := parseInterspersed(fs, args[1:])
 		if err != nil {
 			return err
 		}
-		if len(pos) != 0 || *from == "" || *out == "" {
+		if len(pos) != 0 || *from == "" || *out == "" || *version != 1 && *version != 2 {
 			return usagef("%s", hostRosterUsage)
 		}
 		input, err := readHostRosterInput(*from)
 		if err != nil {
 			return err
 		}
-		n, err := envelopeobserve.WriteRoster(input, *out, a.rosterProtection)
+		build := envelopeobserve.WriteRoster
+		if *version == 2 {
+			build = envelopeobserve.WriteRosterV2
+		}
+		n, err := build(input, *out, a.rosterProtection)
 		if err != nil {
 			return err
 		}

@@ -76,16 +76,24 @@ func protectedPath(path string, lstat func(string) (os.FileInfo, error)) error {
 
 // ParseRoster decodes a previously authenticated host snapshot. It does not
 // establish storage provenance; production callers must use Load.
-// Integers/duplicate keys/UTF8/depth use the pinned bounded codec.
+// Version 1 and verifier facts retain the pinned bounded codec; the larger
+// version 2 author list uses strict bounded JSON.
 func ParseRoster(raw []byte) (*Observer, error) {
-	value, err := record.Parse(raw, maxRosterBytes, 16)
-	if err != nil {
+	m, err := decodeRosterDocument(raw)
+	if err != nil || len(m) != 3 {
 		return nil, ErrRoster
 	}
-	m, ok := value.(map[string]any)
-	if !ok || len(m) != 3 || m["version"] != "a2a-envelope-roster/1" {
+	switch m["version"] {
+	case rosterVersion:
+		return parseRosterV1(m)
+	case rosterVersionV2:
+		return parseRosterV2(m)
+	default:
 		return nil, ErrRoster
 	}
+}
+
+func parseRosterV1(m map[string]any) (*Observer, error) {
 	authors, ok := m["authors"].(map[string]any)
 	if !ok || len(authors) == 0 || len(authors) > 4096 {
 		return nil, ErrRoster
@@ -108,10 +116,15 @@ func ParseRoster(raw []byte) (*Observer, error) {
 		o.authors[sender] = key
 		keys = append(keys, key)
 	}
-	facts, ok := m["facts"].(map[string]any)
+	return loadRosterFacts(o, m["facts"], keys)
+}
+
+func loadRosterFacts(o *Observer, value any, keys []any) (*Observer, error) {
+	facts, ok := value.(map[string]any)
 	if !ok {
 		return nil, ErrRoster
 	}
+	var err error
 	c := &o.context
 	slots := map[string]*verifier.Evidence{
 		"audience": &c.Audience, "service_root": &c.ServiceRoot,

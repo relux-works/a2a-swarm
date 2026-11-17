@@ -2,8 +2,9 @@
 
 Ordinary `a2a inbox` and `a2a read` label messages with exactly one result:
 
-- `verified: <author>`: the exact full Matrix sender is bound to the signed
-  author key by the host roster, and the pinned `VerifyMessage` accepts.
+- `verified: <author>`: the protected host roster admits the signed author key
+  and exact Matrix carrier, and the pinned `VerifyMessage` accepts. Version 1
+  prints the sender MXID; version 2 prints the host's author label.
 - `unsigned (no envelope)`: no `works.relux.swarm.envelope` content member.
 - `invalid: <named reason>`: malformed, oversized, mismatched or unverifiable
   input; the suffix is a fixed local code, never received text.
@@ -65,7 +66,14 @@ watermark or journal plan. It cannot qualify those host duties by reading JSON.
 
 ## Roster schema
 
-The bounded, duplicate-free, UTF-8 JSON has exactly these top-level members:
+Both versions are bounded, duplicate-free UTF-8 JSON with exactly `version`,
+`authors` and `facts`. The exact `version` selects the schema; a malformed
+version 2 file never falls back to version 1.
+
+### Version 1: one messaging account per author
+
+Use version 1 when each author publishes through its own Matrix account. Its
+schema, accepted sender spelling and output labels remain unchanged:
 
 ```json
 {
@@ -81,7 +89,81 @@ to valid Ed25519 or BIP-340 public key IDs. Display names and event-supplied
 metadata cannot add authors. A known sender with a different signed author is
 `invalid: author_mismatch`; an absent sender is `unknown-author`.
 
-The file is at most 1 MiB and depth 16. `facts` accepts only these members,
+### Version 2: shared publishing accounts
+
+Use version 2 when a bridge carries several authors' envelopes through one
+Matrix account, or one author permits several carriers:
+
+```json
+{
+  "version": "a2a-envelope-roster/2",
+  "authors": [
+    {"author_key": "ed25519:<canonical-public-key>", "author": "alpha", "publishers": ["@bridge:example.invalid"]},
+    {"author_key": "bip340:<canonical-public-key>", "author": "beta", "publishers": ["@bridge:example.invalid"]}
+  ],
+  "facts": {}
+}
+```
+
+These are unusable placeholder keys. `authors` is a closed list of 1..4096
+objects, each with exactly `author_key`, `author` and `publishers`:
+
+- `author_key`: the same canonical Ed25519 or BIP-340 public key ID as version 1.
+  Each exact key occurs once. No key case folding or encoding normalization is
+  applied; base64url payload case is significant. Escaped JSON spellings of the
+  same key are duplicates, and noncanonical key encodings are refused.
+- `author`: the host's logical author label, not an event display name. It uses
+  the version 1 label character bound: 1..255 ASCII bytes from `!` through `~`,
+  without spaces or controls. It need not itself be an MXID.
+- `publishers`: 1..64 distinct exact full Matrix sender IDs, with the same
+  admission rule as version 1. Membership is case-sensitive and never rewritten.
+  One carrier may appear under many keys; a carrier admitted under one key is
+  not thereby admitted under another.
+
+Duplicate keys or members, case-variant or unknown member names, missing members,
+empty/oversize lists, invalid labels, noncanonical keys and invalid MXIDs make
+**the whole roster unavailable**. There is no partial salvage. The selector,
+root ownership, ancestor protection and non-root reader rule are identical for
+both versions.
+
+Both roster versions use this observation order:
+
+1. Run the pinned verifier with the actual delivery binding, including only the
+   selected-room signed-post fallback described below.
+2. If present, bind the carried attestation to signed `body.author_attestation`.
+3. Check signed-post metadata and the room-addressed recipient list.
+4. Only after those checks accept, resolve the author: version 1 by sender;
+   version 2 by the signed `body.author` key, never the publishing account.
+
+A known author's failed check takes precedence over a sender/key or publisher
+mismatch. Version 2 resolves the final author decision as follows:
+
+| Version 2 observation | Label |
+| --- | --- |
+| No envelope member | `unsigned (no envelope)` |
+| No available protected roster | `unknown-author` |
+| Signed author key absent from the roster | `unknown-author` |
+| Known key, verifier or carried-attestation/metadata/recipient check refuses | The existing `invalid: <named reason>` |
+| Known key, verifier accepts, exact sender absent from that key's publishers | `invalid: publisher_mismatch` |
+| Known key, verifier accepts, exact sender present | `verified: <author>` using the host label |
+
+Malformed carrier/envelope input retains its existing closed invalid label.
+An unadmitted key missing from version 2 is classified as `unknown-author`
+after the verifier reports `signer_unknown`; it is not a successful verification.
+Other verification failures retain their closed invalid label. No roster entry
+or publisher can turn unsigned or badly signed content into `verified`. For known keys, bad signatures and wrong room, recipient or text
+bindings retain their verifier refusal, even if the publisher is also unlisted.
+`publisher_mismatch` is a fixed local label, not peer-supplied text. The
+version 1 sender/key mapping and ordinary labels are retained; its author
+lookup also follows the mandatory content checks. This is
+still observation only: neither version changes delivery, storage or receipts.
+
+### Shared verifier facts and bounds
+
+The file is at most 1 MiB and depth 16. The outer version 2 author list has the
+4096-row bound; publisher lists have the 64-item bound. Verifier facts retain
+the pinned codec's original bounds, including its 64-item array bound.
+`facts` accepts only these members,
 using the in-process shapes documented by the pinned
 [verifier contract](https://github.com/relux-works/swarma-envelope/blob/065e25f69da8b28cdf3ea35d9fcd7fc4aacc4d5e/verifier/README.md):
 
@@ -182,17 +264,19 @@ Named limits:
 ## Provisioning the roster
 
 `a2a host roster build` is a host tool, run by the host operator as root. It
-writes the roster schema above from one input document and nothing else.
+writes one of the roster schemas above from one input document and nothing
+else. The default (and explicit `--version 1`) remains version 1; only
+`--version 2` selects version 2. The flag and input version must agree.
 
-**Trust statement.** The roster is the host operator's assertion of which key
-speaks for which MXID. The tool does not verify an attestation of any key
+**Trust statement.** The roster is the host operator's assertion: version 1
+binds an MXID to a key; version 2 binds a key to a logical author label and its
+allowed carriers. The tool does not verify an attestation of any key
 (that arrives with the Keymaker codec), reads no key store, calls no signer
 and uses no network. It checks the form of the input, not its truth.
 
 The output always has `"facts": {}`: the input cannot carry verifier evidence.
-With empty facts the reader resolves senders (`author_mismatch`,
-`unknown-author`) but strict verification reports the missing evidence instead
-of `verified`. If an existing roster has non-empty `facts`, build refuses with
+With empty facts the reader can resolve configured authors, but strict
+verification reports the missing evidence instead of `verified`. If an existing roster has non-empty `facts`, build refuses with
 `existing_facts` before creating or writing a temporary file and leaves the
 previous file byte-identical. There is no override flag; this tool must not
 remove separately provisioned verifier evidence.
@@ -219,6 +303,31 @@ One strict JSON document of at most 1 MiB, with exactly these members:
   the key came from. It is checked and not written to the roster, because the
   roster schema has no member for it; keep the input document as the record.
 
+### Input: `a2a-roster-input/2`
+
+Select this input explicitly with `a2a host roster build --version 2`. It is a
+strict JSON object of at most 1 MiB and depth 16:
+
+```json
+{
+  "version": "a2a-roster-input/2",
+  "entries": [
+    {"author_key": "ed25519:<canonical-public-key>", "author": "alpha", "publishers": ["@bridge:example.invalid"], "source": "public operator record"},
+    {"author_key": "bip340:<canonical-public-key>", "author": "beta", "publishers": ["@bridge:example.invalid"], "source": "public operator record"}
+  ]
+}
+```
+
+`entries` contains 1..4096 closed objects with exactly `author_key`, `author`,
+`publishers` and `source`. Key, label and publisher rules are the version 2
+reader rules above; `source` retains the version 1 0..64 printable ASCII byte
+rule and is not written. Duplicate keys are refused, while the same publisher
+under different keys is allowed. Both writers retain the same protected
+publication path and refuse existing nonempty facts, including in a version 2
+roster with more than 64 authors. There is no override.
+
+### Refusals and publication reports
+
 Input refusals reject the whole document and write nothing. Every refusal
 occurs before the rename and leaves an existing final file byte-identical;
 any temporary created before a later refusal is removed. Refusals use
@@ -229,13 +338,15 @@ any temporary created before a later refusal is removed. Refusals use
 | `input_unreadable` | The `--from` file cannot be read |
 | `input_malformed` | Not one strict UTF-8 JSON object within the bound, or a duplicate member name |
 | `input_member_case`, `input_member_unknown`, `input_member_missing`, `input_member_type` | A case variant of a member, an unknown member, an absent member, a non-string value |
-| `input_version` | `version` is not `a2a-roster-input/1` |
+| `input_version` | Input version does not match the selected writer (`a2a-roster-input/1` by default, `/2` with `--version 2`) |
 | `input_entries`, `input_entries_count` | `entries` is not an array of objects; it has 0 or more than 4096 items |
 | `mxid_invalid` | Not a full sender identifier the reader admits |
 | `mxid_duplicate`, `mxid_case_variant` | The same MXID twice; two MXIDs that differ only in letter case |
 | `key_type`, `key_invalid` | A key type the reader does not admit; not a valid key identifier |
+| `key_duplicate`, `author_invalid` | Version 2 repeats an author key or has an invalid author label |
+| `publishers_invalid`, `publishers_count`, `publisher_duplicate` | Version 2 publishers is not an array, has 0 or more than 64 items, or repeats an exact sender |
 | `source_invalid` | Longer than 64 bytes or not printable ASCII |
-| `output_unencodable`, `selfcheck_failed`, `selfcheck_mismatch` | The built bytes are refused by the reader's parser or load a different sender map; nothing is published |
+| `output_unencodable`, `selfcheck_failed`, `selfcheck_mismatch` | Built bytes are refused by the selected reader or load different key/label/publisher bindings; nothing is published |
 | `out_path` | `--out` is not an absolute clean path |
 | `not_root` | The caller cannot create a root-owned file; nothing is written |
 | `out_unprotected` | A directory above `--out` is missing, a symlink, not root-owned, or group/other-writable |
@@ -276,10 +387,18 @@ there is no rollback:
    a2a host roster build --from /root/roster-input.json --out /etc/a2a-swarm/author-roster.json
    ```
 
-   The tool builds the roster in one fixed spelling (compact JSON, members and
-   senders in byte order), loads those bytes through the reader's parser and
-   requires the loaded sender map to equal the input. Before writing anything,
-   it refuses an existing roster with non-empty facts. It then creates a
+   For a shared account, use the version 2 input above and add `--version 2`:
+
+   ```sh
+   a2a host roster build --version 2 --from /root/roster-input.json --out /etc/a2a-swarm/author-roster.json
+   ```
+
+   The tool builds the roster in one fixed spelling (compact JSON, members in
+   byte order; version 1 senders or version 2 author keys and publishers in
+   byte order), loads those bytes through the selected reader's parser and
+   requires the loaded bindings to equal the input. Version 2 compares every
+   key, author label and publisher set, and requires empty output facts. Before
+   writing anything, it refuses an existing roster with non-empty facts. It then creates a
    temporary file in the same directory (exclusive create, no symlink
    following, mode 0644), writes and syncs it, renames it over the final name,
    syncs the directory and applies the reader's protection rule to the final
@@ -303,9 +422,12 @@ there is no rollback:
    a2a host roster show --check
    ```
 
-   `show` prints one line per sender: MXID, key type and the first 16 hex
-   digits of SHA-256 over the public key identifier, tab-separated. Without
-   `--check` an unavailable roster prints `roster unavailable` and exits 0;
+   `show` retains three columns: MXID, key type and the first 16 hex digits of
+   SHA-256 over the public key identifier, tab-separated. Version 1 prints one
+   line per sender; version 2 prints one line per publisher/key pair, including
+   multiple rows for a shared carrier. Rows sort by MXID, then key type and
+   fingerprint for version 2. It does not print source or logical author labels.
+   Without `--check` an unavailable roster prints `roster unavailable` and exits 0;
    with `--check` an absent, unprotected or malformed roster exits non-zero.
    The reader refuses every roster for a root caller, so run `show` as the
    agent user, not as root.
@@ -318,7 +440,7 @@ No tool or native signer is installed. From this repository, with task-scoped te
 | Tool | Entry point | Output |
 | --- | --- | --- |
 | Observe contract fixtures | `go test ./internal/envelopeobserve ./internal/config ./internal/cli -run 'Test(Observe|EnvelopeObserve|InvalidEnvelope|Roster|Protected|EnvelopeRoster)' -count=1` | Local test output; isolated fake carrier and public signed fixtures |
-| Host roster writer | `a2a host roster build --from FILE --out ABSOLUTE_PATH`; `a2a host roster show [--check]` | The roster file at `--out`; sender, key type and fingerprint on stdout |
+| Host roster writer | `a2a host roster build --from FILE --out ABSOLUTE_PATH [--version 1\|2]`; `a2a host roster show [--check]` | The roster file at `--out`; sender, key type and fingerprint on stdout |
 | Roster writer tests | `go test ./internal/envelopeobserve ./internal/cli -run 'Test(Roster|HostRoster|ObserverAuthors)' -count=1` | Local test output; run as a non-root user, ownership through the test seam |
 | Full race gate | `go test ./... -race -timeout 30m` | Test output; retain command log under `.temp/` |
 | Static/build gates | `go vet ./...`; `go build ./...` | Diagnostics under `.temp/`; normal Go cache |
