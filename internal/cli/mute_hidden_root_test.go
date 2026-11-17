@@ -24,15 +24,17 @@ func TestMuteHiddenRootEvidence(t *testing.T) {
 			f := newPrejoinFixture(t)
 			f.status, f.body = 403, `{"errcode":"M_FORBIDDEN"}`
 			st := config.State{NextBatch: "preserved", Threads: []string{prejoinRoot}}
+			if err := config.SaveState(f.paths, "alice", st); err != nil {
+				t.Fatal(err)
+			}
 			if evidence != "delivered-child" {
 				id := "$child"
 				if evidence == "learned-root" {
 					id = prejoinRoot
 				}
-				st.RememberThreadEvent(config.ThreadEvent{Room: prejoinRoom, EventID: id, Root: prejoinRoot})
-			}
-			if err := config.SaveState(f.paths, "alice", st); err != nil {
-				t.Fatal(err)
+				if _, err := config.AppendThreadEvents(f.paths, "alice", []config.ThreadEvent{{Room: prejoinRoom, EventID: id, Root: prejoinRoot}}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			mb, err := config.OpenMailbox(f.paths, "alice")
 			if err != nil {
@@ -79,13 +81,16 @@ func TestMuteHiddenRootRefusals(t *testing.T) {
 				f := newPrejoinFixture(t)
 				f.status, f.body = status, fmt.Sprintf(`{"errcode":%q}`, map[int]string{403: "M_FORBIDDEN", 404: "M_NOT_FOUND"}[status])
 				st := config.State{NextBatch: "preserved"}
-				if evidence == "foreign-membership" {
-					st.RememberThreadEvent(config.ThreadEvent{Room: "!other:fixture", EventID: prejoinRoot, Root: prejoinRoot})
-				} else if evidence == "legacy-lists" {
+				if evidence == "legacy-lists" {
 					st.Threads, st.Muted = []string{prejoinRoot}, []string{prejoinRoot}
 				}
 				if err := config.SaveState(f.paths, "alice", st); err != nil {
 					t.Fatal(err)
+				}
+				if evidence == "foreign-membership" {
+					if _, err := config.AppendThreadEvents(f.paths, "alice", []config.ThreadEvent{{Room: "!other:fixture", EventID: prejoinRoot, Root: prejoinRoot}}); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if evidence == "foreign-delivery" || evidence == "header-only" {
 					room := prejoinRoom

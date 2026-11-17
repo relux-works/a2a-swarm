@@ -155,7 +155,7 @@ func TestUpdateStateUnchangedForeignInputStillFenced(t *testing.T) {
 			}
 			fenced := busyLoad(t, p)
 			first := fenced.Writer.ForeignSeen
-			if !validWriterSeal(fenced) || first.IsZero() || fenced.NextBatch != "s-foreign-batch" || len(fenced.ThreadEvents) != syntheticThreadRecords {
+			if !validWriterSeal(fenced) || first.IsZero() || fenced.NextBatch != "s-foreign-batch" || len(fenced.Threads) != syntheticThreadRecords {
 				t.Fatal("foreign input was not resealed with a fence and its value")
 			}
 			if n := countStateRewrites(t, p, busyStateName, busyNoop(p), busyNoop(p)); n != 0 {
@@ -444,12 +444,12 @@ func TestUpdateStateUnchangedByteIdenticalMonitorRefused(t *testing.T) {
 
 // Proves every effective change is still persisted exactly once, including
 // the authority and arrival changes a busy cycle can observe (lease renewal,
-// generation replacement, cursor move, new thread record, idle qualification),
+// generation replacement, cursor move, new mute record, idle qualification),
 // and that repeating the same change is then elided.
 func TestUpdateStateUnchangedChangesStillPersist(t *testing.T) {
 	expires := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	idle := &TerminalIdle{At: time.Date(2030, 1, 1, 0, 0, 1, 0, time.UTC), Generation: strings.Repeat("0", 32), SessionID: "synthetic-session"}
-	extra := ThreadEvent{Room: syntheticID("!", "room", 99), EventID: syntheticID("$", "event", 99999), Root: syntheticID("$", "root", 99)}
+	extraRoot := syntheticID("$", "root", 99)
 	cases := map[string]struct {
 		change func(*State)
 		check  func(State) bool
@@ -468,10 +468,10 @@ func TestUpdateStateUnchangedChangesStillPersist(t *testing.T) {
 			change: func(st *State) { st.NextBatch = "s-synthetic-next" },
 			check:  func(st State) bool { return st.NextBatch == "s-synthetic-next" },
 		},
-		"thread record learned": {
-			change: func(st *State) { st.RememberThreadEvent(extra) },
+		"mute record learned": {
+			change: func(st *State) { st.Mute(extraRoot) },
 			check: func(st State) bool {
-				return len(st.ThreadEvents) == syntheticThreadRecords && st.ThreadEventRoot(extra.Room, extra.EventID) == extra.Root
+				return len(st.Threads) == syntheticThreadRecords && st.IsMuted(extraRoot)
 			},
 		},
 		"idle qualification": {
@@ -509,12 +509,12 @@ func TestUpdateStateUnchangedChangesStillPersist(t *testing.T) {
 func TestUpdateStateUnchangedSnapshotsIndependent(t *testing.T) {
 	p, raw := seedSyntheticBusyState(t)
 	var working *TerminalBinding
-	var workingEvents []ThreadEvent
+	var workingThreads []string
 	var got State
 	replaced, err := stateReplaced(t, p, busyStateName, func() error {
 		var err error
 		got, err = UpdateState(p, busyStateName, func(st *State) error {
-			working, workingEvents = st.Terminal, st.ThreadEvents
+			working, workingThreads = st.Terminal, st.Threads
 			return nil
 		})
 		return err
@@ -522,18 +522,18 @@ func TestUpdateStateUnchangedSnapshotsIndependent(t *testing.T) {
 	if err != nil || replaced {
 		t.Fatalf("setup: err=%v replaced=%v", err, replaced)
 	}
-	if got.Terminal == working || &got.ThreadEvents[0] == &workingEvents[0] || !validWriterSeal(got) {
+	if got.Terminal == working || &got.Threads[0] == &workingThreads[0] || !validWriterSeal(got) {
 		t.Fatal("returned state aliases the callback working copy")
 	}
 	working.Outcome = "mutated-working"
-	workingEvents[0].Room = "mutated-working"
-	if got.Terminal.Outcome != syntheticBusyOutcome || got.ThreadEvents[0].Room != syntheticID("!", "room", 0) {
+	workingThreads[0] = "mutated-working"
+	if got.Terminal.Outcome != syntheticBusyOutcome || got.Threads[0] != syntheticThreadEntry(0) {
 		t.Fatal("working copy mutation reached the returned state")
 	}
 	got.Terminal.Outcome = "mutated-returned"
-	got.ThreadEvents[0].Room = "mutated-returned"
+	got.Threads[0] = "mutated-returned"
 	if _, err := UpdateState(p, busyStateName, func(st *State) error {
-		if st.Terminal.Outcome != syntheticBusyOutcome || st.ThreadEvents[0].Room != syntheticID("!", "room", 0) {
+		if st.Terminal.Outcome != syntheticBusyOutcome || st.Threads[0] != syntheticThreadEntry(0) {
 			return errors.New("returned state mutation reached the next working copy")
 		}
 		return nil

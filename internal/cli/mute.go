@@ -127,10 +127,12 @@ func (s *session) resolveMuteTopic(ctx context.Context, roomID, label, topic str
 		if err != nil {
 			return "", "", err
 		}
-		for _, e := range st.ThreadEvents {
-			if e.Room == roomID && e.Root == topic {
-				return topic, "", nil
-			}
+		win, err := config.LoadThreadEventWindow(s.paths, s.name, st)
+		if err != nil {
+			return "", "", err
+		}
+		if win.HasRoot(roomID, topic) {
+			return topic, "", nil
 		}
 		mb, err := config.OpenMailbox(s.paths, s.name)
 		if err != nil {

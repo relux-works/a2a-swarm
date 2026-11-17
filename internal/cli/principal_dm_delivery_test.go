@@ -164,7 +164,7 @@ func TestPrincipalDMNoTrustChange(t *testing.T) {
 				if err := json.Unmarshal(raw, &resp); err != nil {
 					t.Fatal(err)
 				}
-				b, err := s.collectBatchWithPrincipals(context.Background(), resp, "previous", config.State{}, []Sub{{ID: d.SubID, SubSelector: SubSelector{Room: room, AllEvents: true}}}, nil, map[string]string{room: "room"}, configured)
+				b, err := s.collectBatchWithPrincipals(context.Background(), resp, "previous", config.State{}, nil, []Sub{{ID: d.SubID, SubSelector: SubSelector{Room: room, AllEvents: true}}}, nil, map[string]string{room: "room"}, configured)
 				if err != nil || len(b.entries) != 1 {
 					t.Fatal("classification", b, err)
 				}
