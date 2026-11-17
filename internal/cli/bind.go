@@ -421,6 +421,12 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 				}
 				ready.Close()
 			}
+			// Record what this process runs inside the startup control
+			// transaction, with a short bounded lock wait, so the record
+			// commits with the start (and with each re-exec). Diagnostic
+			// only: a lock held past the wait never fails the start; the
+			// consumer loop retries the record on every cycle until it lands.
+			_ = a.recordRunningInfoBy(s, generation, time.Now().Add(runningInfoStartupWait))
 			return nil
 		})
 		if err != nil {
@@ -583,6 +589,15 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	defer stopAlarm()
 	alarmWake := make(chan struct{}, 1)
 	go a.runMailAlarm(alarmCtx, s, generation, alarmWake)
+	go a.runBinderCPU(alarmCtx, s, generation)
+	// The running-info recorder keeps what this process runs recorded: an
+	// in-place re-exec re-enters here and replaces the record with the new
+	// image. Until that record commits for this generation and PID (a busy
+	// State lock at start must not leave the previous image's record in
+	// place for the life of the process), every cycle retries it against
+	// the binding that cycle already loaded, so a current record costs no
+	// extra State work. The startup transaction has normally recorded it.
+	runningRecorder := &runningInfoRecorder{}
 	delay := policy.Interval
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true
@@ -623,6 +638,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 				return "stopped", nil
 			}
 			policy = *b
+			runningRecorder.ensureLoaded(a, s, generation, b)
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 			owner, ownerErr := tmuxwake.Birth(probe, b.OwnerPID)
 			_, _, _, targetErr := b.Target.Inspect(probe)

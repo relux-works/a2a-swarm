@@ -94,6 +94,7 @@ type mailAlarmStatus struct {
 	LastAlert   time.Time              `json:"last_alert_time"`
 	Config      config.MailAlarmConfig `json:"config"`
 	StuckNotice alarmRouteStatus       `json:"stuck_notice"`
+	BinderCPU   alarmRouteStatus       `json:"binder_cpu"`
 }
 
 func alarmStatus(s *session, st config.State) mailAlarmStatus {
@@ -106,6 +107,7 @@ func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmCo
 		alarmRouteStatus: alarmRouteStatus{State: "armed", Reason: reason, Targets: []alarmStatusTarget{}, Outstanding: st.MailAlarm.Active},
 		Threshold:        c.Minutes, LastAlert: st.MailAlarm.LastAlert, Config: c,
 		StuckNotice: alarmRouteStatus{State: "disabled", Reason: "no owner or lead destinations", Targets: []alarmStatusTarget{}},
+		BinderCPU:   alarmRouteStatus{State: "disabled", Reason: "no owner destination", Targets: []alarmStatusTarget{}},
 	}
 	if reason != "" {
 		out.State = "disabled"
@@ -120,6 +122,8 @@ func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmCo
 		if role == "owner" {
 			out.StuckNotice.Targets = append(out.StuckNotice.Targets, route)
 			out.StuckNotice.State, out.StuckNotice.Reason = "armed", ""
+			out.BinderCPU.Targets = append(out.BinderCPU.Targets, route)
+			out.BinderCPU.State, out.BinderCPU.Reason = "armed", ""
 		}
 	}
 	if validAlarmConfig(c) && c.Lead != "" {
@@ -131,15 +135,20 @@ func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmCo
 	if st.MailAlarm.Invalid {
 		out.State, out.Reason = "error", "invalid alarm state; held until addressed stale set drains"
 		out.StuckNotice.State, out.StuckNotice.Reason = "error", "invalid alarm state"
+		out.BinderCPU.State, out.BinderCPU.Reason = "error", "invalid alarm state"
 	}
 	if !validAlarmConfig(c) {
 		out.State, out.Reason = "error", "invalid config"
 		out.StuckNotice.State, out.StuckNotice.Reason = "error", "invalid config"
+		out.BinderCPU.State, out.BinderCPU.Reason = "error", "invalid config"
 	}
 	for _, j := range st.MailAlarm.Jobs {
 		route := &out.alarmRouteStatus
 		if incidentAlarmKind(j.Kind) {
 			route = &out.StuckNotice
+		}
+		if j.Kind == binderCPUAlarmKind {
+			route = &out.BinderCPU
 		}
 		route.Pending++
 		route.Outstanding = true
@@ -148,7 +157,7 @@ func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmCo
 		} else if j.Failure != "" {
 			route.State, route.Reason = "error", alarmFailureReason(j.Failure)
 		}
-		if !incidentAlarmKind(j.Kind) && j.Uncertain >= 2 {
+		if !incidentAlarmKind(j.Kind) && j.Kind != binderCPUAlarmKind && j.Uncertain >= 2 {
 			route.Held++
 			route.State, route.Reason = "error", "ambiguous alarm delivery; held"
 		}
@@ -232,6 +241,10 @@ func (a *App) printAlarmStatus(s mailAlarmStatus) {
 	a.printf("stuck-notice=%s outstanding=%t pending=%d reason=%s\n", s.StuckNotice.State, s.StuckNotice.Outstanding, s.StuckNotice.Pending, s.StuckNotice.Reason)
 	for _, route := range s.StuckNotice.Targets {
 		a.printf("  stuck-notice-target=%s target=%s room=%s topic=%s\n", route.Role, route.Target, route.Room, route.Topic)
+	}
+	a.printf("binder-cpu=%s outstanding=%t pending=%d reason=%s\n", s.BinderCPU.State, s.BinderCPU.Outstanding, s.BinderCPU.Pending, s.BinderCPU.Reason)
+	for _, route := range s.BinderCPU.Targets {
+		a.printf("  binder-cpu-target=%s target=%s room=%s topic=%s\n", route.Role, route.Target, route.Room, route.Topic)
 	}
 }
 
@@ -341,6 +354,9 @@ func (a *App) observeMailAlarm(s *session, generation string, sample alarmSample
 	})
 }
 func alarmBody(j config.MailAlarmJob) string {
+	if j.Kind == binderCPUAlarmKind {
+		return fmt.Sprintf("Binder CPU alarm: identity=%s host=%s share=%s of one core window=%dm revision=%s", j.Identity, j.Host, cpuShareText(j.Count), j.Minutes, j.Reason)
+	}
 	if incidentAlarmKind(j.Kind) {
 		reason := orphanReason
 		if j.Kind == consumerUnavailableAlarmKind {
@@ -415,6 +431,11 @@ func validAlarmJob(job config.MailAlarmJob, identity string) bool {
 		since.second = since.second.Add(bound)
 		payload = ok && !at.before(since) && job.Count == 0 && job.Minutes == 0 && job.Reason == reason
 	}
+	if job.Kind == binderCPUAlarmKind {
+		since, ok := parseNoticeTimestamp(job.Since)
+		at, _ := parseNoticeTimestamp(job.At.UTC().Format(time.RFC3339Nano))
+		payload = ok && !at.before(since) && job.Count > 0 && job.Count <= maxBinderCPUCount && job.Minutes == int64(binderCPUWindow/time.Minute) && safeRevisionToken(job.Reason) && job.Target == ""
+	}
 	return payload && job.Identity == identity && config.ValidateName(job.Identity) == nil && aliasLocalRE.MatchString(job.Host) && strings.HasPrefix(job.ID, "a2a-mail-alarm-") && len(job.ID) == 47 && (job.Topic == "" || slugRE.MatchString(job.Topic) || alarmEventRE.MatchString(job.Topic)) && (job.ResolvedRoom == "" || alarmRoom(job.ResolvedRoom)) && (job.Root == "" || alarmEventRE.MatchString(job.Root)) && alarmRoom(job.Room) && (job.Target == "" || alarmTarget(job.Target))
 }
 
@@ -427,7 +448,7 @@ func (a *App) sendMailAlarm(ctx context.Context, s *session, generation string) 
 		if ctx.Err() != nil {
 			return
 		}
-		if !alarmJobEnabled(s, st, job) || !incidentAlarmKind(job.Kind) && job.Uncertain >= 2 || a.Now().Before(job.Next) {
+		if !alarmJobEnabled(s, st, job) || !incidentAlarmKind(job.Kind) && job.Kind != binderCPUAlarmKind && job.Uncertain >= 2 || a.Now().Before(job.Next) {
 			continue
 		}
 		// Invalid persisted outbox data is held, never reflected into a message.
@@ -551,6 +572,15 @@ func (a *App) finishMailAlarm(s *session, generation string, job config.MailAlar
 // Stranded incidents remain eligible through hook gates; ordinary mail alarms
 // retain their existing policy. A queued destination is pinned across edits.
 func alarmJobEnabled(s *session, st config.State, job config.MailAlarmJob) bool {
+	if job.Kind == binderCPUAlarmKind {
+		// Like incidents, the CPU self-alarm stays eligible through hook
+		// gates; only its owner audience can pause it.
+		c := config.MailAlarmConfig{Minutes: defaultAlarmMinutes, Owner: "auto"}
+		if st.MailAlarmConfig != nil {
+			c = *st.MailAlarmConfig
+		}
+		return !st.MailAlarm.Invalid && validAlarmConfig(c) && c.Owner != "off" && job.Target == ""
+	}
 	if incidentAlarmKind(job.Kind) {
 		c := config.MailAlarmConfig{Minutes: defaultAlarmMinutes, Owner: "auto"}
 		if st.MailAlarmConfig != nil {
