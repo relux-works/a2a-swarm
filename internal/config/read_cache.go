@@ -25,6 +25,83 @@ type ReadCache struct {
 	mailboxStamp FileStamp
 	mailboxRaw   []byte
 	mailbox      *Mailbox
+	mailboxInc   *mailboxIncState
+}
+
+// mailboxIncState is one consumer's incremental mailbox snapshot: the parsed
+// mailbox after the complete lines in file[:offset] of the file identified
+// by (dev, ino), the digest of that prefix, and the digest and size of the
+// whole file as read. It is immutable once stored; a later remember replaces
+// the pointer. Every use re-verifies the file identity and the prefix digest
+// against the current file, so a stale snapshot can only miss, never serve
+// wrong content. visible, when non-nil, is base with a valid unterminated
+// final line applied, matching a full parse of the remembered bytes; the
+// incremental path itself never applies an unterminated line.
+type mailboxIncState struct {
+	path      string
+	dev, ino  uint64
+	offset    int64
+	prefixSum [32]byte
+	fileSize  int64
+	fileSum   [32]byte
+	base      *Mailbox
+	visible   *Mailbox
+}
+
+// incSnapshot returns the stored incremental snapshot for name and path.
+func (c *ReadCache) incSnapshot(name, path string) *mailboxIncState {
+	if c == nil || name != c.identity {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.mailboxInc == nil || c.mailboxInc.path != path {
+		return nil
+	}
+	return c.mailboxInc
+}
+
+// rememberInc stores inc as the incremental snapshot. The caller guarantees
+// inc's mailboxes are fresh clones that nothing else mutates.
+func (c *ReadCache) rememberInc(name string, inc *mailboxIncState) {
+	if c == nil || name != c.identity || inc == nil {
+		return
+	}
+	c.mu.Lock()
+	c.mailboxInc = inc
+	c.mu.Unlock()
+}
+
+// updateRawAfterIncremental extends the exact-byte cache after an incremental
+// read: the new raw file is the remembered raw prefix plus the bytes read
+// past the parsed offset. It runs only when the whole file stays within the
+// raw cache admission bound; otherwise the raw entry is dropped, as a full
+// parse would drop it.
+func (c *ReadCache) updateRawAfterIncremental(name, path string, stamp FileStamp, inc *mailboxIncState, appended []byte, m *Mailbox, total int64) {
+	if c == nil || name != c.identity {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if total > mailboxCacheMaxInput {
+		if c.mailboxPath == path {
+			c.mailbox = nil
+			c.mailboxRaw = nil
+			c.mailboxPath = ""
+		}
+		return
+	}
+	if c.mailboxPath != path || int64(len(c.mailboxRaw)) != inc.fileSize {
+		return
+	}
+	raw := make([]byte, 0, total)
+	raw = append(raw, c.mailboxRaw[:inc.offset]...)
+	raw = append(raw, appended...)
+	if int64(len(raw)) != total {
+		return
+	}
+	c.mailboxPath, c.mailboxStamp, c.mailbox = path, stamp, cloneMailbox(m)
+	c.mailboxRaw = raw
 }
 
 func NewReadCache(identity string) *ReadCache { return &ReadCache{identity: identity} }

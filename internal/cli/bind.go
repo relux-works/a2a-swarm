@@ -588,6 +588,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true
 	var quietSince time.Time
+	var backoff stuckBackoff
 	// The owner's native identity is taken once, before the first cycle, and
 	// kept for this consumer's lifetime; an unknown read leaves it to the
 	// first successful read of a later wait. The owner's absence at that first
@@ -602,6 +603,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	for ctx.Err() == nil {
 		cycleStart := time.Now()
 		quiet := false
+		stuck := false
 		a.traceTerminal("cycle")
 		// A full cycle revalidates file versions and every caller guard, so
 		// earlier foreign-write evidence is consumed here and nowhere else.
@@ -683,6 +685,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 				return "selected connection unavailable", guardErr
 			}
 			qualificationInterrupted = true
+			backoff.reset()
 			delay = min(policy.RetryMax, max(policy.Interval, delay*2))
 			// A failed write is not a reason to terminate. The next cycle must load
 			// fresh state and reacquire its lease before it may touch the terminal.
@@ -695,6 +698,16 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			if fresh, readErr := config.LoadState(s.paths, s.name); readErr == nil {
 				delay = a.notificationWait(fresh, delay)
 				quiet = s.terminalUndelivered == 0 && terminalQuiescent(fresh, generation, os.Getpid(), a.Now())
+				stuck = !quiet && (view == nil || !view.pending()) && terminalStuckUnavailable(fresh, generation, os.Getpid(), a.Now())
+			}
+			// While readiness stays unavailable with no outstanding work, a
+			// full cycle can only re-observe the same suppression, so the
+			// wait between full cycles doubles up to the stuck cap. Any
+			// other cycle — and any early wake below — resets it.
+			if stuck {
+				delay = backoff.next(policy.Interval)
+			} else {
+				backoff.reset()
 			}
 		}
 		// Dispatch (including Send, finish and all notice publication) returned;
@@ -730,6 +743,22 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 				continue
 			}
 		}
+		if stuck && backoff.active() {
+			switch a.waitStuck(ctx, s, delay, policy, owner, view) {
+			case "cancelled":
+				return "cancelled", nil
+			case "owner-replaced":
+				if outcome, stopped := a.quiescentOwnerTeardown(ctx, s, generation, policy, true); stopped {
+					return outcome, nil
+				}
+				backoff.reset()
+			case "wake":
+				// New mail, a state or local change: run the next full
+				// cycle at once and restart the stuck schedule.
+				backoff.reset()
+			}
+			continue
+		}
 		switch a.waitActive(ctx, delay, policy, owner) {
 		case "cancelled":
 			return "cancelled", nil
@@ -740,6 +769,58 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 		}
 	}
 	return "cancelled", nil
+}
+
+// waitStuck is the inter-cycle wait while a consumer is stuck unavailable.
+// The owner liveness tick keeps waitActive's rate of min(Interval, 1s); on
+// the same tick it compares only metadata stamps — its own state and
+// mailbox files (through the decode scope's own-writer record when one is
+// recorded, else stamps taken at entry) and the quiescent watch's local
+// files. A change ends the wait at once ("wake"); timer expiry ("") runs
+// the next full cycle on the backed-off schedule. No file is read or
+// decoded here.
+func (a *App) waitStuck(ctx context.Context, s *session, delay time.Duration, policy config.TerminalBinding, owner *ownerIdentity, view terminalRefreshView) string {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
+	defer ticker.Stop()
+	scope := s.paths.StateDecodeScope()
+	fallback := scope == nil || !scope.OwnFilesRecorded()
+	stateStamp := config.StampFile(s.paths.StateFile(s.name))
+	mailboxStamp := config.StampFile(s.paths.MailboxFile(s.name))
+	watch := newQuiescentWatch(s, view)
+	owner.beginWait()
+	replaced := func() bool {
+		return terminalWatchOwnerWhileHeld && owner.observe(policy.OwnerPID) == ownerTokenReplaced
+	}
+	if replaced() {
+		return "owner-replaced"
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return "cancelled"
+		case <-timer.C:
+			return ""
+		case <-ticker.C:
+			a.traceTerminal("watch")
+			if replaced() {
+				return "owner-replaced"
+			}
+			changed := watch.changed()
+			if !changed {
+				if fallback {
+					changed = !stateStamp.Equal(config.StampFile(s.paths.StateFile(s.name))) || !mailboxStamp.Equal(config.StampFile(s.paths.MailboxFile(s.name)))
+				} else {
+					changed = !scope.OwnFilesUnchanged(s.paths, s.name)
+				}
+			}
+			if changed {
+				a.traceTerminal("wake:stuck")
+				return "wake"
+			}
+		}
+	}
 }
 
 // waitActive is the ordinary inter-cycle wait. It also keeps the fork-free
