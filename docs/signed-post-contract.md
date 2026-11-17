@@ -1,4 +1,4 @@
-Two-sided contract of record for the signed post (sender and key holder); the text below this line is carried unchanged.
+Two-sided contract of record for the signed post (sender and key holder). Sections 1-11 below are r4, carried unchanged; section 12 is amendment 1.
 # M2 two-sided contract r4: the signed message between an a2a sender and Keymaker
 
 Status: r4 = r3 (accepted by Keymaker, sha256 624bd202...) with section 11, one carrier-side row that names the event member carrying the attestation. For Keymaker's re-ACCEPT by hash. Nothing here is implemented or live. Sources read by the drafter, in full:
@@ -134,3 +134,18 @@ added; nothing else moves.
 | Point | r4 text |
 | --- | --- |
 | A on the wire, the member | A travels in the Matrix event CONTENT, beside the envelope member, in the carrier's own member `works.relux.swarm.author_attestation`: a string, base64url without padding of the raw attestation bytes, non-empty, at most 8192 raw bytes. It is NOT a member of `swarm-envelope/2` and is not inside the signed bytes. The binding is inside the signed bytes: `body.author_attestation` = T is the content id of A and the signature covers T. Sender: before publishing, checks that the content id of A equals T. Receiver: when the member is present, checks that the content id of A equals `body.author_attestation`; a mismatch, a malformed value or an oversize value labels `invalid: attestation_mismatch`; when the member is absent the roster decides as before. The content id is computed by the pinned envelope module's own function for an attestation record; neither side defines another. Verification of A under the purpose-5 pin is not part of this version (no pin exists yet). |
+
+## 12. Amendment 1 (2026-11-17): connections and timeout, acknowledged by the key holder
+
+The preimage depends on K and T, and on an unbound connection every next frame must arrive within 2 s of the previous
+reply, so building the preimage between the identity reply and the sign request on one connection races that window.
+These rows REPLACE the r4 row "Timeout (ASK 4)"; nothing else moves.
+
+| Point | Amendment 1 text |
+| --- | --- |
+| Connections per post | Two. Connection 1: hello, identity. The sender then builds the preimage. Connection 2: hello, a FRESH identity request, then the sign request at once, with no other work in between. |
+| Identity on connection 2 | Its K and T must be byte-equal to the K and T inside the preimage. If either differs, nothing is signed: the sender closes and prepares again with a new nonce, iat, exp, a new preimage and a new sign request id. A preimage is never signed under a stale T. |
+| Request ids | Only the hello carries the fixed id `00000000000000000000000000000001` (it may repeat on every connection). Every identity and sign request carries a fresh random id and never that one. |
+| Sign retry | A retryable refusal or a lost reply is retried on a NEW connection: hello, the fresh identity check above, then the SAME sign request id with the SAME preimage. The holder keys its retention by caller, request id, method and preimage and returns the retained signature; it never signs twice. |
+| Timeout | `timeout_ms` = 1500 on each request; the sender's read budget is 2 s from before the write; one outstanding request per connection. |
+
