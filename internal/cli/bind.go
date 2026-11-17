@@ -702,8 +702,11 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			// While readiness stays unavailable with no outstanding work, a
 			// full cycle can only re-observe the same suppression, so the
 			// wait between full cycles doubles up to the stuck cap. Any
-			// other cycle — and any early wake below — resets it.
-			if stuck {
+			// other cycle — and any early wake below — resets it. A target
+			// kind whose readiness cannot be probed cheaply during the
+			// wait never backs off: it keeps the Interval schedule, so a
+			// turn end is never observed later than today.
+			if stuck && stuckProbeSupported(policy) {
 				delay = backoff.next(policy.Interval)
 			} else {
 				backoff.reset()
@@ -752,8 +755,9 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 				}
 				backoff.reset()
 			case "wake":
-				// New mail, a state or local change: run the next full
-				// cycle at once and restart the stuck schedule.
+				// New mail, a state or local change, or a readiness probe
+				// that found the pane eligible: run the next full cycle
+				// at once and restart the stuck schedule.
 				backoff.reset()
 			}
 			continue
@@ -770,19 +774,52 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	return "cancelled", nil
 }
 
+// stuckProbeSupported reports whether the bound target's readiness can be
+// assessed cheaply from the in-memory binding alone. Only the two target
+// runtimes a binding can pin qualify; any other kind never backs off.
+func stuckProbeSupported(policy config.TerminalBinding) bool {
+	return policy.Target.Runtime == "claude" || policy.Target.Runtime == "codex"
+}
+
+// probeStuckReadiness is the stuck wait's cheap readiness probe: the same
+// screen/registry assessment a full cycle's dispatch uses, run on the
+// in-memory binding as a wake hint that grants nothing. It loads no State,
+// opens no mailbox and computes no seal digest. Eligible is exactly the
+// complement of dispatch's suppressed branch for pending mail, so an
+// eligible probe is the readiness change that ends the stuck outcome; the
+// full cycle after the wake revalidates everything as today.
+func (a *App) probeStuckReadiness(ctx context.Context, policy config.TerminalBinding) bool {
+	if !stuckProbeSupported(policy) {
+		return false
+	}
+	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
+	defer cancel()
+	return a.terminalEffects(policy).ObserveReadiness(probe, policy.Notice).Eligible()
+}
+
 // waitStuck is the inter-cycle wait while a consumer is stuck unavailable.
 // The owner liveness tick keeps waitActive's rate of min(Interval, 1s); on
 // the same tick it compares only metadata stamps — its own state and
 // mailbox files (through the decode scope's own-writer record when one is
 // recorded, else stamps taken at entry) and the quiescent watch's local
-// files. A change ends the wait at once ("wake"); timer expiry ("") runs
-// the next full cycle on the backed-off schedule. No file is read or
-// decoded here.
+// files. Every Interval it also runs the cheap readiness probe, so a pane
+// that becomes eligible with no file change (a turn ended, a draft was
+// cleared) ends the wait within one Interval, as before the back-off. A
+// stamp change or an eligible probe ends the wait at once ("wake"); timer
+// expiry ("") runs the next full cycle on the backed-off schedule. No
+// State or mailbox file is read or decoded here.
 func (a *App) waitStuck(ctx context.Context, s *session, delay time.Duration, policy config.TerminalBinding, owner *ownerIdentity, view terminalRefreshView) string {
+	a.traceTerminal("wait:stuck")
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	ticker := time.NewTicker(min(policy.Interval, terminalQuietTickMax))
 	defer ticker.Stop()
+	var probeTick <-chan time.Time
+	if policy.Interval > 0 && stuckProbeSupported(policy) {
+		probeTicker := time.NewTicker(policy.Interval)
+		defer probeTicker.Stop()
+		probeTick = probeTicker.C
+	}
 	scope := s.paths.StateDecodeScope()
 	fallback := scope == nil || !scope.OwnFilesRecorded()
 	stateStamp := config.StampFile(s.paths.StateFile(s.name))
@@ -815,6 +852,12 @@ func (a *App) waitStuck(ctx context.Context, s *session, delay time.Duration, po
 				}
 			}
 			if changed {
+				a.traceTerminal("wake:stuck")
+				return "wake"
+			}
+		case <-probeTick:
+			a.traceTerminal("probe:stuck")
+			if a.probeStuckReadiness(ctx, policy) {
 				a.traceTerminal("wake:stuck")
 				return "wake"
 			}
