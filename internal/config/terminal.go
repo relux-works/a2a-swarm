@@ -48,6 +48,7 @@ type TerminalBinding struct {
 	NoticeReport       *NoticeReport              `json:"notice_report,omitempty"`
 	ConsumerReport     *NoticeReport              `json:"consumer_report,omitempty"` // Diagnostic episode; never terminal authority.
 	Generation         string                     `json:"generation"`
+	TakenOver          *TerminalTakeover          `json:"taken_over,omitempty"`
 	SessionID          string                     `json:"session_id"`
 	Host               string                     `json:"host"`
 	OwnerPID           int                        `json:"owner_pid"`
@@ -76,6 +77,17 @@ type TerminalBinding struct {
 	Rung               []string                   `json:"rung,omitempty"`
 	Reservations       []time.Time                `json:"reservations,omitempty"`
 	Idle               *TerminalIdle              `json:"idle_observation,omitempty"`
+}
+
+// TerminalTakeover records the previous generation an explicit take-over
+// displaced after its recorded owner and consumer were gone: that
+// generation and session, the session that took over, and when. It is
+// diagnostic history of the replacement, never delivery authority.
+type TerminalTakeover struct {
+	Generation  string    `json:"generation"`
+	SessionID   string    `json:"session_id"`
+	BySessionID string    `json:"by_session_id"`
+	At          time.Time `json:"at"`
 }
 
 // NoticeReport pins an incident transaction before its network effect.

@@ -24,7 +24,8 @@ func isolateBindTest(t *testing.T) {
 			key == "TMUX" || key == "TMUX_PANE" || key == "CLAUDECODE" ||
 			key == "CLAUDE_ENV_FILE" || key == "CLAUDE_SESSION_ID" ||
 			key == "CLAUDE_PROJECT_DIR" || key == "CLAUDE_PID" || key == "CLAUDE_EFFORT" ||
-			key == "CODEX_THREAD_ID" || key == "CODEX_ENV_FILE" {
+			key == "CODEX_THREAD_ID" || key == "CODEX_ENV_FILE" ||
+			key == "MUSE_SESSION_ID" || key == "MUSE_THREAD_ID" {
 			t.Setenv(key, "")
 			if err := os.Unsetenv(key); err != nil {
 				t.Fatal(err)
