@@ -151,7 +151,7 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 		}
 		return true
 	}
-	if !publicID(m["caller"].(string), '@') || !publicID(m["room_id"].(string), '!') || child && !publicID(m["state_key"].(string), '!') {
+	if !publicID(m["caller"].(string), '@') || !publicID(m["room_id"].(string), '!') || child && (!publicID(m["state_key"].(string), '!') || m["state_key"] == m["room_id"]) {
 		return nil, bad
 	}
 	id, hasID := m["event_id"]
@@ -160,7 +160,7 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 	}
 	if hasID {
 		s, ok := id.(string)
-		if !ok || len(s) < 2 || !strings.HasPrefix(s, "$") {
+		if !ok || !publicID(s, '$') {
 			return nil, bad
 		}
 	}
@@ -236,6 +236,11 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 				s, ok := raw.(string)
 				if !ok || len(s) > 255 {
 					return nil, bad
+				}
+				for _, r := range s {
+					if unicode.IsControl(r) {
+						return nil, bad
+					}
 				}
 				if (outcome == "PRESENT" || outcome == "VERIFIED") && s == "" || outcome == "EMPTY" && s != "" {
 					return nil, bad
@@ -451,6 +456,13 @@ func TestRoomAdminDecoderPlants(t *testing.T) {
 		"type": func(m map[string]any) { m["type"] = "room-avatar" }, "version": func(m map[string]any) { m["version"] = 2 }, "operation": func(m map[string]any) { m["operation"] = "delete" },
 		"false-ack": func(m map[string]any) { m["acknowledged"] = false }, "missing-id": func(m map[string]any) { delete(m, "event_id") }, "unknown-content": func(m map[string]any) { m["outcome"] = "UNKNOWN"; m["readback"] = "unavailable" },
 		"missing-content": func(m map[string]any) { delete(m, "content") }, "get-verified": func(m map[string]any) { m["operation"] = "get" }, "readback": func(m map[string]any) { m["readback"] = "future" }, "outcome": func(m map[string]any) { m["outcome"] = "DONE" },
+		"event-control":  func(m map[string]any) { m["event_id"] = "$bad\n" },
+		"event-overlong": func(m map[string]any) { m["event_id"] = "$" + strings.Repeat("e", 255) },
+		"name-control":   func(m map[string]any) { m["content"] = map[string]any{"name": "bad\n"} },
+		"name-type":      func(m map[string]any) { m["content"] = map[string]any{"name": 7} },
+		"self-child": func(m map[string]any) {
+			m["type"], m["operation"], m["state_type"], m["state_key"], m["content"] = "space-child", "add", "m.space.child", m["room_id"], map[string]any{"via": []string{"example.invalid"}}
+		},
 	}
 	for name, plant := range plants {
 		t.Run(name, func(t *testing.T) {
@@ -559,7 +571,10 @@ func TestRoomAdminValidInputs(t *testing.T) {
 				t.Fatalf("valid name exit%d %s", code, f.err.String())
 			}
 			m, e := decodeAdminRecord(f.out.Bytes())
-			if e != nil || m["content"].(map[string]any)["name"] != name || puts != 1 {
+			if e != nil || m["outcome"] != "VERIFIED" || puts != 1 {
+				t.Fatal("valid name not verified")
+			}
+			if m["content"].(map[string]any)["name"] != name {
 				t.Fatal("literal valid name lost")
 			}
 		})
@@ -598,7 +613,7 @@ func TestRoomAdminValidInputs(t *testing.T) {
 				t.Fatalf("valid via exit%d %s", code, f.err.String())
 			}
 			m, err := decodeAdminRecord(f.out.Bytes())
-			if err != nil || puts != 1 {
+			if err != nil || puts != 1 || m["outcome"] != "VERIFIED" {
 				t.Fatal("valid via not verified")
 			}
 			b, _ := json.Marshal(m["content"].(map[string]any)["via"])
