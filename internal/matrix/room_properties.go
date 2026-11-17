@@ -182,6 +182,17 @@ func (c *Client) SetRoomParent(ctx context.Context, child, parent string, via []
 }
 
 func (c *Client) writeProperty(ctx context.Context, room, typ, key string, content map[string]any) (StateWriteResult, error) {
+	return c.writePropertyChecked(ctx, room, typ, key, content, func(got map[string]any) error {
+		if typ == "m.room.avatar" {
+			_, err := avatarProjection(got, true)
+			return err
+		}
+		_, err := parentProjection(got, true)
+		return err
+	})
+}
+
+func (c *Client) writePropertyChecked(ctx context.Context, room, typ, key string, content map[string]any, validate func(map[string]any) error) (StateWriteResult, error) {
 	out := StateWriteResult{Outcome: "UNKNOWN", Readback: "not-attempted"}
 	// Encode before sending, then compare the same strict tree to the full
 	// readback. A projection alone could hide unexpected or wrong-key content.
@@ -218,12 +229,8 @@ func (c *Client) writeProperty(ctx context.Context, room, typ, key string, conte
 	}
 	out.Acknowledged, out.EventID = true, ack.EventID
 	got, present, err := c.propertyContent(ctx, room, typ, key)
-	if err == nil && present {
-		if typ == "m.room.avatar" {
-			_, err = avatarProjection(got, true)
-		} else {
-			_, err = parentProjection(got, true)
-		}
+	if err == nil && present && validate != nil {
+		err = validate(got)
 	}
 	if err != nil {
 		out.Readback = "unavailable"

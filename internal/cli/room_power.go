@@ -123,6 +123,12 @@ func cmdRoomPower(ctx context.Context, a *App, args []string) error {
 // projectRoomPower interprets a complete current-state observation. It does not
 // attest to server honesty, exclusivity over unlisted users, or future writes.
 func projectRoomPower(events []matrix.RoomPolicyEvent, server, room, caller string) (*roomPowerView, error) {
+	return projectRoomPowerForEvent(events, server, room, caller, "")
+}
+
+// The empty event preserves the existing read-only projection. A mutation
+// selects its concrete state event while sharing every policy validation rule.
+func projectRoomPowerForEvent(events []matrix.RoomPolicyEvent, server, room, caller, stateEvent string) (*roomPowerView, error) {
 	bad := errRoomPowerPolicy
 	if !matrix.ValidVerificationID(caller, '@') || !matrix.ValidVerificationID(room, '!') {
 		return nil, bad
@@ -285,6 +291,13 @@ func projectRoomPower(events []matrix.RoomPolicyEvent, server, room, caller stri
 				return nil, bad
 			}
 			required["power_levels"] = v
+			if stateEvent != "" {
+				v, ok := field(events, stateEvent, defaults["state_default"])
+				if !ok || !powerExactFields(events, stateEvent) {
+					return nil, bad
+				}
+				required["state_event"] = v
+			}
 		}
 		if raw, present := power["notifications"]; present {
 			notifications, ok := raw.(map[string]any)
@@ -305,6 +318,11 @@ func projectRoomPower(events []matrix.RoomPolicyEvent, server, room, caller stri
 	}
 	if _, ok := required["power_levels"]; !ok {
 		required["power_levels"] = defaults["state_default"]
+	}
+	if stateEvent != "" {
+		if _, ok := required["state_event"]; !ok {
+			required["state_event"] = defaults["state_default"]
+		}
 	}
 	union := map[string]bool{caller: true}
 	for id, m := range members {
