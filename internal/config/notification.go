@@ -31,6 +31,30 @@ type NotificationReservation struct {
 	Previous   time.Time `json:"previous"`
 }
 
+// WakeClass modes recorded by WakeClassPolicy.
+const (
+	WakeClassEconomy  = "economy"
+	WakeClassStandard = "standard"
+)
+
+// WakeClassPolicy is the binding's priority-class wake policy. It is the one
+// optional State member for per-class reservations: absent means the legacy
+// single-cap behaviour. Reservations record wake attempts in the trailing
+// hour, exactly like the legacy hourly reservations they sit beside.
+type WakeClassPolicy struct {
+	Mode              string        `json:"mode"`
+	Reason            string        `json:"reason,omitempty"`
+	OwnerPerHour      int           `json:"owner_per_hour,omitempty"`
+	PeerPerHour       int           `json:"peer_per_hour,omitempty"`
+	BatchInterval     time.Duration `json:"batch_interval,omitempty"`
+	StartedAt         time.Time     `json:"started_at,omitempty"`
+	LastBatchWake     time.Time     `json:"last_batch_wake,omitempty"`
+	OwnerReservations []time.Time   `json:"owner_reservations,omitempty"`
+	PeerReservations  []time.Time   `json:"peer_reservations,omitempty"`
+	OwnerSuppressed   bool          `json:"owner_suppressed,omitempty"`
+	PeerSuppressed    bool          `json:"peer_suppressed,omitempty"`
+}
+
 // Prepare migrates once and clamps a backwards wall-clock jump. Call under
 // the state lock and save even when spacing refuses the outward effect.
 func (n *Notification) Prepare(now, legacy time.Time) error {
