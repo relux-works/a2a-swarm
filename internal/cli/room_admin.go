@@ -363,6 +363,9 @@ func (a *App) runRoomAdmin(ctx context.Context, args []string) int {
 			out.Outcome, out.Readback = "REFUSED", "not-attempted"
 		} else {
 			out.Outcome, out.Readback = "UNKNOWN", "unavailable"
+			if in.mutate && !out.Acknowledged {
+				out.Readback = "not-attempted"
+			}
 		}
 		out.Content = nil
 	}

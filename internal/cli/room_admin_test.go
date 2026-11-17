@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -135,7 +136,22 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 	} else if m["type"] != "room-name" || m["state_type"] != "m.room.name" || m["state_key"] != "" || op != "get" && op != "set" {
 		return nil, bad
 	}
-	if !strings.HasPrefix(m["caller"].(string), "@") || !strings.HasPrefix(m["room_id"].(string), "!") {
+	publicID := func(s string, sigil byte) bool {
+		if len(s) < 2 || len(s) > 255 || s[0] != sigil || !utf8.ValidString(s) {
+			return false
+		}
+		for _, r := range s {
+			if unicode.IsControl(r) || unicode.IsSpace(r) {
+				return false
+			}
+		}
+		if sigil == '@' {
+			local, server, ok := strings.Cut(s[1:], ":")
+			return ok && local != "" && server != ""
+		}
+		return true
+	}
+	if !publicID(m["caller"].(string), '@') || !publicID(m["room_id"].(string), '!') || child && !publicID(m["state_key"].(string), '!') {
 		return nil, bad
 	}
 	id, hasID := m["event_id"]
