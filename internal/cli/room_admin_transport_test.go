@@ -381,3 +381,31 @@ func TestRoomAdminDiagnosticDetector(t *testing.T) {
 		})
 	}
 }
+
+// Cancellation during an unverified ACK does not invent a readback or erase
+// uncertainty. The request may have applied, but no event ID was established.
+func TestRoomAdminUnacknowledgedContext(t *testing.T) {
+	f := newNamedFixture(t, true)
+	a := f.app()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	puts, gets := 0, 0
+	a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/state") {
+			return propertyCLIReply(r, 200, adminPolicy()), nil
+		}
+		if r.Method == "PUT" {
+			puts++
+			resp := propertyCLIReply(r, 200, `{"event_id":"$uncertain"}`)
+			resp.Body = adminCloseBody{strings.NewReader(`{"event_id":"$uncertain"}`), cancel}
+			return resp, nil
+		}
+		gets++
+		return propertyCLIReply(r, 200, `{}`), nil
+	})}
+	code := a.Run(ctx, append(adminArgs(false, "set"), "--json"))
+	m, err := decodeAdminRecord(f.out.Bytes())
+	if code != 1 || err != nil || m["outcome"] != "UNKNOWN" || m["acknowledged"] != false || m["readback"] != "not-attempted" || puts != 1 || gets != 0 || f.err.String() != "RULE admin_context: $.context\n" {
+		t.Fatalf("unacknowledged cancellation: %s %s consumer=%v", f.out.String(), f.err.String(), err)
+	}
+}
