@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -83,10 +84,14 @@ func (t *binderCPUTracker) observe(at time.Time, cpu time.Duration, threshold fl
 		}
 		kept = append(kept, t.samples[i])
 	}
-	t.samples = kept
 	if base == nil {
+		t.samples = kept
 		return 0, false, false, false
 	}
+	// Retain the base sample for the next call: with ticker jitter the
+	// next cutoff advances by less (or more) than the sample spacing, and
+	// a dropped base would leave that call with no window base at all.
+	t.samples = append([]binderCPUSample{*base}, kept...)
 	elapsed := at.Sub(base.at)
 	if elapsed < binderCPUWindow || cpu < base.cpu {
 		return 0, false, false, false
@@ -123,8 +128,14 @@ func (t *binderCPUTracker) observe(at time.Time, cpu time.Duration, threshold fl
 	return share, full, false, false
 }
 
+// maxBinderCPUCount bounds the share a CPU job can carry, in tenths of a
+// percent of one core (1000.0%). validAlarmJob enforces the same bound, so
+// a binder burning more than ten cores queues a valid, deliverable notice
+// reporting the capped share instead of an invalid job held forever.
+const maxBinderCPUCount = 10000
+
 func cpuShareTenths(share float64) int {
-	return int(math.Round(share * 1000))
+	return min(int(math.Round(share*1000)), maxBinderCPUCount)
 }
 
 func cpuShareText(tenths int) string {
@@ -201,6 +212,9 @@ func (a *App) sampleBinderCPU(s *session, generation string, tracker *binderCPUT
 	share, _, fire, rearm := tracker.observe(now, cpu, threshold)
 	switch {
 	case fire:
+		// The notice and the log line name this process's own loaded
+		// revision, never a possibly stale persisted record: which build
+		// is burning CPU is the question the notice exists to answer.
 		revision := resolveRunningInfo().Revision
 		_, err := a.updateStateBy(s.paths, s.name, time.Now(), func(cur *config.State) error {
 			b := cur.Terminal
@@ -209,7 +223,7 @@ func (a *App) sampleBinderCPU(s *session, generation string, tracker *binderCPUT
 			}
 			if b.Observe == nil {
 				info := resolveRunningInfo()
-				b.Observe = &config.TerminalObserve{Executable: info.Executable, Revision: info.Revision, OnLaunchAlias: info.OnLaunchAlias}
+				b.Observe = &config.TerminalObserve{Executable: info.Executable, Revision: info.Revision, OnLaunchAlias: info.OnLaunchAlias, PID: os.Getpid(), Generation: generation}
 			}
 			if b.Observe.CPUAlerted {
 				// The persisted fence, not this process's RAM, decides.
@@ -217,10 +231,6 @@ func (a *App) sampleBinderCPU(s *session, generation string, tracker *binderCPUT
 			}
 			b.Observe.CPUAlerted = true
 			b.Observe.CPUAlertAt = now
-			revision = b.Observe.Revision
-			if revision == "" {
-				revision = resolveRunningInfo().Revision
-			}
 			if err := enqueueBinderCPUJob(s, cur, now, share, revision); err != nil {
 				return err
 			}
@@ -251,13 +261,14 @@ func (a *App) sampleBinderCPU(s *session, generation string, tracker *binderCPUT
 		// An episode whose owner route was missing at alert time queues its
 		// one notice when a route appears; the log line is not repeated.
 		if tracker.alerted && threshold > 0 && (st.Terminal.Observe == nil || st.Terminal.Observe.CPUJobID == "") {
+			revision := resolveRunningInfo().Revision
 			_, _ = a.updateStateBy(s.paths, s.name, time.Now(), func(cur *config.State) error {
 				b := cur.Terminal
 				if b == nil || b.Stopped || b.Generation != generation || b.Observe == nil || !b.Observe.CPUAlerted || b.Observe.CPUJobID != "" {
 					return errBinderCPUUnchanged
 				}
 				before := len(cur.MailAlarm.Jobs)
-				if err := enqueueBinderCPUJob(s, cur, now, share, b.Observe.Revision); err != nil {
+				if err := enqueueBinderCPUJob(s, cur, now, share, revision); err != nil {
 					return err
 				}
 				if len(cur.MailAlarm.Jobs) == before {

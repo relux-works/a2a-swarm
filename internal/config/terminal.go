@@ -82,15 +82,19 @@ type TerminalBinding struct {
 // TerminalObserve is the owning consumer's self-observation, written only by
 // that consumer at start and after each in-place re-exec: the executable it
 // resolved for itself, that image's build revision, and whether it was
-// launched through the admitted alias. The CPU fields fence its CPU
-// self-alarm to one notice per episode. Diagnostic only; it grants no
-// delivery, refresh or input authority, and old state without it is unknown.
+// launched through the admitted alias. PID and Generation name the consumer
+// that recorded it, so status can refuse to present another consumer's
+// record as the live one. The CPU fields fence its CPU self-alarm to one
+// notice per episode. Diagnostic only; it grants no delivery, refresh or
+// input authority, and old state without it is unknown.
 type TerminalObserve struct {
 	Executable    string    `json:"executable,omitempty"`
 	Revision      string    `json:"revision,omitempty"`
 	OnLaunchAlias bool      `json:"on_launch_alias,omitempty"`
+	PID           int       `json:"pid,omitempty"`
+	Generation    string    `json:"generation,omitempty"`
 	CPUAlerted    bool      `json:"cpu_alerted,omitempty"`
-	CPUAlertAt    time.Time `json:"cpu_alert_at,omitempty"`
+	CPUAlertAt    time.Time `json:"cpu_alert_at"`
 	CPUJobID      string    `json:"cpu_job_id,omitempty"`
 }
 

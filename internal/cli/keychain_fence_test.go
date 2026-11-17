@@ -127,7 +127,6 @@ func TestKeychainFenceRecordsNoInvalidBoot(t *testing.T) {
 	uid := e.agent("alice")
 	dir := fakeKeychain(e, map[string]string{}, "")
 	b := &blockingBackend{fakeBackend: fakeBackend{dir}, started: make(chan struct{}), release: make(chan struct{})}
-	defer close(b.release)
 	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b, timeout: 300 * time.Millisecond,
 		boot:  func() (string, error) { return "garbage-without-error", nil },
 		birth: func(context.Context, int) (string, error) { return "synthetic-identity", nil }})
@@ -139,6 +138,14 @@ func TestKeychainFenceRecordsNoInvalidBoot(t *testing.T) {
 	if err != nil || fence == nil || fence.Boot != "" {
 		t.Fatalf("invalid boot evidence recorded: %+v %v", fence, err)
 	}
+	// Release the blocked mutation and wait for it to settle, as the
+	// abandoned-write test above does: releasing it from a defer without
+	// waiting lets its late writes race TempDir cleanup under load.
+	close(b.release)
+	waitUntil(t, 5*time.Second, func() bool {
+		_, err := os.Stat(k.fencePath(uid))
+		return errors.Is(err, os.ErrNotExist)
+	})
 }
 
 // A completed mutation leaves no fence (positive control for the test above).

@@ -2838,28 +2838,47 @@ the threshold. These diagnostics grant no terminal input or receipt authority.
 At start, and again after each in-place re-exec, the consumer records what it itself runs: the executable
 path it resolved from its own process (never by reading the launch alias, whose target may already be a newer
 image) and that loaded image's `vcs.revision` from its build info, plus whether that image is the target of its
-admitted launch alias. `bind status` prints `running_pid=N running_executable=PATH running_revision=REV
+admitted launch alias. The record is written inside the startup control transaction with a short bounded
+State-lock wait; if a busy lock still defeats that attempt (the one moment a re-exec could otherwise leave the
+previous image's record behind), the consumer retries it on every cycle until it has committed for the current
+generation and PID. Each record carries the recording consumer's PID and generation, and `bind status` projects
+it only when both match the live binding: it prints `running_pid=N running_executable="PATH" running_revision=REV
 on_launch_alias=true|false` (JSON: `running_pid`, `running_executable`, `running_revision`, `on_launch_alias`)
 alongside the existing `refresh` status, so the revision shown is the running consumer's, even when the installed
 alias already names a different build. A consumer that is not on its admitted launch alias (a direct image, a
 bare or relative launch name, or an alias that fails custody) also prints exactly
 `not on the launch alias: a new install will not reach this binder`; retargeting an alias cannot refresh it, so
-rebind it once through the installed command. A consumer that predates this record shows none of these fields
-(unknown), and a stopped binding shows no running claim. The record is diagnostic only: it grants no delivery,
-refresh or input authority, and it contains no screen, mail or peer text.
+rebind it once through the installed command. A live binding whose record is absent, predates the PID/generation
+stamp, or was written by another PID or generation shows `running=unknown (not yet recorded)` (JSON: `running`)
+and none of the `running_pid`/`running_executable`/`running_revision`/`on_launch_alias` fields, never the other
+consumer's revision; a stopped binding shows no running claim and no `running_pid`. The record is diagnostic
+only: it grants no delivery, refresh or input authority, and it contains no screen, mail or peer text.
 
 The consumer also samples its own process CPU time (user+system, `getrusage`) every minute. When its share of
 one core over the sliding 10-minute window exceeds the configured threshold, it posts exactly one owner notice
 through the existing mail-alarm owner route, with the fixed text `Binder CPU alarm: identity=NAME host=HOST
 share=P% of one core window=10m revision=REV`, appends one `binding cpu alarm: share=P% window=10m revision=REV`
-line to `state/NAME.binding.log`, and records the episode in state. It never stops or restarts itself. The notice
-is not repeated while the share stays above the threshold, and it can fire again only after the window share has
-stayed at or below the threshold for a full window. A queued notice keeps the ordinary mail-alarm bounded retry
-with transaction deduplication, and a failed send never blocks delivery; an episode whose owner route is missing
-queues its one notice if a route appears before it rearms. The threshold is the optional `binder_cpu_percent`
-integer member of the identity's protected credential file `agents/NAME.json` (percent of one core, 0–1000),
+line to `state/NAME.binding.log`, and records the episode in state. `REV` is the firing process's own loaded
+revision, and a share above ten cores is reported at the 1000.0% cap so the queued notice stays valid and
+deliverable. It never stops or restarts itself. The notice is not repeated while the share stays above the
+threshold, and it can fire again only after the window share has stayed at or below the threshold for a full
+window. A queued notice is retried with incident-style backoff and transaction deduplication until delivered or
+rearmed, and a failed send never blocks delivery; an episode whose owner route is missing queues its one notice
+if a route appears before it rearms. `bind status` and `mail-alarm status` count a queued or failed CPU notice
+under their own `binder-cpu` route, never as stale mail. The episode fence is per consumer generation: a
+replacement consumer starts a new episode, a State rewrite by an older binary can drop the record (and with it
+the fence, so a further notice is possible), and a notice still pending at unbind is not tied to its generation,
+so the next binding's worker may still send it. The threshold is the optional `binder_cpu_percent` integer
+member of the identity's protected credential file `agents/NAME.json` (percent of one core, 0–1000),
 provisioned by the operator like `own_room` through `config.UpdateCredentials` (or by editing that 0600 file
 with no consumer running for the identity); absent, it defaults to 20, and an explicit `0` disables the alarm.
+Set it only after every binder and CLI on the host runs a build that knows it: older binaries decode named
+credential metadata strictly and refuse a file carrying an unknown member, so setting `binder_cpu_percent` while
+any older binary still serves the identity makes that identity's credentials unusable for it. Upgrade every
+binary that reads this identity's metadata first (confirm with `bind status` that no binder is still "not on the
+launch alias" on an older revision), then verify with a status or credential read after setting it. The value
+must be an integer: a non-integer hand edit (`"20"`, `20.5`, `"off"`) fails the decode of the whole credential
+file, so the identity stops loading credentials at all; it does not merely fall back to the default threshold.
 The consumer re-reads it every minute, so a change needs no rebind. A build without `getrusage` samples nothing.
 The alarm text carries only identity, host, share, window and revision: no file content and no mailbox text.
 

@@ -106,6 +106,38 @@ func TestBinderCPUTrackerWindow(t *testing.T) {
 	}
 }
 
+// Claim: the window base survives tick jitter. After a full high window
+// at exact minutes, an early tick (30s later) and the jittered ticks
+// after it still compute a full share from the retained base sample;
+// dropping the base each call would leave those ticks with no window.
+func TestBinderCPUTrackerJitteredTicks(t *testing.T) {
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	tr := &binderCPUTracker{}
+	at, cpu := start, time.Duration(0)
+	tr.observe(at, cpu, 0.20)
+	fired := false
+	for i := 0; i < 10; i++ {
+		at = at.Add(time.Minute)
+		cpu += 54 * time.Second
+		_, _, fire, _ := tr.observe(at, cpu, 0.20)
+		fired = fired || fire
+	}
+	if !fired {
+		t.Fatal("exact-minute control did not fire at the full window")
+	}
+	for _, step := range []time.Duration{30 * time.Second, 90 * time.Second, 45 * time.Second, 75 * time.Second, 60 * time.Second} {
+		at = at.Add(step)
+		cpu += step * 9 / 10
+		share, full, fire, _ := tr.observe(at, cpu, 0.20)
+		if !full || share < 0.85 || share > 0.95 {
+			t.Fatalf("jittered tick +%v lost the window: share=%v full=%v", step, share, full)
+		}
+		if fire {
+			t.Fatal("jittered ticks refired while still above")
+		}
+	}
+}
+
 // Claim: the protected config member resolves as absent = default 20%,
 // explicit 0 = disabled, other values as their percent of one core, and
 // out-of-range values fall back to the default instead of silencing the
@@ -171,12 +203,15 @@ func cpuJobs(e *env) []config.MailAlarmJob {
 }
 
 // prepareBinderCPU returns the alarm fixture with a recorded running image
-// and the fake clocks installed, at the first (baseline) sample.
+// and the fake clocks installed, at the first (baseline) sample. The
+// loaded image is stubbed to the same revision, so notices that name the
+// in-process revision match the record unless a test stales it.
 func prepareBinderCPU(t *testing.T) (*env, *App, *session, *binderCPUTracker, *time.Time, *time.Duration, *strings.Builder) {
 	t.Helper()
 	e, a, s, room, _ := alarmFixture(t)
 	_ = room
 	rev := strings.Repeat("d", 40)
+	stubRunning(t, "/installed/a2a-image", "/installed/a2a-image", rev)
 	notificationState(t, e, func(st *config.State) {
 		st.Terminal.Observe = &config.TerminalObserve{Executable: "/installed/a2a-image", Revision: rev, OnLaunchAlias: true}
 	})
@@ -191,17 +226,23 @@ func prepareBinderCPU(t *testing.T) (*env, *App, *session, *binderCPUTracker, *t
 }
 
 // Claim: a full high window records the episode in state, queues exactly
-// one owner notice carrying share, window and the recorded running
-// revision (no file or mailbox text), and logs one line; continued high
-// samples repeat none of them, and the ordinary alarm worker then
-// delivers that one notice. The control is the same feed just below the
-// threshold, which stays silent.
+// one owner notice carrying share, window and the loaded image's running
+// revision (no file or mailbox text), and logs one line; the persisted
+// record is deliberately staled first, so a notice or log that named the
+// stored revision instead of the in-process one would fail here. The
+// queued job is classified under binder-cpu in status, never as stale
+// mail. Continued high samples repeat none of them, and the ordinary
+// alarm worker then delivers that one notice. The control is the same
+// feed just below the threshold, which stays silent.
 func TestBinderCPUSampleQueuesOneOwnerNotice(t *testing.T) {
 	e, a, s, tracker, now, cpu, log := prepareBinderCPU(t)
 	feedBinderCPU(a, s, tracker, now, cpu, 15, 11400*time.Millisecond)
 	if len(cpuJobs(e)) != 0 || log.Len() != 0 {
 		t.Fatal("just-below control was not silent")
 	}
+	notificationState(t, e, func(st *config.State) {
+		st.Terminal.Observe.Revision = strings.Repeat("e", 40)
+	})
 	// Continue from the below-threshold feed into a high window.
 	feedBinderCPU(a, s, tracker, now, cpu, 12, 54*time.Second)
 	jobs := cpuJobs(e)
@@ -218,6 +259,13 @@ func TestBinderCPUSampleQueuesOneOwnerNotice(t *testing.T) {
 	}
 	if got := strings.Count(log.String(), "binding cpu alarm: share="); got != 1 {
 		t.Fatalf("log lines=%d: %q", got, log.String())
+	}
+	if !strings.Contains(log.String(), "revision="+strings.Repeat("d", 40)) || strings.Contains(log.String(), strings.Repeat("e", 40)) {
+		t.Fatalf("log line named the stale stored revision: %q", log.String())
+	}
+	status := alarmStatus(s, e.state("alice"))
+	if status.Pending != 0 || status.BinderCPU.Pending != 1 || !status.BinderCPU.Outstanding || status.BinderCPU.State != "armed" {
+		t.Fatalf("cpu job misclassified in alarm status: stale=%+v binder-cpu=%+v", status.alarmRouteStatus, status.BinderCPU)
 	}
 	feedBinderCPU(a, s, tracker, now, cpu, 3, 54*time.Second)
 	if len(cpuJobs(e)) != 1 || strings.Count(log.String(), "binding cpu alarm:") != 1 {
@@ -304,5 +352,113 @@ func TestBinderCPUNoticeFailureRetried(t *testing.T) {
 	a.sendMailAlarm(context.Background(), s, "alarm")
 	if len(cpuJobs(e)) != 0 || len(cpuAlarmEvents(e)) != 1 {
 		t.Fatalf("retry after failures did not deliver exactly once: jobs=%+v events=%v", cpuJobs(e), cpuAlarmEvents(e))
+	}
+}
+
+// Claim: a fresh tracker (the state a re-exec leaves: RAM gone, the
+// persisted episode intact) queues no second notice for the still-high
+// episode, because sampling mirrors the persisted fence before each
+// sample. The control is the first tracker, which queued exactly one.
+func TestBinderCPUFreshTrackerOverPersistedEpisode(t *testing.T) {
+	e, a, s, tracker, now, cpu, log := prepareBinderCPU(t)
+	feedBinderCPU(a, s, tracker, now, cpu, 11, 54*time.Second)
+	if len(cpuJobs(e)) != 1 || strings.Count(log.String(), "binding cpu alarm:") != 1 {
+		t.Fatal("control: first tracker did not queue exactly one notice")
+	}
+	fresh := &binderCPUTracker{}
+	feedBinderCPU(a, s, fresh, now, cpu, 15, 54*time.Second)
+	if len(cpuJobs(e)) != 1 || strings.Count(log.String(), "binding cpu alarm:") != 1 {
+		t.Fatalf("fresh tracker repeated the persisted episode: jobs=%+v log=%q", cpuJobs(e), log.String())
+	}
+	if observe := e.state("alice").Terminal.Observe; observe == nil || !observe.CPUAlerted || observe.CPUJobID != cpuJobs(e)[0].ID {
+		t.Fatalf("persisted episode changed under the fresh tracker: %+v", observe)
+	}
+}
+
+// Claim: after a full window at or below the threshold the persisted
+// episode rearms in state, and a new high window then queues a second
+// notice through the real sampling step (the tracker-level test alone
+// cannot see the state fence). The first notice is delivered before the
+// low window, so exactly one job is ever pending.
+func TestBinderCPURearmSecondNoticeThroughState(t *testing.T) {
+	e, a, s, tracker, now, cpu, log := prepareBinderCPU(t)
+	feedBinderCPU(a, s, tracker, now, cpu, 11, 54*time.Second)
+	if len(cpuJobs(e)) != 1 {
+		t.Fatal("setup: no cpu job queued")
+	}
+	*now = now.Add(time.Minute)
+	a.sendMailAlarm(context.Background(), s, "alarm")
+	if len(cpuJobs(e)) != 0 || len(cpuAlarmEvents(e)) != 1 {
+		t.Fatal("setup: first notice not delivered exactly once")
+	}
+	feedBinderCPU(a, s, tracker, now, cpu, 30, 6*time.Second)
+	if observe := e.state("alice").Terminal.Observe; observe == nil || observe.CPUAlerted || observe.CPUJobID != "" {
+		t.Fatalf("episode did not rearm in state after a full low window: %+v", observe)
+	}
+	feedBinderCPU(a, s, tracker, now, cpu, 12, 54*time.Second)
+	if len(cpuJobs(e)) != 1 || strings.Count(log.String(), "binding cpu alarm:") != 2 {
+		t.Fatalf("no second notice after rearm and a new high window: jobs=%+v log=%q", cpuJobs(e), log.String())
+	}
+}
+
+// Claim: an episode whose owner route is missing at fire time records its
+// fence and log line but queues nothing; when the route appears, a later
+// sample queues its one notice (naming the in-process revision, with the
+// stored record deliberately staled) without repeating the log line,
+// and further samples queue no more.
+func TestBinderCPUDeferredRouteQueuesOnce(t *testing.T) {
+	e, a, s, tracker, now, cpu, log := prepareBinderCPU(t)
+	owner := e.state("alice").MailAlarmConfig.Owner
+	notificationState(t, e, func(st *config.State) { st.MailAlarmConfig.Owner = "off" })
+	feedBinderCPU(a, s, tracker, now, cpu, 11, 54*time.Second)
+	if len(cpuJobs(e)) != 0 {
+		t.Fatal("notice queued without an owner route")
+	}
+	if observe := e.state("alice").Terminal.Observe; observe == nil || !observe.CPUAlerted || observe.CPUJobID != "" {
+		t.Fatalf("episode fence not recorded without a route: %+v", observe)
+	}
+	if strings.Count(log.String(), "binding cpu alarm:") != 1 {
+		t.Fatalf("fire without a route logged %q", log.String())
+	}
+	notificationState(t, e, func(st *config.State) {
+		st.MailAlarmConfig.Owner = owner
+		st.Terminal.Observe.Revision = strings.Repeat("e", 40)
+	})
+	feedBinderCPU(a, s, tracker, now, cpu, 2, 54*time.Second)
+	jobs := cpuJobs(e)
+	if len(jobs) != 1 || jobs[0].Reason != strings.Repeat("d", 40) || !validAlarmJob(jobs[0], "alice") {
+		t.Fatalf("deferred notice not queued once with the in-process revision: %+v", jobs)
+	}
+	if observe := e.state("alice").Terminal.Observe; observe == nil || observe.CPUJobID != jobs[0].ID {
+		t.Fatalf("deferred job not fenced in state: %+v", observe)
+	}
+	feedBinderCPU(a, s, tracker, now, cpu, 2, 54*time.Second)
+	if len(cpuJobs(e)) != 1 || strings.Count(log.String(), "binding cpu alarm:") != 1 {
+		t.Fatal("deferred notice or log repeated after the route appeared")
+	}
+}
+
+// Claim: a share above ten cores queues a valid, deliverable notice at
+// the capped share instead of an invalid job held forever with the
+// episode fenced off. The control is the uncapped conversion below the
+// bound, which is exact.
+func TestBinderCPUAboveTenCoresClamped(t *testing.T) {
+	if got := cpuShareTenths(0.9); got != 900 {
+		t.Fatalf("uncapped control: cpuShareTenths(0.9)=%d, want 900", got)
+	}
+	if got := cpuShareTenths(25); got != maxBinderCPUCount {
+		t.Fatalf("cpuShareTenths(25)=%d, want capped %d", got, maxBinderCPUCount)
+	}
+	e, a, s, tracker, now, cpu, _ := prepareBinderCPU(t)
+	feedBinderCPU(a, s, tracker, now, cpu, 11, 660*time.Second) // 11 cores
+	jobs := cpuJobs(e)
+	if len(jobs) != 1 || jobs[0].Count != maxBinderCPUCount || !validAlarmJob(jobs[0], "alice") {
+		t.Fatalf("above-ten-cores job not valid at the cap: %+v", jobs)
+	}
+	*now = now.Add(time.Minute)
+	a.sendMailAlarm(context.Background(), s, "alarm")
+	bodies := cpuAlarmEvents(e)
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "share=1000.0%") || len(cpuJobs(e)) != 0 {
+		t.Fatalf("capped notice not delivered once: %v", bodies)
 	}
 }
