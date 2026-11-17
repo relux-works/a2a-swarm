@@ -825,7 +825,7 @@ does not repair #169's thread-read completeness or relations pagination.
 | `--subtype` | - | only with `--kind system`: landing, window, incident, blocker, ownership, budget (protocol rule 24); queue (readiness claims, slot requests); redline, redline-closed (rule 28); impact-start, impact-end (rule 31) |
 | `--subject` | - | what the message is about, 1-128 chars of `[A-Za-z0-9#._/:@-]`, e.g. `relux-works/skill-project-management@main`, `BUG-260928-2qon2t`, `PR#12` |
 | `--envelope` | - | `@file`: carry the exact bytes of the file as a swarm envelope next to the text ([below](#carrying-a-swarm-envelope---envelope-file)) |
-| `--sign` | false | sign the post through the configured signer; refused when it cannot be signed (always, as released: no signer is linked), never sent unsigned ([below](#signed-posts---sign)) |
+| `--sign` | false | sign through the explicitly configured native signer; live signing remains unavailable (see below), never sent unsigned ([below](#signed-posts---sign)) |
 
 With `--re`, the CLI reads the target through the selected session's
 authenticated endpoint in the resolved room. Local room-scoped redaction
@@ -982,11 +982,57 @@ a2a post <room> --topic T --sign 'human-readable text'
 signature, and publishes only what the sender verified itself. The two-sided contract is
 [signed-post-contract.md](signed-post-contract.md).
 
-**As released, every `post --sign` is refused and nothing is sent.** No signer implementation is linked
-(`signer_unconfigured`), and no purpose-5 pin exists, so even with a signer the command ends in
-`signer_unqualified` before it builds a signing input. A refused signed post is never sent unsigned: remove
-`--sign` to send an ordinary post. The path behind those two states is implemented and tested with a fake
-signer behind the seam:
+**Live signing remains unavailable; a refused `post --sign` sends nothing.** Absent `message_author`
+configuration is `signer_unconfigured`. The optional Linux native client uses the pinned fixture-only
+`github.com/relux-works/swarma-keymaker/messageauthor` codec at
+`v0.0.0-20261116200824-2cc4a3909841`; it supplies no key, enrollment or signing provider. The holder answers
+`key_not_enrolled` or `message_author_unqualified` until live signing exists; both map to
+`signer_unqualified`. Even a successful fixture-shaped identity stops at `signer_unqualified` in production:
+no purpose-5 issuer pin or qualification callback exists. This version checks shape and the attestation's
+content id, not its issuer, binding, expiry or revocation. Never treat a codec round trip as live qualification.
+A refusal never falls back to an unsigned post. The complete path is exercised only with public fixture
+operands and a fake holder.
+
+The selected agent's existing 0600 credential metadata file may contain one optional member:
+
+```json
+"message_author": {
+  "socket_path": "/protected/message-author/control.sock",
+  "uid": 1234,
+  "gid": 1234,
+  "mode": "0660",
+  "audience": "service-a"
+}
+```
+
+These are placeholders, not installation instructions. Installed host configuration supplies the absolute,
+clean socket path, numeric holder UID, numeric message-author client GID and signed audience. Both numeric pins
+must be explicitly present (zero is allowed only as an explicit pin); mode must be the literal `"0660"`.
+There is no default path, discovery, environment selector, fallback socket or alternate signer. Missing pins or
+another mode refuse with `signer_unavailable`; a missing audience is `signer_unconfigured`.
+Before writing even a hello byte, the client checks that the immediate parent is a real directory owned by root
+or the holder and not group/other writable, the endpoint is a real socket (not a symlink), its UID/GID/mode match,
+and its kernel peer UID equals the holder UID. The endpoint inode/pins are rechecked after dialing. A mismatch
+closes without sending bytes. The author-side process must run under the author's own OS account: one UID maps
+to one author at the holder. Other platforms fail closed before connecting; Darwin native peer qualification is
+not supplied here.
+
+Each seam operation uses a fresh connection: `Identity` does hello then identity; `Sign` does hello, a fresh
+identity check, then sign. This fits the existing two-call seam without keeping an idle connection while the
+sender builds its preimage. The exact preimage and request frames are built **before** dialing for `Sign`.
+Hello offers exactly version 1 and accepts only the canonical correlated version-1 reply, within 2 seconds.
+Identity is sent immediately after hello, and sign immediately after the identity check, within the holder's
+2-second next-complete-frame bound. Only one request is outstanding on a connection. Each request has
+`timeout_ms=2000`; one overall deadline bounds each operation (4 seconds for identity, 6 seconds for sign),
+shortened by caller cancellation/deadline. Framing caps are checked before allocating a response body.
+Native request IDs are 16 bytes from `crypto/rand`, encoded as 32 lowercase hex characters. The client retains
+one random signing ID per exact-preimage fingerprint for 120 seconds, including lost/refused replies; equal
+caller retries reuse it. Its bounded 64-entry table refuses capacity rather than evicting live IDs. This table
+is process-local, not crash recovery or durable holder retention. The client never retries a sign itself.
+A retryable refusal or a lost reply does **not** establish that no signature exists.
+
+The sender's assembly and publication remain:
+
 
 1. The recipient rule, before any signer call. Exactly one recipient: the signed `to` is its full user id.
    Zero or several: `to` is the room id and the ordered list of full ids is the signed `arguments.to`.
@@ -1001,11 +1047,14 @@ signer behind the seam:
    mentioned full ids. The signing input is the pinned module's signing preimage of that body.
 4. One signature request with exactly that preimage. A retryable signer failure repeats the same preimage,
    at most twice more and only before `exp`.
-5. The returned key must equal the identity key. The envelope is assembled once (`id` = the module's
-   content id of the body) and the shared completed-post checker verifies its signature over the exact
-   preimage once, along with its delivery, time and attestation binding, before it can be sent in
-   `works.relux.swarm.envelope`, beside the attestation described below. The checker is also used by
-   signed-only stations at the daemon. All other event content is identical to the unsigned post.
+5. The native client requires the returned key to equal its same-operation identity key and verifies the
+   signature with the pinned envelope module over SHA-256 of the unchanged preimage (hashed once, not a
+   caller-supplied digest). A changed identity K/T, returned key or invalid signature is `signer_unqualified`.
+   The envelope is assembled once (`id` = the module's content id of the body) and the shared
+   completed-post checker verifies its signature over the exact preimage once, along with its delivery,
+   time and attestation binding, before it can be sent in `works.relux.swarm.envelope`, beside the
+   attestation described below. The checker is also used by signed-only stations at the daemon. All other
+   event content is identical to the unsigned post.
 6. When the send fails it is repeated once: before `exp` with the identical envelope bytes under the same
    transaction id, after `exp` with a newly signed envelope (new nonce, `iat`, `exp`).
 
@@ -1020,15 +1069,15 @@ host roster decides as before. The carried issuer is not verified: no purpose-5 
   one of `signer_unconfigured`, `signer_unavailable`, `signer_unqualified`, `signer_refused`,
   `signer_result_invalid`, `recipients_too_many`. A detail is fixed local text or the holder's code name,
   never a key, attestation bytes or received text.
-  - `signer_unconfigured`: no signer, or no audience, is configured. This is what the released command
-    prints, before any request.
+  - `signer_unconfigured`: no endpoint configuration, or no audience, is configured; no holder request.
   - `recipients_too_many`: more than 64 recipients, a duplicate recipient, a recipient id over 255 bytes or
     not a printable ASCII full MXID, or a signing input over 24576 bytes. The recipient rule is decided before any
     signer call; the list is never truncated or split.
   - `signer_unavailable` (retryable), `signer_refused` (not retryable): the signer's own failure, mapped to
     this closed vocabulary.
-  - `signer_result_invalid`: a reply that is not one of the signer's typed errors, a returned key that
-    differs from the identity key, or a signature that does not verify over the exact preimage.
+  - `signer_result_invalid`: an error outside the signer's typed vocabulary, or failure of the sender's
+    independent final key/signature check. The native client itself reports invalid holder results as
+    `signer_unqualified`.
   - `signer_unqualified`: the author key is not a well-formed `bip340:` key, the attestation id is not a
     `sha256:` content id, the attestation is empty, over 8192 bytes, malformed or has another content id,
     or (always, as released) no purpose-5 pin is configured.
@@ -1037,9 +1086,36 @@ host roster decides as before. The carried issuer is not verified: no purpose-5 
 - **Daemon route.** The local daemon's request allowlist does not admit `--sign`; such a request is refused
   there and nothing is sent.
 
+##### Native holder refusal mapping
+
+The codec checks its closed vocabulary, exact retry bit, schema, method and outstanding request ID before
+mapping. Unknown codes, inconsistent bits, malformed/extra/missing fields, wrong correlations and invalid
+K/T/A/signature encodings are `ErrUnqualified` -> `signer_unqualified`, with no publication. Transport loss,
+deadline/cancellation, endpoint pins and failed hello are `ErrUnavailable` -> `signer_unavailable` (retryable).
+The mapper consults the decoded **retryable bit first**, never the code name to infer retryability. The
+codec currently admits exactly the bits below. Every code is listed; grouped rows share exactly one mapping.
+Only the nonretryable holder code is retained as detail for `RefusedError`. No received free-form text, key or
+attestation appears in a diagnostic.
+
+| Holder codes | Codec retryable | Seam error -> CLI code |
+| --- | --- | --- |
+| `busy`, `rate_limited`, `generation_source_unavailable`, `audit_unavailable`, `request_deadline_exceeded` | true | `ErrUnavailable` -> `signer_unavailable` |
+| `key_not_enrolled`, `message_author_unqualified` | false | `ErrUnqualified` -> `signer_unqualified` |
+| `frame_too_large`, `frame_truncated`, `frame_malformed`, `ccj_noncanonical` | false | `RefusedError` -> `signer_refused` |
+| `request_malformed`, `request_conflict`, `version_unsupported`, `hello_required`, `hello_already_negotiated`, `operation_unsupported` | false | `RefusedError` -> `signer_refused` |
+| `peer_identity_unavailable`, `generation_source_fenced`, `generation_inactive`, `generation_mismatch`, `binding_not_found`, `peer_binding_mismatch`, `binding_conflict` | false | `RefusedError` -> `signer_refused` |
+| `identity_revoked`, `role_not_permitted`, `custody_unavailable`, `entropy_unavailable`, `clock_untrusted`, `key_not_valid_now`, `sign_key_mismatch`, `state_capacity_exceeded` | false | `RefusedError` -> `signer_refused` |
+| `signer_preimage_too_large`, `signer_tag_malformed`, `signer_domain_refused`, `signer_payload_invalid`, `signer_identity_unavailable`, `signer_identity_malformed`, `signer_identity_mismatch` | false | `RefusedError` -> `signer_refused` |
+
+The four framing/canonical refusal codes carry null IDs as required by the codec. These remain nonretryable
+refusals, not correlated successful results. All other nonnull IDs must match our outstanding request.
+Existing sender retry bounds remain unchanged: identical P and retained native ID on a retryable signing
+failure before `exp`, identical assembled event bytes on a carrier retry before `exp`; new nonce/iat/exp,
+preimage and native ID after expiry. A refreshed T cannot be substituted under old signed bytes.
+
 Not in this version:
 
-- the key-holder client (socket, peer pins, hello, identity and sign requests) and any real key;
+- any real key, live signing coordinator, enrollment or durable cross-process retry recovery;
 - the attestation's own verification under the per-host purpose-5 pin: only its content id is compared.
   Until that verification exists no signed post is published outside tests;
 - a configuration surface for the signer and the audience;

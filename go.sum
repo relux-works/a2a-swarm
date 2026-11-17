@@ -50,6 +50,8 @@ github.com/relux-works/skill-go-testing-tools/tuitestkit v0.1.1 h1:T3iD+MHLRxHp9
 github.com/relux-works/skill-go-testing-tools/tuitestkit v0.1.1/go.mod h1:eskmRagIK80UL3welr4n8HITS/BAZz4lyT4LoBESN+8=
 github.com/relux-works/swarma-envelope v0.0.0-20261114153213-065e25f69da8 h1:Dlnt/FeaU6ysDHyE1x11mk1qeKtXNa5NDmwyO3139aM=
 github.com/relux-works/swarma-envelope v0.0.0-20261114153213-065e25f69da8/go.mod h1:KRYIv6a94YcuR4jNhQlbyMtS1oMRSyt7qTnlO0hp6/Q=
+github.com/relux-works/swarma-keymaker/messageauthor v0.0.0-20261116200824-2cc4a3909841 h1:JafryaWSrwU/yqtThP3iVyfc+sx9pgGFaLclRHMLTMs=
+github.com/relux-works/swarma-keymaker/messageauthor v0.0.0-20261116200824-2cc4a3909841/go.mod h1:Zl7h8BTdQguHNfAgxZwOm18zXjBiclA2NQixZEgFlEI=
 github.com/relux-works/swarma-registrar v0.0.0-20261023164451-5f44ebf3f788 h1:5PY0Ri0qGh43ImOMK0Y5pMJoq8ZcT6yAGT3oVjUjJSQ=
 github.com/relux-works/swarma-registrar v0.0.0-20261023164451-5f44ebf3f788/go.mod h1:4bnxh4kC6jNAovfx5i8t1OdnhytaM/ZeD/zXoQQTKwA=
 github.com/rivo/uniseg v0.2.0/go.mod h1:J6wj4VEh+S6ZtnVlnTBMWIodfgj8LQOQFoIToxlJtxc=

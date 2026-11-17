@@ -7,6 +7,7 @@ require (
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8
 	github.com/relux-works/skill-go-testing-tools/tuitestkit v0.1.1
 	github.com/relux-works/swarma-envelope v0.0.0-20261114153213-065e25f69da8
+	github.com/relux-works/swarma-keymaker/messageauthor v0.0.0-20261116200824-2cc4a3909841
 	github.com/yuin/goldmark v1.8.7
 	golang.org/x/net v0.58.0
 	maunium.net/go/mautrix v0.30.0

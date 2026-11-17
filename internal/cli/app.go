@@ -36,11 +36,11 @@ const (
 type App struct {
 	// Test-only host-file loader; production always validates protected ownership.
 	loadEnvelopeRoster func(string) (*envelopeobserve.Observer, error)
-	// postSigner is the one signer seam. No implementation is linked: production
-	// leaves it nil and `post --sign` refuses with signer_unconfigured.
+	// postSigner is the one signer seam. Signed-post selection configures the
+	// native client only when the selected identity explicitly pins an endpoint.
 	postSigner signedpost.Signer
 	// postAudience is the signed `aud` value; it belongs to the signer
-	// configuration and is empty in production.
+	// configuration; absent configuration leaves it empty.
 	postAudience string
 	// postQualified stands for attestation verification under the purpose-5 pin.
 	// No pin exists: production leaves it nil and a signed post ends in

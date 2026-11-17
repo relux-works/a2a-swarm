@@ -8,18 +8,19 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/relux-works/a2a-swarm/internal/keymakersigner"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/signedpost"
 )
 
 // Signed posts, send side. `a2a post --sign` asks the one signer seam
 // (signedpost.Signer) and publishes only what the sender verified itself. This
-// version links no signer implementation and has no purpose-5 pin, so in
+// version has an optional native client but no purpose-5 pin, so in
 // production every signed post is refused before any event is sent. A refusal
 // or a send error never becomes an unsigned post.
 
-// signedPostSelection refuses unsupported shapes and a missing signer before
-// any file or network access.
+// signedPostSelection refuses unsupported shapes before reading configuration;
+// a missing signer is then refused before text-file or network access.
 func signedPostSelection(a *App, envelope, voice bool, positionals int) error {
 	switch {
 	case envelope:
@@ -28,9 +29,37 @@ func signedPostSelection(a *App, envelope, voice bool, positionals int) error {
 		return usagef("--sign cannot be combined with --voice")
 	case positionals != 2:
 		return usagef("--sign needs exactly one text argument after the room (quote it: the text is signed byte for byte)")
-	case a.postSigner == nil:
+	}
+	if a.postSigner == nil {
+		return a.configurePostSigner()
+	}
+	return nil
+}
+
+func (a *App) configurePostSigner() error {
+	name, err := a.identity()
+	if err != nil {
+		return err
+	}
+	paths, err := a.pathsFor(name)
+	if err != nil {
+		return err
+	}
+	creds, err := a.credentialMetadata(paths, name)
+	if err != nil {
+		return err
+	}
+	pin := creds.MessageAuthor
+	if pin == nil {
 		return signedpost.Refuse(signedpost.RefuseSignerUnconfigured, "")
 	}
+	if pin.UID == nil || pin.GID == nil || pin.Mode != "0660" {
+		return signedpost.Refuse(signedpost.RefuseSignerUnavailable, "")
+	}
+	a.postSigner = keymakersigner.New(keymakersigner.Endpoint{Path: pin.SocketPath, UID: *pin.UID, GID: *pin.GID, Mode: 0o660})
+	a.postAudience = pin.Audience
+	// No production qualification callback: issuer/currentness verification
+	// remains unavailable, even when a fixture-shaped identity is returned.
 	return nil
 }
 

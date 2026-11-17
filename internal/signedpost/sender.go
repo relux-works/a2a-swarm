@@ -22,10 +22,10 @@ type Identity struct {
 }
 
 // Signer is the one seam behind which a key-holder client plugs in. The sender
-// never holds, reads or derives a key. Sign takes only the exact preimage: the
-// request id is derived inside the implementation from that preimage (see
-// RequestID), so a caller cannot express a different preimage under the same
-// id. The returned key is the key id text the holder signed with, as bytes;
+// never holds, reads or derives a key. Sign takes only the exact preimage. The
+// implementation retains its native request id against that preimage (see
+// RequestID), so a retry cannot change bytes under an existing id.
+// The returned key is the key id text the holder signed with, as bytes;
 // the signature is the raw 64 bytes.
 type Signer interface {
 	Identity(ctx context.Context) (Identity, error)
@@ -236,10 +236,9 @@ func DecodeAttestation(value string) ([]byte, error) {
 const requestIDLabel = "a2a-signed-post-request/1\n"
 
 // RequestID is the request id of a signing request, derived from the exact
-// preimage and from nothing else. A Signer implementation derives its id with
-// this function inside Sign: the same preimage always has the same id, and a
-// different preimage cannot be sent under it. Mapping the value to the
-// holder's wire format belongs to the key-holder client.
+// preimage and from nothing else. It is a local retention fingerprint, not a
+// native wire id. The key-holder client retains a random native id against
+// this fingerprint: equal preimages reuse it throughout their retry lifetime.
 func RequestID(preimage []byte) string {
 	h := sha256.New()
 	h.Write([]byte(requestIDLabel))
@@ -251,7 +250,7 @@ func RequestID(preimage []byte) string {
 type Sender struct {
 	Signer Signer
 	// Audience is the installation's `aud` value. It is part of the signer
-	// configuration; production configures none in this unit.
+	// configuration; absent configuration leaves it empty.
 	Audience string
 	// Qualified stands for the verification of the attestation under the
 	// per-host purpose-5 pin, which is the next unit. No pin exists yet:

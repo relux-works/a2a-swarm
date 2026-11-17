@@ -173,7 +173,8 @@ func loadMatrix(p Paths, getenv Getenv, routingOnly bool) (Matrix, error) {
 
 // Credentials is the per-agent credential file.
 type Credentials struct {
-	AdmissionPolicy string `json:"admission_policy,omitempty"`
+	MessageAuthor   *MessageAuthor `json:"message_author,omitempty"`
+	AdmissionPolicy string         `json:"admission_policy,omitempty"`
 	// waitKeywordsRaw is immutable optional configuration, including invalid data.
 	waitKeywordsRaw waitKeywordValues
 	WaitKeywords    WaitKeywords `json:"wait_keywords,omitempty"`
@@ -188,6 +189,17 @@ type Credentials struct {
 	// VaultSelection is named-only vault-v1 metadata. Absent for every
 	// legacy backend, so legacy serialized metadata keeps its exact bytes.
 	VaultSelection VaultSelectionField `json:"vault_selection,omitzero"`
+}
+
+// MessageAuthor pins one optional native message-author endpoint. Pointer IDs
+// distinguish an explicitly pinned root account/group from a missing pin.
+// Mode is the literal "0660"; no endpoint or identity is discovered implicitly.
+type MessageAuthor struct {
+	SocketPath string  `json:"socket_path"`
+	UID        *uint32 `json:"uid"`
+	GID        *uint32 `json:"gid"`
+	Mode       string  `json:"mode"`
+	Audience   string  `json:"audience"`
 }
 
 // ServerName returns the server part of the user id.
