@@ -177,7 +177,9 @@ func TestRoomAdminTargetAndContext(t *testing.T) {
 					if strings.Contains(r.URL.Path, "#child") {
 						id = adminChild
 					}
-					if tc.mode == "wrong" {
+					// Change only the Space resolution: the child stays distinct and
+					// valid, so no second invalid predicate masks a pin bypass.
+					if tc.mode == "wrong" && id == adminRoom {
 						id = "!other"
 						if tc.badID {
 							id = "!bad space"
