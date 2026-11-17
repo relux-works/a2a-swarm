@@ -2,10 +2,11 @@
 // the one signer seam, the checks that run before anything is signed, and the
 // build, sign, verify and assemble steps on the pinned envelope module.
 //
-// This unit links no signer implementation and dials nothing. In production no
-// signer and no purpose-5 pin are configured, so every signed post is refused
-// before publication; see docs/signed-post-contract.md and the "Signed posts"
-// section of docs/cli.md for what is and is not implemented.
+// This package dials nothing. The CLI configures a native signer only when
+// message_author is present; absent configuration means no signer is configured.
+// No production purpose-5 pin exists, so every signed post is refused before
+// publication; see docs/signed-post-contract.md and the "Signed posts" section
+// of docs/cli.md for what is and is not implemented.
 package signedpost
 
 import "time"

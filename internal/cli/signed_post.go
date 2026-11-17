@@ -36,25 +36,27 @@ func signedPostSelection(a *App, envelope, voice bool, positionals int) error {
 	return nil
 }
 
+const signerConfigurationDetail = "message-author configuration invalid"
+
 func (a *App) configurePostSigner() error {
 	name, err := a.identity()
 	if err != nil {
-		return err
+		return signedpost.Refuse(signedpost.RefuseSignerUnconfigured, signerConfigurationDetail)
 	}
 	paths, err := a.pathsFor(name)
 	if err != nil {
-		return err
+		return signedpost.Refuse(signedpost.RefuseSignerUnconfigured, signerConfigurationDetail)
 	}
 	creds, err := a.credentialMetadata(paths, name)
 	if err != nil {
-		return err
+		return signedpost.Refuse(signedpost.RefuseSignerUnconfigured, signerConfigurationDetail)
 	}
 	pin := creds.MessageAuthor
 	if pin == nil {
 		return signedpost.Refuse(signedpost.RefuseSignerUnconfigured, "")
 	}
 	if pin.UID == nil || pin.GID == nil || pin.Mode != "0660" {
-		return signedpost.Refuse(signedpost.RefuseSignerUnavailable, "")
+		return signedpost.Refuse(signedpost.RefuseSignerUnconfigured, signerConfigurationDetail)
 	}
 	a.postSigner = keymakersigner.New(keymakersigner.Endpoint{Path: pin.SocketPath, UID: *pin.UID, GID: *pin.GID, Mode: 0o660})
 	a.postAudience = pin.Audience
@@ -80,6 +82,9 @@ func (s *session) sendSignedPost(ctx context.Context, roomID, label string, h He
 		return "", errors.New("signed post: event body unavailable")
 	}
 	a := s.app
+	// The two-call seam uses two holder connections: P depends on Identity's
+	// K/T, so Sign refreshes identity on a new connection instead of idling
+	// the first connection beyond the holder's next-frame deadline.
 	sender := signedpost.Sender{Signer: a.postSigner, Audience: a.postAudience, Qualified: a.postQualified, Now: a.Now}
 	sender.CheckSize = func(envelopeBytes, attestationBytes int) error {
 		// Both carried strings use the base64url alphabet, which JSON never

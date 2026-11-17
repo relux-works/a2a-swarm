@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"io"
 	"io/fs"
 	"net"
@@ -21,7 +22,17 @@ import (
 	"github.com/relux-works/swarma-keymaker/messageauthor"
 )
 
-const requestBudget = 2 * time.Second
+const (
+	requestBudget  = 2 * time.Second
+	helloRequestID = "00000000000000000000000000000001"
+)
+
+// A protocol/result error deliberately falls outside the signer's typed seam:
+// the sender classifies it as signer_result_invalid without received details.
+var errResultInvalid = errors.New("signer result invalid")
+
+// Tests may replace entropy without changing the production random source.
+var readRandom = rand.Read
 
 // Endpoint is installed configuration, not discovery or an environment default.
 // Mode must be 0660; UID and GID are the holder and message-author client group.
@@ -50,11 +61,18 @@ var _ signedpost.Signer = (*Client)(nil)
 func New(endpoint Endpoint) *Client { return &Client{endpoint: endpoint} }
 
 func randomID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", signedpost.ErrUnavailable
+	for {
+		var b [16]byte
+		if _, err := readRandom(b[:]); err != nil {
+			return "", signedpost.ErrUnavailable
+		}
+		id := hex.EncodeToString(b[:])
+		// The holder retains by principal and ID; reserve hello's ID even
+		// when the random source happens to draw those exact bytes.
+		if id != helloRequestID {
+			return id, nil
+		}
 	}
-	return hex.EncodeToString(b[:]), nil
 }
 
 func (c *Client) signingID(preimage []byte) (string, error) {
@@ -111,6 +129,12 @@ func (c *Client) Sign(ctx context.Context, preimage []byte) ([]byte, []byte, err
 		return nil, nil, signedpost.ErrUnqualified
 	}
 	preimage = bytes.Clone(preimage)
+	// Parse and admit P before connecting. After the fresh identity arrives,
+	// only its local qualification and byte-equality checks precede sign.
+	key, attestationID, err := preimageIdentity(preimage)
+	if err != nil {
+		return nil, nil, err
+	}
 	id, err := c.signingID(preimage)
 	if err != nil {
 		return nil, nil, err
@@ -132,25 +156,45 @@ func (c *Client) Sign(ctx context.Context, preimage []byte) ([]byte, []byte, err
 	if err != nil {
 		return nil, nil, err
 	}
-	// Reject a changed K or T before asking for a signature under stale input.
-	if _, err := record.AdmitSigner(preimage, record.IdentityPolicy{Check: true, MultiAgent: true, CallerKey: own.Key, CallerAttestationID: own.AttestationID}); err != nil {
-		return nil, nil, signedpost.ErrUnqualified
+	// These are the exact textual K/T bytes admitted from P, not normalized
+	// equivalents. Close on either change; the sender must prepare anew.
+	if own.Key != key || own.AttestationID != attestationID {
+		return nil, nil, signedpost.ErrIdentityChanged
 	}
 	r, err := exchange(ctx, conn, sq, sf)
 	if err != nil {
 		return nil, nil, err
 	}
 	if r.Signature.KeyID != own.Key {
-		return nil, nil, signedpost.ErrUnqualified
+		return nil, nil, errResultInvalid
 	}
 	// VerifySignature owns SHA-256 of the original preimage, exactly once.
 	if record.VerifySignature(own.Key, r.Signature.Signature, preimage) != nil {
-		return nil, nil, signedpost.ErrUnqualified
+		return nil, nil, errResultInvalid
 	}
 	if ctx.Err() != nil {
 		return nil, nil, signedpost.ErrUnavailable
 	}
 	return []byte(r.Signature.KeyID), r.Signature.Signature, nil
+}
+
+func preimageIdentity(preimage []byte) (string, string, error) {
+	_, payload, ok := bytes.Cut(preimage, []byte{'\n'})
+	if !ok {
+		return "", "", signedpost.ErrUnqualified
+	}
+	parsed, err := record.Parse(payload, messageauthor.MaxPreimage, 12)
+	if err != nil {
+		return "", "", signedpost.ErrUnqualified
+	}
+	object, _ := parsed.(map[string]any)
+	body, _ := object["body"].(map[string]any)
+	key, _ := object["key"].(string)
+	attestationID, _ := body["author_attestation"].(string)
+	if _, err := record.AdmitSigner(preimage, record.IdentityPolicy{Check: true, MultiAgent: true, CallerKey: key, CallerAttestationID: attestationID}); err != nil {
+		return "", "", signedpost.ErrUnqualified
+	}
+	return key, attestationID, nil
 }
 
 func identity(ctx context.Context, conn net.Conn, q messageauthor.Request, frame []byte) (signedpost.Identity, error) {
@@ -177,7 +221,10 @@ func request(method messageauthor.Method, id string, preimage []byte) (messageau
 	if err != nil {
 		return messageauthor.Request{}, nil, err
 	}
-	q := messageauthor.Request{ID: id, Method: method, TimeoutMS: 2000, Preimage: preimage}
+	if id == helloRequestID {
+		return messageauthor.Request{}, nil, errResultInvalid
+	}
+	q := messageauthor.Request{ID: id, Method: method, TimeoutMS: 1500, Preimage: preimage}
 	frame, err := messageauthor.EncodeRequestFrame(q)
 	if err != nil {
 		return messageauthor.Request{}, nil, signedpost.ErrUnqualified
@@ -214,7 +261,7 @@ func exchange(ctx context.Context, conn net.Conn, q messageauthor.Request, frame
 	// Context is ours, never inferred from received ID or result members.
 	r, err := messageauthor.DecodeResponseFrame(q, frame)
 	if err != nil {
-		return messageauthor.Response{}, signedpost.ErrUnqualified
+		return messageauthor.Response{}, errResultInvalid
 	}
 	if r.Refusal != nil {
 		return messageauthor.Response{}, mapRefusal(r.Refusal)
@@ -257,7 +304,7 @@ func readFrame(r io.Reader) ([]byte, error) {
 	}
 	n, err := messageauthor.FrameLength(h)
 	if err != nil {
-		return nil, signedpost.ErrUnqualified
+		return nil, errResultInvalid
 	}
 	frame := make([]byte, 4+n)
 	copy(frame, h[:])
@@ -290,10 +337,6 @@ func (c *Client) open(ctx context.Context) (net.Conn, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	helloID, err := randomID()
-	if err != nil {
-		return nil, nil, err
-	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.endpoint.Path)
 	if err != nil {
 		return nil, nil, signedpost.ErrUnavailable
@@ -309,7 +352,7 @@ func (c *Client) open(ctx context.Context) (net.Conn, func(), error) {
 		close()
 		return nil, nil, err
 	}
-	body := []byte(`{"method":"hello","request_id":"` + helloID + `","versions":[1]}`)
+	body := []byte(`{"method":"hello","request_id":"` + helloRequestID + `","versions":[1]}`)
 	frame := make([]byte, 4+len(body))
 	binary.BigEndian.PutUint32(frame, uint32(len(body)))
 	copy(frame[4:], body)
@@ -318,7 +361,7 @@ func (c *Client) open(ctx context.Context) (net.Conn, func(), error) {
 		return nil, nil, signedpost.ErrUnavailable
 	}
 	reply, err := readFrame(conn)
-	want := []byte(`{"request_id":"` + helloID + `","result":{"version":1}}`)
+	want := []byte(`{"request_id":"` + helloRequestID + `","result":{"version":1}}`)
 	if err != nil || !bytes.Equal(reply[4:], want) {
 		close()
 		return nil, nil, signedpost.ErrUnavailable

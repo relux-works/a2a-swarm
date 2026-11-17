@@ -25,6 +25,8 @@ type Identity struct {
 // never holds, reads or derives a key. Sign takes only the exact preimage. The
 // implementation retains its native request id against that preimage (see
 // RequestID), so a retry cannot change bytes under an existing id.
+// A refreshed identity that differs from P returns ErrIdentityChanged, without
+// requesting a signature. The sender then prepares a new identity and preimage.
 // The returned key is the key id text the holder signed with, as bytes;
 // the signature is the raw 64 bytes.
 type Signer interface {
@@ -37,6 +39,8 @@ var (
 	ErrUnconfigured = errors.New("signer not configured")
 	ErrUnavailable  = errors.New("signer unavailable") // retryable
 	ErrUnqualified  = errors.New("signer unqualified")
+	// ErrIdentityChanged requires a new preparation, not a retry of the old P.
+	ErrIdentityChanged = errors.New("signer identity changed")
 )
 
 // RefusedError is a holder refusal that must not be retried. HolderCode is the
@@ -92,7 +96,7 @@ func classify(err error) error {
 		return Refuse(RefuseSignerUnconfigured, "")
 	case errors.Is(err, ErrUnavailable), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return &Refusal{Code: RefuseSignerUnavailable, Retryable: true}
-	case errors.Is(err, ErrUnqualified):
+	case errors.Is(err, ErrUnqualified), errors.Is(err, ErrIdentityChanged):
 		return Refuse(RefuseSignerUnqualified, "")
 	case errors.As(err, &refused):
 		detail := ""
@@ -340,8 +344,57 @@ var errSigningInput = errors.New("signed post: the signing input cannot be built
 // Sign prepares, builds the signing input, asks for one signature, checks the
 // result once and assembles the envelope once. A retryable signer failure is
 // retried with the same preimage, at most MaxSignAttempts in total and only
-// inside the message lifetime. Any error means nothing may be published.
+// inside the message lifetime. A changed identity starts a new preparation,
+// also bounded by MaxSignAttempts, with a new nonce and later iat/exp. Any error
+// means nothing may be published.
 func (s Sender) Sign(ctx context.Context, d Draft) (Signed, error) {
+	for preparation := 1; ; preparation++ {
+		signed, err := s.prepareAndSign(ctx, d)
+		var changed *identityChanged
+		if !errors.As(err, &changed) {
+			return signed, err
+		}
+		if preparation >= MaxSignAttempts {
+			return Signed{}, classify(ErrIdentityChanged)
+		}
+		// Timestamps have second precision. Wait outside any holder connection
+		// rather than reusing old iat/exp or inventing a future issue time.
+		if err := s.waitForNextIssue(ctx, changed.issued); err != nil {
+			return Signed{}, classify(err)
+		}
+	}
+}
+
+type identityChanged struct{ issued time.Time }
+
+func (e *identityChanged) Error() string { return ErrIdentityChanged.Error() }
+func (e *identityChanged) Unwrap() error { return ErrIdentityChanged }
+
+func (s Sender) waitForNextIssue(ctx context.Context, issued time.Time) error {
+	if ctx.Err() != nil {
+		return ErrUnavailable
+	}
+	if delay := issued.Add(time.Second).Sub(s.now()); delay > 0 {
+		if delay > time.Second {
+			return ErrUnavailable
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ErrUnavailable
+		case <-timer.C:
+		}
+	}
+	// A backwards or stalled injected clock must not produce an old/future
+	// issue time or turn a bounded preparation retry into an infinite wait.
+	if !s.now().UTC().Truncate(time.Second).After(issued) {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func (s Sender) prepareAndSign(ctx context.Context, d Draft) (Signed, error) {
 	p, err := s.Prepare(ctx, d.Room, d.Recipients)
 	if err != nil {
 		return Signed{}, err
@@ -404,6 +457,9 @@ func (s Sender) Sign(ctx context.Context, d Draft) (Signed, error) {
 		key, signature, err = s.Signer.Sign(ctx, append([]byte(nil), preimage...))
 		if err == nil {
 			break
+		}
+		if errors.Is(err, ErrIdentityChanged) {
+			return Signed{}, &identityChanged{issued: issued}
 		}
 		refused := classify(err)
 		var r *Refusal

@@ -58,19 +58,12 @@ func nativePostHolder(t *testing.T, refusal string) config.MessageAuthor {
 				if err != nil {
 					return
 				}
-				var hello struct {
-					RequestID string `json:"request_id"`
-				}
-				if json.Unmarshal(f[4:], &hello) != nil {
-					t.Error("hello decode")
+				want := []byte(`{"method":"hello","request_id":"00000000000000000000000000000001","versions":[1]}`)
+				if !bytes.Equal(f, nativePostFrame(want)) {
+					t.Error("hello must match the fixed canonical first frame")
 					return
 				}
-				want := `{"method":"hello","request_id":"` + hello.RequestID + `","versions":[1]}`
-				if string(f[4:]) != want {
-					t.Error("hello bytes")
-					return
-				}
-				if _, err := conn.Write(nativePostFrame([]byte(`{"request_id":"` + hello.RequestID + `","result":{"version":1}}`))); err != nil {
+				if _, err := conn.Write(nativePostFrame([]byte(`{"request_id":"00000000000000000000000000000001","result":{"version":1}}`))); err != nil {
 					return
 				}
 				for {
@@ -82,6 +75,10 @@ func nativePostHolder(t *testing.T, refusal string) config.MessageAuthor {
 					q, err := messageauthor.DecodeRequestFrame(f)
 					if err != nil {
 						t.Error("native request decode")
+						return
+					}
+					if q.ID == "00000000000000000000000000000001" || q.TimeoutMS != 1500 {
+						t.Error("native request ID or timeout")
 						return
 					}
 					r := messageauthor.Response{ID: q.ID}
@@ -136,9 +133,9 @@ func nativePostRead(r io.Reader) ([]byte, error) {
 	return f, err
 }
 
-// Claim: explicit native configuration carries the verified fixture unchanged; missing pins, holder refusals and missing issuer qualification publish nothing.
+// Claim: configured fixture signing preserves event bytes; static errors have fixed unconfigured diagnostics, and every refusal publishes nothing.
 func TestPostSignNativeConfiguration(t *testing.T) {
-	for _, mode := range []string{"valid", "absent", "uid-absent", "gid-absent", "mode-absent", "relative-path", "key_not_enrolled", "message_author_unqualified", "no-purpose-pin"} {
+	for _, mode := range []string{"valid", "absent", "uid-absent", "gid-absent", "mode-absent", "wrong-mode", "metadata-missing", "metadata-malformed", "metadata-mode", "relative-path", "key_not_enrolled", "message_author_unqualified", "no-purpose-pin"} {
 		t.Run(mode, func(t *testing.T) {
 			e, room, _ := signedPostWorld(t)
 			refusal := ""
@@ -153,6 +150,8 @@ func TestPostSignNativeConfiguration(t *testing.T) {
 				pin.GID = nil
 			case "mode-absent":
 				pin.Mode = ""
+			case "wrong-mode":
+				pin.Mode = "0600"
 			case "relative-path":
 				pin.SocketPath = "relative.sock"
 			}
@@ -165,6 +164,17 @@ func TestPostSignNativeConfiguration(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+			switch mode {
+			case "metadata-missing":
+				err = os.Remove(paths.AgentFile("author"))
+			case "metadata-malformed":
+				err = os.WriteFile(paths.AgentFile("author"), []byte("{"), 0o600)
+			case "metadata-mode":
+				err = os.Chmod(paths.AgentFile("author"), 0o644)
+			}
+			if err != nil {
+				t.Fatal("metadata fixture setup")
 			}
 			configure := e.configure
 			e.configure = func(a *App) {
@@ -179,14 +189,18 @@ func TestPostSignNativeConfiguration(t *testing.T) {
 			args := []string{"post", room, "--topic", "alpha", "--to", "recipient", "hello signed"}
 			r := e.as("author", append(args, "--sign")...)
 			if mode != "valid" {
-				want := "signer_unavailable"
-				if mode == "absent" {
-					want = "signer_unconfigured"
+				want := "signer_unconfigured"
+				static := mode != "absent" && mode != "relative-path" && refusal == "" && mode != "no-purpose-pin"
+				if mode == "relative-path" {
+					want = "signer_unavailable"
 				}
 				if refusal != "" || mode == "no-purpose-pin" {
 					want = "signer_unqualified"
 				}
 				r.failsWith(t, ExitError, "signed post refused: "+want)
+				if static && r.stderr != "a2a: signed post refused: signer_unconfigured (message-author configuration invalid)\n" {
+					t.Fatal("static configuration diagnostic not fixed")
+				}
 				if e.eventCount() != before || r.stdout != "" {
 					t.Fatal("native refusal published")
 				}

@@ -1008,8 +1008,10 @@ The selected agent's existing 0600 credential metadata file may contain one opti
 These are placeholders, not installation instructions. Installed host configuration supplies the absolute,
 clean socket path, numeric holder UID, numeric message-author client GID and signed audience. Both numeric pins
 must be explicitly present (zero is allowed only as an explicit pin); mode must be the literal `"0660"`.
-There is no default path, discovery, environment selector, fallback socket or alternate signer. Missing pins or
-another mode refuse with `signer_unavailable`; a missing audience is `signer_unconfigured`.
+There is no default path, discovery, environment selector, fallback socket or alternate signer. Missing UID/GID
+pins, another mode, or failure to load the selected signing metadata refuse with `signer_unconfigured` and the
+fixed detail `message-author configuration invalid`, never received metadata or a raw loader error. A missing
+audience is also `signer_unconfigured`.
 Before writing even a hello byte, the client checks that the immediate parent is a real directory owned by root
 or the holder and not group/other writable, the endpoint is a real socket (not a symlink), its UID/GID/mode match,
 and its kernel peer UID equals the holder UID. The endpoint inode/pins are rechecked after dialing. A mismatch
@@ -1018,18 +1020,28 @@ to one author at the holder. Other platforms fail closed before connecting; Darw
 not supplied here.
 
 Each seam operation uses a fresh connection: `Identity` does hello then identity; `Sign` does hello, a fresh
-identity check, then sign. This fits the existing two-call seam without keeping an idle connection while the
-sender builds its preimage. The exact preimage and request frames are built **before** dialing for `Sign`.
-Hello offers exactly version 1 and accepts only the canonical correlated version-1 reply, within 2 seconds.
+identity check, then sign. A post therefore uses **two connections**: P depends on Identity's K/T, and the
+two-call seam must not leave that first connection idle while the sender builds P. The exact preimage and request
+frames are built **before** dialing for `Sign`.
+Hello's byte-exact canonical first object is
+`{"method":"hello","request_id":"00000000000000000000000000000001","versions":[1]}`, preceded by its BE32 length.
+Every connection uses that same fixed hello ID; hello accepts only its canonical correlated version-1 reply,
+within 2 seconds. Identity and sign request IDs never equal this reserved ID, even if the random source draws it:
+that draw is discarded, and the request encoder also rejects the reserved ID.
 Identity is sent immediately after hello, and sign immediately after the identity check, within the holder's
 2-second next-complete-frame bound. Only one request is outstanding on a connection. Each request has
-`timeout_ms=2000`; one overall deadline bounds each operation (4 seconds for identity, 6 seconds for sign),
+`timeout_ms=1500`, leaving a margin below the client's 2-second read/write budget measured before the write.
+One overall deadline bounds each operation (4 seconds for identity, 6 seconds for sign),
 shortened by caller cancellation/deadline. Framing caps are checked before allocating a response body.
 Native request IDs are 16 bytes from `crypto/rand`, encoded as 32 lowercase hex characters. The client retains
 one random signing ID per exact-preimage fingerprint for 120 seconds, including lost/refused replies; equal
 caller retries reuse it. Its bounded 64-entry table refuses capacity rather than evicting live IDs. This table
 is process-local, not crash recovery or durable holder retention. The client never retries a sign itself.
 A retryable refusal or a lost reply does **not** establish that no signature exists.
+Each sign retry opens a **new connection**: the fixed-ID hello, a new random-ID identity request, the K/T
+byte-equality check, then the **same sign ID and byte-identical P**. The holder can return its retained signature
+instead of signing twice. Every non-retry identity or sign request gets a fresh random ID; only hello's fixed ID
+repeats unconditionally.
 
 The sender's assembly and publication remain:
 
@@ -1049,7 +1061,17 @@ The sender's assembly and publication remain:
    at most twice more and only before `exp`.
 5. The native client requires the returned key to equal its same-operation identity key and verifies the
    signature with the pinned envelope module over SHA-256 of the unchanged preimage (hashed once, not a
-   caller-supplied digest). A changed identity K/T, returned key or invalid signature is `signer_unqualified`.
+   caller-supplied digest). A different returned key or an invalid signature is `signer_result_invalid`.
+   Before dialing connection 2, the client parses and admits P and prepares both request frames. After hello,
+   it obtains a fresh identity and compares K and T **byte for byte** with the K and T inside P, then sends sign
+   immediately after local qualification/equality checks, with no intervening I/O or wait. If either differs, it
+   closes **without sending sign** and returns `ErrIdentityChanged`. The sender starts the same preparation path
+   used after expiry: a newly qualified identity, new nonce, later `iat`/`exp`, new P and new native sign ID.
+   Identity-change restarts are bounded by `MaxSignAttempts` (3); an identity that keeps changing ends in
+   `signer_unqualified`, with no publication. Because timestamps have second precision, a restart may wait until
+   the next issue second **outside** all holder connections; cancellation or a stalled/backwards clock refuses
+   as unavailable rather than reusing old timestamps or inventing future ones.
+   The sender independently checks the result against its prepared identity.
    The envelope is assembled once (`id` = the module's content id of the body) and the shared
    completed-post checker verifies its signature over the exact preimage once, along with its delivery,
    time and attestation binding, before it can be sent in `works.relux.swarm.envelope`, beside the
@@ -1069,18 +1091,20 @@ host roster decides as before. The carried issuer is not verified: no purpose-5 
   one of `signer_unconfigured`, `signer_unavailable`, `signer_unqualified`, `signer_refused`,
   `signer_result_invalid`, `recipients_too_many`. A detail is fixed local text or the holder's code name,
   never a key, attestation bytes or received text.
-  - `signer_unconfigured`: no endpoint configuration, or no audience, is configured; no holder request.
+  - `signer_unconfigured`: absent endpoint configuration or audience, missing numeric pins, a wrong configured
+    mode, or a signing-metadata load failure; no holder request.
   - `recipients_too_many`: more than 64 recipients, a duplicate recipient, a recipient id over 255 bytes or
     not a printable ASCII full MXID, or a signing input over 24576 bytes. The recipient rule is decided before any
     signer call; the list is never truncated or split.
   - `signer_unavailable` (retryable), `signer_refused` (not retryable): the signer's own failure, mapped to
     this closed vocabulary.
-  - `signer_result_invalid`: an error outside the signer's typed vocabulary, or failure of the sender's
-    independent final key/signature check. The native client itself reports invalid holder results as
-    `signer_unqualified`.
-  - `signer_unqualified`: the author key is not a well-formed `bip340:` key, the attestation id is not a
-    `sha256:` content id, the attestation is empty, over 8192 bytes, malformed or has another content id,
-    or (always, as released) no purpose-5 pin is configured.
+  - `signer_result_invalid`: an undecodable, uncorrelated or wrong-method reply, an unknown holder code,
+    invalid response framing/schema, a different returned key, a signature that fails verification, or another
+    error outside the signer's typed vocabulary. Both the client and the sender reject invalid signature results.
+  - `signer_unqualified`: a decoded identity fails local K/T/A qualification or attestation-content-ID checks,
+    an identity keeps changing across bounded re-preparations, the holder reports unenrolled/unqualified, or (always, as released)
+    no purpose-5 pin is configured. K/T/A encodings or bounds rejected by the wire codec instead constitute an
+    undecodable holder reply and are `signer_result_invalid`.
 - **Usage errors** (exit 2): `--sign` with `--envelope`, with `--voice`, with `--operation-id`, or without
   exactly one text argument.
 - **Daemon route.** The local daemon's request allowlist does not admit `--sign`; such a request is refused
@@ -1089,8 +1113,11 @@ host roster decides as before. The carried issuer is not verified: no purpose-5 
 ##### Native holder refusal mapping
 
 The codec checks its closed vocabulary, exact retry bit, schema, method and outstanding request ID before
-mapping. Unknown codes, inconsistent bits, malformed/extra/missing fields, wrong correlations and invalid
-K/T/A/signature encodings are `ErrUnqualified` -> `signer_unqualified`, with no publication. Transport loss,
+mapping. Unknown codes, inconsistent bits, malformed/extra/missing fields, wrong correlations, wrong-method
+results, zero/over-cap response frame headers and K/T/A/signature encodings rejected by the codec are fixed
+non-seam errors -> `signer_result_invalid`. Different returned K or mathematically invalid S have the same result.
+Local checks on an admitted identity, including malformed attestation records or a content-ID mismatch, remain
+`ErrUnqualified` -> `signer_unqualified`. Nothing is published on any failure. Transport loss,
 deadline/cancellation, endpoint pins and failed hello are `ErrUnavailable` -> `signer_unavailable` (retryable).
 The mapper consults the decoded **retryable bit first**, never the code name to infer retryability. The
 codec currently admits exactly the bits below. Every code is listed; grouped rows share exactly one mapping.
@@ -1109,7 +1136,7 @@ attestation appears in a diagnostic.
 
 The four framing/canonical refusal codes carry null IDs as required by the codec. These remain nonretryable
 refusals, not correlated successful results. All other nonnull IDs must match our outstanding request.
-Existing sender retry bounds remain unchanged: identical P and retained native ID on a retryable signing
+Existing per-preimage signing and carrier retry bounds remain unchanged: identical P and retained native ID on a retryable signing
 failure before `exp`, identical assembled event bytes on a carrier retry before `exp`; new nonce/iat/exp,
 preimage and native ID after expiry. A refreshed T cannot be substituted under old signed bytes.
 
@@ -1118,7 +1145,6 @@ Not in this version:
 - any real key, live signing coordinator, enrollment or durable cross-process retry recovery;
 - the attestation's own verification under the per-host purpose-5 pin: only its content id is compared.
   Until that verification exists no signed post is published outside tests;
-- a configuration surface for the signer and the audience;
 - the roster writer, and refusing unsigned senders.
 
 The receive side of a signed post (room-addressed recipients, metadata binding, the labels

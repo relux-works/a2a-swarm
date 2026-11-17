@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,27 +56,42 @@ func fixtureIdentity(t *testing.T) signedpost.Identity {
 }
 
 type holderOptions struct {
-	hello     string
-	stage     messageauthor.Method
-	change    func(messageauthor.Request, []byte) []byte
-	signature string
-	refusal   *messageauthor.Refusal
-	wait      time.Duration
+	hello         string
+	stage         messageauthor.Method
+	change        func(messageauthor.Request, []byte) []byte
+	signature     string
+	refusal       *messageauthor.Refusal
+	wait          time.Duration
+	identityAt    func(int) signedpost.Identity
+	loseFirstSign bool
+	busyFirstSign bool
+}
+
+type retainedSignature struct {
+	preimage []byte
+	result   *messageauthor.SignatureResult
 }
 
 type fakeHolder struct {
-	t           *testing.T
-	endpoint    Endpoint
-	listener    *net.UnixListener
-	identity    signedpost.Identity
-	opts        holderOptions
-	mu          sync.Mutex
-	requests    []messageauthor.Request
-	connections int
-	helloBytes  int
-	err         error
-	wg          sync.WaitGroup
-	done        chan struct{}
+	t                  *testing.T
+	endpoint           Endpoint
+	listener           *net.UnixListener
+	identity           signedpost.Identity
+	opts               holderOptions
+	mu                 sync.Mutex
+	requests           []messageauthor.Request
+	requestConnections []int
+	identityCount      int
+	signAttempts       int
+	signatures         int
+	retained           map[string]retainedSignature
+	connections        int
+	helloBytes         int
+	hellos             int
+	helloRead          chan struct{}
+	err                error
+	wg                 sync.WaitGroup
+	done               chan struct{}
 }
 
 func startHolder(t *testing.T, opts holderOptions) *fakeHolder {
@@ -94,7 +110,7 @@ func startHolder(t *testing.T, opts holderOptions) *fakeHolder {
 	if err := os.Chmod(path, 0o660); err != nil {
 		t.Fatal(err)
 	}
-	h := &fakeHolder{t: t, listener: l, identity: fixtureIdentity(t), opts: opts, done: make(chan struct{}), endpoint: Endpoint{Path: path, UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Mode: 0o660}}
+	h := &fakeHolder{t: t, listener: l, identity: fixtureIdentity(t), opts: opts, retained: make(map[string]retainedSignature), done: make(chan struct{}), helloRead: make(chan struct{}, 32), endpoint: Endpoint{Path: path, UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Mode: 0o660}}
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
@@ -105,9 +121,10 @@ func startHolder(t *testing.T, opts holderOptions) *fakeHolder {
 			}
 			h.mu.Lock()
 			h.connections++
+			connection := h.connections
 			h.mu.Unlock()
 			h.wg.Add(1)
-			go func() { defer h.wg.Done(); defer c.Close(); h.serve(c) }()
+			go func() { defer h.wg.Done(); defer c.Close(); h.serve(c, connection) }()
 		}
 	}()
 	t.Cleanup(func() {
@@ -132,32 +149,25 @@ func (h *fakeHolder) fail(err error) {
 	}
 }
 
-func (h *fakeHolder) serve(c net.Conn) {
+func (h *fakeHolder) serve(c net.Conn, connection int) {
 	c.SetDeadline(time.Now().Add(3 * time.Second))
-	frame, err := readFrame(c)
+	counted := &readCounter{Reader: c}
+	frame, err := readFrame(counted)
 	h.mu.Lock()
-	h.helloBytes += len(frame)
+	h.helloBytes += counted.n
 	h.mu.Unlock()
+	h.helloRead <- struct{}{}
 	if err != nil {
 		return
 	} // Pin refusals may close without sending any bytes.
-	var hello struct {
-		Method, RequestID string
-		Versions          []int
-	}
-	var o map[string]json.RawMessage
-	if json.Unmarshal(frame[4:], &o) != nil || len(o) != 3 {
-		h.fail(errors.New("hello schema"))
+	want := []byte(`{"method":"hello","request_id":"00000000000000000000000000000001","versions":[1]}`)
+	if !bytes.Equal(frame, wireFrame(want)) {
+		h.fail(errors.New("hello must match the fixed canonical first frame"))
 		return
 	}
-	json.Unmarshal(o["method"], &hello.Method)
-	json.Unmarshal(o["request_id"], &hello.RequestID)
-	json.Unmarshal(o["versions"], &hello.Versions)
-	want := `{"method":"hello","request_id":"` + hello.RequestID + `","versions":[1]}`
-	if hello.Method != "hello" || !nativeID(hello.RequestID) || string(frame[4:]) != want {
-		h.fail(errors.New("hello must be canonical and offer only version 1"))
-		return
-	}
+	h.mu.Lock()
+	h.hellos++
+	h.mu.Unlock()
 	if h.opts.hello == "silent" {
 		select {
 		case <-h.done:
@@ -165,14 +175,14 @@ func (h *fakeHolder) serve(c net.Conn) {
 		}
 		return
 	}
-	reply := `{"request_id":"` + hello.RequestID + `","result":{"version":1}}`
+	reply := `{"request_id":"00000000000000000000000000000001","result":{"version":1}}`
 	switch h.opts.hello {
 	case "refused":
-		reply = `{"error":{"code":"version_unsupported","retryable":false},"request_id":"` + hello.RequestID + `"}`
+		reply = `{"error":{"code":"version_unsupported","retryable":false},"request_id":"00000000000000000000000000000001"}`
 	case "version":
 		reply = strings.Replace(reply, `"version":1`, `"version":2`, 1)
 	case "id":
-		reply = strings.Replace(reply, hello.RequestID, strings.Repeat("a", 32), 1)
+		reply = strings.Replace(reply, "00000000000000000000000000000001", strings.Repeat("a", 32), 1)
 	case "extra":
 		reply = strings.Replace(reply, `"version":1`, `"version":1,"x":0`, 1)
 	case "noncanonical":
@@ -181,6 +191,7 @@ func (h *fakeHolder) serve(c net.Conn) {
 	if writeFrame(c, wireFrame([]byte(reply))) != nil {
 		return
 	}
+	own := h.identity
 	for {
 		// Enforce the holder's NEXT-complete-frame rule after hello and identity.
 		c.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -193,12 +204,19 @@ func (h *fakeHolder) serve(c net.Conn) {
 			h.fail(errors.New("request rejected by real codec"))
 			return
 		}
-		if !nativeID(q.ID) || q.TimeoutMS < 1 || q.TimeoutMS > 2000 {
+		if !nativeID(q.ID) || q.ID == "00000000000000000000000000000001" || q.TimeoutMS != 1500 {
 			h.fail(errors.New("request bounds"))
 			return
 		}
 		h.mu.Lock()
 		h.requests = append(h.requests, q)
+		h.requestConnections = append(h.requestConnections, connection)
+		if q.Method == messageauthor.IdentityMethod {
+			h.identityCount++
+		} else {
+			h.signAttempts++
+		}
+		identityNumber, signAttempt := h.identityCount, h.signAttempts
 		h.mu.Unlock()
 		if h.opts.wait > 0 {
 			select {
@@ -214,34 +232,61 @@ func (h *fakeHolder) serve(c net.Conn) {
 				r.ID = ""
 			}
 		} else if q.Method == messageauthor.IdentityMethod {
-			v := h.identity
-			r.Identity = &messageauthor.IdentityResult{KeyID: v.Key, AuthorAttestation: v.AttestationID, Attestation: v.Attestation}
+			if h.opts.identityAt != nil {
+				own = h.opts.identityAt(identityNumber)
+			}
+			r.Identity = &messageauthor.IdentityResult{KeyID: own.Key, AuthorAttestation: own.AttestationID, Attestation: own.Attestation}
+		} else if h.opts.busyFirstSign && signAttempt == 1 {
+			r.Refusal = &messageauthor.Refusal{Code: "busy", Retryable: true}
 		} else {
-			if _, err := record.AdmitSigner(q.Preimage, record.IdentityPolicy{Check: true, MultiAgent: true, CallerKey: fixtureKey, CallerAttestationID: fixtureT}); err != nil {
+			if _, err := record.AdmitSigner(q.Preimage, record.IdentityPolicy{Check: true, MultiAgent: true, CallerKey: own.Key, CallerAttestationID: own.AttestationID}); err != nil {
 				h.fail(errors.New("fixture holder admission"))
 				return
 			}
-			p := bytes.Clone(q.Preimage)
-			operand := bytes.Repeat([]byte{3}, 32)
-			if h.opts.signature == "preimage" {
-				p = append(p, '\n')
+			h.mu.Lock()
+			retained, exists := h.retained[q.ID]
+			h.mu.Unlock()
+			if exists {
+				if !bytes.Equal(retained.preimage, q.Preimage) {
+					h.fail(errors.New("retained ID changed preimage"))
+					return
+				}
+				r.Signature = retained.result
+			} else {
+				p := bytes.Clone(q.Preimage)
+				operand := bytes.Repeat([]byte{3}, 32)
+				if own.Key == alternateKey {
+					operand = make([]byte, 32)
+					operand[31] = 3
+				}
+				if h.opts.signature == "preimage" {
+					p = append(p, '\n')
+				}
+				if h.opts.signature == "other-key" {
+					operand = make([]byte, 32)
+					operand[31] = 3
+				}
+				key, _ := btcec.PrivKeyFromBytes(operand)
+				digest := sha256.Sum256(p)
+				sig, err := schnorr.Sign(key, digest[:])
+				if err != nil {
+					h.fail(err)
+					return
+				}
+				k := own.Key
+				if h.opts.signature == "returned-key" {
+					k = alternateKey
+				}
+				r.Signature = &messageauthor.SignatureResult{KeyID: k, Signature: sig.Serialize()}
+				h.mu.Lock()
+				h.signatures++
+				h.retained[q.ID] = retainedSignature{preimage: bytes.Clone(q.Preimage), result: r.Signature}
+				h.mu.Unlock()
 			}
-			if h.opts.signature == "other-key" {
-				operand = make([]byte, 32)
-				operand[31] = 3
-			}
-			key, _ := btcec.PrivKeyFromBytes(operand)
-			digest := sha256.Sum256(p)
-			sig, err := schnorr.Sign(key, digest[:])
-			if err != nil {
-				h.fail(err)
-				return
-			}
-			k := fixtureKey
-			if h.opts.signature == "returned-key" {
-				k = alternateKey
-			}
-			r.Signature = &messageauthor.SignatureResult{KeyID: k, Signature: sig.Serialize()}
+		}
+		// Model a holder that retained its signature but lost the reply.
+		if h.opts.loseFirstSign && q.Method == messageauthor.SignMethod && signAttempt == 1 {
+			return
 		}
 		out, err := messageauthor.EncodeResponseFrame(q, r)
 		if err != nil {
@@ -293,19 +338,6 @@ func mutateResponse(change func(map[string]any)) func(messageauthor.Request, []b
 	}
 }
 
-func afterFirstIdentity(field, value string) func(messageauthor.Request, []byte) []byte {
-	var mu sync.Mutex
-	count := 0
-	return mutateResponse(func(o map[string]any) {
-		mu.Lock()
-		defer mu.Unlock()
-		count++
-		if count > 1 {
-			o["result"].(map[string]any)[field] = value
-		}
-	})
-}
-
 func post(t *testing.T, c *Client, want string) ([]signedpost.Signed, error) {
 	t.Helper()
 	var sent []signedpost.Signed
@@ -321,7 +353,7 @@ func post(t *testing.T, c *Client, want string) ([]signedpost.Signed, error) {
 	return sent, err
 }
 
-// Claim: a valid holder signs the exact sender preimage and preserves the envelope and raw attestation in one publication.
+// Claim: one post uses two fixed-ID hellos and publishes the exact verified preimage's envelope and unchanged raw attestation.
 func TestClientPublishesVerifiedFixture(t *testing.T) {
 	h := startHolder(t, holderOptions{})
 	sent, _ := post(t, New(h.endpoint), "")
@@ -345,8 +377,8 @@ func TestClientPublishesVerifiedFixture(t *testing.T) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.connections != 2 || len(h.requests) != 3 {
-		t.Fatalf("connections/requests: %d/%d", h.connections, len(h.requests))
+	if h.connections != 2 || h.hellos != 2 || len(h.requests) != 3 {
+		t.Fatalf("connections/fixed hellos/requests: %d/%d/%d", h.connections, h.hellos, len(h.requests))
 	}
 	if h.requests[0].Method != messageauthor.IdentityMethod || h.requests[1].Method != messageauthor.IdentityMethod || h.requests[2].Method != messageauthor.SignMethod || !bytes.Equal(h.requests[2].Preimage, p) {
 		t.Fatal("operation order or preimage")
@@ -374,7 +406,7 @@ func TestClientHelloRefusals(t *testing.T) {
 	}
 }
 
-// Claim: correlation, method, schema, identity and mathematical signature failures publish nothing beside a valid control.
+// Claim: undecodable or invalid signature results are result_invalid, local identity failures are unqualified, and neither publishes beside valid controls.
 func TestClientResponseRefusals(t *testing.T) {
 	maxAttestation := fixtureIdentity(t).Attestation
 	maxAttestation = append(maxAttestation, bytes.Repeat([]byte{' '}, 8192-len(maxAttestation))...)
@@ -404,8 +436,6 @@ func TestClientResponseRefusals(t *testing.T) {
 		})}},
 		{"malformed-attestation", holderOptions{stage: messageauthor.IdentityMethod, change: mutateResponse(func(o map[string]any) { o["result"].(map[string]any)["attestation"] = "e30" })}},
 		{"key-shape", holderOptions{stage: messageauthor.IdentityMethod, change: mutateResponse(func(o map[string]any) { o["result"].(map[string]any)["key_id"] = "bip340:" + strings.Repeat("_", 43) })}},
-		{"identity-key-changed", holderOptions{stage: messageauthor.IdentityMethod, change: afterFirstIdentity("key_id", alternateKey)}},
-		{"identity-attestation-changed", holderOptions{stage: messageauthor.IdentityMethod, change: afterFirstIdentity("author_attestation", "sha256:"+strings.Repeat("0", 64))}},
 		{"short-signature", holderOptions{stage: messageauthor.SignMethod, change: mutateResponse(func(o map[string]any) {
 			o["result"].(map[string]any)["signature"] = base64.RawURLEncoding.EncodeToString(make([]byte, 63))
 		})}},
@@ -428,12 +458,76 @@ func TestClientResponseRefusals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := startHolder(t, tc.opts)
-			want := "signer_unqualified"
-			if tc.name == "valid" || tc.name == "max-attestation" {
+			want := "signer_result_invalid"
+			switch tc.name {
+			case "valid", "max-attestation":
 				want = ""
+			case "attestation-id", "malformed-attestation":
+				want = "signer_unqualified"
 			}
 			post(t, New(h.endpoint), want)
 		})
+	}
+}
+
+// Claim: the client returns no key or signature for another key or preimage, classifies each as result_invalid, and publishes nothing beside a signed control.
+func TestClientRejectsInvalidSignatureResults(t *testing.T) {
+	control := startHolder(t, holderOptions{})
+	post(t, New(control.endpoint), "")
+	control.mu.Lock()
+	preimage := bytes.Clone(control.requests[2].Preimage)
+	control.mu.Unlock()
+	for _, mode := range []string{"returned-key", "preimage", "other-key"} {
+		t.Run(mode, func(t *testing.T) {
+			h := startHolder(t, holderOptions{signature: mode})
+			c := New(h.endpoint)
+			key, signature, err := c.Sign(context.Background(), preimage)
+			if !errors.Is(err, errResultInvalid) || key != nil || signature != nil {
+				t.Fatal("invalid signature result escaped the client")
+			}
+			post(t, c, "signer_result_invalid")
+		})
+	}
+}
+
+// Claim: a reserved entropy draw is discarded, identity/sign frames exclude the fixed hello ID, and valid requests carry timeout_ms 1500.
+func TestClientRequestIDsExcludeHello(t *testing.T) {
+	original := readRandom
+	t.Cleanup(func() { readRandom = original })
+	reserved, err := hex.DecodeString("00000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	draws := 0
+	readRandom = func(p []byte) (int, error) {
+		draws++
+		if draws == 1 {
+			copy(p, reserved)
+		} else {
+			for i := range p {
+				p[i] = byte(draws)
+			}
+		}
+		return len(p), nil
+	}
+	id, err := randomID()
+	if err != nil || draws != 2 || !nativeID(id) || id == "00000000000000000000000000000001" {
+		t.Fatal("reserved entropy draw was not discarded")
+	}
+	seen := map[string]bool{id: true}
+	for _, method := range []messageauthor.Method{messageauthor.IdentityMethod, messageauthor.SignMethod} {
+		q, frame, err := request(method, "", nil)
+		if err != nil || q.ID == "00000000000000000000000000000001" || !nativeID(q.ID) || seen[q.ID] {
+			t.Fatal("request ID not fresh or reserved", err)
+		}
+		seen[q.ID] = true
+		decoded, err := messageauthor.DecodeRequestFrame(frame)
+		if err != nil || decoded.ID != q.ID || decoded.TimeoutMS != 1500 || time.Duration(decoded.TimeoutMS)*time.Millisecond >= requestBudget {
+			t.Fatal("request timing margin", err)
+		}
+		if q, frame, err := request(method, "00000000000000000000000000000001", nil); err == nil || q.ID != "" || frame != nil {
+			t.Fatal("reserved request ID encoded")
+		}
 	}
 }
 
@@ -473,12 +567,15 @@ func TestClientRefusalMapping(t *testing.T) {
 	}
 }
 
-// Claim: path, socket, ownership, mode, parent and kernel-peer pin failures send no hello bytes and publish nothing beside a pinned control.
+// Claim: filesystem pin failures refuse before dialing, and a post-dial kernel peer mismatch sends zero bytes; neither publishes beside a pinned control.
 func TestClientEndpointPins(t *testing.T) {
-	for _, mode := range []string{"valid", "relative", "missing", "regular", "owner", "group", "mode", "configured-mode", "parent-writable", "symlink", "parent-symlink"} {
+	for _, mode := range []string{"valid", "relative", "missing", "regular", "owner", "peer", "group", "mode", "configured-mode", "parent-writable", "symlink", "parent-symlink"} {
 		t.Run(mode, func(t *testing.T) {
 			h := startHolder(t, holderOptions{})
 			e := h.endpoint
+			ownership, peer := lookupOwnership, lookupPeerUID
+			t.Cleanup(func() { lookupOwnership, lookupPeerUID = ownership, peer })
+			parentLookups, socketLookups, peerLookups := 0, 0, 0
 			switch mode {
 			case "relative":
 				e.Path = "relative.sock"
@@ -490,7 +587,21 @@ func TestClientEndpointPins(t *testing.T) {
 					t.Fatal("regular file")
 				}
 			case "owner":
-				e.UID++
+				lookupOwnership = func(st os.FileInfo) (uint32, uint32, bool) {
+					uid, gid, ok := ownership(st)
+					if st.Mode()&os.ModeSocket != 0 {
+						socketLookups++
+						return uid + 1, gid, ok
+					}
+					parentLookups++
+					return uid, gid, ok
+				}
+			case "peer":
+				lookupPeerUID = func(conn net.Conn) (uint32, bool) {
+					peerLookups++
+					uid, ok := peer(conn)
+					return uid + 1, ok
+				}
 			case "group":
 				e.GID++
 			case "mode":
@@ -522,9 +633,26 @@ func TestClientEndpointPins(t *testing.T) {
 				want = ""
 			}
 			post(t, New(e), want)
+			if mode == "peer" {
+				select {
+				case <-h.helloRead:
+				case <-time.After(time.Second):
+					t.Fatal("holder did not observe the closed connection")
+				}
+				if peerLookups != 1 {
+					t.Fatal("peer lookup not isolated")
+				}
+			}
+			if mode == "owner" && (parentLookups == 0 || socketLookups == 0) {
+				t.Fatal("socket owner negative did not pass the parent check")
+			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if mode != "valid" && (h.helloBytes != 0 || h.connections != 0) {
+			if mode == "peer" {
+				if h.connections != 1 || h.helloBytes != 0 {
+					t.Fatal("peer pin did not refuse after dial with zero bytes")
+				}
+			} else if mode != "valid" && (h.helloBytes != 0 || h.connections != 0) {
 				t.Fatal("endpoint pin failed after connect/hello")
 			}
 		})
@@ -653,6 +781,17 @@ func TestClientFrameIO(t *testing.T) {
 			t.Fatal("truncated input")
 		}
 	}
+}
+
+type readCounter struct {
+	io.Reader
+	n int
+}
+
+func (r *readCounter) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.n += n
+	return n, err
 }
 
 type shortWriter struct{ w io.Writer }
