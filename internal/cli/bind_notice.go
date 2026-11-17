@@ -154,6 +154,17 @@ func noticeText(n config.OwnNoticeObservation) string {
 	return "own notice clear (last observation or turn)"
 }
 
+// One recorded process as status shows it: its pid and recorded start,
+// and whether that pid is alive now with that same start. The owner also
+// names its recorded session and host. Observation only; never authority.
+type bindingProcessStatus struct {
+	PID       int    `json:"pid"`
+	Start     string `json:"start"`
+	SessionID string `json:"session_id,omitempty"`
+	Host      string `json:"host,omitempty"`
+	Alive     bool   `json:"alive"`
+}
+
 func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	fs := newFlagSet("bind status")
 	asJSON := fs.Bool("json", false, "recorded notice observation as JSON")
@@ -182,6 +193,11 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		publication = st.Terminal.NoticePublication
 	}
 	noticeError := ""
+	var ownerProcess, consumerProcess *bindingProcessStatus
+	if b := st.Terminal; b != nil {
+		ownerProcess = &bindingProcessStatus{PID: b.OwnerPID, Start: b.OwnerBirth, SessionID: b.SessionID, Host: b.Host, Alive: bindingProcessAlive(ctx, b.OwnerPID, b.OwnerBirth)}
+		consumerProcess = &bindingProcessStatus{PID: b.DaemonPID, Start: b.DaemonBirth, Alive: bindingProcessAlive(ctx, b.DaemonPID, b.DaemonBirth)}
+	}
 	var readiness *terminalReadinessStatus
 	var sendRefusal *config.TerminalSendRefusal
 	var recovery *config.TerminalRecovery
@@ -244,7 +260,9 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			Refresh             string                      `json:"refresh"`
 			PrincipalError      string                      `json:"principal_error,omitempty"`
 			StateWriterWarnings []stateWriterWarning        `json:"state_writer_warnings,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, stateWriters})
+			Owner               *bindingProcessStatus       `json:"owner,omitempty"`
+			Consumer            *bindingProcessStatus       `json:"consumer,omitempty"`
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, stateWriters, ownerProcess, consumerProcess})
 	}
 	for _, warning := range stateWriters {
 		a.printf("warning: %s: %s\n", warning.Source, warning.Detail)
@@ -275,6 +293,8 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		return nil
 	}
 	b := st.Terminal
+	a.printf("owner pid=%d start=%q session=%s host=%s alive=%t\n", ownerProcess.PID, ownerProcess.Start, sanitizeLine(ownerProcess.SessionID), sanitizeLine(ownerProcess.Host), ownerProcess.Alive)
+	a.printf("consumer pid=%d start=%q alive=%t\n", consumerProcess.PID, consumerProcess.Start, consumerProcess.Alive)
 	a.printf("%s generation=%s pid=%d stopped=%t outcome=%s; %s; publication=%s; system-report=%s\n", s.name, b.Generation, b.DaemonPID, b.Stopped, b.Outcome, noticeText(n), publication, terminalNoticeReportStatus(b))
 	return nil
 }

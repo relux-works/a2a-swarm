@@ -151,7 +151,8 @@ func awaitBinding(t *testing.T, p config.Paths, test func(config.State) bool) co
 
 // Public CLI integration uses a fake homeserver and a newly created private
 // tmux server. It proves detached bind survives the command, dedups without
-// receipts, resumes after transient sync failure, refuses duplicates, and
+// receipts, resumes after transient sync failure, reports a same-session
+// duplicate bind as already bound without restarting it, and
 // unbind retires/stops its own PID without dropping mail. No real credentials,
 // provider sessions, hooks or Keychain commands participate.
 func TestBindDetachedLifecycle(t *testing.T) {
@@ -275,7 +276,13 @@ func TestBindDetachedLifecycle(t *testing.T) {
 			t.Fatalf("detached consumer lacks %s", kv)
 		}
 	}
-	request(2).failsWith(t, ExitError, "already bound")
+	duplicate := request(2).ok(t)
+	if !strings.Contains(duplicate.stdout, "already bound (generation ") {
+		t.Fatalf("same-session duplicate bind did not report already bound: %q", duplicate.stdout)
+	}
+	if after := e.state("alice").Terminal; after.Generation != st.Terminal.Generation || after.DaemonPID != pid {
+		t.Fatalf("same-session duplicate bind restarted the binding: %+v", after)
+	}
 	if holdBindFixtureControl(t, dir, owned) {
 		return
 	}

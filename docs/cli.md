@@ -2666,10 +2666,13 @@ a2a unbind
 
 If `bind status` shows `unbound` in your tmux session before another hook runs, use the explicit bind above once from that session.
 
-Session selection keeps explicit `--session-id`, then `A2A_SESSION_ID`, then `CODEX_THREAD_ID`; a Claude bind/unbind can also use
-`CLAUDE_CODE_SESSION_ID` when those environment selectors are absent. A conflicting current selector still refuses an explicit foreign ID.
-Malformed values do not enable a lower-priority bind selector. Native Claude commands use that same valid session ID for the lease,
-so a hook-owned lease is shared rather than stolen; foreign live lease holders still refuse. No environment value bypasses target/ancestry checks.
+Session selection keeps explicit `--session-id`, then `A2A_SESSION_ID`, then `CODEX_THREAD_ID`; when those environment selectors are
+absent, bind/unbind use the runtime's own native session source: `CLAUDE_CODE_SESSION_ID` for `--runtime claude` and `MUSE_SESSION_ID`
+for `--runtime muse` (hooks always supply their JSON session ID). A conflicting current selector still refuses an explicit foreign ID.
+Malformed values do not enable a lower-priority bind selector. A current session that cannot be established from any source is unknown:
+it is never treated as the recorded session, and unbind refuses it as unknown rather than as another session. Native Claude commands use
+that same valid session ID for the lease, so a hook-owned lease is shared rather than stolen; foreign live lease holders still refuse. No
+environment value bypasses target/ancestry checks.
 
 `TMUX` and `TMUX_PANE` select this invocation's own absolute socket and exact `%N` pane. Explicit `--socket` / `--pane` must match those values.
 A Codex tool shell normally has neither variable: Codex's shell environment policy does not pass the pane's tmux variables to tool commands,
@@ -2685,7 +2688,17 @@ own environment. Use this order:
 3. Otherwise the launcher may admit `TMUX` and `TMUX_PANE` to tool shells through Codex `shell_environment_policy`. That configuration belongs
    to the profile/launcher custodian; a2a does not edit it.
 The owner must be an ancestor of the invoking command and a descendant of the pane process. Socket inode, pane process birth and owner process
-birth are pinned. A replacement socket or confirmed dead/recycled PID stops the consumer; unavailable observations retain mail and back off. Duplicate binding refuses; unbind
+birth are pinned. A replacement socket or confirmed dead/recycled PID stops the consumer; unavailable observations retain mail and back off. A second bind from the
+recorded binding's own live session (same session, same host, recorded owner and consumer alive) reports `already bound (generation G, readiness R)` from the
+stored readiness and exits 0 without restarting anything; a bind from another live session refuses as before. `bind status` also prints the recorded owner
+(`owner pid=PID start="START" session=SESSION host=HOST alive=BOOL`) and consumer (`consumer pid=PID start="START" alive=BOOL`), where alive means the pid
+exists now with the recorded start; `--json` carries the same facts as `owner`/`consumer` objects. A new session of the same identity can take over a binding
+whose recorded owner is gone (pid absent, or present with another start) with `a2a bind ... --take-over`: it is admitted only when the recorded consumer is
+also gone or stops within the same bounded wait used for a confirmed-dead prior owner, and it then records the previous generation as taken over by this
+session in State (`terminal.taken_over`) and as a `taken_over generation=... session=... by=... at=...` line in `binding.log`, releasing only that
+generation's own same-host lease. While the recorded owner (or a consumer that does not stop in the bound) is live, take-over refuses with
+`take-over refused: binding held by live session SESSION (generation G, owner pid PID, consumer pid PID)` and changes nothing; there is no force flag, and a
+live owner of another session is never displaced. Unbind
 retires the generation before signalling only its recorded PID after a birth check, waits for exit, and preserves the mailbox. Restarting a provider
 fires SessionStart and automatically binds its own new session; no shared service, launchd job, profile edit or automatic session rehost is installed.
 

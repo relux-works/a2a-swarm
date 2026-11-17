@@ -53,6 +53,20 @@ const (
 
 // Native session metadata is a selector, never binding/lease authority. Keep
 // explicit A2A and Codex precedence, and never fall through a malformed value.
+// Hooks supply their own JSON session id explicitly; this resolves only the
+// environment sources below, one documented native source per runtime.
+func nativeSessionEnv(runtime string) string {
+	switch runtime {
+	case "claude":
+		return "CLAUDE_CODE_SESSION_ID"
+	case "codex":
+		return "CODEX_THREAD_ID"
+	case "muse":
+		return "MUSE_SESSION_ID"
+	}
+	return ""
+}
+
 func (a *App) terminalSessionID(runtime string) string {
 	if id := a.Getenv(EnvSessionID); id != "" {
 		return id
@@ -60,10 +74,42 @@ func (a *App) terminalSessionID(runtime string) string {
 	if id := a.Getenv("CODEX_THREAD_ID"); id != "" {
 		return id
 	}
-	if runtime == "claude" {
-		return a.Getenv("CLAUDE_CODE_SESSION_ID")
+	if env := nativeSessionEnv(runtime); env != "" {
+		return a.Getenv(env)
 	}
 	return ""
+}
+
+type sessionMatch int
+
+const (
+	sessionUnknown sessionMatch = iota
+	sessionSame
+	sessionAnother
+)
+
+// A session matches only when both ids are established (present and
+// well-formed) and exactly equal. An id that cannot be established is
+// unknown: it proves neither sameness nor difference.
+func classifySession(recorded, current string) sessionMatch {
+	if !claudeSessionRE.MatchString(recorded) || !claudeSessionRE.MatchString(current) {
+		return sessionUnknown
+	}
+	if recorded == current {
+		return sessionSame
+	}
+	return sessionAnother
+}
+
+// A recorded process is alive only when its pid exists with the recorded
+// start time. An absent pid, a reused pid (another start) or an unreadable
+// start is not proof of life.
+func bindingProcessAlive(ctx context.Context, pid int, recordedBirth string) bool {
+	if pid <= 1 || recordedBirth == "" || processGone(pid) {
+		return false
+	}
+	live, err := bindingProcessBirth(ctx, pid)
+	return err == nil && live != "" && live == recordedBirth
 }
 
 // The stage is a closed diagnostic token, not an error rendering. Lock
@@ -106,7 +152,8 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	fs := newFlagSet("bind")
 	runtime := fs.String("runtime", "", "claude or codex")
 	owner := fs.Int("owner-pid", 0, "own live runtime PID")
-	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID, CODEX_THREAD_ID, or native Claude session)")
+	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID, CODEX_THREAD_ID, or the runtime's native session)")
+	takeOver := fs.Bool("take-over", false, "take over the recorded binding once its owner and consumer are gone")
 	pane := fs.String("pane", a.Getenv("TMUX_PANE"), "own exact tmux pane")
 	socket := fs.String("socket", strings.Split(a.Getenv("TMUX"), ",")[0], "own tmux socket")
 	interval := fs.Duration("interval", defaultBindInterval, "idle observation and sync interval (1s..60s)")
@@ -143,8 +190,10 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		return usagef("bind requires --runtime, own --owner-pid, --session-id (or session env), --interval 1s..60s, --retry-max interval..5m and --max-wakes-per-hour 1..3600")
 	}
 	current := a.Getenv(EnvSessionID)
-	if current == "" && *runtime == "claude" && a.Getenv("CODEX_THREAD_ID") == "" {
-		current = a.Getenv("CLAUDE_CODE_SESSION_ID")
+	if current == "" && a.Getenv("CODEX_THREAD_ID") == "" {
+		if env := nativeSessionEnv(*runtime); env != "" {
+			current = a.Getenv(env)
+		}
 	}
 	if current != "" && current != *sessionID {
 		return usagef("bind refuses another live session")
@@ -173,6 +222,8 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	var ready *os.File
 	var child *exec.Cmd
 	existing := false
+	var alreadyBound *config.TerminalBinding
+	var takeover *config.TerminalTakeover
 	err = a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 		st, err := config.LoadState(s.paths, s.name)
 		if err != nil {
@@ -215,9 +266,16 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				return bindingInspectionFailure("prior-owner-birth", ownerErr)
 			}
 			ownerGone := ownerErr == nil && live != b.OwnerBirth || processGone(b.OwnerPID)
+			// Same-session recognition is exact and mode-independent: a manual
+			// second bind from the recorded session is that binding, not a
+			// duplicate. An unestablished recorded session is never the same.
+			sameSession := classifySession(b.SessionID, *sessionID) == sessionSame
 			if !ownerGone {
-				matches := automatic && b.SessionID == *sessionID && sameTarget(b)
+				matches := sameSession && sameTarget(b)
 				if !matches {
+					if *takeOver {
+						return takeoverRefusal(b)
+					}
 					return errors.New("session already bound; unbind this generation first")
 				}
 				daemon, daemonErr := bindingProcessBirth(ctx, b.DaemonPID)
@@ -225,6 +283,8 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 					if err := a.associateTerminalRoot(s, *b, registryRoot); err != nil {
 						return err
 					}
+					snapshot := *b
+					alreadyBound = &snapshot
 					existing = true
 					return a.acquireLease(s, *sessionID, time.Now().Add(nativeRPCTimeout))
 				}
@@ -233,6 +293,30 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				}
 				// No live consumer remains: SessionStart recovers automatically,
 				// carrying the same-session attempt fence and hourly ledger.
+			}
+			if *takeOver && ownerGone && !sameSession {
+				// Take-over is admitted only on this proof, under the control
+				// lock: the recorded owner is gone above, and its consumer is
+				// gone or stops within the existing bounded wait.
+				previous := *b
+				if err := waitPriorBindingConsumer(ctx, b); err != nil {
+					return takeoverRefusal(b)
+				}
+				// Preserve the consumer's final journal writes made during wait.
+				st, err = config.LoadState(s.paths, s.name)
+				if err != nil {
+					return err
+				}
+				if st.Terminal == nil || st.Terminal.Generation != previous.Generation {
+					return errors.New("binding changed while prior consumer stopped")
+				}
+				if st.HooksPaused || manualWakeGate(st) != "" {
+					return errors.New("binding refused: manual gate")
+				}
+				if err := a.releaseTakenOverLease(s, previous); err != nil {
+					return err
+				}
+				takeover = &config.TerminalTakeover{Generation: previous.Generation, SessionID: previous.SessionID, BySessionID: *sessionID, At: a.Now().UTC()}
 			}
 			if automatic && ownerGone {
 				if err := waitPriorBindingConsumer(ctx, b); err != nil {
@@ -267,7 +351,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		if _, err = rand.Read(random[:]); err != nil {
 			return err
 		}
-		b := &config.TerminalBinding{Generation: hex.EncodeToString(random[:]), SessionID: *sessionID, Host: machineLabel(), OwnerPID: *owner, OwnerBirth: birth, Target: target, ClaudeRegistryRoot: registryRoot, Interval: *interval, RetryMax: *retryMax, MaxWakes: *rate, Outcome: "starting"}
+		b := &config.TerminalBinding{Generation: hex.EncodeToString(random[:]), TakenOver: takeover, SessionID: *sessionID, Host: machineLabel(), OwnerPID: *owner, OwnerBirth: birth, Target: target, ClaudeRegistryRoot: registryRoot, Interval: *interval, RetryMax: *retryMax, MaxWakes: *rate, Outcome: "starting"}
 		if old := st.Terminal; old != nil {
 			b.Reservations = slices.Clone(old.Reservations)
 			if old.SessionID == b.SessionID {
@@ -308,6 +392,15 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 			return err
 		}
 		defer log.Close()
+		if takeover != nil {
+			// Fixed tokens only: the displaced generation/session and the
+			// session that took over, never screens, bodies or error text.
+			if _, err = fmt.Fprintf(log, "taken_over generation=%s session=%s by=%s at=%s\n", sanitizeLine(takeover.Generation), sanitizeLine(takeover.SessionID), sanitizeLine(takeover.BySessionID), takeover.At.Format(time.RFC3339Nano)); err != nil {
+				ready.Close()
+				writer.Close()
+				return err
+			}
+		}
 		pin, err := a.pinnedArgs(s.name)
 		if err != nil {
 			return err
@@ -347,6 +440,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		return err
 	}
 	if existing {
+		// The recorded binding is this caller's own live generation:
+		// report it and restart nothing.
+		a.printf("%s already bound (generation %s, %s)\n", s.name, alreadyBound.Generation, bindingReadinessLabel(alreadyBound))
 		return nil
 	}
 	defer ready.Close()
@@ -366,6 +462,38 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	}
 	a.printf("%s bound pid=%d; persistent terminal fallback; unbind stops it\n", s.name, child.Process.Pid)
 	return nil
+}
+
+// Stored readiness only: reporting an existing binding observes nothing new
+// and starts nothing. A missing or unrecognized stored reason is unknown.
+func bindingReadinessLabel(b *config.TerminalBinding) string {
+	if b == nil || b.Readiness == nil || !tmuxwake.ValidRuntimeReason(b.Readiness.Reason) {
+		return "readiness unknown"
+	}
+	return "readiness " + string(b.Readiness.Reason)
+}
+
+// Take-over refusal wording is fixed; the live holder is named from the
+// recorded binding only (session, generation, recorded process ids).
+func takeoverRefusal(b *config.TerminalBinding) error {
+	return fmt.Errorf("take-over refused: binding held by live session %s (generation %s, owner pid %d, consumer pid %d)", sanitizeLine(b.SessionID), sanitizeLine(b.Generation), b.OwnerPID, b.DaemonPID)
+}
+
+// The displaced generation's lease is released only while it is still held
+// by that generation's recorded session on this host (the session-handover
+// guard). Any other holder is left to ordinary lease admission; no force.
+func (a *App) releaseTakenOverLease(s *session, previous config.TerminalBinding) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
+		if st.Terminal == nil || st.Terminal.Generation != previous.Generation {
+			return errors.New("binding changed before take-over")
+		}
+		if l := st.Lease; l != nil && l.Host == machineLabel() && l.Holder == previous.SessionID {
+			_, err := st.Release(s.name, previous.SessionID, false, a.Now(), nil)
+			return err
+		}
+		return nil
+	})
+	return err
 }
 
 func runBoundChild(ctx context.Context, a *App, generation string, inherited int) error {
@@ -459,8 +587,17 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 				return nil
 			}
 			sessionID := a.terminalSessionID(b.Target.Runtime)
-			if !claudeSessionRE.MatchString(sessionID) || sessionID != b.SessionID || b.Host != machineLabel() {
+			// Only an established exact match is this session's own binding.
+			// A session that cannot be established is unknown, never another.
+			switch classifySession(b.SessionID, sessionID) {
+			case sessionSame:
+				if b.Host != machineLabel() {
+					return errors.New("unbind refuses another session's binding")
+				}
+			case sessionAnother:
 				return errors.New("unbind refuses another session's binding")
+			default:
+				return errors.New("unbind refuses: current session unknown")
 			}
 			pid, birth = b.DaemonPID, b.DaemonBirth
 			b.Stopped = true

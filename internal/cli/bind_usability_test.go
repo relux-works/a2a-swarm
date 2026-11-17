@@ -212,17 +212,18 @@ func TestBindUsabilityUnbind(t *testing.T) {
 	for _, tc := range []struct {
 		name, runtime, a2a, codex, claude, holder, host string
 		ok                                              bool
+		want                                            string
 	}{
 		{name: "native-claude", runtime: "claude", claude: "own", holder: "own", ok: true},
 		{name: "native-codex", runtime: "codex", codex: "own", claude: "ignored", holder: "own", ok: true},
 		{name: "explicit-a2a", runtime: "claude", a2a: "own", claude: "foreign", holder: "own", ok: true},
-		{name: "foreign-claude", runtime: "claude", claude: "foreign", holder: "own"},
-		{name: "malformed", runtime: "claude", claude: "../bad", holder: "own"},
-		{name: "malformed-even-if-stored", runtime: "claude", claude: "../bad", holder: "../bad"},
-		{name: "invalid-a2a-no-fallback", runtime: "claude", a2a: "../bad", claude: "own", holder: "own"},
-		{name: "foreign-explicit", runtime: "claude", a2a: "foreign", claude: "own", holder: "own"},
-		{name: "wrong-runtime", runtime: "codex", claude: "own", holder: "own"},
-		{name: "foreign-host", runtime: "claude", claude: "own", holder: "own", host: "foreign-host"},
+		{name: "foreign-claude", runtime: "claude", claude: "foreign", holder: "own", want: "another session's binding"},
+		{name: "malformed", runtime: "claude", claude: "../bad", holder: "own", want: "current session unknown"},
+		{name: "malformed-even-if-stored", runtime: "claude", claude: "../bad", holder: "../bad", want: "current session unknown"},
+		{name: "invalid-a2a-no-fallback", runtime: "claude", a2a: "../bad", claude: "own", holder: "own", want: "current session unknown"},
+		{name: "foreign-explicit", runtime: "claude", a2a: "foreign", claude: "own", holder: "own", want: "another session's binding"},
+		{name: "wrong-runtime", runtime: "codex", claude: "own", holder: "own", want: "current session unknown"},
+		{name: "foreign-host", runtime: "claude", claude: "own", holder: "own", host: "foreign-host", want: "another session's binding"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, room := world(t)
@@ -253,7 +254,7 @@ func TestBindUsabilityUnbind(t *testing.T) {
 			if tc.ok {
 				e.as("alice", "unbind").ok(t)
 			} else {
-				e.as("alice", "unbind").failsWith(t, ExitError, "another session's binding")
+				e.as("alice", "unbind").failsWith(t, ExitError, tc.want)
 			}
 			checkEffects()
 			after := e.state("alice")
