@@ -273,6 +273,13 @@ esac
 // handoverLiveBinding installs one live recorded binding (owner is the
 // test parent, consumer is an owned sleep) and returns it with its env.
 func handoverLiveBinding(t *testing.T, runtime, session string) (*env, config.TerminalBinding) {
+	e, binding, _ := handoverLiveBindingConsumer(t, runtime, session)
+	return e, binding
+}
+
+// handoverLiveBindingConsumer is handoverLiveBinding and also returns the
+// owned live consumer process, so a test can stop exactly that consumer.
+func handoverLiveBindingConsumer(t *testing.T, runtime, session string) (*env, config.TerminalBinding, *exec.Cmd) {
 	t.Helper()
 	isolateBindTest(t)
 	target := handoverTarget(t, runtime)
@@ -303,7 +310,84 @@ func handoverLiveBinding(t *testing.T, runtime, session string) (*env, config.Te
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e, binding
+	return e, binding, consumer
+}
+
+// handoverDeadProcess returns a pid and its recorded start for a process
+// that has already exited and been reaped.
+func handoverDeadProcess(t *testing.T) (int, string) {
+	t.Helper()
+	p := exec.Command("sleep", "0.2")
+	if err := p.Start(); err != nil {
+		t.Fatal(err)
+	}
+	birth, err := tmuxwake.Birth(context.Background(), p.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	return p.Process.Pid, birth
+}
+
+// handoverLiveProcess starts one owned live process for the duration of
+// the test (a test may stop it earlier; cleanup then is a no-op).
+func handoverLiveProcess(t *testing.T) *exec.Cmd {
+	t.Helper()
+	p := exec.Command("sleep", "120")
+	if err := p.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		p.Process.Kill()
+		p.Wait()
+	})
+	return p
+}
+
+// handoverGoneBinding installs a recorded binding whose owner and
+// consumer have both exited, with the given lease. The invocation target
+// (this test parent's pane) is admissible for a new session, so in a
+// fixture built on it only lease evidence can refuse take-over. It
+// returns the invocation owner pid (the new session's live owner).
+func handoverGoneBinding(t *testing.T, session string, lease *config.Lease) (*env, config.TerminalBinding, int) {
+	t.Helper()
+	isolateBindTest(t)
+	target := handoverTarget(t, "codex")
+	e := newEnv(t)
+	e.agent("alice")
+	e.extra["TMUX"] = target.Socket + ",1,0"
+	e.extra["TMUX_PANE"] = target.Pane
+	e.extra["CLAUDE_CONFIG_DIR"] = t.TempDir()
+	ownerPID, ownerBirth := handoverDeadProcess(t)
+	consumerPID, consumerBirth := handoverDeadProcess(t)
+	oldTarget := target
+	oldTarget.OwnerPID, oldTarget.OwnerBirth = ownerPID, ownerBirth
+	binding := config.TerminalBinding{Generation: "handover-gen", SessionID: session, Host: machineLabel(), OwnerPID: ownerPID, OwnerBirth: ownerBirth, DaemonPID: consumerPID, DaemonBirth: consumerBirth, Target: oldTarget, Interval: time.Second, RetryMax: 2 * time.Second, MaxWakes: 6, Outcome: "armed: no new mail"}
+	_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+		installed := binding
+		st.Terminal = &installed
+		st.Lease = lease
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e, binding, target.OwnerPID
+}
+
+func handoverStateAndLog(t *testing.T, e *env) (state, log []byte) {
+	t.Helper()
+	state, err := os.ReadFile(e.paths().StateFile("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err = os.ReadFile(filepath.Join(e.dir, "state", "alice.binding.log"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return state, log
 }
 
 func handoverBindArgs(runtime string, ownerPID int, session string, extra ...string) []string {
@@ -359,33 +443,189 @@ func TestBindHandoverAnotherLiveSessionRefused(t *testing.T) {
 }
 
 // Take-over refuses while the recorded owner is live, names that live
-// holder in its fixed message, and changes nothing, beside the valid
-// same-session control on the same fixture.
+// holder in its fixed message, and changes nothing. The fixture isolates
+// the owner gate: after the valid same-session control, the consumer is
+// stopped and the lease is expired, so the live owner is the ONLY reason
+// left to refuse. Bypassing the owner-gone check therefore cannot pass
+// this test behind the consumer wait or the lease.
 func TestBindHandoverTakeoverLiveOwnerRefused(t *testing.T) {
-	e, binding := handoverLiveBinding(t, "codex", "old-session")
+	e, binding, consumer := handoverLiveBindingConsumer(t, "codex", "old-session")
 	handoverSessionEnv(e, "codex", "old-session")
 	e.as("alice", handoverBindArgs("codex", binding.OwnerPID, "old-session")...).ok(t)
-	before, err := os.ReadFile(e.paths().StateFile("alice"))
+	// Isolate the owner gate: consumer gone, lease expired, owner live.
+	if err := consumer.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.Wait(); err == nil {
+		t.Fatal("killed consumer exited cleanly")
+	}
+	_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+		st.Lease = &config.Lease{Holder: "old-session", Host: machineLabel(), PID: binding.OwnerPID, Expires: time.Now().Add(-time.Hour)}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, beforeLog := handoverStateAndLog(t, e)
 	handoverSessionEnv(e, "codex", "new-session")
 	e.as("alice", handoverBindArgs("codex", binding.OwnerPID, "new-session", "--take-over")...).
 		failsWith(t, ExitError, "take-over refused: binding held by live session old-session (generation handover-gen, owner pid "+strconv.Itoa(binding.OwnerPID)+", consumer pid "+strconv.Itoa(binding.DaemonPID)+")")
-	after, err := os.ReadFile(e.paths().StateFile("alice"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(after) {
-		t.Fatalf("refused take-over changed state:\nbefore %s\nafter %s", before, after)
+	after, afterLog := handoverStateAndLog(t, e)
+	if string(before) != string(after) || string(beforeLog) != string(afterLog) {
+		t.Fatalf("refused take-over changed state or log:\nbefore %s log %s\nafter %s log %s", before, beforeLog, after, afterLog)
 	}
 }
 
-// Take-over end to end: with the recorded owner and consumer gone, a new
-// session of the same identity gets exactly one new generation; the
-// previous generation is recorded as taken over by it in State and in
-// binding.log, its live lease does not block the take-over, and the new
-// session can unbind what it took over.
+// Take-over refuses when the recorded owner is gone but its consumer
+// does not stop within the bound, and changes nothing. Owner, lease and
+// invocation are otherwise admissible, so the live consumer is the only
+// reason to refuse.
+func TestBindHandoverTakeoverLiveConsumerRefused(t *testing.T) {
+	expired := &config.Lease{Holder: "old-session", Host: machineLabel(), Expires: time.Now().Add(-time.Hour)}
+	e, binding, invokeOwner := handoverGoneBinding(t, "old-session", expired)
+	// Replace the exited consumer with a live one that never stops.
+	live := handoverLiveProcess(t)
+	liveBirth, err := tmuxwake.Birth(context.Background(), live.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+		st.Terminal.DaemonPID = live.Process.Pid
+		st.Terminal.DaemonBirth = liveBirth
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.DaemonPID = live.Process.Pid
+	before, beforeLog := handoverStateAndLog(t, e)
+	handoverSessionEnv(e, "codex", "new-session")
+	e.as("alice", handoverBindArgs("codex", invokeOwner, "new-session", "--take-over")...).
+		failsWith(t, ExitError, "take-over refused: binding held by live session old-session (generation handover-gen, owner pid "+strconv.Itoa(binding.OwnerPID)+", consumer pid "+strconv.Itoa(binding.DaemonPID)+")")
+	after, afterLog := handoverStateAndLog(t, e)
+	if string(before) != string(after) || string(beforeLog) != string(afterLog) {
+		t.Fatalf("refused take-over changed state or log:\nbefore %s log %s\nafter %s log %s", before, beforeLog, after, afterLog)
+	}
+}
+
+// Take-over never releases the previous session's lease on process
+// evidence alone. The resumed-thread case: the recorded owner and
+// consumer are gone, but the same session still refreshes its unexpired
+// lease from a NEW live process (a pid nowhere in the binding). Only
+// lease evidence can refuse here, and it must: fixed holder refusal,
+// lease, State and log unchanged.
+func TestBindHandoverTakeoverLiveLeaseRefused(t *testing.T) {
+	resumed := handoverLiveProcess(t)
+	lease := &config.Lease{Holder: "old-session", Host: machineLabel(), PID: resumed.Process.Pid, Expires: time.Now().Add(time.Hour)}
+	e, binding, invokeOwner := handoverGoneBinding(t, "old-session", lease)
+	before, beforeLog := handoverStateAndLog(t, e)
+	handoverSessionEnv(e, "codex", "new-session")
+	e.as("alice", handoverBindArgs("codex", invokeOwner, "new-session", "--take-over")...).
+		failsWith(t, ExitError, "take-over refused: binding held by live session old-session (generation handover-gen, owner pid "+strconv.Itoa(binding.OwnerPID)+", consumer pid "+strconv.Itoa(binding.DaemonPID)+")")
+	after, afterLog := handoverStateAndLog(t, e)
+	if string(before) != string(after) || string(beforeLog) != string(afterLog) {
+		t.Fatalf("refused take-over changed state or log:\nbefore %s log %s\nafter %s log %s", before, beforeLog, after, afterLog)
+	}
+	st := e.state("alice")
+	if st.Lease == nil || st.Lease.Holder != "old-session" || st.Lease.PID != resumed.Process.Pid || st.Terminal == nil || st.Terminal.Generation != binding.Generation {
+		t.Fatalf("live lease displaced by refused take-over: lease %+v terminal %+v", st.Lease, st.Terminal)
+	}
+}
+
+// The old lease is released only on its own evidence. Beside the
+// resumed live-holder negative, the controls admitted are exactly: an
+// expired lease, a holder pid that is absent, and a holder pid present
+// only with a different start than recorded for it. A live holder pid
+// with its recorded start, a live holder pid with no recorded start (a
+// session resumed in a new process), a missing holder pid and another
+// host are live-or-unknown and never prove the holder gone.
+func TestBindHandoverTakeoverLeaseEvidence(t *testing.T) {
+	ctx := context.Background()
+	selfBirth, err := tmuxwake.Birth(ctx, os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPID, deadBirth := handoverDeadProcess(t)
+	resumed := handoverLiveProcess(t)
+	now := time.Now()
+	previous := config.TerminalBinding{Generation: "handover-gen", SessionID: "old-session", OwnerPID: os.Getpid(), OwnerBirth: selfBirth, DaemonPID: deadPID, DaemonBirth: deadBirth}
+	reused := previous
+	reused.OwnerBirth = "another-start"
+	noBirth := previous
+	noBirth.OwnerBirth = ""
+	live := func(pid int) *config.Lease {
+		return &config.Lease{Holder: "old-session", Host: machineLabel(), PID: pid, Expires: now.Add(time.Hour)}
+	}
+	for _, tc := range []struct {
+		name     string
+		previous config.TerminalBinding
+		lease    *config.Lease
+		want     bool
+	}{
+		{name: "no-lease", previous: previous, want: true},
+		{name: "expired-live-holder", previous: previous, lease: &config.Lease{Holder: "old-session", Host: machineLabel(), PID: resumed.Process.Pid, Expires: now.Add(-time.Hour)}, want: true},
+		{name: "holder-pid-absent", previous: previous, lease: live(deadPID), want: true},
+		{name: "holder-pid-different-start", previous: reused, lease: live(os.Getpid()), want: true},
+		{name: "holder-pid-recorded-start", previous: previous, lease: live(os.Getpid()), want: false},
+		{name: "resumed-new-process", previous: previous, lease: live(resumed.Process.Pid), want: false},
+		{name: "missing-holder-pid", previous: previous, lease: live(0), want: false},
+		{name: "another-host", previous: previous, lease: &config.Lease{Holder: "old-session", Host: "elsewhere", PID: deadPID, Expires: now.Add(time.Hour)}, want: false},
+		{name: "no-recorded-start", previous: noBirth, lease: live(os.Getpid()), want: false},
+	} {
+		if got := takenOverLeaseProvenGone(ctx, tc.previous, tc.lease, now); got != tc.want {
+			t.Fatalf("%s: takenOverLeaseProvenGone=%v want=%v", tc.name, got, tc.want)
+		}
+	}
+	// At the release gate itself: the live resumed lease refuses with the
+	// fixed holder refusal and is kept; a holder-pid-gone lease is
+	// released; an expired lease is admitted untouched for the ordinary
+	// acquisition that follows (no separate release write).
+	for _, tc := range []struct {
+		name      string
+		lease     *config.Lease
+		wantErr   string
+		wantLease bool
+	}{
+		{name: "resumed-live-refused", lease: live(resumed.Process.Pid), wantErr: "take-over refused: binding held by live session old-session", wantLease: true},
+		{name: "holder-gone-released", lease: live(deadPID), wantLease: false},
+		{name: "expired-admitted", lease: &config.Lease{Holder: "old-session", Host: machineLabel(), PID: resumed.Process.Pid, Expires: now.Add(-time.Hour)}, wantLease: true},
+		{name: "unknown-refused", lease: live(0), wantErr: "take-over refused: binding held by live session old-session", wantLease: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.agent("alice")
+			_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+				installed := previous
+				st.Terminal = &installed
+				st.Lease = tc.lease
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &App{Now: time.Now}
+			s := &session{app: a, paths: e.paths(), name: "alice"}
+			err = a.releaseTakenOverLease(ctx, s, previous)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("releaseTakenOverLease=%v want nil", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("releaseTakenOverLease=%v want %q", err, tc.wantErr)
+			}
+			after := e.state("alice").Lease
+			if (after != nil) != tc.wantLease {
+				t.Fatalf("lease after=%+v want present=%v", after, tc.wantLease)
+			}
+		})
+	}
+}
+
+// Take-over end to end: with the recorded owner and consumer gone and
+// the previous session's lease expired, a new session of the same
+// identity gets exactly one new generation; the previous generation is
+// recorded as taken over by it in State and in binding.log, and the new
+// session can unbind what it took over. This is the expired-lease
+// control beside the live-lease negative above.
 func TestBindHandoverTakeover(t *testing.T) {
 	isolateBindTest(t)
 	if testing.Short() {
@@ -433,7 +673,7 @@ func TestBindHandoverTakeover(t *testing.T) {
 	oldGen := strings.Repeat("a", 32)
 	_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 		st.Terminal = &config.TerminalBinding{Generation: oldGen, SessionID: "old-session", Host: machineLabel(), OwnerPID: ownerPID, OwnerBirth: ownerBirth, DaemonPID: consumerPID, DaemonBirth: consumerBirth, Target: tmuxwake.Target{Runtime: "codex"}, Interval: time.Second, RetryMax: 2 * time.Second, MaxWakes: 6, Outcome: "armed: no new mail"}
-		st.Lease = &config.Lease{Holder: "old-session", Host: machineLabel(), Expires: time.Now().Add(time.Hour)}
+		st.Lease = &config.Lease{Holder: "old-session", Host: machineLabel(), PID: ownerPID, Expires: time.Now().Add(-time.Hour)}
 		return nil
 	})
 	if err != nil {

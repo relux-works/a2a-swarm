@@ -2695,8 +2695,11 @@ stored readiness and exits 0 without restarting anything; a bind from another li
 exists now with the recorded start; `--json` carries the same facts as `owner`/`consumer` objects. A new session of the same identity can take over a binding
 whose recorded owner is gone (pid absent, or present with another start) with `a2a bind ... --take-over`: it is admitted only when the recorded consumer is
 also gone or stops within the same bounded wait used for a confirmed-dead prior owner, and it then records the previous generation as taken over by this
-session in State (`terminal.taken_over`) and as a `taken_over generation=... session=... by=... at=...` line in `binding.log`, releasing only that
-generation's own same-host lease. While the recorded owner (or a consumer that does not stop in the bound) is live, take-over refuses with
+session in State (`terminal.taken_over`) and as a `taken_over generation=... session=... by=... at=...` line in `binding.log`. The previous session's
+lease is released only on that lease's own evidence, checked under the same lock: the lease has expired, or its recorded holder process is gone (its pid
+absent, or present only with a different start than recorded for that pid); the recorded owner process being gone alone proves nothing about the lease,
+because the same session may still refresh it from a new process, so a live or unknown lease holder also refuses the take-over with the same fixed
+message and changes nothing. While the recorded owner (or a consumer that does not stop in the bound) is live, take-over refuses with
 `take-over refused: binding held by live session SESSION (generation G, owner pid PID, consumer pid PID)` and changes nothing; there is no force flag, and a
 live owner of another session is never displaced. Unbind
 retires the generation before signalling only its recorded PID after a birth check, waits for exit, and preserves the mailbox. Restarting a provider
