@@ -382,7 +382,13 @@ func TestRoomAdminContractRecords(t *testing.T) {
 						return propertyCLIReply(r, 200, `{"name":null,"via":null,"private":"`+adminMarker+`"}`), nil
 					}
 					if strings.Contains(specimen.ID, "readback-mismatch") {
-						return propertyCLIReply(r, 200, strings.TrimSuffix(stored, "}")+`,"private":"`+adminMarker+`"}`), nil
+						content := map[string]any{}
+						if err := json.Unmarshal([]byte(stored), &content); err != nil {
+							t.Fatal("invalid stored fixture content")
+						}
+						content["private"] = adminMarker
+						body, _ := json.Marshal(content)
+						return propertyCLIReply(r, 200, string(body)), nil
 					}
 					if strings.Contains(specimen.ID, "readback-unavailable") {
 						return nil, errors.New(adminMarker)
