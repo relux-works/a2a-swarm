@@ -2190,8 +2190,9 @@ must also match its binding and daemon birth. Existing Stop 60s/loop limits stil
 apply. Even a fallback Stop saves its reservation and completion, so a Stop
 completed at 5s moves the next ordinary due time to 35s. Prompt and session-start
 always obey the 30s window. Pause, human/manual, busy, lease, connection, hourly,
-terminal idle-observation and bounded recovery gates remain prerequisites; there
-is no urgent-message bypass. Already-due but gated work keeps ordinary bounded
+terminal idle-observation and bounded recovery gates remain prerequisites for
+every wake class (see the economy wake classes under `a2a bind`): a class only
+decides when a wake is due, it bypasses no gate. Already-due but gated work keeps ordinary bounded
 polling, and notification timing never shortens error backoff or idle-sample floors.
 
 Private `state/NAME.json` stores `notification` version 1 with UTC `not_before`
@@ -2701,7 +2702,41 @@ Current CLI identity selection requires `--as` or `A2A_AGENT`; there is no third
 macOS inspection uses `/usr/sbin/lsof` executable vnode metadata; Linux uses `/proc/PID/exe`. Other platforms refuse unavailable inspection.
 
 Timing and spend flags default to the same policy as SessionStart: `--interval 2s`, `--retry-max 30s`, `--max-wakes-per-hour 30`.
-Explicit flags still accept `--interval` 1s..60s, `--retry-max` interval..5m and `--max-wakes-per-hour` 1..3600. The process syncs and
+Explicit flags still accept `--interval` 1s..60s, `--retry-max` interval..5m and `--max-wakes-per-hour` 1..3600.
+
+Economy wake classes (`--economy`) replace that single hourly cap with priority
+classes, computed for each pending mailbox entry when a wake is decided:
+principal mail from a host-pinned principal (exact Matrix sender ID, nothing
+else) is class owner; mail addressed to this identity in its structured `to`
+with kind `question`, `request`, `decision` or `owner-needed` is class peer
+(the kind and address are self-declared metadata, so this class is bounded only
+by its cap); everything else (thread copies, subscriptions, notices, handovers,
+answers) is batch. Owner mail wakes as soon as the ordinary gates allow, up to
+`--owner-wakes-per-hour` (default 20); peer mail likewise up to
+`--peer-wakes-per-hour` (default 20) — neither spends the other's allowance.
+Batch mail wakes at most once per `--batch-interval` (default 30m, range
+1m..6h) measured from the previous wake or the binding start. Any wake carries
+every pending entry of every class; a class only decides when a wake is due,
+and an entry never moves to an earlier class because it waited. The 30s common
+spacing, pause, busy, lease, connection, terminal idle observation and recovery
+bounds apply to every class. When a class cap is exhausted its entries stay in
+the mailbox, bind status records one `suppressed: owner hourly cap` or
+`suppressed: peer hourly cap` outcome per episode, and the next allowed wake
+(class window or batch timer) delivers them — never a silent drop. The
+per-class reservations are one optional `wake_classes` member of the private
+state; absent is exactly the single-cap behaviour above, and restart and
+generation replacement keep them like the legacy hourly reservations.
+`--owner-wakes-per-hour`, `--peer-wakes-per-hour` and `--batch-interval` each
+accept 1..3600 / 1..3600 / 1m..6h and imply `--economy`. Economy is the default
+for new bindings: SessionStart auto-bind with no recorded binding or policy,
+and `a2a identity ensure` for a newly registered identity, select it with no
+flag; an existing binding keeps its recorded mode until rebound. The only
+opt-out is explicit: `a2a bind --no-economy --reason TEXT` (reason required,
+1..200 printable bytes, recorded in state), which restores exactly the
+single-cap behaviour. `bind status` prints `mode=economy` or
+`mode=standard reason=...`, plus per-class wakes used in the current hour, the
+last batch wake and next batch due, and pending entries per class (JSON:
+`wake_classes`). The process syncs and
 observes idle input at that interval, refreshes its own identity lease, and exponentially backs off sync errors to the chosen maximum.
 A consumer with nothing outstanding (no undelivered mail, attempt, reservation, cooldown, notice report or retry, idle sample, open
 availability episode or refresh candidate) that stays so for 30 seconds becomes quiescent: instead of a full cycle every interval it waits for a

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -57,7 +56,7 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 			return a.Getenv(k)
 		}
 	}
-	return clone.bindTerminal(ctx, []string{"--runtime", runtime, "--owner-pid", strconv.Itoa(owner), "--session-id", in.SessionID, "--interval", defaultBindInterval.String(), "--retry-max", defaultBindRetryMax.String(), "--max-wakes-per-hour", strconv.Itoa(defaultBindMaxWakes)}, mode)
+	return clone.bindTerminal(ctx, autoBindArgs(runtime, owner, in.SessionID, st, mode), mode)
 }
 
 // Prompt/Stop take only state and birth observations for a healthy consumer.
