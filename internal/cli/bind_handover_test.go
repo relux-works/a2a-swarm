@@ -512,7 +512,8 @@ func TestBindHandoverTakeoverLiveConsumerRefused(t *testing.T) {
 // evidence alone. The resumed-thread case: the recorded owner and
 // consumer are gone, but the same session still refreshes its unexpired
 // lease from a NEW live process (a pid nowhere in the binding). Only
-// lease evidence can refuse here, and it must: fixed holder refusal,
+// the lease's expiry can admit take-over here, and it has not passed:
+// the fixed holder refusal extended by the lease expiry, with the
 // lease, State and log unchanged.
 func TestBindHandoverTakeoverLiveLeaseRefused(t *testing.T) {
 	resumed := handoverLiveProcess(t)
@@ -521,7 +522,7 @@ func TestBindHandoverTakeoverLiveLeaseRefused(t *testing.T) {
 	before, beforeLog := handoverStateAndLog(t, e)
 	handoverSessionEnv(e, "codex", "new-session")
 	e.as("alice", handoverBindArgs("codex", invokeOwner, "new-session", "--take-over")...).
-		failsWith(t, ExitError, "take-over refused: binding held by live session old-session (generation handover-gen, owner pid "+strconv.Itoa(binding.OwnerPID)+", consumer pid "+strconv.Itoa(binding.DaemonPID)+")")
+		failsWith(t, ExitError, "take-over refused: binding held by live session old-session (generation handover-gen, owner pid "+strconv.Itoa(binding.OwnerPID)+", consumer pid "+strconv.Itoa(binding.DaemonPID)+"); lease held until "+lease.Expires.UTC().Format(time.RFC3339)+"; retry after it expires")
 	after, afterLog := handoverStateAndLog(t, e)
 	if string(before) != string(after) || string(beforeLog) != string(afterLog) {
 		t.Fatalf("refused take-over changed state or log:\nbefore %s log %s\nafter %s log %s", before, beforeLog, after, afterLog)
@@ -532,64 +533,87 @@ func TestBindHandoverTakeoverLiveLeaseRefused(t *testing.T) {
 	}
 }
 
-// The old lease is released only on its own evidence. Beside the
-// resumed live-holder negative, the controls admitted are exactly: an
-// expired lease, a holder pid that is absent, and a holder pid present
-// only with a different start than recorded for it. A live holder pid
-// with its recorded start, a live holder pid with no recorded start (a
-// session resumed in a new process), a missing holder pid and another
-// host are live-or-unknown and never prove the holder gone.
-func TestBindHandoverTakeoverLeaseEvidence(t *testing.T) {
-	ctx := context.Background()
-	selfBirth, err := tmuxwake.Birth(ctx, os.Getpid())
-	if err != nil {
-		t.Fatal(err)
+// Take-over never releases the previous session's lease on the lease's
+// pid either. Lease.PID names only the last process that refreshed the
+// lease, and that refresher is usually a one-shot hook or inbox run that
+// has already exited: here the recorded owner and consumer are gone and
+// the same session's unexpired lease carries such an exited refresher's
+// pid. Only expiry can prove that holder gone, so take-over must refuse
+// with the fixed holder message extended by the lease expiry, and State
+// and binding.log stay byte-identical.
+func TestBindHandoverTakeoverDeadRefresherLeaseRefused(t *testing.T) {
+	deadPID, _ := handoverDeadProcess(t)
+	lease := &config.Lease{Holder: "old-session", Host: machineLabel(), PID: deadPID, Expires: time.Now().Add(time.Hour)}
+	e, binding, invokeOwner := handoverGoneBinding(t, "old-session", lease)
+	before, beforeLog := handoverStateAndLog(t, e)
+	handoverSessionEnv(e, "codex", "new-session")
+	e.as("alice", handoverBindArgs("codex", invokeOwner, "new-session", "--take-over")...).
+		failsWith(t, ExitError, "take-over refused: binding held by live session old-session (generation handover-gen, owner pid "+strconv.Itoa(binding.OwnerPID)+", consumer pid "+strconv.Itoa(binding.DaemonPID)+"); lease held until "+lease.Expires.UTC().Format(time.RFC3339)+"; retry after it expires")
+	after, afterLog := handoverStateAndLog(t, e)
+	if string(before) != string(after) || string(beforeLog) != string(afterLog) {
+		t.Fatalf("refused take-over changed state or log:\nbefore %s log %s\nafter %s log %s", before, beforeLog, after, afterLog)
 	}
-	deadPID, deadBirth := handoverDeadProcess(t)
+	st := e.state("alice")
+	if st.Lease == nil || st.Lease.Holder != "old-session" || st.Lease.PID != deadPID || st.Terminal == nil || st.Terminal.Generation != binding.Generation {
+		t.Fatalf("lease of a session refreshed by an exited process displaced: lease %+v terminal %+v", st.Lease, st.Terminal)
+	}
+}
+
+// Only expiry proves the displaced lease gone, on exactly the
+// boundary ordinary acquisition uses: at or past Expires the lease is
+// admitted, one second before it is not. Beside those controls, an
+// unexpired lease is never proven gone whatever pid shape it carries:
+// an exited refresher, a live process, this process, or no pid at all,
+// on this host or another. Lease.PID is the last refresher, so none of
+// those shapes says anything about the holding session.
+func TestBindHandoverTakeoverLeaseEvidence(t *testing.T) {
+	deadPID, _ := handoverDeadProcess(t)
 	resumed := handoverLiveProcess(t)
-	now := time.Now()
-	previous := config.TerminalBinding{Generation: "handover-gen", SessionID: "old-session", OwnerPID: os.Getpid(), OwnerBirth: selfBirth, DaemonPID: deadPID, DaemonBirth: deadBirth}
-	reused := previous
-	reused.OwnerBirth = "another-start"
-	noBirth := previous
-	noBirth.OwnerBirth = ""
-	live := func(pid int) *config.Lease {
-		return &config.Lease{Holder: "old-session", Host: machineLabel(), PID: pid, Expires: now.Add(time.Hour)}
+	now := time.Now().UTC().Truncate(time.Second)
+	previous := config.TerminalBinding{Generation: "handover-gen", SessionID: "old-session", OwnerPID: os.Getpid(), DaemonPID: deadPID}
+	at := func(expires time.Time, pid int) *config.Lease {
+		return &config.Lease{Holder: "old-session", Host: machineLabel(), PID: pid, Expires: expires}
 	}
 	for _, tc := range []struct {
-		name     string
-		previous config.TerminalBinding
-		lease    *config.Lease
-		want     bool
+		name  string
+		lease *config.Lease
+		want  bool
 	}{
-		{name: "no-lease", previous: previous, want: true},
-		{name: "expired-live-holder", previous: previous, lease: &config.Lease{Holder: "old-session", Host: machineLabel(), PID: resumed.Process.Pid, Expires: now.Add(-time.Hour)}, want: true},
-		{name: "holder-pid-absent", previous: previous, lease: live(deadPID), want: true},
-		{name: "holder-pid-different-start", previous: reused, lease: live(os.Getpid()), want: true},
-		{name: "holder-pid-recorded-start", previous: previous, lease: live(os.Getpid()), want: false},
-		{name: "resumed-new-process", previous: previous, lease: live(resumed.Process.Pid), want: false},
-		{name: "missing-holder-pid", previous: previous, lease: live(0), want: false},
-		{name: "another-host", previous: previous, lease: &config.Lease{Holder: "old-session", Host: "elsewhere", PID: deadPID, Expires: now.Add(time.Hour)}, want: false},
-		{name: "no-recorded-start", previous: noBirth, lease: live(os.Getpid()), want: false},
+		{name: "no-lease", want: true},
+		{name: "one-second-past-expiry-dead-refresher", lease: at(now.Add(-time.Second), deadPID), want: true},
+		{name: "one-second-past-expiry-live-pid", lease: at(now.Add(-time.Second), resumed.Process.Pid), want: true},
+		{name: "exactly-at-expiry-dead-refresher", lease: at(now, deadPID), want: true},
+		{name: "one-second-before-expiry-dead-refresher", lease: at(now.Add(time.Second), deadPID), want: false},
+		{name: "unexpired-dead-refresher", lease: at(now.Add(time.Hour), deadPID), want: false},
+		{name: "unexpired-live-pid", lease: at(now.Add(time.Hour), resumed.Process.Pid), want: false},
+		{name: "unexpired-self-pid", lease: at(now.Add(time.Hour), os.Getpid()), want: false},
+		{name: "unexpired-no-pid", lease: at(now.Add(time.Hour), 0), want: false},
+		{name: "unexpired-another-host", lease: &config.Lease{Holder: "old-session", Host: "elsewhere", PID: deadPID, Expires: now.Add(time.Hour)}, want: false},
 	} {
-		if got := takenOverLeaseProvenGone(ctx, tc.previous, tc.lease, now); got != tc.want {
-			t.Fatalf("%s: takenOverLeaseProvenGone=%v want=%v", tc.name, got, tc.want)
+		if got := takenOverLeaseExpired(tc.lease, now); got != tc.want {
+			t.Fatalf("%s: takenOverLeaseExpired=%v want=%v", tc.name, got, tc.want)
 		}
 	}
-	// At the release gate itself: the live resumed lease refuses with the
-	// fixed holder refusal and is kept; a holder-pid-gone lease is
-	// released; an expired lease is admitted untouched for the ordinary
-	// acquisition that follows (no separate release write).
+	// At the lease gate itself, under the same fixed clock: every
+	// unexpired shape refuses with the exact extended holder refusal;
+	// the same dead-refresher lease one second past expiry, and at its
+	// expiry exactly, is admitted. The gate releases nothing, so the
+	// lease record is unchanged after every case, ready for ordinary
+	// acquisition to decide.
 	for _, tc := range []struct {
-		name      string
-		lease     *config.Lease
-		wantErr   string
-		wantLease bool
+		name    string
+		lease   *config.Lease
+		refused bool
 	}{
-		{name: "resumed-live-refused", lease: live(resumed.Process.Pid), wantErr: "take-over refused: binding held by live session old-session", wantLease: true},
-		{name: "holder-gone-released", lease: live(deadPID), wantLease: false},
-		{name: "expired-admitted", lease: &config.Lease{Holder: "old-session", Host: machineLabel(), PID: resumed.Process.Pid, Expires: now.Add(-time.Hour)}, wantLease: true},
-		{name: "unknown-refused", lease: live(0), wantErr: "take-over refused: binding held by live session old-session", wantLease: true},
+		{name: "dead-refresher-unexpired-refused", lease: at(now.Add(time.Hour), deadPID), refused: true},
+		{name: "dead-refresher-one-second-past-expiry-admitted", lease: at(now.Add(-time.Second), deadPID)},
+		{name: "dead-refresher-exactly-at-expiry-admitted", lease: at(now, deadPID)},
+		{name: "dead-refresher-one-second-before-expiry-refused", lease: at(now.Add(time.Second), deadPID), refused: true},
+		{name: "live-pid-unexpired-refused", lease: at(now.Add(time.Hour), resumed.Process.Pid), refused: true},
+		{name: "self-pid-unexpired-refused", lease: at(now.Add(time.Hour), os.Getpid()), refused: true},
+		{name: "no-pid-unexpired-refused", lease: at(now.Add(time.Hour), 0), refused: true},
+		{name: "other-holder-left-to-admission", lease: &config.Lease{Holder: "other-session", Host: machineLabel(), PID: deadPID, Expires: now.Add(time.Hour)}},
+		{name: "no-lease-admitted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
@@ -603,18 +627,24 @@ func TestBindHandoverTakeoverLeaseEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := &App{Now: time.Now}
+			a := &App{Now: func() time.Time { return now }}
 			s := &session{app: a, paths: e.paths(), name: "alice"}
-			err = a.releaseTakenOverLease(ctx, s, previous)
-			if tc.wantErr == "" && err != nil {
-				t.Fatalf("releaseTakenOverLease=%v want nil", err)
+			err = a.checkTakenOverLease(s, previous)
+			if !tc.refused && err != nil {
+				t.Fatalf("checkTakenOverLease=%v want nil", err)
 			}
-			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
-				t.Fatalf("releaseTakenOverLease=%v want %q", err, tc.wantErr)
+			if tc.refused {
+				want := "take-over refused: binding held by live session old-session (generation handover-gen, owner pid " + strconv.Itoa(previous.OwnerPID) + ", consumer pid " + strconv.Itoa(previous.DaemonPID) + "); lease held until " + tc.lease.Expires.UTC().Format(time.RFC3339) + "; retry after it expires"
+				if err == nil || err.Error() != want {
+					t.Fatalf("checkTakenOverLease=%v want %q", err, want)
+				}
 			}
 			after := e.state("alice").Lease
-			if (after != nil) != tc.wantLease {
-				t.Fatalf("lease after=%+v want present=%v", after, tc.wantLease)
+			if tc.lease == nil && after != nil {
+				t.Fatalf("lease after=%+v want none", after)
+			}
+			if tc.lease != nil && (after == nil || after.Holder != tc.lease.Holder || after.Host != tc.lease.Host || after.PID != tc.lease.PID || !after.Expires.Equal(tc.lease.Expires)) {
+				t.Fatalf("lease after=%+v want unchanged %+v", after, tc.lease)
 			}
 		})
 	}

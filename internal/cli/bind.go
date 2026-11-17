@@ -313,7 +313,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				if st.HooksPaused || manualWakeGate(st) != "" {
 					return errors.New("binding refused: manual gate")
 				}
-				if err := a.releaseTakenOverLease(ctx, s, previous); err != nil {
+				if err := a.checkTakenOverLease(s, previous); err != nil {
 					return err
 				}
 				takeover = &config.TerminalTakeover{Generation: previous.Generation, SessionID: previous.SessionID, BySessionID: *sessionID, At: a.Now().UTC()}
@@ -479,19 +479,24 @@ func takeoverRefusal(b *config.TerminalBinding) error {
 	return fmt.Errorf("take-over refused: binding held by live session %s (generation %s, owner pid %d, consumer pid %d)", sanitizeLine(b.SessionID), sanitizeLine(b.Generation), b.OwnerPID, b.DaemonPID)
 }
 
-// The displaced generation's lease is released only on the lease's own
-// evidence, checked here under the state lock (the caller holds the
-// control lock): the lease is expired, or its recorded holder process is
-// proven gone (holder pid absent, or present only with a different start
-// than the one recorded for that pid in the displaced binding). The
-// recorded owner process being gone proves nothing about the lease: the
-// same session may still refresh it from a new process. A live or
-// unknown lease holder therefore refuses the take-over with the fixed
-// holder refusal and changes nothing. A lease held by any other session
-// is never released here; ordinary lease admission decides it. An
-// expired lease is left for that same ordinary acquisition to take, so
-// no separate release write precedes it.
-func (a *App) releaseTakenOverLease(ctx context.Context, s *session, previous config.TerminalBinding) error {
+// Take-over lease refusal wording is the fixed holder refusal extended
+// with the lease expiry, so the caller knows when a retry can succeed.
+func takeoverLeaseRefusal(b *config.TerminalBinding, l *config.Lease) error {
+	return fmt.Errorf("%v; lease held until %s; retry after it expires", takeoverRefusal(b), l.Expires.UTC().Format(time.RFC3339))
+}
+
+// The displaced generation's lease is proven gone only by its expiry,
+// read here under the state lock (the caller holds the control lock).
+// Lease.PID names only the last process that refreshed the lease, and
+// that refresher is usually a one-shot hook or inbox run that has
+// already exited, so no pid, start-time, host or recorded-owner
+// evidence proves the holding session gone, and none is consulted. An
+// unexpired lease of the previous session refuses the take-over with
+// the extended holder refusal and changes nothing. An expired lease
+// is left untouched for ordinary lease acquisition to take; this gate
+// releases nothing. A lease held by any other session is likewise
+// left to that ordinary admission.
+func (a *App) checkTakenOverLease(s *session, previous config.TerminalBinding) error {
 	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if st.Terminal == nil || st.Terminal.Generation != previous.Generation {
 			return errors.New("binding changed before take-over")
@@ -500,52 +505,20 @@ func (a *App) releaseTakenOverLease(ctx context.Context, s *session, previous co
 		if l == nil || l.Holder != previous.SessionID {
 			return nil
 		}
-		if !takenOverLeaseProvenGone(ctx, previous, l, a.Now()) {
-			return takeoverRefusal(&previous)
-		}
-		if !a.Now().Before(l.Expires) {
+		if takenOverLeaseExpired(l, a.Now()) {
 			return nil
 		}
-		_, err := st.Release(s.name, previous.SessionID, false, a.Now(), nil)
-		return err
+		return takeoverLeaseRefusal(&previous, l)
 	})
 	return err
 }
 
-// takenOverLeaseProvenGone reports whether the lease's own record proves
-// its holder gone: expired by its own expiry, or (on this host) its
-// recorded holder pid absent, or that pid now carrying a different
-// start than recorded for it in the displaced binding. A holder pid
-// present with no recorded start to compare against (for example a
-// session resumed in a new process), a missing holder pid, another
-// host, or an unreadable start is unknown, never gone.
-func takenOverLeaseProvenGone(ctx context.Context, previous config.TerminalBinding, l *config.Lease, now time.Time) bool {
-	if l == nil || !now.Before(l.Expires) {
-		return true
-	}
-	if l.Host != machineLabel() || l.PID <= 1 {
-		return false
-	}
-	if processGone(l.PID) {
-		return true
-	}
-	var recorded string
-	switch l.PID {
-	case previous.OwnerPID:
-		recorded = previous.OwnerBirth
-	case previous.DaemonPID:
-		recorded = previous.DaemonBirth
-	default:
-		return false
-	}
-	if recorded == "" {
-		return false
-	}
-	live, err := bindingProcessBirth(ctx, l.PID)
-	if err != nil {
-		return processGone(l.PID)
-	}
-	return live != "" && live != recorded
+// takenOverLeaseExpired reports whether the lease's own expiry has been
+// reached: now at or past Expires, the same boundary as
+// config.State.Acquire. It is the only evidence take-over accepts
+// about the displaced lease.
+func takenOverLeaseExpired(l *config.Lease, now time.Time) bool {
+	return l == nil || !now.Before(l.Expires)
 }
 
 func runBoundChild(ctx context.Context, a *App, generation string, inherited int) error {
