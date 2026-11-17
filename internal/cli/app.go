@@ -50,6 +50,9 @@ type App struct {
 	loadStationAuthors func(string) (daemon.StationAuthors, error) // Tests only; nil enforces protected host storage.
 	stationAuthorKey   string                                      // Per-invocation key selected by the authenticated peer UID, never by argv.
 
+	// rosterProtection is the roster writer's ownership seam; nil selects the host predicate.
+	rosterProtection envelopeobserve.RosterProtection
+
 	wakeRequiredVersion      string                                       // Immutable process-start admission; never read from a daemon request or ambient selector.
 	wakeContext              context.Context                              // Bounded terminal dispatch copy; never changes ambient command cleanup.
 	terminalFixture          func(config.TerminalBinding) terminalEffects // Isolated tests only; production always uses the bound terminal.
@@ -200,7 +203,7 @@ func commands() []command {
 		{"agent-dm", "agent-dm ensure|status|say|unset|leave FULL_PEER   exact admitted agent pair (default off)", cmdAgentDM},
 		{"register", "register <name>                      create a Matrix account and a 0600 credential file (low level: use identity ensure)", cmdRegister},
 		{"availability", "availability <localpart|@localpart:server> [--json]   read selected-server registration availability (no existence guarantee)", cmdAvailability},
-		{"host", "host init <slug> [--force] | host show | host principals set|show|clear | host mute|unmute   host identity, principal policy and owner-confirmed scope wake mute leases", cmdHost},
+		{"host", "host init <slug> [--force] | host show | host principals set|show|clear | host roster build|show | host mute|unmute   host identity, principal policy, author roster and owner-confirmed scope wake mute leases", cmdHost},
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},

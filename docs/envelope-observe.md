@@ -27,7 +27,8 @@ storage, delivery, read receipts, acknowledgements, wake or hook decisions.
 An invalid envelope is still printed and receipted under the existing output
 success rules. An observer error is a label, never a command failure.
 There is no enforcement switch, signer, key creation, private key input,
-network lookup or roster writer in this feature. A label grants no action or
+network lookup or roster writer on the observe path; the host operator's
+separate tool is described in "Provisioning the roster". A label grants no action or
 operator authority. General grant/action-schema authorization is outside M0.
 
 ## Host configuration and protection
@@ -178,6 +179,137 @@ Named limits:
   (`all`, local names), so the signed recipient list is compared with the full
   ids in `m.mentions`, not with the header's `to`.
 
+## Provisioning the roster
+
+`a2a host roster build` is a host tool, run by the host operator as root. It
+writes the roster schema above from one input document and nothing else.
+
+**Trust statement.** The roster is the host operator's assertion of which key
+speaks for which MXID. The tool does not verify an attestation of any key
+(that arrives with the Keymaker codec), reads no key store, calls no signer
+and uses no network. It checks the form of the input, not its truth.
+
+The output always has `"facts": {}`: the input cannot carry verifier evidence.
+With empty facts the reader resolves senders (`author_mismatch`,
+`unknown-author`) but strict verification reports the missing evidence instead
+of `verified`. If an existing roster has non-empty `facts`, build refuses with
+`existing_facts` before creating or writing a temporary file and leaves the
+previous file byte-identical. There is no override flag; this tool must not
+remove separately provisioned verifier evidence.
+
+### Input: `a2a-roster-input/1`
+
+One strict JSON document of at most 1 MiB, with exactly these members:
+
+```json
+{
+  "version": "a2a-roster-input/1",
+  "entries": [
+    {"mxid": "@worker:example.invalid", "author_key": "ed25519:<canonical-public-key>", "source": "where this key was taken from"}
+  ]
+}
+```
+
+- `entries`: 1..4096 objects with exactly `mxid`, `author_key` and `source`.
+- `mxid`: an exact full Matrix sender identifier as the reader admits it
+  (`@local:server`, printable ASCII without spaces, at most 255 bytes). It is
+  never lowercased or rewritten.
+- `author_key`: a valid `ed25519:` or `bip340:` public key identifier.
+- `source`: 0..64 printable ASCII bytes, the operator's own label for where
+  the key came from. It is checked and not written to the roster, because the
+  roster schema has no member for it; keep the input document as the record.
+
+Input refusals reject the whole document and write nothing. Every refusal
+occurs before the rename and leaves an existing final file byte-identical;
+any temporary created before a later refusal is removed. Refusals use
+`host roster refused: <code>` with one of these fixed codes:
+
+| Code | Meaning |
+| --- | --- |
+| `input_unreadable` | The `--from` file cannot be read |
+| `input_malformed` | Not one strict UTF-8 JSON object within the bound, or a duplicate member name |
+| `input_member_case`, `input_member_unknown`, `input_member_missing`, `input_member_type` | A case variant of a member, an unknown member, an absent member, a non-string value |
+| `input_version` | `version` is not `a2a-roster-input/1` |
+| `input_entries`, `input_entries_count` | `entries` is not an array of objects; it has 0 or more than 4096 items |
+| `mxid_invalid` | Not a full sender identifier the reader admits |
+| `mxid_duplicate`, `mxid_case_variant` | The same MXID twice; two MXIDs that differ only in letter case |
+| `key_type`, `key_invalid` | A key type the reader does not admit; not a valid key identifier |
+| `source_invalid` | Longer than 64 bytes or not printable ASCII |
+| `output_unencodable`, `selfcheck_failed`, `selfcheck_mismatch` | The built bytes are refused by the reader's parser or load a different sender map; nothing is published |
+| `out_path` | `--out` is not an absolute clean path |
+| `not_root` | The caller cannot create a root-owned file; nothing is written |
+| `out_unprotected` | A directory above `--out` is missing, a symlink, not root-owned, or group/other-writable |
+| `out_symlink`, `out_not_regular`, `out_unreadable` | The final name is a symlink, not an ordinary file, or cannot be inspected or read |
+| `existing_facts` | The existing roster has a non-empty facts object; nothing is written and there is no override |
+| `result_unprotected` | The new file would not satisfy the reader's rule; the previous file is untouched |
+| `publish_failed`, `publish_interrupted` | The temporary file could not be written or renamed; the previous file is untouched |
+
+After the rename, these are **reports of a publication that happened**, not
+input refusals. Both exit non-zero with `host roster published: <code>` and say
+plainly that the new roster is at the final path. The temporary is gone and
+there is no rollback:
+
+| Code | Meaning |
+| --- | --- |
+| `published_unsynced` | The new roster is at the final path, but directory sync failed; durability is not established |
+| `published_unprotected` | The new roster is at the final path, but the file or an ancestor is unprotected; the reader treats it as unavailable until the operator fixes the protection |
+
+### Steps
+
+1. As root, create the roster directory once. Every directory from `/` down
+   must be a root-owned real directory without group/other write, and the
+   agent user must be able to traverse it. The tool never creates a missing
+   directory, never changes an owner and never changes the mode of anything
+   that already exists.
+
+   ```sh
+   install -d -o root -g root -m 0755 /etc/a2a-swarm
+   ```
+
+2. Write the input document. For each entry, record in `source` where the
+   public key was taken from. The document holds public keys only.
+
+3. As root, build and publish. `--out` is the physical absolute path (no
+   symlink at any level):
+
+   ```sh
+   a2a host roster build --from /root/roster-input.json --out /etc/a2a-swarm/author-roster.json
+   ```
+
+   The tool builds the roster in one fixed spelling (compact JSON, members and
+   senders in byte order), loads those bytes through the reader's parser and
+   requires the loaded sender map to equal the input. Before writing anything,
+   it refuses an existing roster with non-empty facts. It then creates a
+   temporary file in the same directory (exclusive create, no symlink
+   following, mode 0644), writes and syncs it, renames it over the final name,
+   syncs the directory and applies the reader's protection rule to the final
+   file and every ancestor again. Protection is also rechecked immediately
+   before the rename, so a change already visible then leaves the previous
+   roster untouched. Every refusal before the rename, including an injected
+   interruption, leaves the previous final file byte-identical. A killed run
+   before rename can leave a `.<name>.tmp-<hex>` file beside it; the reader
+   never opens it.
+
+   After rename, a directory-sync failure reports `published_unsynced`, and a
+   protection failure reports `published_unprotected`. Both exit non-zero but
+   explicitly say the new roster is already at the final path; no rollback
+   occurs. For `published_unprotected`, the reader treats the file as
+   unavailable until the operator fixes the protection.
+
+4. As the agent user, select the roster in that agent's configuration root
+   (`envelope-observe.json`, see above) and check what the reader loads:
+
+   ```sh
+   a2a host roster show --check
+   ```
+
+   `show` prints one line per sender: MXID, key type and the first 16 hex
+   digits of SHA-256 over the public key identifier, tab-separated. Without
+   `--check` an unavailable roster prints `roster unavailable` and exits 0;
+   with `--check` an absent, unprotected or malformed roster exits non-zero.
+   The reader refuses every roster for a root caller, so run `show` as the
+   agent user, not as root.
+
 ## Tools and validation
 
 The repository requires Go >=1.26.8; the pinned module requires >=1.26.0.
@@ -186,6 +318,8 @@ No tool or native signer is installed. From this repository, with task-scoped te
 | Tool | Entry point | Output |
 | --- | --- | --- |
 | Observe contract fixtures | `go test ./internal/envelopeobserve ./internal/config ./internal/cli -run 'Test(Observe|EnvelopeObserve|InvalidEnvelope|Roster|Protected|EnvelopeRoster)' -count=1` | Local test output; isolated fake carrier and public signed fixtures |
+| Host roster writer | `a2a host roster build --from FILE --out ABSOLUTE_PATH`; `a2a host roster show [--check]` | The roster file at `--out`; sender, key type and fingerprint on stdout |
+| Roster writer tests | `go test ./internal/envelopeobserve ./internal/cli -run 'Test(Roster|HostRoster|ObserverAuthors)' -count=1` | Local test output; run as a non-root user, ownership through the test seam |
 | Full race gate | `go test ./... -race -timeout 30m` | Test output; retain command log under `.temp/` |
 | Static/build gates | `go vet ./...`; `go build ./...` | Diagnostics under `.temp/`; normal Go cache |
 
