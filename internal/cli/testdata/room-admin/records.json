@@ -1,0 +1,707 @@
+{
+  "records": [
+    {
+      "id": "room-name-get-present",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "PRESENT",
+        "acknowledged": false,
+        "readback": "present",
+        "content": {
+          "name": "Example"
+        }
+      },
+      "expected_text": "room-name v1 get room=\"!space:example.invalid\" key=\"\" outcome=PRESENT acknowledged=false event_id=\"\" readback=present content={\"name\":\"Example\"}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "room-name-get-empty-missing",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "EMPTY",
+        "acknowledged": false,
+        "readback": "present",
+        "content": {}
+      },
+      "expected_text": "room-name v1 get room=\"!space:example.invalid\" key=\"\" outcome=EMPTY acknowledged=false event_id=\"\" readback=present content={}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "room-name-get-empty-explicit",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "EMPTY",
+        "acknowledged": false,
+        "readback": "present",
+        "content": {
+          "name": ""
+        }
+      },
+      "expected_text": "room-name v1 get room=\"!space:example.invalid\" key=\"\" outcome=EMPTY acknowledged=false event_id=\"\" readback=present content={\"name\":\"\"}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "room-name-get-absent",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "ABSENT",
+        "acknowledged": false,
+        "readback": "absent"
+      },
+      "expected_text": "room-name v1 get room=\"!space:example.invalid\" key=\"\" outcome=ABSENT acknowledged=false event_id=\"\" readback=absent content=null\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "room-name-get-unknown",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "UNKNOWN",
+        "acknowledged": false,
+        "readback": "unavailable"
+      },
+      "expected_text": "room-name v1 get room=\"!space:example.invalid\" key=\"\" outcome=UNKNOWN acknowledged=false event_id=\"\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_state: $.content\n"
+    },
+    {
+      "id": "room-name-set-verified",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "VERIFIED",
+        "acknowledged": true,
+        "readback": "match",
+        "event_id": "$event",
+        "content": {
+          "name": "Example"
+        }
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=VERIFIED acknowledged=true event_id=\"$event\" readback=match content={\"name\":\"Example\"}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "room-name-set-refused",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "REFUSED",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=REFUSED acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_write: $.write\n"
+    },
+    {
+      "id": "room-name-set-guard-refused",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "REFUSED",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=REFUSED acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_context: $.context\n"
+    },
+    {
+      "id": "room-name-set-ack-unknown",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "UNKNOWN",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=UNKNOWN acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_write: $.write\n"
+    },
+    {
+      "id": "room-name-set-readback-absent",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "absent",
+        "event_id": "$event"
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=absent content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "room-name-set-readback-mismatch",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "mismatch",
+        "event_id": "$event"
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=mismatch content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "room-name-set-readback-unavailable",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "unavailable",
+        "event_id": "$event"
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "room-name-set-final-context",
+      "expected_json": {
+        "type": "room-name",
+        "version": 1,
+        "operation": "set",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.room.name",
+        "state_key": "",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "unavailable",
+        "event_id": "$event"
+      },
+      "expected_text": "room-name v1 set room=\"!space:example.invalid\" key=\"\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_context: $.context\n"
+    },
+    {
+      "id": "space-child-get-present",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "PRESENT",
+        "acknowledged": false,
+        "readback": "present",
+        "content": {
+          "via": [
+            "example.invalid",
+            "EXAMPLE.invalid",
+            "example.invalid"
+          ]
+        }
+      },
+      "expected_text": "space-child v1 get room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=PRESENT acknowledged=false event_id=\"\" readback=present content={\"via\":[\"example.invalid\",\"EXAMPLE.invalid\",\"example.invalid\"]}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "space-child-get-empty-missing",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "EMPTY",
+        "acknowledged": false,
+        "readback": "present",
+        "content": {}
+      },
+      "expected_text": "space-child v1 get room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=EMPTY acknowledged=false event_id=\"\" readback=present content={}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "space-child-get-empty-explicit",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "EMPTY",
+        "acknowledged": false,
+        "readback": "present",
+        "content": {
+          "via": []
+        }
+      },
+      "expected_text": "space-child v1 get room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=EMPTY acknowledged=false event_id=\"\" readback=present content={\"via\":[]}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "space-child-get-absent",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "ABSENT",
+        "acknowledged": false,
+        "readback": "absent"
+      },
+      "expected_text": "space-child v1 get room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=ABSENT acknowledged=false event_id=\"\" readback=absent content=null\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "space-child-get-unknown",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "get",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": false,
+        "readback": "unavailable"
+      },
+      "expected_text": "space-child v1 get room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=false event_id=\"\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_state: $.content\n"
+    },
+    {
+      "id": "space-child-add-verified",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "VERIFIED",
+        "acknowledged": true,
+        "readback": "match",
+        "event_id": "$event",
+        "content": {
+          "via": [
+            "example.invalid",
+            "EXAMPLE.invalid",
+            "example.invalid"
+          ]
+        }
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=VERIFIED acknowledged=true event_id=\"$event\" readback=match content={\"via\":[\"example.invalid\",\"EXAMPLE.invalid\",\"example.invalid\"]}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "space-child-add-refused",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "REFUSED",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=REFUSED acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_write: $.write\n"
+    },
+    {
+      "id": "space-child-add-guard-refused",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "REFUSED",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=REFUSED acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_context: $.context\n"
+    },
+    {
+      "id": "space-child-add-ack-unknown",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_write: $.write\n"
+    },
+    {
+      "id": "space-child-add-readback-absent",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "absent",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=absent content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "space-child-add-readback-mismatch",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "mismatch",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=mismatch content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "space-child-add-readback-unavailable",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "unavailable",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "space-child-add-final-context",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "add",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "unavailable",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 add room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_context: $.context\n"
+    },
+    {
+      "id": "space-child-remove-verified",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "VERIFIED",
+        "acknowledged": true,
+        "readback": "match",
+        "event_id": "$event",
+        "content": {}
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=VERIFIED acknowledged=true event_id=\"$event\" readback=match content={}\n",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "id": "space-child-remove-refused",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "REFUSED",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=REFUSED acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_write: $.write\n"
+    },
+    {
+      "id": "space-child-remove-guard-refused",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "REFUSED",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=REFUSED acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_context: $.context\n"
+    },
+    {
+      "id": "space-child-remove-ack-unknown",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": false,
+        "readback": "not-attempted"
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=false event_id=\"\" readback=not-attempted content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_write: $.write\n"
+    },
+    {
+      "id": "space-child-remove-readback-absent",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "absent",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=absent content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "space-child-remove-readback-mismatch",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "mismatch",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=mismatch content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "space-child-remove-readback-unavailable",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "unavailable",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_readback: $.readback\n"
+    },
+    {
+      "id": "space-child-remove-final-context",
+      "expected_json": {
+        "type": "space-child",
+        "version": 1,
+        "operation": "remove",
+        "caller": "@operator:example.invalid",
+        "room_id": "!space:example.invalid",
+        "state_type": "m.space.child",
+        "state_key": "!child:example.invalid",
+        "outcome": "UNKNOWN",
+        "acknowledged": true,
+        "readback": "unavailable",
+        "event_id": "$event"
+      },
+      "expected_text": "space-child v1 remove room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=true event_id=\"$event\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_context: $.context\n"
+    }
+  ],
+  "no_record_refusals": [
+    {
+      "id": "name-too-long",
+      "exit": 2,
+      "stdout": "",
+      "stderr": "RULE admin_name: $.name\n",
+      "network_requests": 0
+    },
+    {
+      "id": "repeated-scalar-private-marker",
+      "exit": 2,
+      "stdout": "",
+      "stderr": "RULE admin_usage: argv\n",
+      "network_requests": 0
+    },
+    {
+      "id": "invalid-via-index",
+      "exit": 2,
+      "stdout": "",
+      "stderr": "RULE admin_via: $.via[0]\n",
+      "network_requests": 0
+    },
+    {
+      "id": "insufficient-specific-event-power",
+      "exit": 1,
+      "stdout": "",
+      "stderr": "RULE admin_power: $.policy\n",
+      "property_gets": 0,
+      "puts": 0
+    },
+    {
+      "id": "ordinary-room-as-space",
+      "exit": 1,
+      "stdout": "",
+      "stderr": "RULE admin_space: $.space\n",
+      "property_gets": 0,
+      "puts": 0
+    },
+    {
+      "id": "missing-session",
+      "exit": 1,
+      "stdout": "",
+      "stderr": "RULE admin_session: $.session\n",
+      "property_gets": 0,
+      "puts": 0
+    }
+  ]
+}
