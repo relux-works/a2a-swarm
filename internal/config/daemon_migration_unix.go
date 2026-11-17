@@ -997,7 +997,7 @@ func daemonSourceCredentialCheck(data []byte, keychain bool) error {
 			return ErrDaemonSourceSecrets
 		}
 		switch key {
-		case "user_id", "device_id", "homeserver", "wait_keywords", "own_room", "connection_binding":
+		case "user_id", "device_id", "homeserver", "wait_keywords", "own_room", "connection_binding", "binder_cpu_percent":
 		case "access_token", "password":
 			if keychain {
 				var empty string

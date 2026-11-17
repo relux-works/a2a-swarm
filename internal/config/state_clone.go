@@ -123,6 +123,7 @@ func cloneTerminal(src *TerminalBinding) (*TerminalBinding, bool) {
 		}
 		t.ConsumerReport = &r
 	}
+	t.Observe = copyValuePtr(src.Observe)
 	t.NoticeOrigin = copyValuePtr(src.NoticeOrigin)
 	t.NoticePosition = copyValuePtr(src.NoticePosition)
 	t.Recovery = copyValuePtr(src.Recovery)
@@ -252,7 +253,7 @@ func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
 // A new or changed field anywhere in that graph changes the signature: the
 // scoped decode memo and the writer working-copy clone are then disabled (the
 // ordinary decoder runs) until the clone is reviewed and this pin updated.
-const stateCloneSchemaPin = "b6cec874ebccbdf4cf3ddace8c47daafe42219b66d6f528b958020c3a03e95fd"
+const stateCloneSchemaPin = "fb109a1e66d21755cffc27766e51cff6cc01bbee4fe0455df7c8b28bc3975e68"
 
 var stateCloneSchemaOK = stateSchemaReviewed(reflect.TypeFor[State](), stateCloneSchemaPin)
 

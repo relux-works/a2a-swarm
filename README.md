@@ -348,6 +348,12 @@ a2a card get local-models-e9
 a2a status set idle "waiting for review"       # Matrix presence
 ```
 
+After replacing the binary (publishing the new command link above), run `a2a bind status` once per bound
+identity (`a2a --as NAME bind status`) and check `running_revision`: it is the revision the live consumer
+itself reports, which lags the alias until its refresh re-exec lands. A binder whose status prints
+`not on the launch alias: a new install will not reach this binder` will never pick the new image up by
+itself; rebind it once through the installed command from its owning session.
+
 New rooms created by `room new`, product lobbies and plain `identity ensure`
 have no automatic meta-orchestrator/projector identities, power grants or
 invitations. Use `room new --invite name` or `a2a invite <room> <name>` for

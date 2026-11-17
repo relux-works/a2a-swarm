@@ -179,7 +179,11 @@ type Credentials struct {
 	waitKeywordsRaw waitKeywordValues
 	WaitKeywords    WaitKeywords `json:"wait_keywords,omitempty"`
 	// OwnRoom pins the operator-declared own project/lane route; no room-type discovery.
-	OwnRoom           string             `json:"own_room,omitempty"`
+	OwnRoom string `json:"own_room,omitempty"`
+	// BinderCPUPercent is the operator-declared CPU self-alarm threshold for
+	// the terminal consumer, in percent of one core. Absent selects the
+	// default; an explicit zero disables the alarm.
+	BinderCPUPercent  *int               `json:"binder_cpu_percent,omitempty"`
 	ConnectionBinding *ConnectionBinding `json:"connection_binding,omitempty"`
 	UserID            string             `json:"user_id"`
 	AccessToken       string             `json:"access_token,omitempty"`

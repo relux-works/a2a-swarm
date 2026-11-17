@@ -2835,6 +2835,34 @@ or unwritable state can only produce the local unavailable diagnostic until it
 recovers. Persisted times use wall time across exec, so a clock rollback delays
 the threshold. These diagnostics grant no terminal input or receipt authority.
 
+At start, and again after each in-place re-exec, the consumer records what it itself runs: the executable
+path it resolved from its own process (never by reading the launch alias, whose target may already be a newer
+image) and that loaded image's `vcs.revision` from its build info, plus whether that image is the target of its
+admitted launch alias. `bind status` prints `running_pid=N running_executable=PATH running_revision=REV
+on_launch_alias=true|false` (JSON: `running_pid`, `running_executable`, `running_revision`, `on_launch_alias`)
+alongside the existing `refresh` status, so the revision shown is the running consumer's, even when the installed
+alias already names a different build. A consumer that is not on its admitted launch alias (a direct image, a
+bare or relative launch name, or an alias that fails custody) also prints exactly
+`not on the launch alias: a new install will not reach this binder`; retargeting an alias cannot refresh it, so
+rebind it once through the installed command. A consumer that predates this record shows none of these fields
+(unknown), and a stopped binding shows no running claim. The record is diagnostic only: it grants no delivery,
+refresh or input authority, and it contains no screen, mail or peer text.
+
+The consumer also samples its own process CPU time (user+system, `getrusage`) every minute. When its share of
+one core over the sliding 10-minute window exceeds the configured threshold, it posts exactly one owner notice
+through the existing mail-alarm owner route, with the fixed text `Binder CPU alarm: identity=NAME host=HOST
+share=P% of one core window=10m revision=REV`, appends one `binding cpu alarm: share=P% window=10m revision=REV`
+line to `state/NAME.binding.log`, and records the episode in state. It never stops or restarts itself. The notice
+is not repeated while the share stays above the threshold, and it can fire again only after the window share has
+stayed at or below the threshold for a full window. A queued notice keeps the ordinary mail-alarm bounded retry
+with transaction deduplication, and a failed send never blocks delivery; an episode whose owner route is missing
+queues its one notice if a route appears before it rearms. The threshold is the optional `binder_cpu_percent`
+integer member of the identity's protected credential file `agents/NAME.json` (percent of one core, 0–1000),
+provisioned by the operator like `own_room` through `config.UpdateCredentials` (or by editing that 0600 file
+with no consumer running for the identity); absent, it defaults to 20, and an explicit `0` disables the alarm.
+The consumer re-reads it every minute, so a change needs no rebind. A build without `getrusage` samples nothing.
+The alarm text carries only identity, host, share, window and revision: no file content and no mailbox text.
+
 The only typed text is `a2a: N new peer events; run a2a inbox`. Ordinary fresh delivery requires two consecutive qualified rendered-empty
 observations at least `--interval` apart on the same pinned target. Busy, unknown, draft, gate, session/generation/daemon or authority changes
 reset qualification; the first glimpse spends no typing, hourly reservation or retry. Codex empty admission requires its shortcuts hint;

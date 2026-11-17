@@ -583,6 +583,10 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	defer stopAlarm()
 	alarmWake := make(chan struct{}, 1)
 	go a.runMailAlarm(alarmCtx, s, generation, alarmWake)
+	go a.runBinderCPU(alarmCtx, s, generation)
+	// Record what this process runs before the first cycle; an in-place
+	// re-exec re-enters here and replaces the record with the new image.
+	a.recordRunningInfo(s, generation)
 	delay := policy.Interval
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true

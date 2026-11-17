@@ -47,6 +47,7 @@ type TerminalBinding struct {
 	NoticePublication  string                     `json:"notice_publication"`
 	NoticeReport       *NoticeReport              `json:"notice_report,omitempty"`
 	ConsumerReport     *NoticeReport              `json:"consumer_report,omitempty"` // Diagnostic episode; never terminal authority.
+	Observe            *TerminalObserve           `json:"observe,omitempty"`         // Consumer self-observation; never terminal authority.
 	Generation         string                     `json:"generation"`
 	SessionID          string                     `json:"session_id"`
 	Host               string                     `json:"host"`
@@ -76,6 +77,21 @@ type TerminalBinding struct {
 	Rung               []string                   `json:"rung,omitempty"`
 	Reservations       []time.Time                `json:"reservations,omitempty"`
 	Idle               *TerminalIdle              `json:"idle_observation,omitempty"`
+}
+
+// TerminalObserve is the owning consumer's self-observation, written only by
+// that consumer at start and after each in-place re-exec: the executable it
+// resolved for itself, that image's build revision, and whether it was
+// launched through the admitted alias. The CPU fields fence its CPU
+// self-alarm to one notice per episode. Diagnostic only; it grants no
+// delivery, refresh or input authority, and old state without it is unknown.
+type TerminalObserve struct {
+	Executable    string    `json:"executable,omitempty"`
+	Revision      string    `json:"revision,omitempty"`
+	OnLaunchAlias bool      `json:"on_launch_alias,omitempty"`
+	CPUAlerted    bool      `json:"cpu_alerted,omitempty"`
+	CPUAlertAt    time.Time `json:"cpu_alert_at,omitempty"`
+	CPUJobID      string    `json:"cpu_job_id,omitempty"`
 }
 
 // NoticeReport pins an incident transaction before its network effect.

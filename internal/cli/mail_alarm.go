@@ -148,7 +148,7 @@ func alarmStatusForPolicy(identity string, st config.State, c config.MailAlarmCo
 		} else if j.Failure != "" {
 			route.State, route.Reason = "error", alarmFailureReason(j.Failure)
 		}
-		if !incidentAlarmKind(j.Kind) && j.Uncertain >= 2 {
+		if !incidentAlarmKind(j.Kind) && j.Kind != binderCPUAlarmKind && j.Uncertain >= 2 {
 			route.Held++
 			route.State, route.Reason = "error", "ambiguous alarm delivery; held"
 		}
@@ -341,6 +341,9 @@ func (a *App) observeMailAlarm(s *session, generation string, sample alarmSample
 	})
 }
 func alarmBody(j config.MailAlarmJob) string {
+	if j.Kind == binderCPUAlarmKind {
+		return fmt.Sprintf("Binder CPU alarm: identity=%s host=%s share=%s of one core window=%dm revision=%s", j.Identity, j.Host, cpuShareText(j.Count), j.Minutes, j.Reason)
+	}
 	if incidentAlarmKind(j.Kind) {
 		reason := orphanReason
 		if j.Kind == consumerUnavailableAlarmKind {
@@ -415,6 +418,11 @@ func validAlarmJob(job config.MailAlarmJob, identity string) bool {
 		since.second = since.second.Add(bound)
 		payload = ok && !at.before(since) && job.Count == 0 && job.Minutes == 0 && job.Reason == reason
 	}
+	if job.Kind == binderCPUAlarmKind {
+		since, ok := parseNoticeTimestamp(job.Since)
+		at, _ := parseNoticeTimestamp(job.At.UTC().Format(time.RFC3339Nano))
+		payload = ok && !at.before(since) && job.Count > 0 && job.Count <= 10000 && job.Minutes == int64(binderCPUWindow/time.Minute) && safeRevisionToken(job.Reason) && job.Target == ""
+	}
 	return payload && job.Identity == identity && config.ValidateName(job.Identity) == nil && aliasLocalRE.MatchString(job.Host) && strings.HasPrefix(job.ID, "a2a-mail-alarm-") && len(job.ID) == 47 && (job.Topic == "" || slugRE.MatchString(job.Topic) || alarmEventRE.MatchString(job.Topic)) && (job.ResolvedRoom == "" || alarmRoom(job.ResolvedRoom)) && (job.Root == "" || alarmEventRE.MatchString(job.Root)) && alarmRoom(job.Room) && (job.Target == "" || alarmTarget(job.Target))
 }
 
@@ -427,7 +435,7 @@ func (a *App) sendMailAlarm(ctx context.Context, s *session, generation string) 
 		if ctx.Err() != nil {
 			return
 		}
-		if !alarmJobEnabled(s, st, job) || !incidentAlarmKind(job.Kind) && job.Uncertain >= 2 || a.Now().Before(job.Next) {
+		if !alarmJobEnabled(s, st, job) || !incidentAlarmKind(job.Kind) && job.Kind != binderCPUAlarmKind && job.Uncertain >= 2 || a.Now().Before(job.Next) {
 			continue
 		}
 		// Invalid persisted outbox data is held, never reflected into a message.
@@ -551,6 +559,15 @@ func (a *App) finishMailAlarm(s *session, generation string, job config.MailAlar
 // Stranded incidents remain eligible through hook gates; ordinary mail alarms
 // retain their existing policy. A queued destination is pinned across edits.
 func alarmJobEnabled(s *session, st config.State, job config.MailAlarmJob) bool {
+	if job.Kind == binderCPUAlarmKind {
+		// Like incidents, the CPU self-alarm stays eligible through hook
+		// gates; only its owner audience can pause it.
+		c := config.MailAlarmConfig{Minutes: defaultAlarmMinutes, Owner: "auto"}
+		if st.MailAlarmConfig != nil {
+			c = *st.MailAlarmConfig
+		}
+		return !st.MailAlarm.Invalid && validAlarmConfig(c) && c.Owner != "off" && job.Target == ""
+	}
 	if incidentAlarmKind(job.Kind) {
 		c := config.MailAlarmConfig{Minutes: defaultAlarmMinutes, Owner: "auto"}
 		if st.MailAlarmConfig != nil {

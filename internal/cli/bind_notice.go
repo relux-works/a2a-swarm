@@ -228,6 +228,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		principalError = principalConfigProblem
 	}
 	stateWriters := s.stateWriterWarnings(ctx, st)
+	running := projectRunningStatus(st.Terminal)
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
@@ -242,9 +243,13 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			Recovery            *config.TerminalRecovery    `json:"recovery,omitempty"`
 			MailAlarm           mailAlarmStatus             `json:"mail_alarm"`
 			Refresh             string                      `json:"refresh"`
+			RunningPID          int                         `json:"running_pid,omitempty"`
+			RunningExecutable   string                      `json:"running_executable,omitempty"`
+			RunningRevision     string                      `json:"running_revision,omitempty"`
+			OnLaunchAlias       *bool                       `json:"on_launch_alias,omitempty"`
 			PrincipalError      string                      `json:"principal_error,omitempty"`
 			StateWriterWarnings []stateWriterWarning        `json:"state_writer_warnings,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, stateWriters})
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), running.PID, running.Executable, running.Revision, running.OnLaunchAlias, principalError, stateWriters})
 	}
 	for _, warning := range stateWriters {
 		a.printf("warning: %s: %s\n", warning.Source, warning.Detail)
@@ -260,6 +265,12 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	}
 	a.printAlarmStatus(alarmStatus(s, st))
 	a.printf("refresh=%s\n", terminalRefreshStatus(st.Terminal))
+	if running.Executable != "" {
+		a.printf("running_pid=%d running_executable=%s running_revision=%s on_launch_alias=%t\n", running.PID, running.Executable, running.Revision, *running.OnLaunchAlias)
+		if !*running.OnLaunchAlias {
+			a.printf("%s\n", notOnLaunchAliasLine)
+		}
+	}
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
 	if readiness != nil {
 		a.printf("readiness=%s reason=%s version=%s since=%s unknown_keys=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano), readiness.UnknownKeys)
