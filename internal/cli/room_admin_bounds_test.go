@@ -97,6 +97,14 @@ func TestRoomAdminEntityBounds(t *testing.T) {
 					if code != 0 {
 						t.Fatalf("inclusive boundary exit%d %s", code, f.err.String())
 					}
+					m, err := decodeAdminRecord(f.out.Bytes())
+					want := "VERIFIED"
+					if stage == "get" {
+						want = "PRESENT"
+					}
+					if err != nil || m["outcome"] != want || f.err.Len() != 0 {
+						t.Fatal("inclusive entity did not produce the expected complete record")
+					}
 					return
 				}
 				if code != 1 {
