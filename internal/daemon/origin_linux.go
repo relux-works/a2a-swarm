@@ -53,7 +53,7 @@ func NewOriginService(cfg OriginConfig) (*OriginService, error) {
 // The private constructor accepts the observed service UID for isolated unit
 // fixtures; the public entry always supplies the kernel's effective UID.
 func newOriginService(cfg OriginConfig, serviceUID uint32) (*OriginService, error) {
-	if cfg.Generations == nil || cfg.Launcher.Generation == 0 || cfg.Launcher.UID == 0 || cfg.Launcher.UID == serviceUID {
+	if cfg.Generations == nil || !runorigin.ValidGeneration(cfg.Launcher.Generation) || cfg.Launcher.UID == 0 || cfg.Launcher.UID == serviceUID {
 		return nil, runorigin.ErrRefused
 	}
 	incarnation, err := originRandomID()
@@ -287,7 +287,7 @@ func (s *OriginService) authenticateOrigin(ctx context.Context, c *net.UnixConn)
 	if err != nil {
 		return err
 	}
-	if generation != s.cfg.Launcher.Generation {
+	if !runorigin.ValidGeneration(generation) || generation != s.cfg.Launcher.Generation {
 		return runorigin.ErrRefused
 	}
 	return nil

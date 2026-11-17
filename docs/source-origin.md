@@ -6,6 +6,15 @@ and Curator hooks r1.2
 (`15e7e393b4254f9f6ef2ef211667d203204d095e8b83f71e696dc03673b4f021`).
 This source library does not activate a service.
 
+Generation spelling is a **breaking change of the public `runorigin` package**:
+`Principal.Generation` is now `string`, and `GenerationAuthority.CurrentGeneration`
+returns `(string, error)`, replacing `uint64`. Callers must migrate both their
+principal values and authority implementations to the user manager's generation
+journal spelling: exactly 32 lowercase hexadecimal characters, not all zero.
+The value is opaque and compared bytewise, never converted, truncated, padded
+or case-folded. UID and generation come only from the user manager; no local
+counter or station/runtime generation can substitute for journal authority.
+
 ## Build boundary
 
 `runorigin.Producer` is an optional, explicit typed dependency. It is unrelated
@@ -65,7 +74,7 @@ and the connection closes, before any event read or checker/prepared work.
 Each request envelope contains exactly `op` and `params`:
 
 ```json
-{"op":"source.origin.prepare/1","params":{"request_id":"11111111111111111111111111111111","launch_nonce":"22222222222222222222222222222222","event_ref":{"room_id":"!room:example","event_id":"$matrix-event"},"input_principal":{"uid":4242,"generation":19}}}
+{"op":"source.origin.prepare/1","params":{"request_id":"11111111111111111111111111111111","launch_nonce":"22222222222222222222222222222222","event_ref":{"room_id":"!room:example","event_id":"$matrix-event"},"input_principal":{"uid":4242,"generation":"fedcba9876543210fedcba9876543210"}}}
 ```
 
 ```json
@@ -76,10 +85,17 @@ Both successful operations return exactly `runorigin.PreparedOrigin`'s seven
 fields. Validate repeats the original request ID and every preparation binding:
 
 ```json
-{"request_id":"11111111111111111111111111111111","launch_nonce":"22222222222222222222222222222222","input_principal":{"uid":4242,"generation":19},"identity_registration_number":"protected-registration","source_incarnation":"fedcba9876543210fedcba9876543210","prepared_id":"0123456789abcdef0123456789abcdef","origin":{"kind":"admission","event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","grant_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tip_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","mode":"enforcing","command_id":""}}
+{"request_id":"11111111111111111111111111111111","launch_nonce":"22222222222222222222222222222222","input_principal":{"uid":4242,"generation":"fedcba9876543210fedcba9876543210"},"identity_registration_number":"protected-registration","source_incarnation":"fedcba9876543210fedcba9876543210","prepared_id":"0123456789abcdef0123456789abcdef","origin":{"kind":"admission","event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","grant_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tip_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","mode":"enforcing","command_id":""}}
 ```
 
-Scalar rules: UID is a JSON uint32; generation is a nonzero JSON uint64.
+Scalar rules: UID is a JSON uint32; generation is only a JSON string satisfying
+`runorigin.ValidGeneration`: exactly 32 characters of `0123456789abcdef`, except
+32 zeros. JSON numbers of any value, null, empty, uppercase/mixed-case, non-hex,
+and 31/33-character strings refuse with `run_origin_refused` before any
+per-request authority read or producer call (hello authentication precedes the
+request). The configured launcher generation and every current authority value
+must pass the same validator. A one-character difference refuses; no
+normalization or numeric compatibility path exists.
 Input UID zero is refused. The configured launcher UID must be nonzero and
 must differ from the service's effective UID. Request ID and launch nonce are
 exactly 32 lowercase hex characters; the launcher draws each launch nonce from
@@ -110,9 +126,9 @@ subcodes. Bind/end UNKNOWN belongs to the launcher/Keymaker, not this endpoint.
 ## Authentication, records and budgets
 
 The server checks real Linux SO_PEERCRED against the protected launcher UID,
-then consults injected CURRENT generation authority and compares the protected
-launcher generation. It checks again for every prepare/validate before calling
-the producer. A denied UID does not even reach the generation dependency.
+then consults injected CURRENT generation authority, validates its journal
+spelling and compares it bytewise with the protected launcher generation. It
+checks again for every prepare/validate before calling the producer. A denied UID does not even reach the generation dependency.
 Input/caller fields cannot authenticate a connection.
 
 SourceControlDir must already exist, be A-owned exactly 0711, and have no
@@ -167,7 +183,8 @@ entry points (logs under `.temp/P17-A/`, fixtures in test temp dirs):
 
 ```sh
 go test ./internal/daemon -run '^Test(SourceOrigin|Rev365)' -race -count=1 -v
-A2A_RUN_ORIGIN_PLANTS=1 go test ./internal/daemon -run '^TestSourceOriginNarrowingPlants$' -count=1 -v
+go test ./runorigin ./internal/daemon -run '^Test(ValidGeneration|SourceOriginGeneration(Wire|Authority|Configuration))$' -count=1 -v
+A2A_RUN_ORIGIN_PLANTS=1 go test ./internal/daemon -run '^TestSourceOrigin(Narrowing|Generation)Plants$' -count=1 -v
 go test ./... -race
 go vet ./...
 go build ./...
@@ -176,7 +193,16 @@ go build ./...
 The opt-in plant runner uses Go overlays, checks exact named test failures and
 exit 1 (rejecting compile errors/panics as evidence), then reruns unchanged
 source at exit 0. `A2A_ORIGIN_GO_ENV=/absolute/env.sh` optionally requires the
-subprocesses to source the same admitted environment explicitly.
+subprocesses to source the same admitted environment explicitly. Generation
+plants cover case folding, all-zero admission, numeric JSON admission, an
+off-by-one length check and omitted authority spelling validation, with passing
+controls before and after each overlay. The authority-validation witness alone
+bypasses the private fixture's constructor before serving, so an invalid
+launcher pin cannot mask the current-authority validator through inequality;
+production configuration remains immutable and validated at construction.
+Generation refusal tests assert exact closed error frames, no producer/session
+calls and unchanged control-directory contents/modes. They do not claim to
+observe arbitrary writes outside the fixture directory.
 
 For confined validation, use a write-confined sandbox with a private temporary
 directory and PID namespace; keep compiler and test scratch in the authorized

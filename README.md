@@ -92,6 +92,11 @@ The Linux [P17-A Source origin library](docs/source-origin.md) provides a separa
 closed control socket and optional typed producer seam. Stock upstream has no
 producer and refuses prepare with `origin_not_supported`. Service wiring, rich
 checker implementation and deployment qualification remain downstream work.
+Its public `runorigin` generation API has a breaking change: principal generations
+and current-authority returns are opaque strings, exactly 32 lowercase hex
+characters and not all zero, sourced only from the user manager's generation
+journal and compared bytewise. Callers must replace the former numeric types;
+the wire accepts only that JSON string spelling, never a number.
 
 The default-off [agent pair DM](docs/agent-dm.md) supports exact host-admitted
 keeper/orchestrator pairs with explicit peer join and sole-recipient delivery:

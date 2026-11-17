@@ -69,7 +69,7 @@ type rev365PausingAuthority struct {
 	release chan struct{}
 }
 
-func (a *rev365PausingAuthority) CurrentGeneration(ctx context.Context, uid uint32) (uint64, error) {
+func (a *rev365PausingAuthority) CurrentGeneration(ctx context.Context, uid uint32) (string, error) {
 	at := a.pauseAt
 	if at == 0 {
 		at = 2
@@ -79,10 +79,10 @@ func (a *rev365PausingAuthority) CurrentGeneration(ctx context.Context, uid uint
 		select {
 		case <-a.release:
 		case <-ctx.Done():
-			return 0, ctx.Err()
+			return "", ctx.Err()
 		}
 	}
-	return 11, nil
+	return launcherGeneration, nil
 }
 
 // TestRev365PathChangeDuringAuthentication pauses the production authority call after the per-operation path check, changes socket mode, and requires refusal before producer construction.

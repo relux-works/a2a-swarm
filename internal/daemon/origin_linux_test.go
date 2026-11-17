@@ -24,15 +24,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const launcherGeneration = "0123456789abcdef0123456789abcdef"
+const inputGeneration = "fedcba9876543210fedcba9876543210"
+const nextLauncherGeneration = "0123456789abcdef0123456789abcdee"
+
 type originAuthority struct {
-	generation atomic.Uint64
+	generation atomic.Value
 	calls      atomic.Int32
 	err        error
 }
 
-func (g *originAuthority) CurrentGeneration(ctx context.Context, uid uint32) (uint64, error) {
+func (g *originAuthority) CurrentGeneration(ctx context.Context, uid uint32) (string, error) {
 	g.calls.Add(1)
-	return g.generation.Load(), g.err
+	generation, _ := g.generation.Load().(string)
+	return generation, g.err
 }
 
 type originProducer struct {
@@ -124,10 +129,14 @@ func shortOriginDir(t *testing.T) string {
 }
 func startOrigin(t *testing.T, producer *originProducer, change func(*OriginConfig)) *originFixture {
 	t.Helper()
+	return startOriginBeforeServe(t, producer, change, nil)
+}
+func startOriginBeforeServe(t *testing.T, producer *originProducer, change func(*OriginConfig), beforeServe func(*OriginService)) *originFixture {
+	t.Helper()
 	dir := shortOriginDir(t)
 	g := &originAuthority{}
-	g.generation.Store(11)
-	cfg := OriginConfig{ControlDir: dir, Launcher: runorigin.Principal{UID: uint32(os.Geteuid()), Generation: 11}, Generations: g}
+	g.generation.Store(launcherGeneration)
+	cfg := OriginConfig{ControlDir: dir, Launcher: runorigin.Principal{UID: uint32(os.Geteuid()), Generation: launcherGeneration}, Generations: g}
 	if producer != nil {
 		cfg.Producer = producer
 	}
@@ -139,6 +148,9 @@ func startOrigin(t *testing.T, producer *originProducer, change func(*OriginConf
 	s, err := newOriginService(cfg, uint32(os.Geteuid())+1000000)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if beforeServe != nil {
+		beforeServe(s)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	f := &originFixture{s: s, dir: dir, generation: g, producer: producer, cancel: cancel, done: make(chan error, 1)}
@@ -222,7 +234,7 @@ func sendOrigin(t *testing.T, c *net.UnixConn, op string, params any) {
 	}
 }
 func prepareParams() map[string]any {
-	return map[string]any{"request_id": "11111111111111111111111111111111", "launch_nonce": "22222222222222222222222222222222", "event_ref": runorigin.EventRef{RoomID: "!room:example", EventID: "$matrix"}, "input_principal": runorigin.Principal{UID: 4242, Generation: 19}}
+	return map[string]any{"request_id": "11111111111111111111111111111111", "launch_nonce": "22222222222222222222222222222222", "event_ref": runorigin.EventRef{RoomID: "!room:example", EventID: "$matrix"}, "input_principal": runorigin.Principal{UID: 4242, Generation: inputGeneration}}
 }
 func validateParams(p runorigin.PreparedOrigin) map[string]any {
 	return map[string]any{"request_id": p.RequestID, "launch_nonce": p.LaunchNonce, "prepared_id": p.PreparedID, "source_incarnation": p.SourceIncarnation}
@@ -232,7 +244,7 @@ func prepareOn(t *testing.T, c *net.UnixConn) runorigin.PreparedOrigin {
 	sendOrigin(t, c, originPrepare, prepareParams())
 	b := originRead(t, c)
 	var p runorigin.PreparedOrigin
-	if err := json.Unmarshal(b, &p); err != nil || !p.Origin.Valid() || p.RequestID != "11111111111111111111111111111111" || p.LaunchNonce != "22222222222222222222222222222222" || p.InputPrincipal != (runorigin.Principal{UID: 4242, Generation: 19}) || p.IdentityRegistrationNumber != "registration-7" || !runorigin.LowerHex(p.PreparedID, 32) {
+	if err := json.Unmarshal(b, &p); err != nil || !p.Origin.Valid() || p.RequestID != "11111111111111111111111111111111" || p.LaunchNonce != "22222222222222222222222222222222" || p.InputPrincipal != (runorigin.Principal{UID: 4242, Generation: inputGeneration}) || p.IdentityRegistrationNumber != "registration-7" || !runorigin.LowerHex(p.PreparedID, 32) {
 		t.Fatalf("prepare: %s, %v", b, err)
 	}
 	var members map[string]json.RawMessage
@@ -436,7 +448,7 @@ func TestSourceOriginPeerGate(t *testing.T) {
 					cfg.Launcher.UID++
 				}
 				if name == "generation" {
-					cfg.Launcher.Generation++
+					cfg.Launcher.Generation = nextLauncherGeneration
 				}
 				if name == "missing-authority" {
 					cfg.Generations.(*originAuthority).err = runorigin.ErrRefused
@@ -449,7 +461,7 @@ func TestSourceOriginPeerGate(t *testing.T) {
 			if name == "changed-generation" {
 				c = f.client(t)
 				prepared := prepareOn(t, c)
-				f.generation.generation.Store(12)
+				f.generation.generation.Store(nextLauncherGeneration)
 				sendOrigin(t, c, originValidate, validateParams(prepared))
 			} else {
 				c = f.dial(t)
@@ -489,9 +501,9 @@ func TestSourceOriginClosedWire(t *testing.T) {
 		"duplicate-principal":   strings.Replace(string(good), `"uid":`, `"uid":1,"uid":`, 1),
 		"unknown-principal":     strings.Replace(string(good), `"uid":`, `"role":"launcher","uid":`, 1),
 		"null-principal":        strings.Replace(string(good), `"uid":4242`, `"uid":null`, 1),
-		"zero-generation":       strings.Replace(string(good), `"generation":19`, `"generation":0`, 1),
+		"zero-generation":       strings.Replace(string(good), `"generation":"`+inputGeneration+`"`, `"generation":0`, 1),
 		"negative-uid":          strings.Replace(string(good), `"uid":4242`, `"uid":-1`, 1),
-		"fractional-generation": strings.Replace(string(good), `"generation":19`, `"generation":1.5`, 1),
+		"fractional-generation": strings.Replace(string(good), `"generation":"`+inputGeneration+`"`, `"generation":1.5`, 1),
 		"missing":               strings.Replace(string(good), `,"request_id":"11111111111111111111111111111111"`, "", 1),
 		"case":                  strings.Replace(string(good), `"request_id"`, `"Request_id"`, 1),
 		"unknown-op":            strings.Replace(string(good), originPrepare, "j7_run_bind", 1),
@@ -499,7 +511,7 @@ func TestSourceOriginClosedWire(t *testing.T) {
 		"array":                 `[]`,
 		"invalid-utf8":          "{\"op\":\"\xff\"}",
 		"uid-overflow":          strings.Replace(string(good), `"uid":4242`, `"uid":4294967296`, 1),
-		"generation-overflow":   strings.Replace(string(good), `"generation":19`, `"generation":18446744073709551616`, 1),
+		"generation-overflow":   strings.Replace(string(good), `"generation":"`+inputGeneration+`"`, `"generation":18446744073709551616`, 1),
 		"uid-string":            strings.Replace(string(good), `"uid":4242`, `"uid":"4242"`, 1),
 		"empty-nonce":           strings.Replace(string(good), `"launch_nonce":"22222222222222222222222222222222"`, `"launch_nonce":""`, 1),
 		"trailing":              string(good) + `{}`,
@@ -707,8 +719,8 @@ func TestSourceOriginSocketPath(t *testing.T) {
 			}
 			p := fakeOriginProducer()
 			g := &originAuthority{}
-			g.generation.Store(11)
-			s, err := newOriginService(OriginConfig{ControlDir: dir, Launcher: runorigin.Principal{UID: uint32(os.Geteuid()), Generation: 11}, Generations: g, Producer: p}, uint32(os.Geteuid())+1000000)
+			g.generation.Store(launcherGeneration)
+			s, err := newOriginService(OriginConfig{ControlDir: dir, Launcher: runorigin.Principal{UID: uint32(os.Geteuid()), Generation: launcherGeneration}, Generations: g, Producer: p}, uint32(os.Geteuid())+1000000)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -851,8 +863,8 @@ func TestSourceOriginErrorBudget(t *testing.T) {
 			t.Fatalf("control did not fill socket: %v", err)
 		}
 		generation := &originAuthority{}
-		generation.generation.Store(11)
-		service, err := newOriginService(OriginConfig{Launcher: runorigin.Principal{UID: uint32(os.Geteuid()), Generation: 11}, Generations: generation, Producer: fakeOriginProducer()}, uint32(os.Geteuid())+1000000)
+		generation.generation.Store(launcherGeneration)
+		service, err := newOriginService(OriginConfig{Launcher: runorigin.Principal{UID: uint32(os.Geteuid()), Generation: launcherGeneration}, Generations: generation, Producer: fakeOriginProducer()}, uint32(os.Geteuid())+1000000)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -894,8 +906,8 @@ func TestSourceOriginCorrelationPins(t *testing.T) {
 // TestSourceOriginUIDPins proves public construction rejects zero/shared launcher UIDs and wire decoding rejects zero input beside valid separate-UID policy controls.
 func TestSourceOriginUIDPins(t *testing.T) {
 	g := &originAuthority{}
-	g.generation.Store(11)
-	cfg := OriginConfig{Launcher: runorigin.Principal{UID: uint32(os.Geteuid()) + 1, Generation: 11}, Generations: g, Producer: fakeOriginProducer()}
+	g.generation.Store(launcherGeneration)
+	cfg := OriginConfig{Launcher: runorigin.Principal{UID: uint32(os.Geteuid()) + 1, Generation: launcherGeneration}, Generations: g, Producer: fakeOriginProducer()}
 	t.Run("distinct-launcher", func(t *testing.T) {
 		if _, err := NewOriginService(cfg); err != nil {
 			t.Fatal(err)
@@ -916,7 +928,7 @@ func TestSourceOriginUIDPins(t *testing.T) {
 		f := startOrigin(t, p, nil)
 		c := f.client(t)
 		params := prepareParams()
-		params["input_principal"] = runorigin.Principal{UID: 0, Generation: 19}
+		params["input_principal"] = runorigin.Principal{UID: 0, Generation: inputGeneration}
 		sendOrigin(t, c, originPrepare, params)
 		wantOriginCode(t, c, runorigin.Refused, f.s.incarnation)
 		if p.opens.Load() != 0 {

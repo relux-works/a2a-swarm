@@ -1,5 +1,11 @@
 // Package runorigin defines the optional P17 typed-result seam. Stock upstream
 // builds do not link a Producer. Generic admission.Decision is not this capability.
+//
+// Generations come only from the user manager's generation journal: exactly 32
+// lowercase hexadecimal characters, excluding the all-zero value. They are opaque
+// strings compared bytewise, never numbers. Principal.Generation and
+// GenerationAuthority.CurrentGeneration now use string instead of uint64; this
+// is a breaking public API change and callers must migrate to the journal spelling.
 package runorigin
 
 import (
@@ -23,7 +29,7 @@ var (
 
 type Principal struct {
 	UID        uint32 `json:"uid"`
-	Generation uint64 `json:"generation"`
+	Generation string `json:"generation"`
 }
 
 type EventRef struct {
@@ -58,6 +64,11 @@ func LowerHex(s string, size int) bool {
 		}
 	}
 	return true
+}
+
+// ValidGeneration checks the user manager generation journal's token spelling.
+func ValidGeneration(s string) bool {
+	return LowerHex(s, 32) && s != "00000000000000000000000000000000"
 }
 
 type Result struct {
@@ -95,10 +106,11 @@ type Session interface {
 }
 
 // GenerationAuthority reads CURRENT protected authority, never the station
-// registry or runtime notification generation. Missing authority is a refusal;
+// registry or runtime notification generation. Values must pass ValidGeneration
+// and come from the user manager's generation journal. Missing authority is a refusal;
 // return ErrUnavailable only for a retryable dependency outage.
 type GenerationAuthority interface {
-	CurrentGeneration(context.Context, uint32) (uint64, error)
+	CurrentGeneration(context.Context, uint32) (string, error)
 }
 
 type PreparedOrigin struct {

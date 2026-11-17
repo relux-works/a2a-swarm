@@ -114,10 +114,14 @@ func decodeOriginRequest(b []byte) (originRequest, error) {
 	if err != nil {
 		return r, err
 	}
-	// Unmarshal into integers rejects fractions, signs, strings and overflow;
-	// explicit null must be rejected separately (encoding/json accepts it as zero).
-	if bytes.Equal(bytes.TrimSpace(p["uid"]), []byte("null")) || bytes.Equal(bytes.TrimSpace(p["generation"]), []byte("null")) ||
-		json.Unmarshal(p["uid"], &r.input.UID) != nil || json.Unmarshal(p["generation"], &r.input.Generation) != nil || r.input.Generation == 0 || r.input.UID == 0 {
+	// UID remains an integer; generation accepts only the journal's string spelling.
+	// encoding/json accepts null for scalar destinations, so reject it explicitly
+	// for UID and require a valid nonempty generation string.
+	if bytes.Equal(bytes.TrimSpace(p["uid"]), []byte("null")) ||
+		json.Unmarshal(p["uid"], &r.input.UID) != nil || r.input.UID == 0 {
+		return r, runorigin.ErrRefused
+	}
+	if r.input.Generation, ok = originString(p["generation"]); !ok || !runorigin.ValidGeneration(r.input.Generation) {
 		return r, runorigin.ErrRefused
 	}
 	return r, nil
