@@ -404,6 +404,7 @@ type StateDecodeStats struct {
 	ScopeHits, ScopeMisses, ScopeFallbacks, WriterClones               int64
 	StateDigests, CanonicalStates, SealedStates, WriterSealChecks      int64
 	StateEncodes, MailboxDecodes, StateWriteBytes, MailboxWriteBytes   int64
+	MailboxParseBytes, MailboxIncrementalReads                         int64
 }
 
 type stateStatCounters struct {
@@ -412,6 +413,7 @@ type stateStatCounters struct {
 	scopeHits, scopeMisses, scopeFallbacks, writerClones               atomic.Int64
 	stateDigests, canonicalStates, sealedStates, writerSealChecks      atomic.Int64
 	stateEncodes, mailboxDecodes, stateWriteBytes, mailboxWriteBytes   atomic.Int64
+	mailboxParseBytes, mailboxIncrementalReads                         atomic.Int64
 }
 
 var globalStateStats stateStatCounters
@@ -428,6 +430,7 @@ func ReadStateDecodeStats() StateDecodeStats {
 		SealedStates: g.sealedStates.Load(), WriterSealChecks: g.writerSealChecks.Load(),
 		StateEncodes: g.stateEncodes.Load(), MailboxDecodes: g.mailboxDecodes.Load(),
 		StateWriteBytes: g.stateWriteBytes.Load(), MailboxWriteBytes: g.mailboxWriteBytes.Load(),
+		MailboxParseBytes: g.mailboxParseBytes.Load(), MailboxIncrementalReads: g.mailboxIncrementalReads.Load(),
 	}
 }
 
