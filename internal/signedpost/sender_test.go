@@ -477,9 +477,22 @@ func TestSignRoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeSigner{identity: validIdentity(t)}
 			now := testNow
-			signed, err := newSender(f, &now).Sign(context.Background(), draft("hello", tc.to...))
+			s := newSender(f, &now)
+			var envelopeBytes, attestationBytes, sizeCalls int
+			s.CheckSize = func(envelope, attestation int) error {
+				if f.signCalls != 0 {
+					t.Fatal("size check ran after Sign")
+				}
+				envelopeBytes, attestationBytes = envelope, attestation
+				sizeCalls++
+				return nil
+			}
+			signed, err := s.Sign(context.Background(), draft("hello", tc.to...))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if sizeCalls != 1 || envelopeBytes != len(signed.Envelope) || attestationBytes != len(signed.Attestation) {
+				t.Fatal("pre-sign sizing differed from the completed envelope or attestation")
 			}
 			if f.identityCalls != 1 || f.signCalls != 1 {
 				t.Fatalf("signer calls: identity %d sign %d", f.identityCalls, f.signCalls)

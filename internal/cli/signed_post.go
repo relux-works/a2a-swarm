@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/signedpost"
@@ -50,6 +52,13 @@ func (s *session) sendSignedPost(ctx context.Context, roomID, label string, h He
 	}
 	a := s.app
 	sender := signedpost.Sender{Signer: a.postSigner, Audience: a.postAudience, Qualified: a.postQualified, Now: a.Now}
+	sender.CheckSize = func(envelopeBytes, attestationBytes int) error {
+		// Both carried strings use the base64url alphabet, which JSON never
+		// escapes. Equal-length stand-ins therefore measure the exact event.
+		content[matrix.EnvelopeContentKey] = strings.Repeat("A", base64.RawURLEncoding.EncodedLen(envelopeBytes))
+		content[signedpost.AttestationContentKey] = strings.Repeat("A", base64.RawURLEncoding.EncodedLen(attestationBytes))
+		return matrix.CheckEventContentBudget(content)
+	}
 	draft := signedpost.Draft{Room: roomID, Recipients: mentions, Kind: h.Kind, Topic: h.Topic, Re: h.Re, Text: []byte(body)}
 	var id, txn string
 	var sent []byte

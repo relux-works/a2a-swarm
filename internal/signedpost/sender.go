@@ -258,6 +258,11 @@ type Sender struct {
 	// production leaves it nil and every signed post ends in
 	// signer_unqualified. Only tests set it.
 	Qualified func(Identity) bool
+	// CheckSize, when set, checks the exact completed envelope and raw
+	// attestation byte lengths before any signature is requested. The carrier
+	// can refuse an event that would exceed its budget without wasting a
+	// signature. It must still check the assembled event before publication.
+	CheckSize func(envelopeBytes, attestationBytes int) error
 	// Now and Rand default to the wall clock and the system random source.
 	Now  func() time.Time
 	Rand io.Reader
@@ -295,6 +300,8 @@ func (s Sender) Prepare(ctx context.Context, room string, recipients []string) (
 	if err != nil {
 		return Prepared{}, classify(err)
 	}
+	// Own the returned bytes before any check or qualification callback uses them.
+	id.Attestation = append([]byte(nil), id.Attestation...)
 	if err := CheckIdentityShape(id); err != nil {
 		return Prepared{}, err
 	}
@@ -304,7 +311,6 @@ func (s Sender) Prepare(ctx context.Context, room string, recipients []string) (
 	if s.Qualified == nil || !s.Qualified(id) {
 		return Prepared{}, Refuse(RefuseSignerUnqualified, DetailNoPin)
 	}
-	id.Attestation = append([]byte(nil), id.Attestation...)
 	return Prepared{Identity: id, To: to, Recipients: list}, nil
 }
 
@@ -378,6 +384,21 @@ func (s Sender) Sign(ctx context.Context, d Draft) (Signed, error) {
 	if len(preimage) > MaxPreimageBytes {
 		return Signed{}, Refuse(RefuseRecipientsTooMany, DetailPreimage)
 	}
+	id, err := record.ContentID(MessageType, body)
+	if err != nil {
+		return Signed{}, errSigningInput
+	}
+	if s.CheckSize != nil {
+		// A raw 64-byte signature always has the same unpadded base64url
+		// length. Its alphabet needs no JSON escaping, just like this stand-in.
+		sizing, err := encodeEnvelope(body, id, p.Identity.Key, strings.Repeat("A", base64.RawURLEncoding.EncodedLen(64)))
+		if err != nil {
+			return Signed{}, errSigningInput
+		}
+		if err := s.CheckSize(len(sizing), len(p.Identity.Attestation)); err != nil {
+			return Signed{}, err
+		}
+	}
 	var key, signature []byte
 	for attempt := 1; ; attempt++ {
 		// The signer gets its own copy: the check below is over the bytes built here.
@@ -398,24 +419,24 @@ func (s Sender) Sign(ctx context.Context, d Draft) (Signed, error) {
 	if len(signature) != 64 || record.VerifySignature(p.Identity.Key, signature, preimage) != nil {
 		return Signed{}, Refuse(RefuseSignerResultInvalid, DetailSignature)
 	}
-	id, err := record.ContentID(MessageType, body)
+	envelope, err := encodeEnvelope(body, id, p.Identity.Key, base64.RawURLEncoding.EncodeToString(signature))
 	if err != nil {
 		return Signed{}, errSigningInput
 	}
-	envelope, err := record.Canonical(map[string]any{
+	return Signed{Envelope: envelope, ID: id, Attestation: p.Identity.Attestation, Expires: expires}, nil
+}
+
+func encodeEnvelope(body map[string]any, id, key, signature string) ([]byte, error) {
+	return record.Canonical(map[string]any{
 		"version": EnvelopeVersion,
 		"body":    body,
 		"id":      id,
 		"signatures": []any{map[string]any{
 			"role": SignatureRole,
-			"key":  p.Identity.Key,
-			"sig":  base64.RawURLEncoding.EncodeToString(signature),
+			"key":  key,
+			"sig":  signature,
 		}},
 	})
-	if err != nil {
-		return Signed{}, errSigningInput
-	}
-	return Signed{Envelope: envelope, ID: id, Attestation: p.Identity.Attestation, Expires: expires}, nil
 }
 
 type finalError struct{ err error }

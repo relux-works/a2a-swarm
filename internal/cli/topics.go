@@ -494,13 +494,13 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 			return err
 		}
 	}
+	if *topic == "" && *re == "" {
+		return usagef("--topic is required unless --re selects a reply target (%s)", use)
+	}
 	if *opts.sign {
 		if err := signedPostSelection(a, envelopeMode, *withVoice, len(pos)); err != nil {
 			return err
 		}
-	}
-	if *topic == "" && *re == "" {
-		return usagef("--topic is required unless --re selects a reply target (%s)", use)
 	}
 	if err := validateMessageKind(*kind); err != nil {
 		return err

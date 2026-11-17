@@ -123,25 +123,46 @@ func signedPostRecipients(n int) string {
 	return strings.Join(names, ",")
 }
 
-// Proves `post --sign` with no signer linked (the production wiring) is refused
-// with signer_unconfigured, sends no event and prints nothing on stdout, while
-// the same post without --sign is sent. The refusal is not a silent unsigned post.
-// Claim: a missing signer refuses without publication while the unsigned control sends.
+// Claim: a missing signer refuses with zero HTTP and no @file consumption; the unsigned controls send the untouched body.
 func TestPostSignUnconfiguredPublishesNothing(t *testing.T) {
-	e, _ := world(t)
-	e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t)
-	args := []string{"post", "proj", "--topic", "alpha", "--to", "alice", "text"}
+	for _, fileBody := range []bool{false, true} {
+		t.Run(fmt.Sprintf("file-body-%v", fileBody), func(t *testing.T) {
+			e, _ := world(t)
+			e.as("alice", "topic", "new", "proj", "alpha", "A").ok(t)
+			body := "text"
+			if fileBody {
+				// A pipe exposed as @file is consumable only once. The unsigned
+				// control can read it only if the refusal left its bytes untouched.
+				r, w, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { r.Close(); w.Close() })
+				if _, err := w.WriteString(body); err != nil {
+					t.Fatal(err)
+				}
+				if err := w.Close(); err != nil {
+					t.Fatal(err)
+				}
+				body = fmt.Sprintf("@/dev/fd/%d", r.Fd())
+			}
+			args := []string{"post", "proj", "--topic", "alpha", "--to", "alice", body}
+			before, calls := e.eventCount(), len(e.hs.Calls())
+			r := e.as("bob", append(args, "--sign")...)
+			r.failsWith(t, ExitError, "a2a: signed post refused: signer_unconfigured")
+			if e.eventCount() != before || r.stdout != "" || len(e.hs.Calls()) != calls {
+				t.Fatalf("refusal had effects: events %d->%d HTTP %d->%d stdout %q", before, e.eventCount(), calls, len(e.hs.Calls()), r.stdout)
+			}
 
-	before := e.eventCount()
-	r := e.as("bob", append(args, "--sign")...)
-	r.failsWith(t, ExitError, "a2a: signed post refused: signer_unconfigured")
-	if e.eventCount() != before || r.stdout != "" {
-		t.Fatalf("refused signed post had an effect: events %d->%d stdout %q", before, e.eventCount(), r.stdout)
-	}
-
-	r = e.as("bob", args...).ok(t)
-	if e.eventCount() != before+1 || !strings.HasPrefix(strings.TrimSpace(r.stdout), "$") {
-		t.Fatalf("unsigned control not sent: events %d->%d out %q", before, e.eventCount(), r.stdout)
+			r = e.as("bob", args...).ok(t)
+			id := strings.TrimSpace(r.stdout)
+			if e.eventCount() != before+1 || !strings.HasPrefix(id, "$") || len(e.hs.Calls()) == calls {
+				t.Fatal("unsigned control did not send")
+			}
+			if body := storedContent(t, e, id)["body"].(string); !strings.HasSuffix(body, "\ntext") {
+				t.Fatal("unsigned control did not read the untouched body")
+			}
+		})
 	}
 }
 

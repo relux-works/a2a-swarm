@@ -9,7 +9,7 @@ import (
 	"github.com/relux-works/swarma-envelope/record"
 )
 
-// Proves carried attestation binding rejects tampering, malformed encoding and oversize values beside intact and absent controls.
+// Claim: carried attestation binding rejects tampering, malformed encoding, oversize values and case-alias keys beside intact and absent controls.
 func TestPostSignAttestationTamper(t *testing.T) {
 	const member = "works.relux.swarm.author_attestation"
 	e, room, _ := signedPostWorld(t)
@@ -43,10 +43,12 @@ func TestPostSignAttestationTamper(t *testing.T) {
 		name   string
 		value  any
 		absent bool
+		alias  bool
 		want   string
 	}{
 		{name: "intact", value: carried, want: "verified: " + signedPostAuthor},
 		{name: "absent", absent: true, want: "verified: " + signedPostAuthor},
+		{name: "alias-key", alias: true, value: carried, want: "invalid: content_key_alias"},
 		{name: "bound-8192", value: encode(append(append([]byte(nil), a...), bytes.Repeat([]byte{' '}, 8192-len(a))...)), want: "verified: " + signedPostAuthor},
 		{name: "flipped-byte", value: encode(changed), want: "invalid: attestation_mismatch"},
 		{name: "other-content-id", value: encode(otherRaw), want: "invalid: attestation_mismatch"},
@@ -60,8 +62,11 @@ func TestPostSignAttestationTamper(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			content := storedContent(t, e, id)
-			if tc.absent {
+			if tc.absent || tc.alias {
 				delete(content, member)
+				if tc.alias {
+					content[strings.ToUpper(member)] = tc.value
+				}
 			} else {
 				content[member] = tc.value
 			}
