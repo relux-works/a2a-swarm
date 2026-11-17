@@ -95,6 +95,137 @@ Hook stdin is content, and station environment and filesystem paths are not
 forwarded. Muse's counts-only diagnostic journal is scoped to the resolved
 identity store rather than the daemon's working directory.
 
+## Signed-only stations
+
+The publishing account is the daemon's service account: its carrier credentials
+stay in the daemon home, never in an agent's account. The author-side process
+runs under the agent's own OS account, obtains and verifies a signature there,
+and hands the completed envelope and attestation to the daemon as streamed file
+contents. The daemon does not call a signer on the station's behalf.
+
+Policy is opt-in. Install this selector in `<daemon-home>/station-authors.json`:
+
+```json
+{"authors_path":"/etc/a2a/station-authors.json"}
+```
+
+The selector must be an ordinary file with exactly this member and a clean,
+absolute path. The selected host file has this closed format:
+
+```json
+{"version":"a2a-station-authors/1","authors":[{"uid":1001,"author_key":"bip340:Ux_mBoE0UD0nIxMyJ8hnrI-myDxTfppEw8W9vcsf4zc"}]}
+```
+
+The example key is a public test fixture, not a deployment key. The list holds
+0..64 entries; UIDs are integers in 0..4294967295 and keys must be valid,
+canonical `bip340:` x-only public keys. Duplicate UIDs, duplicate JSON members,
+case variants, unknown members, invalid Unicode, unsupported versions, malformed
+keys or a file over 32768 bytes make the **whole map unavailable**. Reusing a
+key across UIDs is not prohibited. The map is an operator assertion, not key
+qualification evidence.
+
+As for the receive-side host roster, the selected file must be root-owned and
+ordinary, with no symlink and no group/other write bits on it **or any ancestor**;
+all ancestors must be root-owned directories. The reader runs non-root and
+rechecks the opened file. ACL isolation is not established by these mode checks.
+Do not place the file below a user-writable directory, including a sticky
+shared temporary directory.
+
+Operator procedure:
+
+1. Keep the daemon stopped while establishing service-account custody and each
+   station's UID/identity enrollment. Install each author's public key from an
+   independently authenticated source, not from an envelope or argv claim.
+2. As the host administrator, prepare protected ancestors and atomically install
+   the root-owned map (for example mode 0644). Install the selector in the
+   daemon's private home; stations cannot choose or override it.
+3. Start the daemon under its service account. A UID listed in the map is now
+   signed-only for **every** station registration using that kernel UID. Distinct
+   authors require distinct OS accounts. A registry identity cannot select a key.
+4. Send a completed post with explicit room and topic event IDs, full recipient
+   MXIDs, exact text, and both streamed inputs:
+
+   ```bash
+   a2a post '!room:example.invalid' --topic '$root' --to '@recipient:example.invalid' \
+     --envelope @envelope.json --author-attestation @attestation.json 'exact text'
+   ```
+
+   `--author-attestation` carries the raw attestation record, base64url-encoded
+   unchanged into `works.relux.swarm.author_attestation`. It is outside the
+   envelope. Both `--flag @file` and `--flag=@file` use the existing file stream;
+   no hello, frame layout or registry format changes. The envelope bytes,
+   including noncanonical outer whitespace, are carried unchanged.
+5. Replace the map atomically for changes. It is reloaded on every publishing
+   invocation, with no last-good fallback. An unavailable selected map refuses
+   publishing for **all stations**, including UIDs that might otherwise be
+   unmapped. An invalid/present selector also fails closed. Only removing the
+   selector disables policy; that deliberately restores legacy behavior.
+
+For a listed UID, only `post --envelope` has a signed form. The gate shares the
+sender's completed-post checker: pinned bounded JSON parser, closed post schema,
+one author signature over the module's exact preimage (verified once), map key
+match, room, ordered full recipient list, exact text SHA-256, kind/topic/re and
+fixed action/target. It requires `iat <= now < exp` and `0 < exp - iat <= 120 s`
+on the daemon clock, plus a present, well-formed attestation of 1..8192 raw bytes
+whose module-defined content id equals signed `body.author_attestation`.
+Recipient order **is significant**; adding, dropping or reordering a recipient
+refuses. `all` denotes broadcast, not an entry in the full-MXID list.
+
+Checks happen before any carrier request, session/admission-state opening or
+post reservation. To avoid network discovery before that check, signed-only
+posts require an exact `!room` and `$topic` ID (not aliases/slugs), or an explicit
+main-timeline reply with `--reply-main --re '$event'`. Recipient shorthand is
+refused. Normal room/topic/reply validation follows a successful local check.
+UIDs not listed in an available map retain ordinary unsigned posts, aliases and
+shorthand; no selector retains all previous behavior.
+
+Other admitted publishers have no signed form and are refused for listed UIDs:
+`topic new`; `attach` (including media upload and optional pin); every admitted
+hook event (`stop`, `session-start`, `prompt`, `session-end`, conservatively
+including runtimes whose current branch does not publish); `wait --status`
+(liveness and disarm); `who --alert` (alerts); and `e2ee init` (public-key
+uploads). Ordinary wait/watch, read/inbox/files/topics, bind status, who without
+alerts, whoami, admission status, post-operation status and E2EE identity show
+remain available. Read receipts and account-data synchronization are not signed
+message-event publication. New, unclassified admitted commands default to being
+publishers until explicitly classified.
+
+Refusals use existing closed daemon diagnostics (`a2a: daemon: CODE`, exit 1),
+without backend text, envelope bytes, keys or attestations in output/logs:
+
+| Code | Cause |
+| --- | --- |
+| `station_authors_unavailable` | Present selector or selected host map unavailable |
+| `signed_command_refused` | Publishing command has no signed form |
+| `signed_post_required` | Listed UID attempted a post without an envelope |
+| `signed_binding_unavailable` | Room/topic selection needs discovery, or recipient shorthand |
+| `signed_envelope_invalid` | Bounded parse, closed schema, content id, role or preimage invalid |
+| `signed_author_mismatch` | Body or signature author differs from the connecting UID's map key |
+| `signed_signature_invalid` | Signature encoding/math invalid |
+| `signed_room_mismatch` | Another room |
+| `signed_recipients_mismatch` | Another ordered recipient list or signed `to` |
+| `signed_text_mismatch` | Another exact text hash, including a trailing newline |
+| `signed_metadata_mismatch` | Another action, target, kind, topic or re |
+| `signed_post_expired` | Daemon clock is at or after `exp` |
+| `signed_lifetime_invalid` | Invalid/future timestamps or lifetime over 120 s |
+| `signed_attestation_missing` | No carried attestation |
+| `signed_attestation_invalid` | Empty/unreadable/malformed attestation or encoding |
+| `signed_attestation_too_large` | Over 8192 raw bytes |
+| `signed_attestation_mismatch` | Module-defined content id differs from the signed id |
+
+A hook keeps its existing fail-open exit 0 and empty stdout, but prints the
+closed policy code on stderr without updating its station-local failure journal.
+Other transport failures retain existing hook failure accounting. Policy
+refusals make no carrier request and write no station or identity state.
+
+**Named limit: no purpose-5 qualification verification.** No such pin exists.
+This gate proves “the holder of K signed exactly this post”, **not** “K is
+currently qualified”. It checks the attestation's shape/content-id binding,
+not its issuer signature, expiry, revocation or current qualification. It adds
+no receiver admission rule or replay journal; a retry can carry the same bytes
+before expiry. Existing `post --sign` still has no linked production signer or
+purpose-5 pin and cannot produce real signed posts in this release.
+
 ## Wire and delivery
 
 Frames use a four-byte unsigned big-endian length followed by UTF-8 JSON, with

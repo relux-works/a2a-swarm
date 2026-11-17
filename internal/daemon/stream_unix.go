@@ -205,7 +205,7 @@ func (s *stream) receive() {
 		}
 	}
 }
-func (s *server) execute(c *net.UnixConn, station, identity string, sessionAdvertised bool) {
+func (s *server) execute(c *net.UnixConn, station, identity string, uid uint32, sessionAdvertised bool) {
 	_ = c.SetDeadline(time.Now().Add(s.idle))
 	data, err := readFrame(c)
 	if err == io.EOF {
@@ -300,7 +300,7 @@ func (s *server) execute(c *net.UnixConn, station, identity string, sessionAdver
 	}
 	var failure Diagnostic
 	var failureMu sync.Mutex
-	code := s.handler(ctx, Invocation{Identity: identity, Request: r, Stdout: output{st, "stdout"}, Stderr: output{st, "stderr"}, Delivered: st.delivered, Refuse: func(d Diagnostic) int {
+	code := s.handler(ctx, Invocation{Identity: identity, UID: uid, Request: r, Stdout: output{st, "stdout"}, Stderr: output{st, "stderr"}, Delivered: st.delivered, Refuse: func(d Diagnostic) int {
 		failureMu.Lock()
 		failure = Class(d)
 		failureMu.Unlock()

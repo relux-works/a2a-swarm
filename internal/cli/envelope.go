@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/relux-works/a2a-swarm/internal/matrix"
+	"github.com/relux-works/a2a-swarm/internal/signedpost"
 )
 
 // Envelope carriage, send side. `a2a post --envelope @file` places the exact
@@ -90,11 +91,14 @@ func (a *App) readEnvelopeText(arg string) (string, error) {
 // sendThreadEnvelope sends the reply with the exact text as its body and
 // the encoded envelope under the fixed content key. The event content is checked
 // against the published byte budget before anything is sent.
-func (s *session) sendThreadEnvelope(ctx context.Context, roomID, label string, h Header, text, encoded string, mentions []string) (string, error) {
+func (s *session) sendThreadEnvelope(ctx context.Context, roomID, label string, h Header, text, encoded string, mentions []string, attestation string) (string, error) {
 	content := threadReply(h, mentions)
 	content["msgtype"] = "m.text"
 	content["body"] = text
 	content[matrix.EnvelopeContentKey] = encoded
+	if attestation != "" {
+		content[signedpost.AttestationContentKey] = attestation
+	}
 	if err := matrix.CheckEventContentBudget(content); err != nil {
 		return "", err
 	}

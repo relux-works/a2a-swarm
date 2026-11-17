@@ -13,6 +13,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/daemon"
+	"github.com/relux-works/a2a-swarm/internal/signedpost"
 	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
@@ -22,12 +23,42 @@ func (a *App) daemonHandler(home string) daemon.Handler {
 	requiredVersion := a.wakeRequiredVersion // Immutable process-start admission, never ambient selection or station input.
 	return func(ctx context.Context, inv daemon.Invocation) int {
 		refuse := func(message string) int { _, _ = io.WriteString(inv.Stderr, message); return ExitError }
+		policyRefusal := func(class daemon.Diagnostic) int {
+			if inv.Refuse != nil {
+				return inv.Refuse(class)
+			}
+			return refuse("daemon: " + class.Error() + "\n")
+		}
 		if inv.Request.Session != "" && !daemon.ValidSession(inv.Request.Session) {
 			return refuse("daemon: not_allowed\n")
 		}
 		plan, err := daemon.Authorize(inv.Request.Argv, inv.Identity)
 		if err != nil {
 			return refuse("daemon: not_allowed\n")
+		}
+		key := ""
+		if plan.Publishes {
+			path, configured, policyErr := daemon.StationAuthorsPath(home)
+			if policyErr == nil && configured {
+				load := a.loadStationAuthors
+				if load == nil {
+					load = daemon.LoadStationAuthors
+				}
+				var authors daemon.StationAuthors
+				authors, policyErr = load(path)
+				key = authors[inv.UID]
+			}
+			if policyErr != nil {
+				return policyRefusal(daemon.StationAuthorsUnavailable)
+			}
+			if key != "" {
+				if plan.Command != "post" {
+					return policyRefusal(daemon.SignedCommandRefused)
+				}
+				if !plan.Envelope {
+					return policyRefusal(daemon.SignedPostRequired)
+				}
+			}
 		}
 		if config.ValidateName(inv.Identity) != nil {
 			return refuse("daemon: daemon_unavailable\n")
@@ -45,6 +76,7 @@ func (a *App) daemonHandler(home string) daemon.Handler {
 			return refuse("daemon: daemon_unavailable\n")
 		}
 		request := &App{Stdout: inv.Stdout, Stderr: inv.Stderr, Stdin: bytes.NewReader(inv.Request.Stdin), HTTP: a.HTTP, Now: a.Now, as: inv.Identity, ctx: ctx, daemonEngine: true, daemonFiles: map[string]daemon.InputFile{}}
+		request.stationAuthorKey = key
 		defer request.closeAdmission()
 		request.Getenv = func(k string) string {
 			if k == wakemute.EnvRequiredVersion {
@@ -131,6 +163,10 @@ func (a *App) daemonHandler(home string) daemon.Handler {
 					return inv.Refuse(daemon.LeaseConflict)
 				}
 				return refuse("daemon: daemon_lease_conflict\n")
+			}
+			var verification signedpost.Verification
+			if errors.As(err, &verification) {
+				return policyRefusal(daemon.Diagnostic(verification))
 			}
 			if err != nil {
 				// Error values may include peer message bodies, private paths or backend

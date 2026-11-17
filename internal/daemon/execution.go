@@ -30,6 +30,7 @@ type InputFile struct {
 // output streams and the invocation-bound station delivery barrier.
 type Invocation struct {
 	Identity       string
+	UID            uint32 // Authenticated kernel peer; never supplied by argv or a request frame.
 	Request        Request
 	Stdout, Stderr io.Writer
 	Delivered      func() error
@@ -50,12 +51,14 @@ type Plan struct {
 	Inputs       map[int]bool // true: attachment (bare path); false: @body input
 	Stdin        bool         // only an actual stdin operand or hook input, never a flag value
 	LongConsumer bool
+	Publishes    bool // May publish events or public keys, including optional command effects.
+	Envelope     bool
 }
 
 // Authorize uses a positive command/option schema. New CLI flags fail closed
 // until their I/O contract is explicitly admitted here.
 func Authorize(argv []string, identity string) (Plan, error) {
-	p := Plan{Inputs: map[int]bool{}}
+	p := Plan{Inputs: map[int]bool{}, Publishes: true}
 	// App's globals are accepted anywhere before --. Check every occurrence,
 	// including duplicate --as, rather than allowing a last-value override.
 	var rest []string
@@ -125,7 +128,7 @@ func Authorize(argv []string, identity string) (Plan, error) {
 		}
 		start = 2
 	case "post":
-		values = "topic kind re to reply-by trunk subtype subject operation-id envelope"
+		values = "topic kind re to reply-by trunk subtype subject operation-id envelope author-attestation"
 		bools = "reply-main json"
 		minPos = 2
 		maxPos = 256
@@ -223,6 +226,14 @@ func Authorize(argv []string, identity string) (Plan, error) {
 	default:
 		return p, errRefused
 	}
+	// All admitted publishers are explicit here. Unclassified future commands
+	// retain Publishes=true rather than silently bypassing host policy.
+	switch p.Command {
+	case "daemon", "inbox", "read", "topics", "files", "watch", "bind", "whoami", "status", "post-operation", "wait", "who":
+		p.Publishes = false
+	case "e2ee":
+		p.Publishes = rest[1] == "init"
+	}
 	allowed := func(names, name string) bool {
 		for _, n := range strings.Fields(names) {
 			if n == name {
@@ -245,6 +256,9 @@ func Authorize(argv []string, identity string) (Plan, error) {
 				if eq && value != "true" && value != "false" {
 					return p, errRefused
 				}
+				if p.Command == "who" && name == "alert" && (!eq || value == "true") {
+					p.Publishes = true
+				}
 				continue
 			}
 			if !allowed(values, name) {
@@ -259,6 +273,12 @@ func Authorize(argv []string, identity string) (Plan, error) {
 				vi = i
 				value = rest[i]
 			}
+			if p.Command == "post" && name == "envelope" {
+				p.Envelope = true
+			}
+			if p.Command == "wait" && name == "status" && value != "" {
+				p.Publishes = true
+			}
 			if p.Command == "topic" && name == "body" && value == "-" {
 				p.Stdin = true
 			}
@@ -269,14 +289,14 @@ func Authorize(argv []string, identity string) (Plan, error) {
 				}
 				waitTimeout = d
 			}
-			if (p.Command == "topic" && name == "body" || p.Command == "post" && name == "envelope" || p.Command == "inbox" && name == "from") && strings.HasPrefix(value, "@") {
+			if (p.Command == "topic" && name == "body" || p.Command == "post" && (name == "envelope" || name == "author-attestation") || p.Command == "inbox" && name == "from") && strings.HasPrefix(value, "@") {
 				p.Inputs[indices[vi]] = false
 			}
 			// inbox show --from is a path, so only explicit streamed @input is admitted.
 			if p.Command == "inbox" && name == "from" && !strings.HasPrefix(value, "@") {
 				return p, errRefused
 			}
-			if p.Command == "post" && name == "envelope" && !strings.HasPrefix(value, "@") {
+			if p.Command == "post" && (name == "envelope" || name == "author-attestation") && !strings.HasPrefix(value, "@") {
 				return p, errRefused
 			}
 			continue

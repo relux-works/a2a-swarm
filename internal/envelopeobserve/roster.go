@@ -19,13 +19,34 @@ var ErrRoster = errors.New("host envelope roster unavailable")
 // Load reads only an explicitly selected, root-owned, protected local file.
 // Writable/symlink paths and unsupported ownership platforms are unavailable.
 func Load(path string) (*Observer, error) {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+	raw, err := ReadProtectedFile(path, maxRosterBytes)
+	if err != nil {
 		return nil, ErrRoster
 	}
-	if err := protectedPath(path); err != nil {
+	return ParseRoster(raw)
+}
+
+// ReadProtectedFile shares the roster's root-owned, non-writable, no-symlink
+// storage boundary with other host policy readers. It authenticates storage,
+// not the schema; callers must strictly parse the bounded returned snapshot.
+func ReadProtectedFile(path string, maxBytes int) ([]byte, error) {
+	return readProtectedFile(path, maxBytes, os.Lstat, func(path string) (protectedFile, error) { return os.Open(path) })
+}
+
+type protectedFile interface {
+	io.Reader
+	Stat() (os.FileInfo, error)
+	Close() error
+}
+
+func readProtectedFile(path string, maxBytes int, lstat func(string) (os.FileInfo, error), open func(string) (protectedFile, error)) ([]byte, error) {
+	if maxBytes < 0 || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, ErrRoster
 	}
-	f, err := os.Open(path)
+	if err := protectedPath(path, lstat); err != nil {
+		return nil, ErrRoster
+	}
+	f, err := open(path)
 	if err != nil {
 		return nil, ErrRoster
 	}
@@ -34,16 +55,16 @@ func Load(path string) (*Observer, error) {
 	if err != nil || !protectedInfo(st, false) {
 		return nil, ErrRoster
 	}
-	raw, err := io.ReadAll(io.LimitReader(f, maxRosterBytes+1))
-	if err != nil {
+	raw, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	if err != nil || len(raw) > maxBytes {
 		return nil, ErrRoster
 	}
-	return ParseRoster(raw)
+	return raw, nil
 }
 
-func protectedPath(path string) error {
+func protectedPath(path string, lstat func(string) (os.FileInfo, error)) error {
 	for current := path; ; current = filepath.Dir(current) {
-		st, err := os.Lstat(current)
+		st, err := lstat(current)
 		if err != nil || !protectedInfo(st, current != path) {
 			return ErrRoster
 		}

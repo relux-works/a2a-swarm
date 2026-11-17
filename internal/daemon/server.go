@@ -157,7 +157,7 @@ func (s *server) handle(c *net.UnixConn) {
 		return
 	}
 	if s.handler != nil {
-		s.execute(c, station, e.Identity, advertised)
+		s.execute(c, station, e.Identity, uid, advertised)
 		return
 	}
 	_ = c.SetDeadline(time.Now().Add(s.idle))

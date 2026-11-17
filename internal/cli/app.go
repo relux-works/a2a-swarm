@@ -47,6 +47,9 @@ type App struct {
 	// signer_unqualified. Tests only.
 	postQualified func(signedpost.Identity) bool
 
+	loadStationAuthors func(string) (daemon.StationAuthors, error) // Tests only; nil enforces protected host storage.
+	stationAuthorKey   string                                      // Per-invocation key selected by the authenticated peer UID, never by argv.
+
 	wakeRequiredVersion      string                                       // Immutable process-start admission; never read from a daemon request or ambient selector.
 	wakeContext              context.Context                              // Bounded terminal dispatch copy; never changes ambient command cleanup.
 	terminalFixture          func(config.TerminalBinding) terminalEffects // Isolated tests only; production always uses the bound terminal.

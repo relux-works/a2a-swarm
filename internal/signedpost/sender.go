@@ -416,12 +416,20 @@ func (s Sender) Sign(ctx context.Context, d Draft) (Signed, error) {
 	if string(key) != p.Identity.Key {
 		return Signed{}, Refuse(RefuseSignerResultInvalid, DetailKeyDiffers)
 	}
-	if len(signature) != 64 || record.VerifySignature(p.Identity.Key, signature, preimage) != nil {
-		return Signed{}, Refuse(RefuseSignerResultInvalid, DetailSignature)
-	}
 	envelope, err := encodeEnvelope(body, id, p.Identity.Key, base64.RawURLEncoding.EncodeToString(signature))
 	if err != nil {
 		return Signed{}, errSigningInput
+	}
+	attestation, err := EncodeAttestation(p.Identity.Attestation)
+	if err != nil {
+		return Signed{}, err
+	}
+	if err := Verify(envelope, attestation, p.Identity.Key, d, s.now()); err != nil {
+		detail := ""
+		if err == InvalidSignature {
+			detail = DetailSignature
+		}
+		return Signed{}, Refuse(RefuseSignerResultInvalid, detail)
 	}
 	return Signed{Envelope: envelope, ID: id, Attestation: p.Identity.Attestation, Expires: expires}, nil
 }

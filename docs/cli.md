@@ -964,6 +964,14 @@ name or anything the envelope claims. Signing, hashing and verification belong t
   Usage errors (exit 2): `--envelope` without a `@file` operand, repeated, combined with `--voice`, or without
   exactly one text argument.
 
+An optional `--author-attestation @file` beside `--envelope` carries 1..8192
+raw attestation bytes unchanged as unpadded base64url in
+`works.relux.swarm.author_attestation`. The daemon streams both files through
+its existing request mechanism. With a configured signed-only station policy,
+the daemon validates the completed post and its attestation binding before any
+network request; see [Signed-only stations](daemon.md#signed-only-stations).
+The ordinary, unmapped carrier still does not interpret the envelope.
+
 #### Signed posts (`--sign`)
 
 ```bash
@@ -993,10 +1001,11 @@ signer behind the seam:
    mentioned full ids. The signing input is the pinned module's signing preimage of that body.
 4. One signature request with exactly that preimage. A retryable signer failure repeats the same preimage,
    at most twice more and only before `exp`.
-5. The returned key must equal the identity key and the signature must verify over the preimage; both are
-   checked once. Then the envelope is assembled once (`id` = the module's content id of the body) and sent
-   in `works.relux.swarm.envelope`, beside the attestation described below. All other event content is
-   identical to the unsigned post.
+5. The returned key must equal the identity key. The envelope is assembled once (`id` = the module's
+   content id of the body) and the shared completed-post checker verifies its signature over the exact
+   preimage once, along with its delivery, time and attestation binding, before it can be sent in
+   `works.relux.swarm.envelope`, beside the attestation described below. The checker is also used by
+   signed-only stations at the daemon. All other event content is identical to the unsigned post.
 6. When the send fails it is repeated once: before `exp` with the identical envelope bytes under the same
    transaction id, after `exp` with a newly signed envelope (new nonce, `iat`, `exp`).
 

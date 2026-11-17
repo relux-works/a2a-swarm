@@ -77,6 +77,10 @@ func (a *App) stationInvocationRun(ctx context.Context, args []string, event str
 	}
 	refuse := func(class daemon.Diagnostic) (bool, int) {
 		if event != "" {
+			if daemon.SignedPolicyRefusal(class) {
+				_, _ = fmt.Fprintf(hookContextWriter{totalCtx, a.Stderr}, "a2a: daemon: %s\n", class)
+				return true, ExitOK
+			}
 			if err := updateHookFailuresContext(totalCtx, paths.Base, event, class, hookContextWriter{totalCtx, a.Stderr}); err != nil {
 				_, _ = io.WriteString(hookContextWriter{totalCtx, a.Stderr}, "a2a: daemon: daemon_unavailable\n")
 			}

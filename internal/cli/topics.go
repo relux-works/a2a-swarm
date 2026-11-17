@@ -409,20 +409,21 @@ func validKind(k string) bool {
 // postFlagSet is shared by dispatch classification and command parsing so
 // value-taking flags consume the same tokens on both paths.
 type postFlags struct {
-	result      resultFlags
-	to          *stringList
-	operationID *string
-	withVoice   *bool
-	topic       *string
-	kind        *string
-	re          *string
-	replyMain   *bool
-	replyBy     *string
-	trunk       *string
-	subtype     *string
-	subject     *string
-	envelopeArg *string
-	sign        *bool
+	result         resultFlags
+	to             *stringList
+	operationID    *string
+	withVoice      *bool
+	topic          *string
+	kind           *string
+	re             *string
+	replyMain      *bool
+	replyBy        *string
+	trunk          *string
+	subtype        *string
+	subject        *string
+	envelopeArg    *string
+	attestationArg *string
+	sign           *bool
 }
 
 func postFlagSet() (*flag.FlagSet, postFlags) {
@@ -441,8 +442,9 @@ func postFlagSet() (*flag.FlagSet, postFlags) {
 	subtype := fs.String("subtype", "", "system subtype (only with --kind system)")
 	subject := fs.String("subject", "", "structured subject (repo@branch, board id, PR#12)")
 	envelopeArg := fs.String("envelope", "", "carry the exact bytes of @file as a swarm envelope in the event; the text becomes the exact event body")
+	attestationArg := fs.String("author-attestation", "", "carry the raw attestation from @file beside --envelope")
 	sign := fs.Bool("sign", false, "sign the post through the configured signer; refused when it cannot be signed, never sent unsigned")
-	return fs, postFlags{result: result, to: &to, operationID: operationID, withVoice: withVoice, topic: topic, kind: kind, re: re, replyMain: replyMain, replyBy: replyBy, trunk: trunk, subtype: subtype, subject: subject, envelopeArg: envelopeArg, sign: sign}
+	return fs, postFlags{result: result, to: &to, operationID: operationID, withVoice: withVoice, topic: topic, kind: kind, re: re, replyMain: replyMain, replyBy: replyBy, trunk: trunk, subtype: subtype, subject: subject, envelopeArg: envelopeArg, attestationArg: attestationArg, sign: sign}
 }
 
 // cmdPost: a2a post <room> [--topic <slug|$event>] [--kind K] [--re $ev] [--reply-main] [--to a,b] [--reply-by T] [--trunk OID] [--subtype S] [--subject X] <text|@file|->
@@ -497,6 +499,9 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 	if *topic == "" && *re == "" {
 		return usagef("--topic is required unless --re selects a reply target (%s)", use)
 	}
+	if flagPresent(fs, "author-attestation") && (!envelopeMode || *opts.sign || !strings.HasPrefix(*opts.attestationArg, "@") || len(*opts.attestationArg) < 2) {
+		return usagef("--author-attestation requires --envelope and one @file")
+	}
 	if *opts.sign {
 		if err := signedPostSelection(a, envelopeMode, *withVoice, len(pos)); err != nil {
 			return err
@@ -547,6 +552,18 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 
+	attestation := ""
+	if flagPresent(fs, "author-attestation") {
+		attestation, err = a.readPostAttestation(*opts.attestationArg)
+		if err != nil {
+			return err
+		}
+	}
+	if a.stationAuthorKey != "" {
+		if err := a.verifyStationPost(pos[0], *topic, *re, *replyMain, *kind, to.String(), text, encodedEnvelope, attestation); err != nil {
+			return err
+		}
+	}
 	if flagPresent(fs, "operation-id") {
 		return a.durablePost(ctx, postIntent{ID: *operationID, Room: pos[0], Root: *topic, Text: text, Kind: *kind, To: to.String(), ReplyBy: *replyBy, ExplicitReplyBy: flagPresent(fs, "reply-by"), Trunk: *trunk, Subtype: *subtype, Subject: *subject}, Header{V: 1, Type: "message", At: now.Format(time.RFC3339), Kind: *kind, ReplyBy: rb, Trunk: *trunk, Subtype: *subtype, Subject: *subject})
 	}
@@ -591,7 +608,7 @@ func cmdPost(ctx context.Context, a *App, args []string) error {
 		// A signed post is sent signed or not at all: every error returns here.
 		id, err = s.sendSignedPost(ctx, roomID, label, h, text, mentions)
 	case envelopeMode:
-		id, err = s.sendThreadEnvelope(ctx, roomID, label, h, text, encodedEnvelope, mentions)
+		id, err = s.sendThreadEnvelope(ctx, roomID, label, h, text, encodedEnvelope, mentions, attestation)
 	default:
 		id, err = s.sendThreadMessage(ctx, roomID, label, h, text, mentions)
 	}
