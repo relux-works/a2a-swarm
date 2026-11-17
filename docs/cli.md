@@ -3564,9 +3564,22 @@ armed plain Codex waiter with no verified native wake remains unavailable. Plann
 ### Native Codex doorbell: `runtime bind`, `dispatch`, `gate`, `abandon`, `status`
 
 Hooks do not execute at an idle prompt. A launcher attaches its own thread to its selected managed app-server, then registers it with one
-command and supervises the consumer. The native adapter currently verifies app-server **0.160.0, 0.160.1 and 0.161.0**; another version
+command and supervises the consumer. The native adapter verifies app-server **0.160.0, 0.160.1 and 0.161.0** by default; another version
 reports unavailable until its capability is verified. Its dependency is `github.com/coder/websocket v1.8.15`. Native API reference:
 [Codex App Server](https://learn.chatgpt.com/docs/app-server).
+
+App-server **0.163.0, 0.165.0 and 0.167.0** have pinned inspected wire schemas but are admitted only under operator-named qualification.
+Qualification is a protected host entry, never an agent or identity setting: a selector file `native-qualification.json` in the a2a config
+directory (beside `envelope-observe.json`) holds one member, `qualification_path`, an absolute clean path to a root-owned, non-writable
+regular file (no group/other write bit, no symlink component, protected ancestors; the shared protected host-file reader enforces this and
+refuses every other storage shape). That file contains exactly
+`{"version":"a2a-native-qualification/1","qualified_versions":["0.167.0"]}`: its `qualified_versions` member names complete exact versions,
+and only versions with pinned schemas (0.163.0, 0.165.0, 0.167.0) can be named; the same entry may name any or all of them. No entry, an
+unavailable, malformed, unprotected, group-writable or symlinked entry, or an entry naming a different version is refused exactly as an
+unverified version is refused today; the entry is re-read on every native connection, so removing a version revokes new connections for it.
+A binding admitted this way records `under_qualification` and `a2a runtime status` appends `under qualification` to its line, so a witnessed
+first idle wake under qualification is never confused with a default-verified version. An identity whose host starts turns itself needs no
+native binding at all: it uses `a2a watch --json` or `a2a wait --json` and leaves this doorbell unbound.
 
 ```bash
 # Only after the owning launcher has checkpointed/stopped any old embedded process,

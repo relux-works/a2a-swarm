@@ -12,9 +12,12 @@ import (
 )
 
 // currentProtocol describes an inspected wire schema, NOT native capability
-// admission. Dial deliberately does not use it: a schema cannot qualify an
-// attached TUI, ownership, idle wake, or safe scheduling under human control.
-// Sources and complete schema fixtures live in testdata/issue122/.
+// admission. The unqualified Dial deliberately does not use it: a schema
+// cannot qualify an attached TUI, ownership, idle wake, or safe scheduling
+// under human control. Only DialQualified, with a protected host entry naming
+// the exact version (see qualification.go), admits these versions, and the
+// resulting binding records that it runs under qualification. Sources and
+// complete schema fixtures live in testdata/issue122/.
 type currentProtocol struct {
 	version string
 }
@@ -36,6 +39,8 @@ func inspectCurrentProtocol(version string, turnSchema, historySchema []byte) (c
 		valid = (turn == releaseTurn || turn == "abf0d6d29d223b38c650ff1155cb9c9f9b4211e6d0e20c57d750a9e1babfdb41") && history == "0ecf37ff62571c8411aab271ea65d22be4da1108cc2fd2dffb15a7034bfedb28"
 	case "0.165.0":
 		valid = (turn == releaseTurn || turn == "f671d01c24995e99fcc110862ff3251c26d334fba212c7dc12857fb939506e47") && history == "fa5a85adff4a594f6c7183aca89414338fbe51b692d5f5ff8edd88d01f51dc4d"
+	case "0.167.0":
+		valid = (turn == "4e25cd48986f73e600d9949a055ddb994a75b4a38790e935274646f0fece00ad" || turn == "d13cb408b906669e8d3e8694b42148a75180d4dcd0eeac6867271add8dfa1864") && history == "054ebb1e51fad510f1ff9bd2fd06a96d9db06ca4f8963207dccfef91ea8e540b"
 	}
 	if !valid {
 		return currentProtocol{}, errors.New("runtime current wire schema unverified")
@@ -43,7 +48,9 @@ func inspectCurrentProtocol(version string, turnSchema, historySchema []byte) (c
 	return currentProtocol{version: version}, nil
 }
 
-func (p currentProtocol) valid() bool { return p.version == "0.163.0" || p.version == "0.165.0" }
+func (p currentProtocol) valid() bool {
+	return p.version == "0.163.0" || p.version == "0.165.0" || p.version == "0.167.0"
+}
 
 // currentHostOutput is a transport bound, not an encoder or provenance check.
 // The caller MUST supply immutable output from its durable attempt, created
