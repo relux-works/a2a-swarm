@@ -427,7 +427,7 @@ func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
 	f.update(func(st *config.State) { st.Terminal.DaemonPID = os.Getpid(); st.Terminal.DaemonBirth = birth })
 	f.e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "synthetic persistent sync failure")
 	path, _ := refreshExecutable(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
 	calls := 0
 	r := &terminalRefresh{path: path, exec: func(string, []string, []string) error {

@@ -361,7 +361,7 @@ func TestBindUsabilityRetryLog(t *testing.T) {
 				e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "PRIVATE_ERROR_SENTINEL/path/token/body")
 			}
 			beforeLease, _ := config.LoadState(e.paths(), "alice")
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := testDeadlineContext(t)
 			defer cancel()
 			log := &usabilityLog{cancel: cancel}
 			a.Stderr = log

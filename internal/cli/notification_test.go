@@ -438,7 +438,7 @@ func TestNotificationNativeConsumerTrailingNoNewEvent(t *testing.T) {
 	bellContext(t, e.hook("alice", "prompt", `{"session_id":"owned-thread"}`).ok(t).stdout)
 	offset.Store(int64(29900 * time.Millisecond))
 	a, s := notificationApp(t, e)
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
 	owned := false
 	n.onWake = func() {
@@ -474,7 +474,7 @@ func TestNotificationNativeDeadlineDuringMaintenance(t *testing.T) {
 			bellContext(t, e.hook("alice", "prompt", `{"session_id":"owned-thread"}`).ok(t).stdout)
 			clock.add(29900 * time.Millisecond)
 			a, s := notificationApp(t, e)
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			ctx, cancel := testDeadlineContext(t)
 			defer cancel()
 			crossed, wrongPoll, normalBusyPoll := false, false, false
 			n.onWake = cancel

@@ -39,6 +39,15 @@ type result struct {
 	stdout, stderr string
 }
 
+func testDeadlineContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("test deadline unavailable")
+	}
+	return context.WithDeadline(context.Background(), deadline)
+}
+
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	hs := newFakeHS(t)
