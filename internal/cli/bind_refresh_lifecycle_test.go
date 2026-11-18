@@ -439,8 +439,10 @@ func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
 		return syscall.ENOEXEC
 	}}
 	matureRefresh(t, r)
+	initial := *f.binding()
+	inspectionCalls := installSuccessfulTerminalInspector(f.a, initial)
 	err = config.WithConsumerLock(f.s.paths, f.s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
-		_, err := f.a.runTerminalWithRefresh(ctx, f.s, "orphan-gen", *f.binding(), func() { r.poll(ctx, f.a, f.s, "orphan-gen", lock) })
+		_, err := f.a.runTerminalWithRefresh(ctx, f.s, "orphan-gen", initial, func() { r.poll(ctx, f.a, f.s, "orphan-gen", lock) })
 		return err
 	})
 	if err != nil {
@@ -449,6 +451,7 @@ func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
 	if calls != 1 || f.binding().Outcome != "consumer unavailable; retrying" {
 		t.Fatal("safe sync-error cycle stranded old executable")
 	}
+	requireTerminalInspectorCalled(t, inspectionCalls)
 }
 
 // A failed exec returns to the same consumer loop: retained mail is delivered
