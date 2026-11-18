@@ -645,7 +645,7 @@ func TestReadCacheWriteRefresh(t *testing.T) {
 	}
 }
 
-// TestReadCacheDurableNoop proves a stable own-write no-op preserves inode, mtime and bytes without encoding while syncing the verified file and directories, beside one changed atomic replacement.
+// TestReadCacheDurableNoop proves a stable own-write no-op preserves inode, mtime and bytes after one comparison encode while syncing the verified file and directories, beside one changed atomic replacement.
 func TestReadCacheDurableNoop(t *testing.T) {
 	p := cachedPaths(t)
 	path := p.StateFile("fixture")
@@ -677,8 +677,13 @@ func TestReadCacheDurableNoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !os.SameFile(first, same) || !first.ModTime().Equal(same.ModTime()) || !bytes.Equal(raw, data) || after.StateEncodes != before.StateEncodes || after.StateWriteBytes != before.StateWriteBytes || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
-		t.Fatalf("stable no-op did not preserve bytes through ordinary syncs: syncs=%+v durable=%v", rec, p.readCache.durable)
+	sameFile := os.SameFile(first, same)
+	sameMtime := first.ModTime().Equal(same.ModTime())
+	sameBytes := bytes.Equal(raw, data)
+	encodeDelta := after.StateEncodes - before.StateEncodes
+	writeByteDelta := after.StateWriteBytes - before.StateWriteBytes
+	if !sameFile || !sameMtime || !sameBytes || encodeDelta != 1 || writeByteDelta != 0 || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable no-op failed ordinary-sync contract: sameFile=%v sameMtime=%v sameBytes=%v encodeDelta=%d writeByteDelta=%d syncs=%+v durable=%v", sameFile, sameMtime, sameBytes, encodeDelta, writeByteDelta, rec, p.readCache.durable)
 	}
 	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Terminal.Generation = "changed"; return nil }); err != nil {
 		t.Fatal(err)
