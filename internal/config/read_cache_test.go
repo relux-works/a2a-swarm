@@ -349,8 +349,11 @@ func TestReadCacheDurableByteConfirmation(t *testing.T) {
 // no-op still skips file and directory syncs.
 func TestReadCacheOwnDurableNoopSkipsSync(t *testing.T) {
 	p := cachedPaths(t)
-	if !p.readCache.durable {
+	if !stampStateDirectory(filepath.Dir(p.StateFile("fixture"))).known {
 		t.Skip("platform does not expose reliable directory change time")
+	}
+	if !p.readCache.durable {
+		t.Fatal("completed ordinary write did not establish own-durable evidence")
 	}
 	var rec syncRecord
 	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
@@ -374,8 +377,11 @@ func TestReadCacheNamespaceABADurability(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			p := cachedPaths(t)
-			if !p.readCache.durable {
+			if !stampStateDirectory(filepath.Dir(p.StateFile("fixture"))).known {
 				t.Skip("platform does not expose reliable directory change time")
+			}
+			if !p.readCache.durable {
+				t.Fatal("completed ordinary write did not establish own-durable evidence")
 			}
 			var rec syncRecord
 			swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
