@@ -538,6 +538,12 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 	return a.runTerminalWithRefresh(ctx, s, generation, initial, nil)
 }
 
+func inspectTerminalBindingTarget(ctx context.Context, b config.TerminalBinding) (string, error, error) {
+	owner, ownerErr := tmuxwake.Birth(ctx, b.OwnerPID)
+	_, _, _, targetErr := b.Target.Inspect(ctx)
+	return owner, ownerErr, targetErr
+}
+
 func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
 	// This terminal consumer owns its cache and decode epoch. Attach both before
 	// the alarm worker starts so every goroutine sees the same per-identity scope.
@@ -577,8 +583,11 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			}
 			policy = *b
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-			owner, ownerErr := tmuxwake.Birth(probe, b.OwnerPID)
-			_, _, _, targetErr := b.Target.Inspect(probe)
+			inspect := a.inspectTerminalTarget
+			if inspect == nil {
+				inspect = inspectTerminalBindingTarget
+			}
+			owner, ownerErr, targetErr := inspect(probe, *b)
 			cancel()
 			if ownerErr == nil && owner != b.OwnerBirth || ownerErr != nil && processGone(b.OwnerPID) || errors.Is(targetErr, tmuxwake.ErrTargetGone) {
 				a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Stopped = true; b.Outcome = "target exited or replaced" })

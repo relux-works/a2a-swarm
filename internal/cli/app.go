@@ -83,6 +83,9 @@ type App struct {
 	// before it takes the state lock to persist and print: tests use it to let
 	// a concurrent consumer win the race.
 	beforeDeliver func()
+	// inspectTerminalTarget is package-test-only. Production leaves it nil and
+	// uses the pinned OS-backed owner/pane checks.
+	inspectTerminalTarget func(context.Context, config.TerminalBinding) (string, error, error)
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
 	// hookSelection replaces executable selection in installer merge tests only.

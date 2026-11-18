@@ -342,6 +342,19 @@ func TestBindUsabilityRetryLog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			inspectionCalls := 0
+			if stage == "lease" {
+				// This case targets lease rejection; keep the preceding owner/pane
+				// gate deterministic so slow process startup cannot mask it as a
+				// connection failure. The connection sibling exercises real probes.
+				a.inspectTerminalTarget = func(_ context.Context, b config.TerminalBinding) (string, error, error) {
+					inspectionCalls++
+					if b.Generation != initial.Generation || b.OwnerBirth != initial.OwnerBirth {
+						return "", errors.New("unexpected terminal binding inspection"), nil
+					}
+					return b.OwnerBirth, nil, nil
+				}
+			}
 			if stage == "state" {
 				if err = os.WriteFile(e.paths().StateFile("alice"), []byte(`{"PRIVATE_ERROR_SENTINEL":`), 0600); err != nil {
 					t.Fatal(err)
@@ -368,6 +381,9 @@ func TestBindUsabilityRetryLog(t *testing.T) {
 			reason, err := a.runTerminal(ctx, s, "own", initial)
 			if err != nil || reason != "cancelled" {
 				t.Fatalf("loop exit=%s %v", reason, err)
+			}
+			if stage == "lease" && inspectionCalls != 1 {
+				t.Fatalf("lease fixture target inspections=%d want=1", inspectionCalls)
 			}
 			want := "binding consumer unavailable; bounded retry cause=" + stage + "\n"
 			if log.String() != want {
