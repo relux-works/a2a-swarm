@@ -151,8 +151,8 @@ func TestTerminalPauseSendBoundary(t *testing.T) {
 			lock := filepath.Join(f.e.paths().Base, "state", "alice.runtime-control.lock")
 			script := fmt.Sprintf(`#!/usr/bin/env python3
 import os,sys,fcntl
-if "send-keys" in sys.argv:
-    boundary="type" if "-l" in sys.argv else "enter" if "Enter" in sys.argv else "other"
+if "paste-buffer" in sys.argv or "send-keys" in sys.argv:
+    boundary="type" if "paste-buffer" in sys.argv or "-l" in sys.argv else "enter" if "Enter" in sys.argv else "other"
     with open(%q,"r+") as lock:
         try:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
