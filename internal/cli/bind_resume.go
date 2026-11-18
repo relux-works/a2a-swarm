@@ -22,17 +22,53 @@ func (a *App) sendTerminalAttempt(ctx context.Context, s *session, expected conf
 			if b == nil || b.Stopped || !sameTerminalScope(*b, expected) || b.NotificationToken != expected.NotificationToken || b.Notice != expected.Notice || !b.AttemptAt.Equal(expected.AttemptAt) || !slices.Equal(b.AttemptIDs, expected.AttemptIDs) || st.HooksPaused || manualWakeGate(*st) != "" {
 				return errors.New("terminal typing attempt changed")
 			}
+			if err := s.requireAudienceIDs(expected.AttemptIDs); err != nil {
+				return err
+			}
 			b.TypingStarted = true
 			return nil
 		})
 		if fenceErr != nil {
 			cancel()
 		}
-	}, nil)
+	}, nil, func() error { return s.requireAudienceIDs(expected.AttemptIDs) })
 	if fenceErr != nil {
+		if errors.Is(fenceErr, errAddressChanged) {
+			if err := a.cancelUnstartedTerminalAudience(s, expected); err != nil {
+				return result, err
+			}
+		}
 		return result, fenceErr
 	}
 	return result, err
+}
+
+// Only a known pre-type audience refusal can refund this new reservation.
+// Once typing started, ambiguous submission/recovery keeps its existing fence.
+func (a *App) cancelUnstartedTerminalAudience(s *session, expected config.TerminalBinding) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
+		b := st.Terminal
+		if b == nil || !sameTerminalScope(*b, expected) || b.NotificationToken != expected.NotificationToken || !b.AttemptAt.Equal(expected.AttemptAt) || !slices.Equal(b.AttemptIDs, expected.AttemptIDs) {
+			return config.ErrNotificationStale
+		}
+		if b.TypingStarted {
+			return nil
+		}
+		if err := st.Notification.Cancel(expected.NotificationToken); err != nil {
+			return err
+		}
+		for i := len(b.Reservations) - 1; i >= 0; i-- {
+			if b.Reservations[i].Equal(b.AttemptAt) {
+				b.Reservations = slices.Delete(b.Reservations, i, i+1)
+				break
+			}
+		}
+		b.AttemptIDs, b.NotificationToken, b.Notice, b.NoticeCount = nil, "", "", 0
+		b.NoticeOrigin, b.NoticePosition, b.Idle = nil, nil, nil
+		b.Outcome = "suppressed: audience changed before typing"
+		return nil
+	})
+	return err
 }
 
 // The saved empty observation is an identity constraint, never permission.
@@ -111,6 +147,12 @@ func (a *App) reserveTerminalRecovery(ctx context.Context, s *session, generatio
 			return errors.New("terminal recovery attempt changed")
 		}
 		if err := s.checkConnection(); err != nil {
+			return err
+		}
+		if len(current.AttemptIDs) != current.NoticeCount {
+			return errAddressChanged
+		}
+		if err := s.requireAudienceIDs(current.AttemptIDs); err != nil {
 			return err
 		}
 		if st.HooksPaused || manualWakeGate(*st) != "" || st.Runtime != nil && !st.Runtime.Retired || current.Retried || !ownTerminalTarget(current, b.Target) || !noticeRecoveryBudget(*current, now) {

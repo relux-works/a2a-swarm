@@ -55,7 +55,7 @@ func (r SendResult) Text() string {
 	return string(r.Outcome)
 }
 
-func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKey, beforeType, afterType func()) (SendResult, error) {
+func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKey, beforeType, afterType func(), beforeEnter ...func() error) (SendResult, error) {
 	refused := SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput, Reason: ReasonUnavailable, ReasonAt: time.Now().UTC()}
 	if !expected.valid() || expected.Target != t.Target || expected.Generation != t.Generation || expected.SessionID != t.SessionID || expected.ClaudeRegistryRoot != t.ClaudeRegistryRoot {
 		return refused, nil
@@ -81,7 +81,7 @@ func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKe
 	// The last check follows beforeType, so a test/caller callback cannot turn
 	// a qualified key into unconditional permission. The final I/O gap remains.
 	preType := func() bool { _, ok := inspect(ctx, ""); return ok && ctx.Err() == nil }
-	result, err := t.Target.sendWith(ctx, count, "", beforeType, afterType, inspect, preType)
+	result, err := t.Target.sendWith(ctx, count, "", beforeType, afterType, inspect, preType, beforeEnter...)
 	if result.Disposition == SendDraft || result.Disposition == SendUncertain {
 		result.NoticePosition = t.captureNoticePosition(ctx, Notice(count), expected.Route == RegistryNamed)
 		if result.NoticePosition == nil {

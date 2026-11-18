@@ -875,6 +875,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			return err
 		}
 		outcome, sendErr := a.sendTerminalAttempt(ctx, s, reservedAttempt, readiness.Key)
+		if errors.Is(sendErr, errAddressChanged) {
+			return sendErr
+		}
 		return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 	})
 	if err != nil {

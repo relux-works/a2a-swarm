@@ -624,6 +624,9 @@ func (c *Client) SendMessageReceipt(ctx context.Context, roomID string, content 
 
 // Event is a client-format room event.
 type Event struct {
+	// NotificationAudience is local minimal evidence captured before scrubbing.
+	// Wire JSON can never supply it; explicit reads never export it.
+	NotificationAudience json.RawMessage `json:"-"`
 	// RedactionVerified is local evidence, never accepted from wire JSON.
 	RedactionVerified bool            `json:"-"`
 	EventID           string          `json:"event_id"`

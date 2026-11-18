@@ -365,7 +365,13 @@ func TestMailAlarmOldAndCorruptState(t *testing.T) {
 func TestMailAlarmWorkerDoesNotBlockDelivery(t *testing.T) {
 	e, a, s, room, sample := alarmFixture(t)
 	primeAlarm(t, e, a, s, sample)
-	if _, err := e.mailbox("alice").Append([]config.MailEntry{{ID: "$delivery", Kind: config.MailEvent, Room: room, Rel: "to", TS: sample.Oldest.UnixMilli()}}); err != nil {
+	// Use an actual eligible event so this checks lock isolation rather than
+	// relying on a payload-less entry that the audience view must refuse.
+	raw, err := json.Marshal(firstSyncMessage("$delivery", "@sender:example.org", toMsg("sender", "notice", "fixture")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.mailbox("alice").Append([]config.MailEntry{{ID: "$delivery", Kind: config.MailEvent, Room: room, Rel: "to", TS: sample.Oldest.UnixMilli(), Event: raw}}); err != nil {
 		t.Fatal(err)
 	}
 	entered, release, done := make(chan struct{}, 2), make(chan struct{}), make(chan struct{})

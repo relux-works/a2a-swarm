@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+
+	"github.com/relux-works/a2a-swarm/internal/audience"
 )
 
 // ReadCache belongs to one consumer and identity. It retains at most one State
@@ -66,6 +68,19 @@ func (c *ReadCache) forgetMailboxLocked() {
 	c.mailboxStamp = FileStamp{}
 	c.mailboxRaw = nil
 	c.mailbox = nil
+}
+
+// Any mailbox mutation invalidates this consumer's cached payload copies,
+// including excluded records. Redaction cannot leave an authorized stale copy.
+func (c *ReadCache) invalidateMailbox(path string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.mailboxPath == path {
+		c.forgetMailboxLocked()
+	}
 }
 
 func (c *ReadCache) stateHit(name, path string, stamp FileStamp) (State, bool) {
@@ -199,6 +214,11 @@ func (c *ReadCache) unchangedDurable(name, path string, old, next State) bool {
 
 func cloneMailbox(src *Mailbox) *Mailbox {
 	m := *src
+	m.pendingFilter = nil
+	m.audiences = make(map[audience.Key]audience.Evidence, len(src.audiences))
+	for k, e := range src.audiences {
+		m.audiences[k] = e
+	}
 	m.order = cloneStrings(src.order)
 	m.received = cloneStrings(src.received)
 	m.live = make(map[string]*MailEntry, len(src.live))

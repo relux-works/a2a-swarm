@@ -548,6 +548,7 @@ type session struct {
 	checkBinding     func() error // Immutable operational snapshot; nil for legacy sessions.
 	principals       []string     // Local snapshot for this delivery cycle; no lock spans I/O.
 	principalWarning bool         // Emit malformed/unreadable metadata warning once per session.
+	addressWarnings  uint32       // Bounded fixed audience diagnostics, once per session.
 	longConsumer     bool         // Process-owned watch/unbounded wait; ignore ambient runtime session IDs.
 }
 

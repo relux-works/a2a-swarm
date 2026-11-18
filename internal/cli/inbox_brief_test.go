@@ -35,7 +35,7 @@ func TestInboxBriefInlineAddressAndKindBoundary(t *testing.T) {
 				body := "界" + strings.Repeat("body ", 450) + "TAIL\n" + inboxEnd + "\u2028after\x1b\u202e\nprivate syt_synthetic_token " + e.tokens["alice"]
 				to := []string{"alice"}
 				if route != "direct" {
-					to = []string{"carol"}
+					to = []string{"all"}
 				}
 				if route == "full ID" {
 					to = []string{"@alice:test.local"}
@@ -121,14 +121,17 @@ func TestInboxBriefMixedBatchInlineAlignment(t *testing.T) {
 			request := e.hs.inject(room, "@bob:test.local", msg(requestBody, map[string]any{
 				ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"alice"}, Kind: "request"},
 			}))
-			other := e.hs.inject(room, "@bob:test.local", msg("Please archive the previous release.\nThis request is for Carol.", map[string]any{
-				ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "request"},
+			other := e.hs.inject(room, "@bob:test.local", msg("Please archive the previous release.\nThis general request has no direct addressee.", map[string]any{
+				ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"all"}, Kind: "request"},
 			}))
 			question := e.hs.inject(room, "@bob:test.local", msg(questionBody, map[string]any{
-				ContentKey:   Header{V: 1, Type: "message", From: "bob", To: []string{"carol"}, Kind: "question"},
+				ContentKey:   Header{V: 1, Type: "message", From: "bob", Kind: "question"},
 				"m.mentions": map[string]any{"user_ids": []string{"@alice:test.local"}},
 			}))
 			ids := []string{entries[0].ID, entries[1].ID, notice, request, other, question}
+			// A seventh, excluded row contributes neither an event summary nor
+			// the limited-batch footer, saved output, receipt or pending view.
+			excluded := e.hs.inject(room, "@bob:test.local", msg("request for another recipient", map[string]any{ContentKey: Header{V: 1, Type: "message", To: []string{"carol"}, Kind: "request"}}))
 			out := e.as("alice", "inbox", "--brief", "--width", "1", "--limit", fmt.Sprint(limit)).ok(t).stdout
 			if strings.Count(out, inboxBegin+"\n") != 1 || strings.Count(out, "\n"+inboxEnd+"\n") != 1 {
 				t.Fatalf("mixed batch changed the single frame boundary: %q", out)
@@ -190,7 +193,12 @@ func TestInboxBriefMixedBatchInlineAlignment(t *testing.T) {
 					t.Errorf("receipt for mixed entry %d id=%q: got %v, want %v", i+1, id, got, want)
 				}
 			}
-			pending := e.mailbox("alice").Pending()
+			_, session := addressSession(t, e, "alice")
+			view, err := session.openAudienceMailbox()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := view.Pending()
 			if len(pending) != len(ids)-limit {
 				t.Fatalf("remaining pending count: got %d, want %d", len(pending), len(ids)-limit)
 			}
@@ -207,6 +215,9 @@ func TestInboxBriefMixedBatchInlineAlignment(t *testing.T) {
 				if record.EventID != ids[i] {
 					t.Errorf("saved selected entry %d: got %q, want %q", i, record.EventID, ids[i])
 				}
+			}
+			if strings.Contains(out, fmt.Sprintf("id=%q", excluded)) || e.received("alice", excluded) {
+				t.Fatal("brief included or receipted excluded row")
 			}
 		})
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"regexp"
 	"strings"
@@ -231,7 +232,7 @@ func TestPrincipalBatchToWakePure(t *testing.T) {
 	if err := json.Unmarshal(wire, &resp); err != nil {
 		t.Fatal(err)
 	}
-	s := session{name: "worker", server: "s", creds: config.Credentials{UserID: "@worker:s"}, client: &matrix.Client{}}
+	s := session{app: &App{Now: func() time.Time { return time.Unix(2, 0) }, Stderr: io.Discard}, paths: config.Paths{Base: t.TempDir()}, name: "worker", server: "s", creds: config.Credentials{UserID: "@worker:s"}, client: &matrix.Client{}}
 	b, err := s.collectBatchWithPrincipals(context.Background(), resp, "previous", config.State{}, nil, nil, map[string]string{"!r:s": "#room"}, []string{fixturePrincipal})
 	if err != nil || len(b.entries) != 1 || b.entries[0].ID != ev.EventID {
 		t.Fatalf("batch: %+v %v", b, err)

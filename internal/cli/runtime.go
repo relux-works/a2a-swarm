@@ -509,7 +509,8 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		if len(items) == 0 {
 			return a.runtimeOutcome(s, generation, "runtime ready: no new mail")
 		}
-		notice := doorbellText(doorbellOf(items, s.server, s.verifySenders(probe, items)))
+		members := s.verifySenders(probe, items)
+		notice := doorbellText(doorbellOf(items, s.server, members))
 		ids := itemIDs(items)
 		var attempt *codexwake.Attempt
 		_, err = a.reserveNotification(ctx, s, time.Now().Add(nativeRPCTimeout), "native", b.SessionID, generation, false, func(cur *config.State, mb *config.Mailbox, token string) (bool, error) {
@@ -530,6 +531,11 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			}
 			cur.Wake.PruneRung(current)
 			ids = slices.DeleteFunc(ids, func(id string) bool { return !slices.Contains(current, id) })
+			if len(ids) == 0 {
+				return false, nil
+			}
+			items = slices.DeleteFunc(items, func(it waitItem) bool { return !slices.Contains(ids, it.id) })
+			notice = doorbellText(doorbellOf(items, s.server, members))
 			attempt, err = cur.Wake.Begin(b, ids, notice, a.Now().UTC())
 			if errors.Is(err, codexwake.ErrRate) {
 				return false, nil
@@ -558,6 +564,14 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 			}
 		}
 		if err := s.checkConnection(); err != nil {
+			return err
+		}
+		if err := s.requireAudienceIDs(attempt.IDs); err != nil {
+			// This fence is before Wake: unlike an ambiguous transport result,
+			// no request was sent, so release only this unstarted reservation.
+			if cancelErr := a.cancelNativeAudience(s, *attempt); cancelErr != nil {
+				return cancelErr
+			}
 			return err
 		}
 		turn, err := client.Wake(probe, b.ThreadID, attempt.Output)
@@ -607,6 +621,27 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		}
 		return err
 	})
+}
+
+func (a *App) cancelNativeAudience(s *session, attempt codexwake.Attempt) error {
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
+		if st.Wake.Attempt == nil || st.Wake.Attempt.ID != attempt.ID || st.Wake.Attempt.NotificationToken != attempt.NotificationToken {
+			return config.ErrNotificationStale
+		}
+		if err := st.Notification.Cancel(attempt.NotificationToken); err != nil {
+			return err
+		}
+		for i := len(st.Wake.Reservations) - 1; i >= 0; i-- {
+			if st.Wake.Reservations[i].Equal(attempt.Started) {
+				st.Wake.Reservations = slices.Delete(st.Wake.Reservations, i, i+1)
+				break
+			}
+		}
+		st.Wake.Attempt = nil
+		st.Wake.Outcome = "wake suppressed: audience changed before submit"
+		return nil
+	})
+	return err
 }
 
 func (a *App) runNative(ctx context.Context, s *session, generation string) error {

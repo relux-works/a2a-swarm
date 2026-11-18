@@ -459,7 +459,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 		return err
 	}
 	var members map[string]bool
-	if mb, err := config.OpenMailbox(s.paths, s.name); err == nil {
+	if mb, err := s.openAudienceMailbox(); err == nil {
 		members = s.verifySenders(ctx, itemsOf(mb.Pending(), s.server))
 	}
 	limited := false
@@ -512,6 +512,12 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 			return err
 		}
 		if err = s.checkConnection(); err != nil {
+			return err
+		}
+		if err = s.requireAudienceIDs(keys); err != nil {
+			if cancelErr := a.cancelNotification(ctx, s, deadline, token); cancelErr != nil {
+				return cancelErr
+			}
 			return err
 		}
 		written, writeErr := io.WriteString(a.Stdout, out)
