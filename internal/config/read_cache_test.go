@@ -345,6 +345,94 @@ func TestReadCacheDurableByteConfirmation(t *testing.T) {
 	}
 }
 
+// TestReadCacheOwnDurableNoopSkipsSync proves a stable ordinary own-durable
+// no-op still skips file and directory syncs.
+func TestReadCacheOwnDurableNoopSkipsSync(t *testing.T) {
+	p := cachedPaths(t)
+	if !p.readCache.durable {
+		t.Skip("platform does not expose reliable directory change time")
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 0 || len(rec.dirs) != 0 {
+		t.Fatalf("own durable no-op synced: %+v", rec)
+	}
+}
+
+// TestReadCacheNamespaceABADurability proves same-inode, same-byte rename-away
+// and rename-back cannot reuse durability for the restored directory entry,
+// with and without observing the missing filename; the ordinary path syncs
+// the verified file and both directories before refreshing its proof.
+func TestReadCacheNamespaceABADurability(t *testing.T) {
+	for _, observeMissing := range []bool{false, true} {
+		name := "without missing-file read"
+		if observeMissing {
+			name = "with missing-file read"
+		}
+		t.Run(name, func(t *testing.T) {
+			p := cachedPaths(t)
+			if !p.readCache.durable {
+				t.Skip("platform does not expose reliable directory change time")
+			}
+			var rec syncRecord
+			swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+
+			path := p.StateFile("fixture")
+			before := StampFile(path)
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			moved := path + ".moved"
+			if err := os.Rename(path, moved); err != nil {
+				t.Fatal(err)
+			}
+			if err := syncStateDirectory(filepath.Dir(path)); err != nil {
+				t.Fatal(err)
+			}
+			if observeMissing {
+				missing, err := LoadState(p, "fixture")
+				if err != nil || missing.NextBatch != "" {
+					t.Fatalf("missing-file read = State(%q), %v", missing.NextBatch, err)
+				}
+				if p.readCache.durable {
+					t.Fatal("observed missing path retained own-write durability")
+				}
+			}
+			if err := os.Rename(moved, path); err != nil {
+				t.Fatal(err)
+			}
+			after := StampFile(path)
+			restored, err := os.ReadFile(path)
+			if err != nil || !before.Equal(after) || !bytes.Equal(original, restored) {
+				t.Fatalf("ABA control did not restore identical file identity and bytes: err=%v sameStamp=%v sameBytes=%v", err, before.Equal(after), bytes.Equal(original, restored))
+			}
+
+			rec = syncRecord{}
+			if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.files) != 1 || len(rec.dirs) != 2 {
+				t.Fatalf("restored namespace no-op must sync the verified file and both directories: %+v", rec)
+			}
+			if !p.readCache.durable {
+				t.Fatal("successful ordinary durability path did not establish fresh own-write evidence")
+			}
+
+			rec = syncRecord{}
+			if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.files) != 0 || len(rec.dirs) != 0 {
+				t.Fatalf("fresh own-durable no-op positive control synced: %+v", rec)
+			}
+		})
+	}
+}
+
 // TestReadCacheByteReadFailure proves candidate hits fail closed when the byte read is denied after the stamp pre-check, beside readable controls before and after.
 func TestReadCacheByteReadFailure(t *testing.T) {
 	p := cachedPaths(t)
@@ -595,13 +683,13 @@ func TestReadCacheWrittenInode(t *testing.T) {
 	p := cachedPaths(t)
 	path := p.StateFile("fixture")
 	s := cachedLoad(t, p)
-	stamp := StampFile(path)
-	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, stamp)
+	evidence := stateWriteEvidence{file: StampFile(path), directory: stampStateDirectory(filepath.Dir(path))}
+	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, evidence)
 	if !p.readCache.durable {
 		t.Fatal("matching written-inode control lost durability evidence")
 	}
 	cacheReplace(t, path, s.rawState)
-	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, stamp)
+	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, evidence)
 	if p.readCache.durable {
 		t.Fatal("replacement inherited a different inode's durability evidence")
 	}

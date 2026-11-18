@@ -81,20 +81,30 @@ func writeOrdinaryStateAtomic(path, name string, data []byte, syncDir func(strin
 	return err
 }
 
-func writeOrdinaryStateAtomicStamped(path, name string, data []byte, syncDir func(string) error) (FileStamp, error) {
+type stateWriteEvidence struct {
+	file      FileStamp
+	directory directoryStamp
+}
+
+func writeOrdinaryStateAtomicStamped(path, name string, data []byte, syncDir func(string) error) (stateWriteEvidence, error) {
 	dir := filepath.Dir(path)
 	if err := syncDir(filepath.Dir(dir)); err != nil {
-		return FileStamp{}, err
+		return stateWriteEvidence{}, err
 	}
-	stamp, err := writeStateSecretAtomicStamped(path, name, data)
+	fileStamp, err := writeStateSecretAtomicStamped(path, name, data)
 	if err != nil {
-		return FileStamp{}, err
+		return stateWriteEvidence{}, err
 	}
 	globalStateStats.stateWriteBytes.Add(int64(len(data)))
+	beforeDirectorySync := stampStateDirectory(dir)
 	if err := syncDir(dir); err != nil {
-		return FileStamp{}, ErrStateWriteUncertain
+		return stateWriteEvidence{}, ErrStateWriteUncertain
 	}
-	return stamp, nil
+	afterDirectorySync := stampStateDirectory(dir)
+	if !beforeDirectorySync.Equal(afterDirectorySync) {
+		afterDirectorySync = directoryStamp{}
+	}
+	return stateWriteEvidence{file: fileStamp, directory: afterDirectorySync}, nil
 }
 
 // writeStateSecretAtomicStamped is the State-only counterpart of
@@ -304,37 +314,51 @@ var ordinaryStateSync = stateSyncer{file: (*os.File).Sync, dir: syncStateDirecto
 // through the verified descriptor before syncing both directory entries. A
 // mismatch or file-sync failure falls back to atomic replacement.
 func elideUnchangedOrdinaryState(path string, input []byte, sync stateSyncer) (bool, error) {
+	_, elided, err := elideUnchangedOrdinaryStateWithEvidence(path, input, sync)
+	return elided, err
+}
+
+// elideUnchangedOrdinaryStateWithEvidence proves exact current bytes and
+// persists them through the verified descriptor before syncing both directory
+// entries. The returned directory evidence is reusable only when its identity
+// and change time stayed stable across the state-directory sync.
+func elideUnchangedOrdinaryStateWithEvidence(path string, input []byte, sync stateSyncer) (stateWriteEvidence, bool, error) {
 	if checkSecretFile(path) != nil {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != SecretFileMode || opened.Size() != int64(len(input)) {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	data := make([]byte, len(input)+1)
 	n, err := io.ReadFull(f, data)
 	if err != io.ErrUnexpectedEOF || n != len(input) || !bytes.Equal(data[:n], input) {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	if sync.file(f) != nil {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	if current, err := os.Lstat(path); err != nil || !os.SameFile(opened, current) {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	dir := filepath.Dir(path)
 	if err := sync.dir(filepath.Dir(dir)); err != nil {
-		return false, err
+		return stateWriteEvidence{}, false, err
 	}
+	beforeDirectorySync := stampStateDirectory(dir)
 	if err := sync.dir(dir); err != nil {
-		return false, ErrStateWriteUncertain
+		return stateWriteEvidence{}, false, ErrStateWriteUncertain
 	}
-	return true, nil
+	afterDirectorySync := stampStateDirectory(dir)
+	if !beforeDirectorySync.Equal(afterDirectorySync) {
+		afterDirectorySync = directoryStamp{}
+	}
+	return stateWriteEvidence{file: stampInfo(opened), directory: afterDirectorySync}, true, nil
 }
 
 func sealedState(s State) ([]byte, error) {

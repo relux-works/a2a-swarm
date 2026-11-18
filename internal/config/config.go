@@ -621,6 +621,7 @@ func LoadState(p Paths, name string) (State, error) {
 	globalStateStats.loadStateCalls.Add(1)
 	path := p.StateFile(name)
 	if err := checkSecretFile(path); err != nil {
+		p.readCache.invalidateState(name, path)
 		if errors.Is(err, fs.ErrNotExist) {
 			return State{}, nil
 		}
@@ -638,6 +639,7 @@ func LoadState(p Paths, name string) (State, error) {
 	}
 	data, err := readStateFile(path)
 	if err != nil {
+		p.readCache.invalidateState(name, path)
 		return State{}, err
 	}
 	var envelope map[string]json.RawMessage
@@ -742,11 +744,12 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 		return old, nil
 	}
 	if inputSealed && !strict && unchangedSealedState(old, s) {
-		elided, err := elideUnchangedOrdinaryState(path, old.rawState, ordinaryStateSync)
+		evidence, elided, err := elideUnchangedOrdinaryStateWithEvidence(path, old.rawState, ordinaryStateSync)
 		if err != nil {
 			return old, err
 		}
 		if elided {
+			p.readCache.rememberWrittenState(p, name, old, old.rawState, evidence)
 			return old, nil
 		}
 	}
@@ -754,11 +757,11 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	if err != nil {
 		return old, err
 	}
-	var writtenStamp FileStamp
+	var evidence stateWriteEvidence
 	if strict {
 		err = writeHostStateAtomic(p, name, append(data, '\n'))
 	} else {
-		writtenStamp, err = writeOrdinaryStateAtomicStamped(path, name, append(data, '\n'), syncStateDirectory)
+		evidence, err = writeOrdinaryStateAtomicStamped(path, name, append(data, '\n'), syncStateDirectory)
 	}
 	if err != nil {
 		return old, err
@@ -770,7 +773,7 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	if err != nil {
 		return old, err
 	}
-	p.readCache.rememberWrittenState(p, name, saved, written, writtenStamp)
+	p.readCache.rememberWrittenState(p, name, saved, written, evidence)
 	return saved, nil
 }
 
