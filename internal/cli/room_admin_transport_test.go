@@ -11,6 +11,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
 // Complete getters distinguish absence, clearing and invalid observations.
@@ -98,6 +101,10 @@ func TestRoomAdminACKNeighbors(t *testing.T) {
 		acknowledged bool
 	}{
 		{"verified", 200, `{"event_id":"$event"}`, `{"name":"Example"}`, "VERIFIED", "match", true},
+		{"opaque-ack-space", 200, `{"event_id":"$receipt with space"}`, `{"name":"Example"}`, "VERIFIED", "match", true},
+		{"opaque-ack-control", 200, `{"event_id":"$receipt\n\t\u0000"}`, `{"name":"Example"}`, "VERIFIED", "match", true},
+		{"opaque-ack-byte-boundary", 200, `{"event_id":"$` + strings.Repeat("e", 254) + `"}`, `{"name":"Example"}`, "VERIFIED", "match", true},
+		{"opaque-ack-utf8-byte-boundary", 200, `{"event_id":"$` + strings.Repeat("é", 127) + `"}`, `{"name":"Example"}`, "VERIFIED", "match", true},
 		{"extra-ack-opaque", 200, `{"event_id":"$event","private":"` + adminMarker + `"}`, `{"name":"Example"}`, "VERIFIED", "match", true},
 		{"extra-content", 200, `{"event_id":"$event"}`, `{"name":"Example","private":"` + adminMarker + `"}`, "UNKNOWN", "mismatch", true},
 		{"bad-content-type", 200, `{"event_id":"$event"}`, `{"name":null}`, "UNKNOWN", "mismatch", true},
@@ -142,6 +149,14 @@ func TestRoomAdminACKNeighbors(t *testing.T) {
 			}
 			if puts != 1 || reads != map[bool]int{true: 1}[tc.acknowledged] || code != map[bool]int{false: 1}[tc.want == "VERIFIED"] {
 				t.Fatalf("ACK request count/exit puts%d reads%d exit%d", puts, reads, code)
+			}
+			if tc.acknowledged {
+				var ack struct {
+					EventID string `json:"event_id"`
+				}
+				if err := json.Unmarshal([]byte(tc.ack), &ack); err != nil || m["event_id"] != ack.EventID {
+					t.Fatal("opaque acknowledgement was not retained exactly")
+				}
 			}
 			if strings.Contains(f.out.String()+f.err.String(), adminMarker) {
 				t.Fatal("raw server error escaped")
@@ -242,12 +257,36 @@ func (adminBrokenOutput) Write([]byte) (int, error) { return 0, errors.New(admin
 
 // Session/global/output errors expose only safe rules. Output failure after
 // a mutation cannot undo its one PUT or cause another send.
+// The fake store records a real selected credential read before failing; no
+// native secret store is accessed. Cancellation here must precede session error.
+type adminReadFailureStore struct {
+	*namedTestStore
+	fail func(context.Context) error
+}
+
+func (s adminReadFailureStore) Read(ctx context.Context, p config.Paths, ref config.SecretReference) (string, error) {
+	_, _ = s.namedTestStore.Read(ctx, p, ref)
+	return "", s.fail(ctx)
+}
+
 func TestRoomAdminSessionAndOutput(t *testing.T) {
-	for _, mode := range []string{"session", "global", "output", "short-output"} {
+	for _, mode := range []string{"session", "session-unavailable", "session-context", "session-deadline", "global", "output", "short-output"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newNamedFixture(t, true)
 			a := f.app()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if mode == "session-unavailable" {
+				a.connectionSecretStore = adminReadFailureStore{f.store, func(context.Context) error { return errors.New(adminMarker) }}
+			}
+			if mode == "session-context" {
+				a.connectionSecretStore = adminReadFailureStore{f.store, func(context.Context) error { cancel(); return context.Canceled }}
+			}
+			if mode == "session-deadline" {
+				a.connectionSecretStore = adminReadFailureStore{f.store, func(c context.Context) error { <-c.Done(); return c.Err() }}
+			}
 			puts := 0
+			requests := 0
 			stored := ""
 			args := adminArgs(false, "set")
 			if mode == "session" {
@@ -263,6 +302,7 @@ func TestRoomAdminSessionAndOutput(t *testing.T) {
 				a.Stdout = adminShortOutput{}
 			}
 			a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+				requests++
 				if strings.HasSuffix(r.URL.Path, "/state") {
 					return propertyCLIReply(r, 200, adminPolicy()), nil
 				}
@@ -274,16 +314,34 @@ func TestRoomAdminSessionAndOutput(t *testing.T) {
 				}
 				return propertyCLIReply(r, 200, stored), nil
 			})}
-			code := a.Run(t.Context(), append(args, "--json"))
+			before := memberFiles(t, f.root)
+			if mode == "session-deadline" {
+				var deadlineCancel context.CancelFunc
+				ctx, deadlineCancel = context.WithTimeout(t.Context(), 2*time.Second)
+				defer deadlineCancel()
+			}
+			code := a.Run(ctx, append(args, "--json"))
 			rule, loc, wantCode, wantPuts := "admin_output", "$.output", 1, 1
-			if mode == "session" {
+			if mode == "session" || mode == "session-unavailable" {
 				rule, loc, wantPuts = "admin_session", "$.session", 0
+			}
+			if mode == "session-context" || mode == "session-deadline" {
+				rule, loc, wantPuts = "admin_context", "$.context", 0
 			}
 			if mode == "global" {
 				rule, loc, wantCode, wantPuts = "admin_usage", "argv", 2, 0
 			}
 			if code != wantCode || puts != wantPuts || f.err.String() != "RULE "+rule+": "+loc+"\n" || strings.Contains(f.out.String()+f.err.String(), adminMarker) {
-				t.Fatalf("session/output boundary exit%d puts%d err%q", code, puts, f.err.String())
+				t.Fatalf("session/output boundary exit%d puts%d requests%d credentialReads%d out%q err%q", code, puts, requests, len(f.store.reads), f.out.String(), f.err.String())
+			}
+			if wantPuts == 0 && (requests != 0 || f.out.Len() != 0) {
+				t.Fatal("preflight session/global refusal performed a property operation or emitted a result")
+			}
+			if (mode == "session-context" || mode == "session-deadline" || mode == "session-unavailable") && len(f.store.reads) != 1 {
+				t.Fatal("session read witness did not execute exactly once")
+			}
+			if len(f.store.creates) != 0 || !reflect.DeepEqual(before, memberFiles(t, f.root)) {
+				t.Fatal("session/output operation changed local credential state")
 			}
 		})
 	}

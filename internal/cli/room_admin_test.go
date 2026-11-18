@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,7 +41,9 @@ func adminSpecimens(t *testing.T) []adminSpecimen {
 	var data struct {
 		Records []adminSpecimen `json:"records"`
 	}
-	if err := json.Unmarshal(b, &data); err != nil {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	if err := d.Decode(&data); err != nil {
 		t.Fatal(err)
 	}
 	if len(data.Records) != 34 {
@@ -56,6 +60,7 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 		return nil, bad
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
 	var value func() error
 	value = func() error {
 		tok, err := d.Token()
@@ -102,7 +107,9 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 		return nil, bad
 	}
 	var m map[string]any
-	if json.Unmarshal(b, &m) != nil || m == nil {
+	d = json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	if d.Decode(&m) != nil || m == nil {
 		return nil, bad
 	}
 	fields := []string{"type", "version", "operation", "caller", "room_id", "state_type", "state_key", "outcome", "acknowledged", "readback"}
@@ -124,7 +131,7 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 		}
 	}
 	ack, ok := m["acknowledged"].(bool)
-	if !ok || m["version"] != float64(1) {
+	if !ok || !adminConsumerVersionOne(m["version"]) {
 		return nil, bad
 	}
 	op, outcome, readback := m["operation"].(string), m["outcome"].(string), m["readback"].(string)
@@ -160,7 +167,9 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 	}
 	if hasID {
 		s, ok := id.(string)
-		if !ok || !publicID(s, '$') {
+		// The pinned ACK predicate is deliberately opaque after the '$'. It
+		// does not inherit the target/caller whitespace and control restrictions.
+		if !ok || len(s) < 2 || len(s) > 255 || s[0] != '$' {
 			return nil, bad
 		}
 	}
@@ -217,7 +226,7 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 				n := 0
 				for _, s := range v {
 					str, ok := s.(string)
-					if !ok || len(str) > 261 {
+					if !ok || len(str) > 261 || !adminConsumerViaServer(str) {
 						return nil, bad
 					}
 					n += len(str)
@@ -251,6 +260,45 @@ func decodeAdminRecord(b []byte) (map[string]any, error) {
 		}
 	}
 	return m, nil
+}
+
+// Decide the exact decimal value, without rounding and without restricting
+// JSON's equivalent integer spellings (1.0, 1e0, 10e-1, ...). JSON syntax has
+// already been checked. Large exponents cannot equal the bounded decimal scale.
+func adminConsumerVersionOne(value any) bool {
+	n, ok := value.(json.Number)
+	if !ok {
+		return false
+	}
+	mantissa, exponent := n.String(), int64(0)
+	if i := strings.IndexAny(mantissa, "eE"); i >= 0 {
+		var err error
+		exponent, err = strconv.ParseInt(mantissa[i+1:], 10, 64)
+		if err != nil {
+			return false
+		}
+		mantissa = mantissa[:i]
+	}
+	integer, fraction, _ := strings.Cut(mantissa, ".")
+	digits := strings.TrimLeft(integer+fraction, "0")
+	significant := strings.TrimRight(digits, "0")
+	return significant == "1" && exponent == int64(len(fraction))-int64(len(digits)-len(significant))
+}
+
+// This independent allowlist preserves the retained structural DNS/IPv4 host
+// alphabet and 1..5 decimal port digits, including noncanonical DNS labels and
+// ports outside TCP's numeric range. Brackets require a real, unzoned IPv6 IP.
+var adminConsumerServerWire = regexp.MustCompile(`^([A-Za-z0-9.-]{1,255}|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$`)
+
+func adminConsumerViaServer(server string) bool {
+	if !adminConsumerServerWire.MatchString(server) {
+		return false
+	}
+	if !strings.HasPrefix(server, "[") {
+		return true
+	}
+	host := server[1:strings.IndexByte(server, ']')]
+	return strings.Contains(host, ":") && net.ParseIP(host) != nil
 }
 
 type adminRequest struct{ Method, Path, Body string }
@@ -462,7 +510,7 @@ func TestRoomAdminDecoderPlants(t *testing.T) {
 		"type": func(m map[string]any) { m["type"] = "room-avatar" }, "version": func(m map[string]any) { m["version"] = 2 }, "operation": func(m map[string]any) { m["operation"] = "delete" },
 		"false-ack": func(m map[string]any) { m["acknowledged"] = false }, "missing-id": func(m map[string]any) { delete(m, "event_id") }, "unknown-content": func(m map[string]any) { m["outcome"] = "UNKNOWN"; m["readback"] = "unavailable" },
 		"missing-content": func(m map[string]any) { delete(m, "content") }, "get-verified": func(m map[string]any) { m["operation"] = "get" }, "readback": func(m map[string]any) { m["readback"] = "future" }, "outcome": func(m map[string]any) { m["outcome"] = "DONE" },
-		"event-control":  func(m map[string]any) { m["event_id"] = "$bad\n" },
+		"event-sigil":    func(m map[string]any) { m["event_id"] = "not-an-event" },
 		"event-overlong": func(m map[string]any) { m["event_id"] = "$" + strings.Repeat("e", 255) },
 		"name-control":   func(m map[string]any) { m["content"] = map[string]any{"name": "bad\n"} },
 		"name-type":      func(m map[string]any) { m["content"] = map[string]any{"name": 7} },
@@ -487,6 +535,73 @@ func TestRoomAdminDecoderPlants(t *testing.T) {
 		if _, err := decodeAdminRecord([]byte(b)); err == nil {
 			t.Fatal("invalid wire accepted")
 		}
+	}
+	// JSON spellings with the exact integral value 1 remain compatible. Nearby
+	// fractions must not become version 1 through binary floating-point rounding.
+	wire, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		spelling string
+		valid    bool
+	}{
+		{"1", true}, {"1.0", true}, {"1e0", true}, {"1E+0", true}, {"10e-1", true},
+		{"0.1e1", true}, {"1000e-3", true}, {"1.0000000000000000", true},
+		{"1e+00000", true}, {"1.000e-0", true},
+		{"1.0000000000000001", false}, {"0.99999999999999999", false},
+		{"1.00000000000000000000000000001", false}, {"2", false}, {`"1"`, false},
+	} {
+		t.Run("raw-version/"+tc.spelling, func(t *testing.T) {
+			b := bytes.Replace(wire, []byte(`"version":1`), []byte(`"version":`+tc.spelling), 1)
+			if bytes.Equal(b, wire) && tc.spelling != "1" {
+				t.Fatal("version plant did not change wire")
+			}
+			_, err := decodeAdminRecord(b)
+			if (err == nil) != tc.valid {
+				t.Fatalf("exact version value: spelling %s accepted=%t want=%t", tc.spelling, err == nil, tc.valid)
+			}
+		})
+	}
+	var child map[string]any
+	for _, s := range adminSpecimens(t) {
+		if s.JSON["type"] == "space-child" && s.JSON["operation"] == "add" && s.JSON["outcome"] == "VERIFIED" {
+			child = s.JSON
+			break
+		}
+	}
+	if child == nil {
+		t.Fatal("missing positive child specimen")
+	}
+	for _, tc := range []struct {
+		server string
+		valid  bool
+	}{
+		{"DNS.invalid", true}, {"127.0.0.1", true}, {"127.0.0.1:8448", true},
+		{"[2001:db8::1]", true}, {"[2001:db8::1]:8448", true}, {"[::ffff:192.0.2.1]:0", true},
+		{"server.invalid:99999", true}, {"server.invalid:00000", true},
+		{".", true}, {"-host", true}, {"host-", true}, {"x..y", true},
+		{strings.Repeat("h", 255) + ":12345", true},
+		{"", false}, {"bad/server", false}, {"bad:port", false}, {"bad host", false},
+		{"[127.0.0.1]", false}, {"[fe80::1%zone]", false}, {"[2001:db8::1]junk", false},
+		{"server.invalid:", false}, {"server.invalid:123456", false}, {"server.invalid:-1", false},
+		{"é.invalid", false}, {"2001:db8::1", false},
+	} {
+		t.Run("via-grammar/"+tc.server, func(t *testing.T) {
+			m := map[string]any{}
+			for k, v := range child {
+				m[k] = v
+			}
+			m["content"] = map[string]any{"via": []string{tc.server}}
+			b, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = decodeAdminRecord(b)
+			if (err == nil) != tc.valid {
+				t.Fatalf("independent via grammar: accepted=%t want=%t", err == nil, tc.valid)
+			}
+		})
 	}
 }
 
@@ -534,6 +649,15 @@ func TestRoomAdminInputRefusals(t *testing.T) {
 		{"remove-via", append(adminArgs(true, "remove"), "--via", adminMarker), "admin_usage", "argv"},
 		{"get-expected", append(adminArgs(false, "get"), "--expect-room-id", adminRoom), "admin_usage", "argv"},
 		{"empty-as", append(append([]string(nil), name...), "--as="), "admin_usage", "argv"},
+		{"empty-as-separated", append(append([]string(nil), name...), "--as", ""), "admin_usage", "argv"},
+		{"empty-as-short-separated", append(append([]string(nil), name...), "-as", ""), "admin_usage", "argv"},
+		{"empty-as-child-separated", append(append([]string(nil), add...), "--as", ""), "admin_usage", "argv"},
+		{"empty-as-child-short-separated", append(append([]string(nil), add...), "-as", ""), "admin_usage", "argv"},
+		{"empty-as-short-equals", append(append([]string(nil), name...), "-as="), "admin_usage", "argv"},
+		{"empty-profile-separated", append(append([]string(nil), name...), "--profile", ""), "admin_usage", "argv"},
+		{"empty-profile-equals", append(append([]string(nil), name...), "--profile="), "admin_usage", "argv"},
+		{"empty-fingerprint-separated", append(append([]string(nil), name...), "--connection-fingerprint", ""), "admin_usage", "argv"},
+		{"empty-fingerprint-equals", append(append([]string(nil), name...), "--connection-fingerprint="), "admin_usage", "argv"},
 		{"repeated-profile", append(append([]string(nil), name...), "--profile", "alpha", "--profile", "alpha"), "admin_usage", "argv"},
 	}
 	for _, tc := range cases {
@@ -541,51 +665,134 @@ func TestRoomAdminInputRefusals(t *testing.T) {
 			f := newNamedFixture(t, true)
 			a := f.app()
 			calls := 0
-			a.HTTP = &http.Client{Transport: memberReadTransport(func(*http.Request) (*http.Response, error) { calls++; return nil, errors.New(adminMarker) })}
+			stored := `{}`
+			// The ambient identity has working credentials and HTTP. An invalid
+			// explicit selector must not fall back to that otherwise usable identity.
+			a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/state") {
+					return propertyCLIReply(r, 200, adminPolicy()), nil
+				}
+				if r.Method == "PUT" {
+					b, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					stored = string(b)
+					return propertyCLIReply(r, 200, `{"event_id":"$ok"}`), nil
+				}
+				return propertyCLIReply(r, 200, stored), nil
+			})}
 			before := memberFiles(t, f.root)
 			code := a.Run(t.Context(), tc.args)
 			if code != ExitUsage || f.err.String() != "RULE "+tc.rule+": "+tc.location+"\n" || f.out.Len() != 0 || calls != 0 || len(f.store.reads) != 0 || !reflect.DeepEqual(before, memberFiles(t, f.root)) {
-				t.Fatalf("wrong refusal code%d calls%d out%q err%q", code, calls, f.out.String(), f.err.String())
+				t.Fatalf("wrong refusal code%d calls%d credentialReads%d out%q err%q", code, calls, len(f.store.reads), f.out.String(), f.err.String())
 			}
 		})
 	}
 }
 
-// Exercises literal accepted boundary names and via entries through real CLI,
-// strict HTTP ACK/readback and an independent request/content comparison.
+// Observe every request and persisted event independently of the production
+// writer and its result reconstruction. Unexpected targets remain functional
+// so a substituted write reaches this wire/state assertion, not a fake error.
+func adminValidInputWrite(t *testing.T, room, key, body string, args []string, pinConnection bool) map[string]any {
+	t.Helper()
+	f := newNamedFixture(t, true)
+	a := f.app()
+	if pinConnection {
+		binding, err := f.r.Profiles["alpha"].Binding("alice", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args = append(append([]string(nil), args...), "--connection-fingerprint", binding.Fingerprint())
+	}
+	typ := "m.room.name"
+	if key != "" {
+		typ = "m.space.child"
+	}
+	policyPath := "/_matrix/client/v3/rooms/" + url.PathEscape(room) + "/state"
+	propertyPath := policyPath + "/" + url.PathEscape(typ) + "/" + url.PathEscape(key)
+	otherPath := "/_matrix/client/v3/rooms/" + url.PathEscape("!other:example.invalid") + "/state/" + url.PathEscape(typ) + "/" + url.PathEscape(key)
+	reversePath := "/_matrix/client/v3/rooms/" + url.PathEscape(adminChild) + "/state/m.space.parent/" + url.PathEscape(room)
+	states := map[string]string{propertyPath: `{}`, otherPath: `{"preserved":"other"}`, reversePath: `{"preserved":"reverse"}`}
+	wantStates := map[string]string{propertyPath: body, otherPath: states[otherPath], reversePath: states[reversePath]}
+	var got []adminRequest
+	want := []adminRequest{{"GET", policyPath, ""}, {"PUT", propertyPath, body}, {"GET", propertyPath, ""}}
+	admissions := 0
+	a.beforeAdminPropertyRequest = func() { admissions++ }
+	a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+		var b []byte
+		if r.Body != nil {
+			var err error
+			b, err = io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		path := r.URL.EscapedPath()
+		got = append(got, adminRequest{r.Method, path, string(b)})
+		if r.URL.Scheme+"://"+r.URL.Host != f.r.Profiles["alpha"].URL || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer isolated-alpha" {
+			t.Fatal("varied input selected authority differs")
+		}
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/state") {
+			return propertyCLIReply(r, 200, adminPolicy()), nil
+		}
+		if r.Method == "PUT" {
+			states[path] = string(b)
+			return propertyCLIReply(r, 200, `{"event_id":"$ok"}`), nil
+		}
+		return propertyCLIReply(r, 200, states[path]), nil
+	})}
+	before := memberFiles(t, f.root)
+	code := a.Run(t.Context(), args)
+	if err := checkAdminEffects(got, want); err != nil {
+		t.Fatalf("varied input wire contract: %v: got=%+v want=%+v", err, got, want)
+	}
+	if !reflect.DeepEqual(states, wantStates) {
+		t.Fatal("varied input stored post-state differs")
+	}
+	if admissions != 1 || len(f.store.reads) != 1 || len(f.store.creates) != 0 || !reflect.DeepEqual(before, memberFiles(t, f.root)) {
+		t.Fatal("varied input admission/credential/local-state contract differs")
+	}
+	if code != ExitOK || f.err.Len() != 0 {
+		t.Fatalf("valid input exit%d %s", code, f.err.String())
+	}
+	m, err := decodeAdminRecord(f.out.Bytes())
+	if err != nil || m["outcome"] != "VERIFIED" || m["room_id"] != room || m["state_type"] != typ || m["state_key"] != key || m["event_id"] != "$ok" {
+		t.Fatalf("valid input result mismatch: %s consumer=%v", f.out.String(), err)
+	}
+	return m
+}
+
+// Literal values and every varied via array must reach the exact selected
+// event, with an independently encoded body and persisted state, not just echo.
 func TestRoomAdminValidInputs(t *testing.T) {
-	for _, name := range []string{strings.Repeat("a", 255), strings.Repeat("é", 127) + "a", " literal spaces ", "--profile", "-as"} {
+	for _, name := range []string{strings.Repeat("a", 255), strings.Repeat("é", 127) + "a", " literal spaces ", "--profile", "-as", "--as", "--human", "--connection-fingerprint"} {
 		t.Run(fmt.Sprintf("name-%x", []byte(name)[:min(5, len(name))]), func(t *testing.T) {
-			f := newNamedFixture(t, true)
-			a := f.app()
-			stored := ""
-			puts := 0
-			a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
-				if strings.HasSuffix(r.URL.Path, "/state") {
-					return propertyCLIReply(r, 200, adminPolicy()), nil
-				}
-				if r.Method == "PUT" {
-					b, _ := io.ReadAll(r.Body)
-					stored = string(b)
-					puts++
-					return propertyCLIReply(r, 200, `{"event_id":"$ok"}`), nil
-				}
-				return propertyCLIReply(r, 200, stored), nil
-			})}
 			args := []string{"room", "name", "set", "!x", "--expect-room-id", "!x", "--name", name, "--json"}
-			if code := a.Run(t.Context(), args); code != 0 {
-				t.Fatalf("valid name exit%d %s", code, f.err.String())
+			body, err := json.Marshal(struct {
+				Name string `json:"name"`
+			}{name})
+			if err != nil {
+				t.Fatal(err)
 			}
-			m, e := decodeAdminRecord(f.out.Bytes())
-			if e != nil || m["outcome"] != "VERIFIED" || puts != 1 {
-				t.Fatal("valid name not verified")
-			}
+			m := adminValidInputWrite(t, "!x", "", string(body), args, false)
 			if m["content"].(map[string]any)["name"] != name {
 				t.Fatal("literal valid name lost")
 			}
 		})
 	}
+	for _, globals := range [][]string{nil, {"--as", "alice"}, {"-as", "alice"}, {"--as=alice"}, {"-as=alice"}, {"--profile", "alpha"}, {"--profile=alpha"}} {
+		t.Run("global-neighbor/"+strings.Join(globals, "_"), func(t *testing.T) {
+			args := append([]string{"room", "name", "set", "!x", "--expect-room-id", "!x", "--name", "Example", "--json"}, globals...)
+			adminValidInputWrite(t, "!x", "", `{"name":"Example"}`, args, false)
+		})
+	}
+	t.Run("global-neighbor/fingerprint", func(t *testing.T) {
+		adminValidInputWrite(t, "!x", "", `{"name":"Example"}`, []string{"room", "name", "set", "!x", "--expect-room-id", "!x", "--name", "Example", "--json"}, true)
+	})
 	viaSets := [][]string{{"DNS.invalid", "127.0.0.1:8448", "[2001:db8::1]:8448", "DNS.invalid"}, {strings.Repeat("h", 255) + ":12345"}}
+	viaSets = append(viaSets, []string{"127.0.0.1", "[::1]", "[::ffff:192.0.2.1]:0", "server.invalid:99999", "server.invalid:00000", ".", "-host", "host-", "x..y"})
 	full := make([]string, 16)
 	for i := range full {
 		full[i] = strings.Repeat("h", 250) + ":12345"
@@ -593,35 +800,19 @@ func TestRoomAdminValidInputs(t *testing.T) {
 	viaSets = append(viaSets, full)
 	for n, via := range viaSets {
 		t.Run(fmt.Sprintf("via-%d", n), func(t *testing.T) {
-			f := newNamedFixture(t, true)
-			a := f.app()
-			stored := ""
-			puts := 0
-			a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
-				if strings.HasSuffix(r.URL.Path, "/state") {
-					return propertyCLIReply(r, 200, adminPolicy()), nil
-				}
-				if r.Method == "PUT" {
-					b, _ := io.ReadAll(r.Body)
-					stored = string(b)
-					puts++
-					return propertyCLIReply(r, 200, `{"event_id":"$ok"}`), nil
-				}
-				return propertyCLIReply(r, 200, stored), nil
-			})}
 			args := adminArgs(true, "remove")
 			args[2] = "add"
 			for _, server := range via {
 				args = append(args, "--via", server)
 			}
 			args = append(args, "--json")
-			if code := a.Run(t.Context(), args); code != 0 {
-				t.Fatalf("valid via exit%d %s", code, f.err.String())
+			body, err := json.Marshal(struct {
+				Via []string `json:"via"`
+			}{append([]string(nil), via...)})
+			if err != nil {
+				t.Fatal(err)
 			}
-			m, err := decodeAdminRecord(f.out.Bytes())
-			if err != nil || puts != 1 || m["outcome"] != "VERIFIED" {
-				t.Fatal("valid via not verified")
-			}
+			m := adminValidInputWrite(t, adminRoom, adminChild, string(body), args, false)
 			b, _ := json.Marshal(m["content"].(map[string]any)["via"])
 			want, _ := json.Marshal(via)
 			if !bytes.Equal(b, want) {
