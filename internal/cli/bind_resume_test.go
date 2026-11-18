@@ -187,10 +187,10 @@ func TestTerminalRecoveryStatus(t *testing.T) {
 	}
 }
 
-// Apply the fixture's literal type but lose its ACK. Subsequent capture/Enter
+// Apply the fixture's bracketed paste but lose its ACK. Subsequent capture/Enter
 // commands use the same private socket; no planted product journal is needed.
 func loseTerminalTypeACK(t *testing.T, f *orphanDispatchFixture) {
-	loseTerminalACK(t, f, "-l")
+	loseTerminalACK(t, f, "paste-buffer")
 }
 
 func loseTerminalACK(t *testing.T, f *orphanDispatchFixture, key string) {
@@ -203,12 +203,19 @@ func loseTerminalACK(t *testing.T, f *orphanDispatchFixture, key string) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
+	waitForPaste := "__never__"
+	if key == "paste-buffer" {
+		waitForPaste = key
+	}
+	socket := f.binding().Target.Socket
 	script := fmt.Sprintf(`#!/usr/bin/env python3
 import os,sys,subprocess,time
 if %q in sys.argv:
+ if %q in sys.argv:
+  notice=subprocess.check_output([%q,'-S',%q,'show-buffer','-b',sys.argv[sys.argv.index('-b')+1]]).rstrip(b'\n')
+  if not notice: raise SystemExit('paste buffer was empty')
  subprocess.run([%q]+sys.argv[1:],check=True)
- if '-l' in sys.argv:
-  notice=sys.argv[sys.argv.index('-l')+1].encode()
+ if %q in sys.argv:
   deadline=time.monotonic()+3
   while time.monotonic()<deadline:
    shown=subprocess.check_output([%q,'-S',%q,'capture-pane','-p','-t','%%0'])
@@ -216,7 +223,7 @@ if %q in sys.argv:
    time.sleep(0.005)
  sys.exit(1)
 os.execv(%q,[%q]+sys.argv[1:])
-`, key, real, real, f.binding().Target.Socket, real, real)
+	`, key, waitForPaste, real, socket, real, waitForPaste, real, socket, real, real)
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
