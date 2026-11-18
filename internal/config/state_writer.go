@@ -77,17 +77,63 @@ func syncStateDirectory(path string) error {
 // or rollback is claimed. The Host v2 route retains its stronger pinned-root
 // writer and existing uncertainty taxonomy.
 func writeOrdinaryStateAtomic(path, name string, data []byte, syncDir func(string) error) error {
+	_, err := writeOrdinaryStateAtomicStamped(path, name, data, syncDir)
+	return err
+}
+
+func writeOrdinaryStateAtomicStamped(path, name string, data []byte, syncDir func(string) error) (FileStamp, error) {
 	dir := filepath.Dir(path)
 	if err := syncDir(filepath.Dir(dir)); err != nil {
-		return err
+		return FileStamp{}, err
 	}
-	if err := writeSecretAtomic(path, name, data); err != nil {
-		return err
+	stamp, err := writeStateSecretAtomicStamped(path, name, data)
+	if err != nil {
+		return FileStamp{}, err
 	}
+	globalStateStats.stateWriteBytes.Add(int64(len(data)))
 	if err := syncDir(dir); err != nil {
-		return ErrStateWriteUncertain
+		return FileStamp{}, ErrStateWriteUncertain
 	}
-	return nil
+	return stamp, nil
+}
+
+// writeStateSecretAtomicStamped is the State-only counterpart of
+// writeSecretAtomic. It returns the identity of the descriptor that was
+// synced and renamed, without changing the credential writer path.
+func writeStateSecretAtomicStamped(path, name string, data []byte) (FileStamp, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+name+".*.tmp")
+	if err != nil {
+		return FileStamp{}, err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
+	if err := tmp.Chmod(SecretFileMode); err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	info, err := tmp.Stat()
+	if err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	stamp := stampInfo(info)
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return FileStamp{}, err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return FileStamp{}, err
+	}
+	return stamp, nil
 }
 
 // canonicalState seals every member except writer.seal, including writer
@@ -97,6 +143,7 @@ func writeOrdinaryStateAtomic(path, name string, data []byte, syncDir func(strin
 // strings use encoding/json escaping, including HTML escaping. Whitespace and
 // object member order do not matter. Duplicate object keys are invalid.
 func canonicalState(data []byte) ([]byte, error) {
+	globalStateStats.canonicalStates.Add(1)
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.UseNumber()
 	v, err := canonicalValue(d)
@@ -184,6 +231,7 @@ func canonicalValue(d *json.Decoder) (any, error) {
 }
 
 func stateDigest(data []byte) (string, error) {
+	globalStateStats.stateDigests.Add(1)
 	b, err := canonicalState(data)
 	if err != nil {
 		return "", err
@@ -193,6 +241,7 @@ func stateDigest(data []byte) (string, error) {
 }
 
 func validWriterSeal(s State) bool {
+	globalStateStats.writerSealChecks.Add(1)
 	if s.Writer == nil || s.Writer.ambiguous || s.Writer.Protocol < stateProtocol || !lowerHex(s.Writer.Seal, 64) {
 		return false
 	}
@@ -201,6 +250,13 @@ func validWriterSeal(s State) bool {
 }
 
 func ordinaryWriterFence(old State, now time.Time) time.Time {
+	fence, _ := ordinaryWriterFenceSealed(old, now)
+	return fence
+}
+
+// ordinaryWriterFenceSealed also reports whether it verified this exact disk
+// input's compatible-writer seal while computing the unchanged fence result.
+func ordinaryWriterFenceSealed(old State, now time.Time) (time.Time, bool) {
 	// Verify every disk input before a callback/effect, including inputs that
 	// already carry a sticky fence. Retaining the timestamp is not a shortcut
 	// around the compatible-writer verification rule.
@@ -208,18 +264,81 @@ func ordinaryWriterFence(old State, now time.Time) time.Time {
 	// Only LoadState's missing-file result has no disk input. An existing
 	// empty/null/unsealed State is foreign history, even with no typed fields.
 	if len(old.rawState) == 0 {
-		return time.Time{}
+		return time.Time{}, false
 	}
 	if old.Writer != nil && !old.Writer.ForeignSeen.IsZero() {
-		return old.Writer.ForeignSeen.UTC()
+		return old.Writer.ForeignSeen.UTC(), valid
 	}
 	if !valid {
-		return now.UTC()
+		return now.UTC(), false
 	}
-	return time.Time{}
+	return time.Time{}, true
+}
+
+// unchangedSealedState reports whether sealing s would reproduce old's exact
+// disk input. The caller must have verified old's seal under the same lock.
+func unchangedSealedState(old, s State) bool {
+	if old.Writer == nil || s.Writer == nil {
+		return false
+	}
+	w := *s.Writer
+	w.Seal = old.Writer.Seal
+	s.Writer = &w
+	data, err := marshalState(s)
+	if err != nil {
+		return false
+	}
+	n := len(data)
+	return len(old.rawState) == n+1 && old.rawState[n] == '\n' && bytes.Equal(old.rawState[:n], data)
+}
+
+type stateSyncer struct {
+	file func(*os.File) error
+	dir  func(string) error
+}
+
+// Tests replace this package-private seam to witness durability requirements.
+var ordinaryStateSync = stateSyncer{file: (*os.File).Sync, dir: syncStateDirectory}
+
+// elideUnchangedOrdinaryState proves exact current bytes and persists them
+// through the verified descriptor before syncing both directory entries. A
+// mismatch or file-sync failure falls back to atomic replacement.
+func elideUnchangedOrdinaryState(path string, input []byte, sync stateSyncer) (bool, error) {
+	if checkSecretFile(path) != nil {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return false, nil
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != SecretFileMode || opened.Size() != int64(len(input)) {
+		return false, nil
+	}
+	data := make([]byte, len(input)+1)
+	n, err := io.ReadFull(f, data)
+	if err != io.ErrUnexpectedEOF || n != len(input) || !bytes.Equal(data[:n], input) {
+		return false, nil
+	}
+	if sync.file(f) != nil {
+		return false, nil
+	}
+	if current, err := os.Lstat(path); err != nil || !os.SameFile(opened, current) {
+		return false, nil
+	}
+	dir := filepath.Dir(path)
+	if err := sync.dir(filepath.Dir(dir)); err != nil {
+		return false, err
+	}
+	if err := sync.dir(dir); err != nil {
+		return false, ErrStateWriteUncertain
+	}
+	return true, nil
 }
 
 func sealedState(s State) ([]byte, error) {
+	globalStateStats.sealedStates.Add(1)
 	data, err := marshalState(s)
 	if err != nil {
 		return nil, err

@@ -105,14 +105,34 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 		}
 		return nil, fmt.Errorf("mailbox: %w", err)
 	}
+	var stamp FileStamp
+	if p.readCache != nil {
+		stamp = StampFile(m.path)
+	}
+	if cached, ok := p.readCache.mailboxHit(name, m.path, stamp); ok {
+		return cached, nil
+	}
 	f, err := os.OpenFile(m.path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
 		return nil, fmt.Errorf("mailbox: %w", err)
 	}
 	defer f.Close()
+	globalStateStats.mailboxDecodes.Add(1)
 	r := bufio.NewReader(f)
+	var raw []byte
+	retainRaw := stamp.Known && stamp.Size <= mailboxCacheMaxInput
+	if retainRaw {
+		raw = make([]byte, 0, int(stamp.Size))
+	}
 	for n := 1; ; n++ {
 		line, err := r.ReadBytes('\n')
+		if retainRaw {
+			if len(raw)+len(line) > mailboxCacheMaxInput {
+				raw, retainRaw = nil, false
+			} else {
+				raw = append(raw, line...)
+			}
+		}
 		if len(line) > 0 {
 			complete := line[len(line)-1] == '\n'
 			var l mailLine
@@ -131,6 +151,7 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 			return nil, fmt.Errorf("mailbox: %w", err)
 		}
 	}
+	p.readCache.rememberMailbox(name, m.path, stamp, raw, m)
 	return m, nil
 }
 
@@ -407,6 +428,7 @@ func (m *Mailbox) compact() error {
 	if err := writeSecretAtomic(m.path, filepath.Base(m.path), buf.Bytes()); err != nil {
 		return err
 	}
+	globalStateStats.mailboxWriteBytes.Add(int64(buf.Len()))
 	m.order = order
 	m.dead = (len(m.received) + 999) / 1000
 	if len(shown) > 0 {
@@ -466,6 +488,7 @@ func (m *Mailbox) write(data []byte) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
+	globalStateStats.mailboxWriteBytes.Add(int64(len(data)))
 	if created {
 		if d, err := os.Open(filepath.Dir(m.path)); err == nil {
 			_ = d.Sync()
