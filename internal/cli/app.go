@@ -59,6 +59,9 @@ type App struct {
 	beforeMemberRegistry  func() error // In-process publication interruption seam.
 	connectionSecretStore connectionSecretStore
 	daemonSecrets         config.DaemonSecretStore // package-test-only; no external fake selection
+
+	// Test-only interruption between preflight and the first property guard.
+	beforeAdminPropertyRequest func()
 	// human selects a human operator's own account (humans/<name>.json); never
 	// set by agents. It needs --as and ignores A2A_AGENT.
 	human   bool
@@ -162,7 +165,8 @@ func commands() []command {
 		{"identity", "identity ensure --role R [--project P] [--runtime R] [--product X --preset P] [--resource ROOM] | identity release   onboard a stable or preset identity; its lease", cmdIdentity},
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
-		{"room", "room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | room retire <alias> | room members <room> [--membership join|invite|join,invite] [--json]   create, retire an EMPTY room, or read current members", cmdRoom},
+		{"room", "room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | room retire <alias> | room members <room> [--membership join|invite|join,invite] [--json] | room power <room> [--json]   create, retire an EMPTY room, or read current members/power; room name get|set: typed property results v1, see docs/cli.md", cmdRoom},
+		{"space", "space child get|add|remove SPACE --child CHILD   inspect or replace one Space-side child declaration; see docs/cli.md", cmdSpace},
 		{"product", "product new X [--keeper NAME] [--projector NAME] | adopt X <room> | list | show X   manage product spaces and rooms", cmdProduct},
 		{"broadcast-room", "broadcast-room init   create the global #broadcast room", cmdBroadcastRoom},
 		{"join", "join <room>                          join a room", cmdJoin},
@@ -234,6 +238,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 	if a.HTTP == nil {
 		a.HTTP = &http.Client{}
+	}
+	if roomAdminInvocation(args) {
+		return a.runRoomAdmin(ctx, args)
 	}
 	command := stationCommand(args)
 	if command != "fetch" && command != "daemon" && command != "help" && command != "--help" && command != "-h" && command != "" && !a.daemonEngine {
