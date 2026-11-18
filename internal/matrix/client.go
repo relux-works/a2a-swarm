@@ -94,6 +94,13 @@ func IsStatus(err error, status int) bool {
 // ErrAuth wraps token rejections so the CLI can print one clear message.
 var ErrAuth = errors.New("access token rejected by the homeserver")
 
+// Retain the interpreted original-response evidence for callers distinguishing
+// a definite token refusal from an uncertain mutation. Error text is unchanged.
+type authRejection struct{ response *Error }
+
+func (e *authRejection) Error() string   { return fmt.Sprintf("%s (%s)", ErrAuth, e.response.ErrCode) }
+func (e *authRejection) Unwrap() []error { return []error{ErrAuth, e.response} }
+
 // seg escapes one path segment (room ids, aliases, event ids, user ids).
 func seg(s string) string { return url.PathEscape(s) }
 
@@ -238,7 +245,7 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 			}
 		}
 		if !c.adminRegistration && resp.StatusCode == http.StatusUnauthorized && (me.ErrCode == "M_UNKNOWN_TOKEN" || me.ErrCode == "M_MISSING_TOKEN") {
-			return nil, fmt.Errorf("%w (%s)", ErrAuth, me.ErrCode)
+			return nil, &authRejection{response: me}
 		}
 		return nil, me
 	}
@@ -309,6 +316,10 @@ func (c *Client) Register(ctx context.Context, username, password, regToken, dev
 		if err == nil {
 			return out, nil
 		}
+		// Retaining typed evidence must not turn a token refusal into UIA progress.
+		if errors.Is(err, ErrAuth) {
+			return out, err
+		}
 		var me *Error
 		if !errors.As(err, &me) || me.Status != http.StatusUnauthorized {
 			return out, err
@@ -353,6 +364,8 @@ func (c *Client) UserExists(ctx context.Context, username string) (bool, error) 
 	switch {
 	case err == nil:
 		return false, fmt.Errorf("register probe: the homeserver registered %s without authentication", username)
+	case errors.Is(err, ErrAuth):
+		return false, fmt.Errorf("register probe: %w", err)
 	case IsCode(err, "M_USER_IN_USE"):
 		return true, nil
 	}
@@ -432,6 +445,9 @@ func (c *Client) Deactivate(ctx context.Context, userID, password string) error 
 	if err == nil {
 		return nil // the server asked for no authentication
 	}
+	if errors.Is(err, ErrAuth) {
+		return fmt.Errorf("deactivate: %w", err)
+	}
 	var me *Error
 	if !errors.As(err, &me) || me.Status != http.StatusUnauthorized {
 		return fmt.Errorf("deactivate: %w", err)
@@ -450,6 +466,9 @@ func (c *Client) Deactivate(ctx context.Context, userID, password string) error 
 		"session":    uia.Session,
 	}}
 	err = c.call(ctx, http.MethodPost, path, nil, req, nil)
+	if errors.Is(err, ErrAuth) {
+		return fmt.Errorf("deactivate: %w", err)
+	}
 	if IsStatus(err, http.StatusUnauthorized) {
 		return fmt.Errorf("deactivate: password rejected by the homeserver: %w", err)
 	}

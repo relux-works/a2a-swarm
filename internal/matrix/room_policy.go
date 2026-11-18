@@ -3,6 +3,7 @@ package matrix
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -16,6 +17,10 @@ type RoomPolicyEvent struct {
 	Content        map[string]any
 }
 
+// ErrRoomPolicyIncomplete distinguishes a failed complete observation from
+// malformed policy. Callers must not interpret either as empty state.
+var ErrRoomPolicyIncomplete = errors.New("matrix: incomplete or oversized policy readback")
+
 // GetRoomPolicyState is separate from display/bulk decoding. Like verification
 // input, it requires a complete bounded original-endpoint response, exact field
 // spelling and strict JSON. It does not change GetRoomState or owner-DM behavior.
@@ -27,18 +32,18 @@ func (c *Client) GetRoomPolicyState(ctx context.Context, roomID string) ([]RoomP
 	defer cancel()
 	resp, err := c.WithoutRedirects().send(ctx, http.MethodGet, v3+"/rooms/"+seg(roomID)+"/state", nil, nil, "", -1)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrRoomPolicyIncomplete, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, errors.New("matrix: policy readback requires HTTP 200")
+		return nil, ErrRoomPolicyIncomplete
 	}
 	// Same inclusive bound and EOF/Close/context requirements as control reads.
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, VerificationEntityLimit+1))
 	closeErr := resp.Body.Close()
 	if readErr != nil || closeErr != nil || ctx.Err() != nil || len(raw) > VerificationEntityLimit ||
 		(resp.ContentLength >= 0 && int64(len(raw)) != resp.ContentLength) {
-		return nil, errors.New("matrix: incomplete or oversized policy readback")
+		return nil, ErrRoomPolicyIncomplete
 	}
 	tree, err := strictJSON(raw)
 	if err != nil {
