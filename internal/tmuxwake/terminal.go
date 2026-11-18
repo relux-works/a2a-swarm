@@ -2,8 +2,11 @@ package tmuxwake
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +31,14 @@ type Target struct {
 	OwnerPID   int    `json:"owner_pid"`
 	OwnerBirth string `json:"owner_birth"`
 	Runtime    string `json:"runtime"`
+}
+
+type sendInspection struct {
+	box      Box
+	eligible bool
+	empty    bool
+	busy     bool
+	foreign  bool
 }
 
 func Birth(ctx context.Context, pid int) (string, error) {
@@ -58,16 +69,43 @@ func SocketID(path string) (string, error) {
 var tmuxCommandTimeout = 3 * time.Second
 
 func (t Target) command(ctx context.Context, args ...string) (string, error) {
+	return t.commandInput(ctx, nil, args...)
+}
+
+func (t Target) commandInput(ctx context.Context, input io.Reader, args ...string) (string, error) {
 	if !paneRE.MatchString(t.Pane) {
 		return "", errors.New("exact tmux pane id required")
 	}
 	ctx, cancel := context.WithTimeout(ctx, tmuxCommandTimeout)
 	defer cancel()
-	b, err := exec.CommandContext(ctx, "tmux", append([]string{"-S", t.Socket}, args...)...).Output()
+	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-S", t.Socket}, args...)...)
+	cmd.Stdin = input
+	b, err := cmd.Output()
 	if err != nil {
 		return "", errors.New("tmux operation unavailable")
 	}
 	return string(b), nil
+}
+
+// pasteNotice uses tmux's bracketed-paste mode, so the runtime receives an
+// explicit paste-end marker before the separately sent Enter key. The unique
+// named buffer avoids replacing any user buffer; -d removes it after paste.
+func (t Target) pasteNotice(ctx context.Context, notice string) error {
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return errors.New("tmux paste buffer name unavailable")
+	}
+	buffer := "a2a-wake-" + hex.EncodeToString(suffix[:])
+	if _, err := t.commandInput(ctx, strings.NewReader(notice), "load-buffer", "-b", buffer, "-"); err != nil {
+		return err
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), tmuxCommandTimeout)
+		defer cancel()
+		_, _ = t.command(cleanup, "delete-buffer", "-b", buffer)
+	}()
+	_, err := t.command(ctx, "paste-buffer", "-d", "-p", "-b", buffer, "-t", t.Pane)
+	return err
 }
 
 func (t Target) Inspect(ctx context.Context) (int, int, int, error) {
@@ -158,6 +196,30 @@ func (t Target) boxWithNotice(ctx context.Context, notice string) (Box, bool) {
 	return b, ok && (notice != "" && b.Text == notice || x == b.Column && y == b.Row)
 }
 
+func (t Target) inspectForSend(ctx context.Context, notice string) sendInspection {
+	x, y, _, err := t.Inspect(ctx)
+	if err != nil {
+		return sendInspection{}
+	}
+	screen, err := t.command(ctx, "capture-pane", "-e", "-p", "-t", t.Pane)
+	if err != nil {
+		return sendInspection{}
+	}
+	box, reason := inputWithNoticeReason(screen, t.Runtime, notice)
+	eligible := reason == InputReasonNone
+	if eligible && box.Text != "" && !completeInput(screen, box) {
+		eligible = false
+	}
+	eligible = eligible && (notice != "" && box.Text == notice || x == box.Column && y == box.Row)
+	return sendInspection{
+		box:      box,
+		eligible: eligible,
+		empty:    reason == InputReasonNone && box.Text == "",
+		busy:     runtimeBusyMarker(screen, t.Runtime),
+		foreign:  foreignComposerText(screen, t.Runtime, notice),
+	}
+}
+
 func completeInput(screen string, box Box) bool {
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 	// Captures pad with ASCII spaces only. Trimming Unicode whitespace would
@@ -231,18 +293,19 @@ func (t Target) send(ctx context.Context, count int, owned string, beforeType, a
 	if count <= 0 {
 		return "", errors.New("positive count required")
 	}
-	result, err := t.sendWith(ctx, count, owned, beforeType, afterType, t.boxWithNotice, nil)
+	result, err := t.sendWith(ctx, count, owned, beforeType, afterType, t.inspectForSend, nil)
 	return result.Text(), err
 }
 
 // The bound adapter shares the established two-phase effect implementation;
 // only its observation and additional pre-type constraint differ.
-func (t Target) sendWith(ctx context.Context, count int, owned string, beforeType, afterType func(), inspect func(context.Context, string) (Box, bool), preType func() bool, beforeEnter ...func() error) (SendResult, error) {
+func (t Target) sendWith(ctx context.Context, count int, owned string, beforeType, afterType func(), inspect func(context.Context, string) sendInspection, preType func() bool, beforeEnter ...func() error) (SendResult, error) {
 	if count <= 0 {
 		return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, errors.New("positive count required")
 	}
-	box, ok := inspect(ctx, owned)
-	if !ok || box.Text != "" && box.Text != owned {
+	observed := inspect(ctx, owned)
+	box := observed.box
+	if !observed.eligible || observed.busy || observed.foreign || box.Text != "" && box.Text != owned {
 		return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, nil
 	}
 	// Resume is continuation only. If the owned text vanished after the
@@ -262,21 +325,77 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 		if preType != nil && !preType() {
 			return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput}, nil
 		}
-		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "-l", notice); err != nil {
+		if err = t.pasteNotice(ctx, notice); err != nil {
 			return SendResult{Disposition: SendUncertain, Outcome: SendTypeUncertain}, err
 		}
 		if afterType != nil {
 			afterType()
 		}
 	}
-	// The redraw may lag key delivery, and a background-priority or busy
-	// terminal can take far longer than one fixed delay (#89). Polling does
-	// not submit anything: Enter still requires one capture showing exactly
-	// the notice. An empty box or a strict prefix of the notice is a lagging
-	// redraw and keeps waiting; any other recognized text is foreign input and
-	// stops. A layout that cannot be read (a filled Codex composer holding
-	// anything but the exact notice, a dialog, a failed capture) also keeps
-	// waiting, and ends as unavailable at the deadline.
+	ready, outcome, err := t.awaitOwnedNotice(ctx, notice, inspect)
+	if err != nil {
+		return SendResult{Disposition: SendUncertain, Outcome: SendInterrupted}, err
+	}
+	if !ready {
+		return SendResult{Disposition: SendDraft, Outcome: outcome}, nil
+	}
+	for _, fence := range beforeEnter {
+		if err := fence(); err != nil {
+			reason := ReasonRecoveryHeld
+			if errors.Is(err, ErrEnterFenceTimeout) {
+				reason = ReasonFenceTimeout
+			}
+			return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput, Reason: reason, ReasonAt: time.Now().UTC()}, err
+		}
+	}
+
+	for attempt := 1; attempt <= enterMaxAttempts; attempt++ {
+		if attempt > 1 {
+			if err := waitContext(ctx, retryBackoff(attempt-2)); err != nil {
+				return SendResult{Disposition: SendUncertain, Outcome: SendInterrupted}, err
+			}
+			observed = inspect(ctx, notice)
+			if observed.foreign || foreignText(notice, observed.box.Text) {
+				return SendResult{Disposition: SendDraft, Outcome: SendDraftChanged}, nil
+			}
+			if observed.busy || observed.empty {
+				return SendResult{Disposition: SendSubmitted, Outcome: SendWakeSubmitted}, nil
+			}
+			if !observed.eligible || observed.box.Text != notice {
+				return SendResult{Disposition: SendUncertain, Outcome: SendEnterUnwitnessed}, nil
+			}
+		}
+		if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
+			return SendResult{Disposition: SendUncertain, Outcome: SendEnterUncertain}, err
+		}
+		witnessed, held, foreign, waitErr := t.awaitSubmitWitness(ctx, notice, inspect)
+		if waitErr != nil {
+			return SendResult{Disposition: SendUncertain, Outcome: SendInterrupted}, waitErr
+		}
+		if foreign {
+			return SendResult{Disposition: SendDraft, Outcome: SendDraftChanged}, nil
+		}
+		if witnessed {
+			return SendResult{Disposition: SendSubmitted, Outcome: SendWakeSubmitted}, nil
+		}
+		if !held || attempt == enterMaxAttempts {
+			return SendResult{Disposition: SendUncertain, Outcome: SendEnterUnwitnessed}, nil
+		}
+	}
+	return SendResult{Disposition: SendUncertain, Outcome: SendEnterUnwitnessed}, nil
+}
+
+// redrawPoll and redrawWait bound the post-type verification. Variables only
+// so tests can shorten the window; production never changes them.
+var (
+	redrawPoll         = 100 * time.Millisecond
+	redrawWait         = 2 * time.Second
+	enterWitnessWait   = 2 * time.Second
+	enterMaxAttempts   = 3
+	enterRetryBackoffs = []time.Duration{100 * time.Millisecond, 250 * time.Millisecond}
+)
+
+func (t Target) awaitOwnedNotice(ctx context.Context, notice string, inspect func(context.Context, string) sendInspection) (bool, SendOutcome, error) {
 	deadline := time.NewTimer(redrawWait)
 	defer deadline.Stop()
 	tick := time.NewTicker(redrawPoll)
@@ -285,41 +404,78 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 	for {
 		select {
 		case <-ctx.Done():
-			return SendResult{Disposition: SendUncertain, Outcome: SendInterrupted}, ctx.Err()
+			return false, SendDraftUnavailable, ctx.Err()
 		case <-deadline.C:
-			return SendResult{Disposition: SendDraft, Outcome: outcome}, nil
+			return false, outcome, nil
 		case <-tick.C:
 		}
-		box, ok = inspect(ctx, notice)
-		if !ok {
-			outcome = SendDraftUnavailable
-			continue
+		observed := inspect(ctx, notice)
+		if observed.foreign || foreignText(notice, observed.box.Text) {
+			return false, SendDraftChanged, nil
 		}
-		if box.Text == notice {
-			for _, fence := range beforeEnter {
-				if err := fence(); err != nil {
-					reason := ReasonRecoveryHeld
-					if errors.Is(err, ErrEnterFenceTimeout) {
-						reason = ReasonFenceTimeout
-					}
-					return SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput, Reason: reason, ReasonAt: time.Now().UTC()}, err
-				}
-			}
-			if _, err = t.command(ctx, "send-keys", "-t", t.Pane, "Enter"); err != nil {
-				return SendResult{Disposition: SendUncertain, Outcome: SendEnterUncertain}, err
-			}
-			return SendResult{Disposition: SendSubmitted, Outcome: SendWakeSubmitted}, nil
+		if observed.busy {
+			return false, SendDraftBusy, nil
 		}
-		outcome = SendDraftChanged
-		if !strings.HasPrefix(notice, box.Text) {
-			return SendResult{Disposition: SendDraft, Outcome: SendDraftChanged}, nil
+		if observed.eligible && observed.box.Text == notice {
+			return true, "", nil
+		}
+		if observed.box.Text != notice {
+			outcome = SendDraftChanged
 		}
 	}
 }
 
-// redrawPoll and redrawWait bound the post-type verification. Variables only
-// so tests can shorten the window; production never changes them.
-var (
-	redrawPoll = 100 * time.Millisecond
-	redrawWait = 2 * time.Second
-)
+func (t Target) awaitSubmitWitness(ctx context.Context, notice string, inspect func(context.Context, string) sendInspection) (witnessed, held, foreign bool, err error) {
+	deadline := time.NewTimer(enterWitnessWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(redrawPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, false, false, ctx.Err()
+		case <-deadline.C:
+			return false, held, false, nil
+		case <-tick.C:
+		}
+		observed := inspect(ctx, notice)
+		if observed.foreign || foreignText(notice, observed.box.Text) {
+			return false, false, true, nil
+		}
+		if observed.busy || observed.empty {
+			return true, false, false, nil
+		}
+		held = observed.eligible && observed.box.Text == notice
+	}
+}
+
+func waitContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryBackoff(index int) time.Duration {
+	if len(enterRetryBackoffs) == 0 {
+		return 0
+	}
+	if index >= len(enterRetryBackoffs) {
+		index = len(enterRetryBackoffs) - 1
+	}
+	if index < 0 {
+		index = 0
+	}
+	return enterRetryBackoffs[index]
+}
+
+func foreignText(notice, observed string) bool {
+	return observed != "" && observed != notice && !strings.HasPrefix(notice, observed)
+}
