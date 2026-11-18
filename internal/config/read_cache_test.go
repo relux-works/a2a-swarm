@@ -20,6 +20,14 @@ func cachedPaths(t *testing.T) Paths {
 	}
 	return p
 }
+
+func useRepeatedUnqualifiedDirectoryTime(t *testing.T) {
+	t.Helper()
+	saved := fileChangeTimeNS
+	fileChangeTimeNS = func(os.FileInfo) (int64, bool) { return 17, false }
+	t.Cleanup(func() { fileChangeTimeNS = saved })
+}
+
 func cachedLoad(t *testing.T, p Paths) State {
 	t.Helper()
 	s, err := LoadState(p, "fixture")
@@ -298,7 +306,7 @@ func TestReadCacheOversizeMailboxFallsBack(t *testing.T) {
 	}
 }
 
-// TestReadCacheByteConfirmationOnUpdate proves a locked update sees a same-stamp foreign sealed change without inheriting own-write durability, beside an own durable no-op.
+// TestReadCacheByteConfirmationOnUpdate proves a locked update sees a same-stamp foreign sealed change and both stable and foreign no-ops use the ordinary durability path when namespace proof is unavailable.
 func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
 	p := cachedPaths(t)
 	var rec syncRecord
@@ -308,9 +316,10 @@ func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
 			t.Fatal("own durable control loaded different content")
 		}
 		return nil
-	}); err != nil || len(rec.files) != 0 || len(rec.dirs) != 0 {
-		t.Fatalf("own durable control: %v, syncs=%+v", err, rec)
+	}); err != nil || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable own-write positive control: %v, syncs=%+v durable=%v", err, rec, p.readCache.durable)
 	}
+	rec = syncRecord{}
 	foreign := cachedLoad(t, p)
 	foreign.NextBatch = "s1"
 	raw, err := sealedState(foreign)
@@ -331,37 +340,66 @@ func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
 	}
 }
 
-// TestReadCacheDurableByteConfirmation proves the own-durable shortcut rejects changed disk bytes even when the stamp and typed arguments still match, beside an unchanged-byte control.
-func TestReadCacheDurableByteConfirmation(t *testing.T) {
+// TestReadCacheUnqualifiedDirectoryTimeNeverAuthorizesDurability proves a repeated but unqualified timestamp cannot enable the zero-sync path.
+func TestReadCacheUnqualifiedDirectoryTimeNeverAuthorizesDurability(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
 	p := cachedPaths(t)
 	old := cachedLoad(t, p)
 	path := p.StateFile("fixture")
-	if !p.readCache.unchangedDurable("fixture", path, old, old) {
-		t.Fatal("own durable unchanged-byte control missed")
-	}
-	cacheRestamp(t, path, bytes.ReplaceAll(old.rawState, []byte("s0"), []byte("s1")))
-	if p.readCache.unchangedDurable("fixture", path, old, old) {
-		t.Fatal("own durable shortcut trusted a stamp collision without byte confirmation")
-	}
-}
-
-// TestReadCacheOwnDurableNoopSkipsSync proves a stable ordinary own-durable
-// no-op still skips file and directory syncs.
-func TestReadCacheOwnDurableNoopSkipsSync(t *testing.T) {
-	p := cachedPaths(t)
-	if !stampStateDirectory(filepath.Dir(p.StateFile("fixture"))).known {
-		t.Skip("platform does not expose reliable directory change time")
-	}
-	if !p.readCache.durable {
-		t.Fatal("completed ordinary write did not establish own-durable evidence")
+	if p.readCache.durable || p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("unqualified repeated directory time authorized zero-sync durability")
 	}
 	var rec syncRecord
 	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
 	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.files) != 0 || len(rec.dirs) != 0 {
-		t.Fatalf("own durable no-op synced: %+v", rec)
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("repeated unqualified time did not use ordinary syncs: %+v durable=%v", rec, p.readCache.durable)
+	}
+	cacheRestamp(t, path, bytes.ReplaceAll(old.rawState, []byte("s0"), []byte("s1")))
+	if p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("unqualified directory time authorized durability after a same-stamp byte change")
+	}
+}
+
+// TestReadCacheRepeatedDirectoryTimestampsDoNotProveNamespace proves that equal directory timestamps are not treated as a namespace version and cannot skip syncs.
+func TestReadCacheRepeatedDirectoryTimestampsDoNotProveNamespace(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
+	p := cachedPaths(t)
+	dir := filepath.Dir(p.StateFile("fixture"))
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, firstKnown := fileChangeTimeNS(info)
+	second, secondKnown := fileChangeTimeNS(info)
+	if first != second || firstKnown || secondKnown || stampStateDirectory(dir).known {
+		t.Fatalf("repeated timestamp was treated as qualified: first=(%d,%v) second=(%d,%v) stamp=%+v", first, firstKnown, second, secondKnown, stampStateDirectory(dir))
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("repeated directory timestamp skipped ordinary durability: %+v durable=%v", rec, p.readCache.durable)
+	}
+}
+
+// TestReadCacheStableOwnWriteUsesOrdinarySync proves an unchanged own-written State succeeds while retaining inode and bytes through the verified-file and directory sync path.
+func TestReadCacheStableOwnWriteUsesOrdinarySync(t *testing.T) {
+	p := cachedPaths(t)
+	if p.readCache.durable {
+		t.Fatal("unqualified platform timestamp minted own-durable evidence")
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable own-write positive did not use ordinary durability: %+v durable=%v", rec, p.readCache.durable)
 	}
 }
 
@@ -376,12 +414,10 @@ func TestReadCacheNamespaceABADurability(t *testing.T) {
 			name = "with missing-file read"
 		}
 		t.Run(name, func(t *testing.T) {
+			useRepeatedUnqualifiedDirectoryTime(t)
 			p := cachedPaths(t)
-			if !stampStateDirectory(filepath.Dir(p.StateFile("fixture"))).known {
-				t.Skip("platform does not expose reliable directory change time")
-			}
-			if !p.readCache.durable {
-				t.Fatal("completed ordinary write did not establish own-durable evidence")
+			if p.readCache.durable {
+				t.Fatal("unqualified repeated directory time minted own-durable evidence")
 			}
 			var rec syncRecord
 			swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
@@ -424,16 +460,16 @@ func TestReadCacheNamespaceABADurability(t *testing.T) {
 			if len(rec.files) != 1 || len(rec.dirs) != 2 {
 				t.Fatalf("restored namespace no-op must sync the verified file and both directories: %+v", rec)
 			}
-			if !p.readCache.durable {
-				t.Fatal("successful ordinary durability path did not establish fresh own-write evidence")
+			if p.readCache.durable {
+				t.Fatal("ordinary sync minted unqualified directory evidence")
 			}
 
 			rec = syncRecord{}
 			if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
 				t.Fatal(err)
 			}
-			if len(rec.files) != 0 || len(rec.dirs) != 0 {
-				t.Fatalf("fresh own-durable no-op positive control synced: %+v", rec)
+			if len(rec.files) != 1 || len(rec.dirs) != 2 {
+				t.Fatalf("later no-op skipped ordinary durability after an ABA: %+v", rec)
 			}
 		})
 	}
@@ -609,7 +645,7 @@ func TestReadCacheWriteRefresh(t *testing.T) {
 	}
 }
 
-// TestReadCacheDurableNoop proves an own durable no-op preserves inode, mtime and bytes without encoding or syncing, beside one changed atomic replacement.
+// TestReadCacheDurableNoop proves a stable own-write no-op preserves inode, mtime and bytes without encoding while syncing the verified file and directories, beside one changed atomic replacement.
 func TestReadCacheDurableNoop(t *testing.T) {
 	p := cachedPaths(t)
 	path := p.StateFile("fixture")
@@ -641,8 +677,8 @@ func TestReadCacheDurableNoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !os.SameFile(first, same) || !first.ModTime().Equal(same.ModTime()) || !bytes.Equal(raw, data) || after.StateEncodes != before.StateEncodes || after.StateWriteBytes != before.StateWriteBytes || len(rec.files) != 0 || len(rec.dirs) != 0 {
-		t.Fatal("durable no-op performed write work")
+	if !os.SameFile(first, same) || !first.ModTime().Equal(same.ModTime()) || !bytes.Equal(raw, data) || after.StateEncodes != before.StateEncodes || after.StateWriteBytes != before.StateWriteBytes || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable no-op did not preserve bytes through ordinary syncs: syncs=%+v durable=%v", rec, p.readCache.durable)
 	}
 	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Terminal.Generation = "changed"; return nil }); err != nil {
 		t.Fatal(err)
@@ -660,7 +696,7 @@ func TestReadCacheDurableNoop(t *testing.T) {
 	}
 }
 
-// TestReadCacheForeignDurability proves a cold compatible State still takes the existing sync path before any own-write durability shortcut.
+// TestReadCacheForeignDurability proves both cold compatible and own-written State no-ops use the ordinary path while directory provenance is unqualified.
 func TestReadCacheForeignDurability(t *testing.T) {
 	p := cachedPaths(t).WithReadCache(NewReadCache("fixture"))
 	var rec syncRecord
@@ -679,20 +715,20 @@ func TestReadCacheForeignDurability(t *testing.T) {
 	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.files) != 0 || len(rec.dirs) != 0 {
-		t.Fatal("own durable control did not skip sync")
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("own-write control did not use ordinary syncs: %+v durable=%v", rec, p.readCache.durable)
 	}
 }
 
-// TestReadCacheWrittenInode proves a same-byte replacement cannot inherit another inode's durable-write evidence, beside a matching written-inode control.
+// TestReadCacheWrittenInode proves an unknown directory timestamp cannot mint own-write durability even beside the matching file inode, and replacement still uses ordinary syncs.
 func TestReadCacheWrittenInode(t *testing.T) {
 	p := cachedPaths(t)
 	path := p.StateFile("fixture")
 	s := cachedLoad(t, p)
 	evidence := stateWriteEvidence{file: StampFile(path), directory: stampStateDirectory(filepath.Dir(path))}
 	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, evidence)
-	if !p.readCache.durable {
-		t.Fatal("matching written-inode control lost durability evidence")
+	if p.readCache.durable {
+		t.Fatal("unqualified directory evidence minted own-write durability")
 	}
 	cacheReplace(t, path, s.rawState)
 	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, evidence)
@@ -704,12 +740,12 @@ func TestReadCacheWrittenInode(t *testing.T) {
 	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.files) != 1 {
+	if len(rec.files) != 1 || len(rec.dirs) != 2 {
 		t.Fatal("replacement skipped the ordinary durability check")
 	}
 }
 
-// TestReadCacheStrictRefresh proves a strict Host write refreshes decoded data without granting the ordinary durable-noop shortcut, beside an ordinary write that does.
+// TestReadCacheStrictRefresh proves ordinary and strict Host writes refresh decoded data without minting unqualified directory durability.
 func TestReadCacheStrictRefresh(t *testing.T) {
 	for _, version := range []int{1, 2} {
 		p, name := hostElisionNeighbour(t, version)
@@ -722,7 +758,7 @@ func TestReadCacheStrictRefresh(t *testing.T) {
 		if err != nil || s.LastInbox != "written" || ReadStateDecodeStats().UnmarshalStatePasses != before.UnmarshalStatePasses {
 			t.Fatalf("version %d post-write cache: %v", version, err)
 		}
-		if p.readCache.durable != (version == 1) {
+		if p.readCache.durable {
 			t.Fatalf("version %d used the wrong durability provenance", version)
 		}
 	}
