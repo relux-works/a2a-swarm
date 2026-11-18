@@ -10,6 +10,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
+	"github.com/relux-works/a2a-swarm/internal/wakediag"
 )
 
 const orphanReason = "owned-notice-orphan-suspected"
@@ -187,7 +188,14 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	var recovery *config.TerminalRecovery
 	var input *tmuxwake.InputAssessment
 	matchLocation := ""
+	wakeDiagnostic := nativeWakeDiagnostic(st.Runtime, s.name)
 	if b := st.Terminal; b != nil {
+		if st.Runtime == nil || st.Runtime.Retired {
+			wakeDiagnostic = nil
+			if ownTerminalTarget(b, b.Target) {
+				wakeDiagnostic = wakediag.Project(b.WakeDiagnostic, wakediag.TerminalLayoutRefused)
+			}
+		}
 		if b.Recovery != nil && b.Recovery.Reason == config.TerminalRecovered && !b.Recovery.At.IsZero() {
 			copy := *b.Recovery
 			recovery = &copy
@@ -239,12 +247,13 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			Input               *tmuxwake.InputAssessment   `json:"input,omitempty"`
 			BusyMatchLocation   string                      `json:"busy_match_location,omitempty"`
 			SendRefusal         *config.TerminalSendRefusal `json:"send_refusal,omitempty"`
+			WakeDiagnostic      *wakediag.Record            `json:"wake_diagnostic,omitempty"`
 			Recovery            *config.TerminalRecovery    `json:"recovery,omitempty"`
 			MailAlarm           mailAlarmStatus             `json:"mail_alarm"`
 			Refresh             string                      `json:"refresh"`
 			PrincipalError      string                      `json:"principal_error,omitempty"`
 			StateWriterWarnings []stateWriterWarning        `json:"state_writer_warnings,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, stateWriters})
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, wakeDiagnostic, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, stateWriters})
 	}
 	for _, warning := range stateWriters {
 		a.printf("warning: %s: %s\n", warning.Source, warning.Detail)
@@ -258,6 +267,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	if sendRefusal != nil {
 		a.printf("send_refusal=%s at=%s\n", sendRefusal.Reason, sendRefusal.At.Format(time.RFC3339Nano))
 	}
+	a.printWakeDiagnostic(wakeDiagnostic)
 	a.printAlarmStatus(alarmStatus(s, st))
 	a.printf("refresh=%s\n", terminalRefreshStatus(st.Terminal))
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)

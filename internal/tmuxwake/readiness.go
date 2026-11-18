@@ -34,9 +34,12 @@ type ReadinessKey struct {
 }
 
 type ReadinessAssessment struct {
-	Runtime RuntimeAssessment `json:"runtime"`
-	Input   InputAssessment   `json:"input"`
-	Key     ReadinessKey      `json:"-"`
+	// InputObserved distinguishes a parser result from an early default reason.
+	// It is diagnostic only and never participates in eligibility or a key.
+	InputObserved bool              `json:"-"`
+	Runtime       RuntimeAssessment `json:"runtime"`
+	Input         InputAssessment   `json:"input"`
+	Key           ReadinessKey      `json:"-"`
 }
 type BoundTerminal struct {
 	Target             Target
@@ -224,6 +227,7 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 		parserNotice = diagnosticNotice
 	}
 	b, reason, named := boundInput(screen, runtime, parserNotice, after.State == RuntimeReady)
+	r.InputObserved = true
 	r.Input = InputAssessment{InputUnavailable, reason}
 	if reason != InputReasonNone {
 		return r, Box{}

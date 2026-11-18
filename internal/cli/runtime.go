@@ -16,6 +16,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/codexwake"
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/wakediag"
 	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
@@ -91,6 +92,7 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 			return nil
 		}
 		a.printf("%s generation=%s gate=%s wake=%s notification=%s\n", s.name, st.Runtime.Generation, st.Runtime.Gate, sanitizeLine(st.Wake.Outcome), notificationDiagnostic(st.Notification, a.Now()).State)
+		a.printWakeDiagnostic(nativeWakeDiagnostic(st.Runtime, s.name))
 		return nil
 	}
 	if err := refuseHostConsumer(s); err != nil {
@@ -371,6 +373,10 @@ func manualWakeGate(st config.State) string {
 }
 
 func (a *App) runtimeOutcome(s *session, generation, outcome string) error {
+	return a.runtimeObservedOutcome(s, generation, outcome, nil)
+}
+
+func (a *App) runtimeObservedOutcome(s *session, generation, outcome string, observe func(*config.State)) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -385,6 +391,9 @@ func (a *App) runtimeOutcome(s *session, generation, outcome string) error {
 			a.printf("%s %s\n", s.name, outcome)
 		}
 		st.Wake.Outcome = outcome
+		if observe != nil {
+			observe(st)
+		}
 		return nil
 	})
 	return err
@@ -596,6 +605,7 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 							return err
 						}
 					}
+					recordNativeWakeDiagnostic(cur, s.name, b, attempt.ID, wakediag.NativeDefiniteRefusal, a.Now())
 					cur.Wake.Attempt = nil
 					cur.Wake.Outcome = "wake refused: not accepted; hourly reservation retained"
 					return nil
@@ -606,7 +616,9 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 				}
 				return updateErr
 			}
-			return a.runtimeOutcome(s, generation, "wake uncertain: transport result; reconcile before retry")
+			return a.runtimeObservedOutcome(s, generation, "wake uncertain: transport result; reconcile before retry", func(cur *config.State) {
+				recordNativeWakeDiagnostic(cur, s.name, b, attempt.ID, wakediag.NativeTransportUncertain, a.Now())
+			})
 		}
 		if a.afterWakeSubmit != nil {
 			if err := a.afterWakeSubmit(); err != nil {

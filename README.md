@@ -209,6 +209,14 @@ cannot detect a release changing an existing field’s meaning or a new dialog
 with composer-like geometry. Real-binary probes are future work. See the
 [binding contract](docs/cli.md#a2a-bind--a2a-bind-status--a2a-unbind).
 
+`bind status [--json]` also reads optional retained `wake_diagnostic` history:
+an observed terminal layout refusal before Send with pending mail, an explicit
+native Wake refusal, or an uncertain native transport result. Each binding
+retains one closed kind and timestamp; repeated identical observations keep
+the first time. This is historical evidence, not a current readiness or wake
+guarantee. Missing history proves no cause. `runtime status` also shows native
+history. These commands do not refresh the record or change delivery state.
+
 Typing-time registry transitions can leave an own notice in the composer while its
 attempt remains pending. This now surfaces as SUSPECTED-DEAF, with one durable
 incident to its explicitly configured own project/lane room after ten minutes of a retained notice journal (or first suspicion when attempt age is unavailable). Exact complete notices recorded by the same generation now get bounded Enter-only recovery on later cycles, without retyping; fresh post-type Enter permits cursor/composer movement; later-cycle recovery pins any filled position seen by the typing invocation. Claude rules anchor the composer even with transcript prompts above it; Codex requires its footer hint when no filled-position record exists. Confirmed empty input after the recovery window revokes that origin. Pre-key recovery refusal preserves the retry, while an attempted Enter exhausts it. See `bind status` recovery token/time and the detailed journal, budget and refusal contract in `docs/cli.md`. Reproduce transitions, stable named/Codex controls and incident

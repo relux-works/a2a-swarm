@@ -18,6 +18,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
+	"github.com/relux-works/a2a-swarm/internal/wakediag"
 	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
@@ -929,7 +930,7 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			// Screen admission precedes the durable attempt fence. A busy target
 			// retains IDs for the next idle observation without spending its rate.
 			if !readiness.Eligible() {
-				return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: busy, draft or unknown input" })
+				return a.terminalPreSendSuppressed(s, generation, *b, readiness)
 			}
 			now := a.Now()
 			if qualified, err := a.qualifyTerminalIdle(s, generation, *b, readiness); err != nil || !qualified {
@@ -1025,6 +1026,32 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 	if errors.Is(err, wakemute.ErrMuted) {
 		return nil
 	}
+	return err
+}
+
+// The existing suppression stays unchanged; history requires both an actual
+// parser refusal and current own scope/lease/gates inside the same transaction.
+func (a *App) terminalPreSendSuppressed(s *session, generation string, expected config.TerminalBinding, r tmuxwake.ReadinessAssessment) error {
+	if err := s.checkConnection(); err != nil {
+		return err
+	}
+	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
+		if err := s.checkConnection(); err != nil {
+			return err
+		}
+		b := st.Terminal
+		if b == nil || b.Generation != generation || b.Stopped {
+			return errTerminalBindingRetired
+		}
+		b.Idle = nil
+		b.Outcome = "suppressed: busy, draft or unknown input"
+		dropRetiredStrandedAlarms(st)
+		l := st.Lease
+		if r.InputObserved && r.Input == (tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonLayoutUnrecognized}) && sameTerminalScope(*b, expected) && ownTerminalTarget(b, expected.Target) && !st.HooksPaused && manualWakeGate(*st) == "" && (st.Runtime == nil || st.Runtime.Retired) && l != nil && l.Holder == b.SessionID && l.Host == machineLabel() && l.Expires.After(a.Now()) {
+			b.WakeDiagnostic = wakediag.Retain(b.WakeDiagnostic, wakediag.TerminalLayoutRefused, a.Now())
+		}
+		return nil
+	})
 	return err
 }
 
