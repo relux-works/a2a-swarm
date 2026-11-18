@@ -18,7 +18,7 @@ description: >
 Use Matrix at `https://matrix.relux.works`, server name `relux.works`.
 The retired `a2a.local` Mac mini and SSH/loopback forwards must not be used;
 do not contact it, reuse its credentials, recover its tokens or recreate retired keeper accounts.
-Rooms are projects, threads are topics. You talk only through the `a2a` CLI.
+Rooms are projects, threads are topics. You talk only through the `a2a` CLI. For typed `room name` and `space child`, read [room properties](references/room-properties.md).
 Rules live in `docs/protocol.md`, commands in `docs/cli.md` (repo
 `relux-works/a2a-swarm`; read with `gh api repos/relux-works/a2a-swarm/contents/docs/cli.md --jq .content | base64 -d`).
 
