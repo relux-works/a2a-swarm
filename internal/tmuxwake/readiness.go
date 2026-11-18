@@ -37,6 +37,11 @@ type ReadinessAssessment struct {
 	Runtime RuntimeAssessment `json:"runtime"`
 	Input   InputAssessment   `json:"input"`
 	Key     ReadinessKey      `json:"-"`
+
+	submitBusy    bool
+	emptyComposer bool
+	submitKey     ReadinessKey
+	foreign       bool
 }
 type BoundTerminal struct {
 	Target             Target
@@ -83,6 +88,18 @@ func (r ReadinessAssessment) runtimeEligible() bool {
 	}
 	return false
 }
+
+// submitWitnessFor ties a post-Enter empty composer to the same pinned runtime
+// identity. Composer coordinates may move after submission, so only those two
+// fields are normalized against the invocation's expected key.
+func (r ReadinessAssessment) submitWitnessFor(expected ReadinessKey) bool {
+	if !r.emptyComposer || !r.submitKey.valid() {
+		return false
+	}
+	r.Key = r.submitKey
+	return r.runtimeEligible() && sameKeyAfterOwnedTyping(r.submitKey, expected)
+}
+
 func (t BoundTerminal) registry(ctx context.Context) registryAssessment {
 	if t.ClaudeRegistryRoot == "" {
 		return registryAssessment{RuntimeAssessment: runtimeResult(RuntimeRootUnavailable, "")}
@@ -153,6 +170,41 @@ func boundInputUsing(screen, runtime, owned string, named bool, parse func(strin
 	return Box{}, InputReasonLayoutUnrecognized, false
 }
 
+// emptyComposerWitness recognizes a post-submit empty prompt without requiring
+// the cursor to remain at its old coordinates. The qualified footer and known
+// runtime layout remain mandatory; this is evidence only after Enter.
+func emptyComposerWitness(screen, runtime string, named bool) (Box, bool) {
+	if _, reason := inputWithNoticeReason(screen, runtime, ""); reason == InputReasonBusyOrDialog {
+		return Box{}, false
+	}
+	if runtime == "claude" {
+		box, reason, _ := boundInput(screen, runtime, "", named)
+		return box, reason == InputReasonNone && box.Text == ""
+	}
+	if runtime != "codex" {
+		return Box{}, false
+	}
+	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+	start := max(0, len(lines)-18)
+	for i := len(lines) - 1; i >= start; i-- {
+		line := visible(lines[i])
+		trimmed := strings.TrimLeft(line, " ")
+		if !strings.HasPrefix(trimmed, "›") {
+			continue
+		}
+		if strings.TrimRight(trimmed, " ") != "›" || i+1 >= len(lines) || strings.TrimSpace(plain(lines[i+1])) != "" {
+			return Box{}, false
+		}
+		footer := plain(strings.Join(lines[i+1:], "\n"))
+		if !strings.Contains(footer, "? for shortcuts") {
+			return Box{}, false
+		}
+		indent := len(line) - len(trimmed)
+		return Box{Row: i, Column: indent + 2}, true
+	}
+	return Box{}, false
+}
+
 func (t BoundTerminal) AssessReadiness(ctx context.Context) ReadinessAssessment {
 	r, _ := t.assess(ctx, "")
 	return r
@@ -190,6 +242,7 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 	r.Runtime = before.RuntimeAssessment
 	r.Input.Reason = InputReasonLayoutUnrecognized
 	if before.State == RuntimeRefused {
+		r.submitBusy = before.Reason == RuntimeBusy
 		return r, Box{}
 	}
 	screen, err := t.Target.command(ctx, "capture-pane", "-e", "-p", "-t", t.Target.Pane)
@@ -202,6 +255,7 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 		after = t.registry(ctx)
 	}
 	r.Runtime = after.RuntimeAssessment
+	r.submitBusy = after.Reason == RuntimeBusy || runtimeBusyMarker(screen, runtime)
 	if after.State == RuntimeRefused {
 		return r, Box{}
 	}
@@ -223,7 +277,14 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 	if parserNotice == "" && fixedNotice.MatchString(diagnosticNotice) {
 		parserNotice = diagnosticNotice
 	}
+	r.foreign = foreignComposerText(screen, runtime, parserNotice)
 	b, reason, named := boundInput(screen, runtime, parserNotice, after.State == RuntimeReady)
+	// A recognized empty composer can witness submission after Enter even when
+	// the cursor moved. Keep its runtime identity separately from position keys.
+	if emptyBox, ok := emptyComposerWitness(screen, runtime, after.State == RuntimeReady); ok && width2 == width && emptyBox.Row >= 0 && emptyBox.Row < len(strings.Split(strings.TrimSuffix(screen, "\n"), "\n")) && emptyBox.Column >= 0 && emptyBox.Column < width {
+		r.emptyComposer = true
+		r.submitKey = readinessKey(t, after, emptyBox, width, named)
+	}
 	r.Input = InputAssessment{InputUnavailable, reason}
 	if reason != InputReasonNone {
 		return r, Box{}
@@ -247,8 +308,16 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 	if b.Text != "" && (owned == "" || b.Text != owned || !fixedNotice.MatchString(owned)) {
 		return r, b
 	}
-	k := ReadinessKey{Target: t.Target, ClaudeRegistryRoot: t.ClaudeRegistryRoot, Generation: t.Generation, SessionID: t.SessionID, ComposerRow: b.Row, ComposerColumn: b.Column - len(b.Text), PaneWidth: width}
-	if runtime == "codex" {
+	k := readinessKey(t, after, b, width, named)
+	if k.valid() {
+		r.Key = k
+	}
+	return r, b
+}
+
+func readinessKey(t BoundTerminal, after registryAssessment, box Box, width int, named bool) ReadinessKey {
+	k := ReadinessKey{Target: t.Target, ClaudeRegistryRoot: t.ClaudeRegistryRoot, Generation: t.Generation, SessionID: t.SessionID, ComposerRow: box.Row, ComposerColumn: box.Column - len(box.Text), PaneWidth: width}
+	if t.Target.Runtime == "codex" {
 		k.Route = LegacyCodex
 		k.ClaudeRegistryRoot = ""
 	} else if after.State == RuntimeReady {
@@ -263,10 +332,7 @@ func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNo
 	} else {
 		k.Route = LegacyFallback
 	}
-	if k.valid() {
-		r.Key = k
-	}
-	return r, b
+	return k
 }
 
 func (t BoundTerminal) ObserveInput(ctx context.Context, notice string) string {
