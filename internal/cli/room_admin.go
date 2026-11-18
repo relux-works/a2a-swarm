@@ -76,7 +76,7 @@ func adminGlobalArgs(args []string) (local, global []string, err *roomAdminError
 			seen[canonical] = true
 			global = append(global, arg)
 			if canonical != "--human" && !eq {
-				if i+1 == len(args) {
+				if i+1 == len(args) || args[i+1] == "" {
 					return nil, nil, adminError("admin_usage", "argv", ExitUsage)
 				}
 				i++
@@ -213,10 +213,16 @@ func (a *App) runRoomAdmin(ctx context.Context, args []string) int {
 		return a.adminFailure(adminError("admin_context", "$.context", ExitError))
 	}
 	if err := a.connectionPreflight("room", nil); err != nil {
+		if ctx.Err() != nil {
+			return a.adminFailure(adminError("admin_context", "$.context", ExitError))
+		}
 		return a.adminFailure(adminError("admin_session", "$.session", ExitError))
 	}
 	s, err := a.session()
 	if err != nil || !matrix.ValidVerificationID(s.creds.UserID, '@') {
+		if ctx.Err() != nil {
+			return a.adminFailure(adminError("admin_context", "$.context", ExitError))
+		}
 		return a.adminFailure(adminError("admin_session", "$.session", ExitError))
 	}
 	s.client = s.client.WithoutRedirects()
