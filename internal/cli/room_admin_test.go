@@ -824,24 +824,50 @@ func TestRoomAdminValidInputs(t *testing.T) {
 
 // All power cases use actual strict snapshot decoding. A valid policy below
 // the concrete threshold must refuse without PUT beside an override success.
+// Child rows pin the concrete m.space.child gate itself: evaluating a child
+// write against m.room.name power, skipping the child refusal, clamping an
+// override to state_default or requiring strictly more than the required
+// level must each fail at least one row beside its allowed neighbour.
 func TestRoomAdminPowerPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, rule string
 		child            bool
+		op               string
 	}{
-		{"concrete-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.room.power_levels":0,"m.room.name":80}`, 1), "admin_power", false},
-		{"concrete-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.room.power_levels":0,"m.room.name":40}`, 1), "", false},
-		{"inherited-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events_default":0`, 1), "admin_power", false},
-		{"inherited-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":80},"state_default":75`, 1), "", false},
-		{"left", strings.Replace(adminPolicy(), `"membership":"join"`, `"membership":"leave"`, 1), "admin_policy", true},
-		{"bad-version", strings.Replace(adminPolicy(), `"room_version":"12"`, `"room_version":"13"`, 1), "admin_policy", false},
-		{"numeric-string10", strings.Replace(strings.Replace(adminPolicy(), `"room_version":"12"`, `"room_version":"10","creator":"@founder:example.invalid"`, 1), `:100`, `:"100"`, 1), "admin_policy", false},
-		{"numeric-string9", strings.Replace(strings.Replace(adminPolicy(), `"room_version":"12"`, `"room_version":"9","creator":"@founder:example.invalid"`, 1), `:100`, `:"100"`, 1), "", false},
-		{"nearcase-event", strings.Replace(adminPolicy(), `"state_default":50`, `"state_default":50,"events":{"M.ROOM.NAME":0}`, 1), "admin_policy", false},
-		{"malformed-unrelated", strings.Replace(adminPolicy(), `"state_default":50`, `"state_default":50,"events":{"other":1.5}`, 1), "admin_policy", false},
-		{"nonspace", strings.Replace(adminPolicy(), `"type":"m.space"`, `"type":"ordinary"`, 1), "admin_space", true},
-		{"nearcase-space", strings.Replace(adminPolicy(), `"type":"m.space"`, `"Type":"m.space"`, 1), "admin_space", true},
-		{"duplicate", strings.TrimSuffix(adminPolicy(), "]") + `,{"type":"m.room.create","state_key":"","content":{"type":"m.space"}}]`, "admin_space", true},
+		{"concrete-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.room.power_levels":0,"m.room.name":80}`, 1), "admin_power", false, ""},
+		{"concrete-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.room.power_levels":0,"m.room.name":40}`, 1), "", false, ""},
+		{"inherited-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events_default":0`, 1), "admin_power", false, ""},
+		{"inherited-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":80},"state_default":75`, 1), "", false, ""},
+		// Claim: a child override above the caller refuses add and remove.
+		{"child-override-refusal-add", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":50,"events":{"m.space.child":80}`, 1), "admin_power", true, "add"},
+		{"child-override-refusal-remove", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":50,"events":{"m.space.child":80}`, 1), "admin_power", true, "remove"},
+		// Claim: a child override below caller and default admits add/remove.
+		{"child-override-allowed-add", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.space.child":40,"m.room.name":100}`, 1), "", true, "add"},
+		{"child-override-allowed-remove", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.space.child":40,"m.room.name":100}`, 1), "", true, "remove"},
+		// Claim: name power does not admit a child write, in either direction.
+		{"child-cross-name-low-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":50,"events":{"m.room.name":0,"m.space.child":80}`, 1), "admin_power", true, "add"},
+		{"child-inherited-name-low-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.room.name":0}`, 1), "admin_power", true, "add"},
+		{"child-cross-child-low-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.room.name":80,"m.space.child":0}`, 1), "", true, "add"},
+		{"name-cross-child-low-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":75,"events":{"m.room.name":80,"m.space.child":0}`, 1), "admin_power", false, ""},
+		// Claim: an override above state_default wins, it is not clamped down.
+		{"name-override-above-default-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":60},"state_default":50,"events":{"m.room.name":80}`, 1), "admin_power", false, ""},
+		// Claim: caller level exactly at the required level is admitted.
+		{"name-equal-override-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":75},"state_default":50,"events":{"m.room.name":75}`, 1), "", false, ""},
+		{"name-equal-inherited-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":75},"state_default":75`, 1), "", false, ""},
+		{"child-equal-override-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":75},"state_default":50,"events":{"m.space.child":75}`, 1), "", true, "add"},
+		{"child-equal-inherited-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":75},"state_default":75`, 1), "", true, "add"},
+		// Claim: with no power_levels, state_default 50 fails a non-creator.
+		{"nopower-noncreator-refusal", `[{"type":"m.room.create","state_key":"","sender":"@founder:example.invalid","content":{"type":"m.space","room_version":"12"}},{"type":"m.room.member","state_key":"@alice:alpha.invalid","content":{"membership":"join"}}]`, "admin_power", false, ""},
+		{"nopower-creator-allowed", `[{"type":"m.room.create","state_key":"","sender":"@alice:alpha.invalid","content":{"type":"m.space","room_version":"12"}},{"type":"m.room.member","state_key":"@alice:alpha.invalid","content":{"membership":"join"}}]`, "", false, ""},
+		{"left", strings.Replace(adminPolicy(), `"membership":"join"`, `"membership":"leave"`, 1), "admin_policy", true, ""},
+		{"bad-version", strings.Replace(adminPolicy(), `"room_version":"12"`, `"room_version":"13"`, 1), "admin_policy", false, ""},
+		{"numeric-string10", strings.Replace(strings.Replace(adminPolicy(), `"room_version":"12"`, `"room_version":"10","creator":"@founder:example.invalid"`, 1), `:100`, `:"100"`, 1), "admin_policy", false, ""},
+		{"numeric-string9", strings.Replace(strings.Replace(adminPolicy(), `"room_version":"12"`, `"room_version":"9","creator":"@founder:example.invalid"`, 1), `:100`, `:"100"`, 1), "", false, ""},
+		{"nearcase-event", strings.Replace(adminPolicy(), `"state_default":50`, `"state_default":50,"events":{"M.ROOM.NAME":0}`, 1), "admin_policy", false, ""},
+		{"malformed-unrelated", strings.Replace(adminPolicy(), `"state_default":50`, `"state_default":50,"events":{"other":1.5}`, 1), "admin_policy", false, ""},
+		{"nonspace", strings.Replace(adminPolicy(), `"type":"m.space"`, `"type":"ordinary"`, 1), "admin_space", true, ""},
+		{"nearcase-space", strings.Replace(adminPolicy(), `"type":"m.space"`, `"Type":"m.space"`, 1), "admin_space", true, ""},
+		{"duplicate", strings.TrimSuffix(adminPolicy(), "]") + `,{"type":"m.room.create","state_key":"","content":{"type":"m.space"}}]`, "admin_space", true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newNamedFixture(t, true)
@@ -861,9 +887,12 @@ func TestRoomAdminPowerPolicy(t *testing.T) {
 				}
 				return propertyCLIReply(r, 200, stored), nil
 			})}
-			op := "set"
-			if tc.child {
-				op = "add"
+			op := tc.op
+			if op == "" {
+				op = "set"
+				if tc.child {
+					op = "add"
+				}
 			}
 			code := a.Run(t.Context(), append(adminArgs(tc.child, op), "--json"))
 			if gets != 1 {

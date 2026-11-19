@@ -251,6 +251,66 @@ func TestRoomAdminTargetAndContext(t *testing.T) {
 	}
 }
 
+// Claim: a child alias resolving to a distinct valid ID other than the
+// --expect-child-id pin is refused at $.child before policy or property
+// traffic, for add and remove, beside valid-alias neighbours that write.
+func TestRoomAdminWrongChildPin(t *testing.T) {
+	const otherChild = "!otherchild:example.invalid"
+	for _, op := range []string{"add", "remove"} {
+		for _, wrong := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wrong%t", op, wrong), func(t *testing.T) {
+				f := newNamedFixture(t, true)
+				a := f.app()
+				aliases, policyGets, puts, props := 0, 0, 0, 0
+				stored := ""
+				a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
+					if strings.Contains(r.URL.Path, "/directory/room/") {
+						aliases++
+						id := adminRoom
+						if strings.Contains(r.URL.Path, "#child") {
+							id = adminChild
+							if wrong {
+								id = otherChild
+							}
+						}
+						b, _ := json.Marshal(map[string]string{"room_id": id})
+						return propertyCLIReply(r, 200, string(b)), nil
+					}
+					if strings.HasSuffix(r.URL.Path, "/state") {
+						policyGets++
+						return propertyCLIReply(r, 200, adminPolicy()), nil
+					}
+					if r.Method == "PUT" {
+						puts++
+						b, _ := io.ReadAll(r.Body)
+						stored = string(b)
+						return propertyCLIReply(r, 200, `{"event_id":"$ok"}`), nil
+					}
+					props++
+					return propertyCLIReply(r, 200, stored), nil
+				})}
+				args := adminArgs(true, op)
+				args[3] = "#space:foreign.invalid"
+				for i, s := range args {
+					if s == "--child" {
+						args[i+1] = "#child:foreign.invalid"
+					}
+				}
+				code := a.Run(t.Context(), append(args, "--json"))
+				if !wrong {
+					if code != 0 || aliases != 2 || policyGets != 1 || puts != 1 || props != 1 {
+						t.Fatalf("valid child pin counts aliases%d policy%d puts%d props%d exit%d %s", aliases, policyGets, puts, props, code, f.err.String())
+					}
+					return
+				}
+				if code != 1 || aliases != 2 || policyGets != 0 || puts != 0 || props != 0 || f.out.Len() != 0 || f.err.String() != "RULE admin_target: $.child\n" {
+					t.Fatalf("wrong child pin refusal aliases%d policy%d puts%d props%d exit%d out%q err%q", aliases, policyGets, puts, props, code, f.out.String(), f.err.String())
+				}
+			})
+		}
+	}
+}
+
 type adminBrokenOutput struct{}
 
 func (adminBrokenOutput) Write([]byte) (int, error) { return 0, errors.New(adminMarker) }
