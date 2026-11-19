@@ -317,7 +317,11 @@ os.execv(%q,[%q]+sys.argv[1:])
 			if mode != "capture" {
 				want = tmuxwake.ReasonBusyOrDialog
 			}
-			if b.Retried || b.SendRefusal == nil || b.SendRefusal.Reason != want || b.Outcome != string(tmuxwake.SendDraftUnavailable) {
+			wantOutcome := tmuxwake.SendDraftUnavailable
+			if mode != "capture" {
+				wantOutcome = tmuxwake.SendDraftBusy
+			}
+			if b.Retried || b.SendRefusal == nil || b.SendRefusal.Reason != want || b.Outcome != string(wantOutcome) {
 				t.Fatal("poll refusal spent fence or lost reason", b.SendRefusal, b.Outcome)
 			}
 			if err := os.Remove(flag); err != nil {

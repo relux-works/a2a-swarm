@@ -357,6 +357,33 @@ func TestTerminalLateRendererInsideWindowSubmitsOnce(t *testing.T) {
 	}
 }
 
+// A missing composer observation stays unavailable; confirmed changed or
+// foreign input retains the changed-input refusal.
+func TestAwaitOwnedNoticeDistinguishesUnavailableAndChangedInput(t *testing.T) {
+	oldWait, oldPoll := redrawWait, redrawPoll
+	redrawWait, redrawPoll = 12*time.Millisecond, time.Millisecond
+	defer func() { redrawWait, redrawPoll = oldWait, oldPoll }()
+
+	for _, tc := range []struct {
+		name        string
+		observation sendInspection
+		want        SendOutcome
+	}{
+		{name: "unavailable capture", observation: sendInspection{}, want: SendDraftUnavailable},
+		{name: "recognized changed draft", observation: sendInspection{inputAvailable: true, box: Box{Text: "noti"}}, want: SendDraftChanged},
+		{name: "foreign draft", observation: sendInspection{foreign: true}, want: SendDraftChanged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ready, got, err := (Target{}).awaitOwnedNotice(context.Background(), "notice", func(context.Context, string) sendInspection {
+				return tc.observation
+			})
+			if err != nil || ready || got != tc.want {
+				t.Fatalf("ready=%v outcome=%q err=%v, want %q", ready, got, err, tc.want)
+			}
+		})
+	}
+}
+
 // Negative control for the polling window: once the box is empty because the
 // notice was already submitted by someone else, polling never adds a second
 // Enter; the attempt ends as a draft outcome with exactly one submission.

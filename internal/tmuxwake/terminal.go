@@ -40,11 +40,12 @@ type Target struct {
 var birthWaitDelay = 500 * time.Millisecond
 
 type sendInspection struct {
-	box      Box
-	eligible bool
-	empty    bool
-	busy     bool
-	foreign  bool
+	box            Box
+	inputAvailable bool
+	eligible       bool
+	empty          bool
+	busy           bool
+	foreign        bool
 }
 
 func Birth(ctx context.Context, pid int) (string, error) {
@@ -220,11 +221,12 @@ func (t Target) inspectForSend(ctx context.Context, notice string) sendInspectio
 	}
 	eligible = eligible && (notice != "" && box.Text == notice || x == box.Column && y == box.Row)
 	return sendInspection{
-		box:      box,
-		eligible: eligible,
-		empty:    reason == InputReasonNone && box.Text == "",
-		busy:     runtimeBusyMarker(screen, t.Runtime),
-		foreign:  foreignComposerText(screen, t.Runtime, notice),
+		box:            box,
+		inputAvailable: reason == InputReasonNone,
+		eligible:       eligible,
+		empty:          reason == InputReasonNone && box.Text == "",
+		busy:           runtimeBusyMarker(screen, t.Runtime),
+		foreign:        foreignComposerText(screen, t.Runtime, notice),
 	}
 }
 
@@ -363,7 +365,7 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 				return SendResult{Disposition: SendUncertain, Outcome: SendInterrupted}, err
 			}
 			observed = inspect(ctx, notice)
-			if observed.foreign || foreignText(notice, observed.box.Text) {
+			if observed.foreign || observed.inputAvailable && foreignText(notice, observed.box.Text) {
 				return SendResult{Disposition: SendDraft, Outcome: SendDraftChanged}, nil
 			}
 			if observed.busy || observed.empty {
@@ -418,7 +420,7 @@ func (t Target) awaitOwnedNotice(ctx context.Context, notice string, inspect fun
 		case <-tick.C:
 		}
 		observed := inspect(ctx, notice)
-		if observed.foreign || foreignText(notice, observed.box.Text) {
+		if observed.foreign || observed.inputAvailable && foreignText(notice, observed.box.Text) {
 			return false, SendDraftChanged, nil
 		}
 		if observed.busy {
@@ -427,7 +429,7 @@ func (t Target) awaitOwnedNotice(ctx context.Context, notice string, inspect fun
 		if observed.eligible && observed.box.Text == notice {
 			return true, "", nil
 		}
-		if observed.box.Text != notice {
+		if observed.inputAvailable && observed.box.Text != notice {
 			outcome = SendDraftChanged
 		}
 	}
@@ -447,7 +449,7 @@ func (t Target) awaitSubmitWitness(ctx context.Context, notice string, inspect f
 		case <-tick.C:
 		}
 		observed := inspect(ctx, notice)
-		if observed.foreign || foreignText(notice, observed.box.Text) {
+		if observed.foreign || observed.inputAvailable && foreignText(notice, observed.box.Text) {
 			return false, false, true, nil
 		}
 		if observed.busy || observed.empty {
