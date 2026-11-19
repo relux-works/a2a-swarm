@@ -164,6 +164,7 @@ func TestReviewCR3ConsumerUnknownPublication(t *testing.T) {
 	since := f.binding().OwnNotice.Since
 	f.a.Now = time.Now
 	f.e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "synthetic sync-only interruption")
+	inspectionCalls := installSuccessfulTerminalInspector(f.a, *f.binding())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := f.a.runTerminal(ctx, f.s, "orphan-gen", *f.binding()); done <- err }()
@@ -179,6 +180,7 @@ func TestReviewCR3ConsumerUnknownPublication(t *testing.T) {
 		}
 	}()
 	awaitBinding(t, f.e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "consumer unavailable; retrying" })
+	requireTerminalInspectorCalled(t, inspectionCalls)
 	local := f.e.as("alice", "bind", "status", "--json").ok(t).stdout
 	remote := f.e.as("alice", "who", "--stale-after", "3m").ok(t).stdout
 	t.Logf("local=%s remote=%q", local, remote)

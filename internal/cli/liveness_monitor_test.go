@@ -460,7 +460,7 @@ func TestLivenessWatchIsolatesPeerThreshold(t *testing.T) {
 	args[4] = "10m"
 	e.as("bob", args...).ok(t)
 	e.as("alice", "who", "--stale-after", "3m").failsWith(t, ExitConfig, "bob")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
 	e.configure = func(a *App) {
 		a.Stdout = &livenessCancelWriter{next: a.Stdout, cancel: cancel, match: "bob\tworking\tinvalid"}

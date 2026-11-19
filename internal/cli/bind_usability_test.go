@@ -342,10 +342,17 @@ func TestBindUsabilityRetryLog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			var inspectionCalls func() int32
+			if stage != "connection" {
+				// Keep the preceding owner/pane gate deterministic so slow process
+				// startup cannot mask the requested state/lease/sync failure as
+				// connection. The connection sibling exercises real probes.
+				inspectionCalls = installSuccessfulTerminalInspector(a, initial)
+			}
 			if stage == "state" {
-				if err = os.WriteFile(e.paths().StateFile("alice"), []byte(`{"PRIVATE_ERROR_SENTINEL":`), 0600); err != nil {
-					t.Fatal(err)
-				}
+				// Fail startDelivery after inspection and lease acquisition, so this
+				// state-stage case also verifies the preceding probe ran.
+				e.hs.fail("GET /_matrix/client/v3/user/{user}/account_data/{type}", 503, "M_UNKNOWN", "PRIVATE_ERROR_SENTINEL/path/token/body")
 			}
 			if stage == "connection" {
 				bad := filepath.Join(t.TempDir(), "not-a-socket")
@@ -361,7 +368,7 @@ func TestBindUsabilityRetryLog(t *testing.T) {
 				e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "PRIVATE_ERROR_SENTINEL/path/token/body")
 			}
 			beforeLease, _ := config.LoadState(e.paths(), "alice")
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := testDeadlineContext(t)
 			defer cancel()
 			log := &usabilityLog{cancel: cancel}
 			a.Stderr = log
@@ -369,15 +376,22 @@ func TestBindUsabilityRetryLog(t *testing.T) {
 			if err != nil || reason != "cancelled" {
 				t.Fatalf("loop exit=%s %v", reason, err)
 			}
+			if stage != "connection" && inspectionCalls() != 1 {
+				t.Fatalf("%s fixture target inspections=%d want=1", stage, inspectionCalls())
+			}
 			want := "binding consumer unavailable; bounded retry cause=" + stage + "\n"
 			if log.String() != want {
 				t.Fatalf("fixed diagnostic=%q want=%q", log.String(), want)
 			}
-			if stage != "state" {
-				st := e.state("alice")
-				if len(st.Terminal.Reservations) != 0 || len(st.Terminal.AttemptIDs) != 0 || st.Terminal.Stopped || !reflect.DeepEqual(st.Lease, beforeLease.Lease) && stage == "lease" {
-					t.Fatal("retry spent effect or changed foreign lease")
-				}
+			st := e.state("alice")
+			if len(st.Terminal.Reservations) != 0 || len(st.Terminal.AttemptIDs) != 0 || st.Terminal.Stopped {
+				t.Fatal("retry spent effect or stopped the binding")
+			}
+			if stage == "lease" && !reflect.DeepEqual(st.Lease, beforeLease.Lease) {
+				t.Fatal("lease rejection changed the foreign lease")
+			}
+			if (stage == "state" || stage == "sync") && (st.Lease == nil || st.Lease.Holder != "own") {
+				t.Fatalf("%s failure did not retain the acquired lease", stage)
 			}
 			ops, _ := os.ReadFile(trace)
 			if strings.Contains(string(ops), "capture") || strings.Contains(string(ops), "FORBIDDEN") {

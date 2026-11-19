@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"os"
 	"testing"
@@ -162,7 +161,7 @@ func TestMetaReviewPolicySerialization(t *testing.T) {
 		r = *early
 		t.Error("repair completed before policy lock released")
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := testDeadlineContext(t)
 		defer cancel()
 		select {
 		case r = <-done:

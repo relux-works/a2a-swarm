@@ -538,7 +538,19 @@ func (a *App) runTerminal(ctx context.Context, s *session, generation string, in
 	return a.runTerminalWithRefresh(ctx, s, generation, initial, nil)
 }
 
+func inspectTerminalBindingTarget(ctx context.Context, b config.TerminalBinding) (string, error, error) {
+	owner, ownerErr := tmuxwake.Birth(ctx, b.OwnerPID)
+	_, _, _, targetErr := b.Target.Inspect(ctx)
+	return owner, ownerErr, targetErr
+}
+
 func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
+	// This terminal consumer owns its cache and decode epoch. Attach both before
+	// the alarm worker starts so every goroutine sees the same per-identity scope.
+	s.paths = s.paths.WithReadCache(config.NewReadCache(s.name))
+	scope := config.NewStateDecodeScope(s.name)
+	s.paths = s.paths.WithStateDecodeScope(scope)
+	defer scope.Close()
 	policy := initial
 	alarmCtx, stopAlarm := context.WithCancel(ctx)
 	defer stopAlarm()
@@ -548,7 +560,9 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true
 	for ctx.Err() == nil {
+		scope.Open()
 		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
+			scope.Close()
 			return "selected connection unavailable", err
 		}
 		stage := "state"
@@ -556,24 +570,32 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 		if err == nil {
 			b := st.Terminal
 			if b == nil {
+				scope.Close()
 				return "binding vanished", nil
 			}
 			if b.Generation != generation {
+				scope.Close()
 				return "generation replaced", nil
 			}
 			if b.Stopped {
+				scope.Close()
 				return "stopped", nil
 			}
 			policy = *b
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-			owner, ownerErr := tmuxwake.Birth(probe, b.OwnerPID)
-			_, _, _, targetErr := b.Target.Inspect(probe)
+			inspect := a.inspectTerminalTarget
+			if inspect == nil {
+				inspect = inspectTerminalBindingTarget
+			}
+			owner, ownerErr, targetErr := inspect(probe, *b)
 			cancel()
 			if ownerErr == nil && owner != b.OwnerBirth || ownerErr != nil && processGone(b.OwnerPID) || errors.Is(targetErr, tmuxwake.ErrTargetGone) {
 				a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Stopped = true; b.Outcome = "target exited or replaced" })
 				if processGone(b.OwnerPID) || ownerErr == nil && owner != b.OwnerBirth {
+					scope.Close()
 					return "owner gone or replaced", nil
 				}
+				scope.Close()
 				return "target gone or replaced", nil
 			}
 			if ownerErr != nil {
@@ -617,10 +639,12 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 			err = a.dispatchTerminal(ctx, s, generation, alarmWake)
 		}
 		if ctx.Err() != nil {
+			scope.Close()
 			return "cancelled", nil
 		}
 		if err != nil {
 			if guardErr := s.checkConnection(); guardErr != nil && !errors.Is(guardErr, config.ErrMigrationStateUnavailable) {
+				scope.Close()
 				return "selected connection unavailable", guardErr
 			}
 			qualificationInterrupted = true
@@ -644,6 +668,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 		if refresh != nil {
 			refresh()
 		}
+		scope.Close()
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -652,6 +677,7 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 		case <-timer.C:
 		}
 	}
+	scope.Close()
 	return "cancelled", nil
 }
 

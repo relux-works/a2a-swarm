@@ -300,8 +300,15 @@ func TestBindDetachedLifecycle(t *testing.T) {
 	if len(screen.Submitted) != 1 {
 		t.Fatal("unreceived event replayed")
 	}
+	logPath := filepath.Join(e.dir, "state", "alice.binding.log")
+	retryLogged := func(cause string) bool {
+		log, err := os.ReadFile(logPath)
+		return err == nil && strings.Contains(string(log), "binding consumer unavailable; bounded retry cause="+cause+"\n")
+	}
 	e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "synthetic transient")
-	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "consumer unavailable; retrying" })
+	awaitBinding(t, e.paths(), func(st config.State) bool {
+		return st.Terminal.Outcome == "consumer unavailable; retrying" && retryLogged("sync")
+	})
 	e.hs.mu.Lock()
 	delete(e.hs.failures, "GET /_matrix/client/v3/sync")
 	e.hs.mu.Unlock()
@@ -422,7 +429,9 @@ func TestBindDetachedLifecycle(t *testing.T) {
 		st.Lease.Holder = "synthetic-other"
 		st.Lease.Expires = time.Now().Add(time.Minute)
 	})
-	awaitBinding(t, e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "consumer unavailable; retrying" })
+	awaitBinding(t, e.paths(), func(st config.State) bool {
+		return st.Terminal.Outcome == "consumer unavailable; retrying" && retryLogged("lease")
+	})
 	if processGone(pid) {
 		t.Fatal("lease error killed persistent consumer")
 	}
