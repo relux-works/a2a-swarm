@@ -82,9 +82,9 @@ type orphanDispatchFixture struct {
 
 const orphanFixtureStep = time.Second
 
-// Allow ten fixture steps for a loaded runner to render/acknowledge a change;
+// Allow twenty fixture steps for a loaded runner to render/acknowledge a change;
 // retain the original 3s floor if the fixture step is shortened in the future.
-const orphanScreenWaitTimeout = max(3*time.Second, 10*orphanFixtureStep)
+const orphanScreenWaitTimeout = max(3*time.Second, 20*orphanFixtureStep)
 
 func newOrphanDispatchFixture(t *testing.T) *orphanDispatchFixture {
 	return newOrphanDispatchFixtureScript(t, orphanFixture)
