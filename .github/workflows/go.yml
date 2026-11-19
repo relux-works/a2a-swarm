@@ -17,6 +17,49 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  pr-fast:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install and verify terminal test dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y tmux
+          command -v tmux
+          command -v python3
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - name: Run selected credential, wake and Send checks
+        shell: bash
+        run: |
+          printf 'Linux load before tests: '; uptime
+          trap 'printf "Linux load after tests: "; uptime || true' EXIT
+          tests=(
+            TestKeychainAuthorizationBoundaries
+            TestKeychainProbeRefusals
+            TestReadinessIdleContinuity
+            TestReadinessTypedCompletion
+            TestTerminalPauseSendBoundary
+            TestTerminalSendRefusalDiagnostic
+            TestBoundSendContinuity
+          )
+          selected=$(IFS='|'; printf '%s' "${tests[*]}")
+          log="$RUNNER_TEMP/go-test-pr-fast.log"
+          go test -race -p 1 -count=1 -timeout 5m -v ./internal/cli ./internal/tmuxwake \
+            -run "^(${selected})$" 2>&1 | tee "$log"
+          # go test can succeed with no matching tests or with skipped tests.
+          for name in "${tests[@]}"; do
+            grep -Eq "^--- PASS: ${name} \(" "$log" || { echo "::error::Expected a passing $name"; exit 1; }
+          done
+
   test:
     if: >-
       github.event_name == 'pull_request' &&
@@ -70,10 +113,12 @@ jobs:
       - name: Test and report skips
         shell: bash
         run: |
+          printf 'Linux load before tests: '; uptime || true
           set +e
           go test -race -timeout 60m -v ./... 2>&1 | tee "$RUNNER_TEMP/go-test-linux.log"
           test_status=${PIPESTATUS[0]}
           set -e
+          printf 'Linux load after tests: '; uptime || true
           skipped=$(grep -c '^[[:space:]]*--- SKIP:' "$RUNNER_TEMP/go-test-linux.log" || true)
           echo "Skipped tests (including subtests): $skipped"
           exit "$test_status"
