@@ -107,6 +107,30 @@ func TestWakeDiagnosticTerminalPositive(t *testing.T) {
 	}
 }
 
+// A real draft with pending mail reaches pre-Send suppression, keeps its exact
+// parser class, and gains no layout history or delivery effects. The existing
+// TerminalPositive test is the paired healthy same-pane dispatch control.
+func TestWakeDiagnosticTerminalDraft(t *testing.T) {
+	f := newOrphanDispatchFixture(t)
+	id := f.mail()
+	f.control(map[string]any{"text": "synthetic draft", "hint": true})
+	r := f.a.terminalEffects(*f.binding()).ObserveReadiness(context.Background(), "")
+	want := tmuxwake.InputAssessment{State: tmuxwake.InputNonempty, Reason: tmuxwake.InputReasonInputNonempty}
+	if !r.InputObserved || r.Input != want || r.Eligible() {
+		t.Fatalf("fixture did not exercise draft refusal: %+v", r.Input)
+	}
+	before := f.wait(func(s orphanScreen) bool { return s.Text == "synthetic draft" })
+	f.dispatch()
+	b := f.binding()
+	if b.Outcome != "suppressed: busy, draft or unknown input" || b.Idle != nil || b.WakeDiagnostic != nil || b.SendRefusal != nil || len(b.AttemptIDs) != 0 || len(b.Reservations) != 0 || len(b.Rung) != 0 || b.Typed || f.e.received("alice", id) {
+		t.Fatal("draft suppression wrote layout history or changed delivery/mail/rate state")
+	}
+	after := f.wait(func(s orphanScreen) bool { return true })
+	if after.Text != before.Text || after.Typed != before.Typed || after.Erased != before.Erased || len(after.Submitted) != len(before.Submitted) {
+		t.Fatal("draft suppression changed terminal input")
+	}
+}
+
 // A supported loaded-session handover ends diagnostic custody even if the
 // pane and consumer generation continue; it preserves existing handover rules.
 func TestWakeDiagnosticTerminalHandover(t *testing.T) {
@@ -163,19 +187,25 @@ func TestWakeDiagnosticTerminalGates(t *testing.T) {
 }
 
 // A default layout reason is not parser evidence. A stale same-generation
-// scope/lease or manual gate cannot attach history to its replacement; the
-// unchanged scope with a real parser observation is the paired positive.
+// scope/lease or manual gate cannot attach history to its replacement. Draft
+// and cursor observations are not layout refusals; valid is the paired control.
+// Own-target cases keep the expected scope equal, independently testing local
+// host and binding-to-target ownership rather than only scope equality.
 func TestWakeDiagnosticTerminalWriteFence(t *testing.T) {
-	for _, mode := range []string{"valid", "not-observed", "session", "target", "daemon", "lease", "paused", "manual", "native"} {
+	for _, mode := range []string{"valid", "not-observed", "draft", "cursor", "session", "target", "daemon", "lease", "lease-expired", "lease-host", "own-host", "own-pid", "own-birth", "paused", "manual", "native"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
-			f.mail()
+			id := f.mail()
 			expected := *f.binding()
 			r := tmuxwake.ReadinessAssessment{InputObserved: true, Input: tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonLayoutUnrecognized}}
 			f.update(func(st *config.State) {
 				switch mode {
 				case "not-observed":
 					r.InputObserved = false
+				case "draft":
+					r.Input = tmuxwake.InputAssessment{State: tmuxwake.InputNonempty, Reason: tmuxwake.InputReasonInputNonempty}
+				case "cursor":
+					r.Input = tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonCursorMismatch}
 				case "session":
 					st.Terminal.SessionID = "other"
 				case "target":
@@ -184,6 +214,19 @@ func TestWakeDiagnosticTerminalWriteFence(t *testing.T) {
 					st.Terminal.DaemonBirth = "new-consumer"
 				case "lease":
 					st.Lease.Holder = "other"
+				case "lease-expired":
+					st.Lease.Expires = f.now
+				case "lease-host":
+					st.Lease.Host = "foreign.invalid"
+				case "own-host":
+					st.Terminal.Host = "foreign.invalid"
+					expected.Host = st.Terminal.Host
+				case "own-pid":
+					st.Terminal.OwnerPID++
+					expected.OwnerPID = st.Terminal.OwnerPID
+				case "own-birth":
+					st.Terminal.OwnerBirth = "other-birth"
+					expected.OwnerBirth = st.Terminal.OwnerBirth
 				case "paused":
 					st.HooksPaused = true
 				case "manual":
@@ -194,6 +237,9 @@ func TestWakeDiagnosticTerminalWriteFence(t *testing.T) {
 				}
 			})
 			before := f.e.state("alice")
+			if strings.HasPrefix(mode, "own-") && (!sameTerminalScope(*before.Terminal, expected) || ownTerminalTarget(before.Terminal, expected.Target)) {
+				t.Fatal("own-target negative did not preserve equal scope with invalid ownership")
+			}
 			if err := f.a.terminalPreSendSuppressed(f.s, expected.Generation, expected, r); err != nil {
 				t.Fatal(err)
 			}
@@ -201,7 +247,14 @@ func TestWakeDiagnosticTerminalWriteFence(t *testing.T) {
 			if mode == "valid" {
 				requireWakeDiagnostic(t, after.Terminal.WakeDiagnostic, wakediag.TerminalLayoutRefused)
 			} else if after.Terminal.WakeDiagnostic != nil {
-				t.Fatal("stale or unobserved stage gained history")
+				t.Fatalf("%s observation gained layout diagnosis: %+v", mode, after.Terminal.WakeDiagnostic)
+			}
+			if after.Terminal.Idle != nil || after.Terminal.Outcome != "suppressed: busy, draft or unknown input" || f.e.received("alice", id) {
+				t.Fatal("suppression reason, idle invalidation or unread mail changed")
+			}
+			screen := f.wait(func(s orphanScreen) bool { return true })
+			if screen.Typed != 0 || screen.Erased != 0 || len(screen.Submitted) != 0 {
+				t.Fatal("suppression wrote terminal input")
 			}
 			// Only the pre-existing suppression fields and new diagnostic may differ.
 			after.Terminal.Idle, before.Terminal.Idle = nil, nil
