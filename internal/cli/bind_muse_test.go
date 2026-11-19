@@ -17,9 +17,9 @@ import (
 // fakeMuseSender scripts the session-message seam of the muse carrier. The
 // real dispatch, qualification, reservation and finish paths run unchanged.
 type fakeMuseSender struct {
-	live             bool
-	sendErr          error
-	targets, bodies  []string
+	live            bool
+	sendErr         error
+	targets, bodies []string
 }
 
 func (f *fakeMuseSender) SessionLive(_ context.Context, sessionID string) (bool, error) {

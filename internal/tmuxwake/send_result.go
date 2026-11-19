@@ -10,20 +10,20 @@ type SendDisposition string
 type SendOutcome string
 
 const (
-	SendRefused          SendDisposition = "refused"
-	SendDraft            SendDisposition = "draft"
-	SendUncertain        SendDisposition = "uncertain"
-	SendSubmitted        SendDisposition = "submitted"
-	SendSuppressedInput  SendOutcome     = "suppressed: busy, draft or unknown input"
-	SendSuppressedWidth  SendOutcome     = "suppressed: target or width"
-	SendDraftUnavailable SendOutcome     = "notice left in draft: input unavailable"
-	SendDraftChanged     SendOutcome     = "notice left in draft: changed input"
-	SendTypeUncertain    SendOutcome     = "uncertain: type"
-	SendEnterUncertain   SendOutcome     = "uncertain: Enter"
-	SendInterrupted      SendOutcome     = "uncertain: interrupted"
-	SendWakeSubmitted    SendOutcome     = "wake submitted"
-	SendMuseRefused      SendOutcome     = "suppressed: muse delivery refused"
-	SendDeliveryUncertain SendOutcome    = "uncertain: delivery"
+	SendRefused           SendDisposition = "refused"
+	SendDraft             SendDisposition = "draft"
+	SendUncertain         SendDisposition = "uncertain"
+	SendSubmitted         SendDisposition = "submitted"
+	SendSuppressedInput   SendOutcome     = "suppressed: busy, draft or unknown input"
+	SendSuppressedWidth   SendOutcome     = "suppressed: target or width"
+	SendDraftUnavailable  SendOutcome     = "notice left in draft: input unavailable"
+	SendDraftChanged      SendOutcome     = "notice left in draft: changed input"
+	SendTypeUncertain     SendOutcome     = "uncertain: type"
+	SendEnterUncertain    SendOutcome     = "uncertain: Enter"
+	SendInterrupted       SendOutcome     = "uncertain: interrupted"
+	SendWakeSubmitted     SendOutcome     = "wake submitted"
+	SendMuseRefused       SendOutcome     = "suppressed: muse delivery refused"
+	SendDeliveryUncertain SendOutcome     = "uncertain: delivery"
 )
 
 type SendResult struct {

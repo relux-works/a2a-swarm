@@ -169,10 +169,10 @@ func TestMuseSendSeam(t *testing.T) {
 
 	t.Run("classifier", func(t *testing.T) {
 		for out, want := range map[string]error{
-			`{"error":"sender_unverified"}`:                                 ErrMuseSenderUnverified,
-			"external_agent_ingress_closed":                                 ErrMuseIngressClosed,
-			`{"status":"target_gone","error_code":"target_not_found"}`:     ErrMuseSessionDead,
-			`{"ok":true}`:                                                   nil,
+			`{"error":"sender_unverified"}`:                            ErrMuseSenderUnverified,
+			"external_agent_ingress_closed":                            ErrMuseIngressClosed,
+			`{"status":"target_gone","error_code":"target_not_found"}`: ErrMuseSessionDead,
+			`{"ok":true}`: nil,
 		} {
 			if got := classifyMuseSend(out); got != want {
 				t.Fatalf("classifyMuseSend(%q) = %v, want %v", out, got, want)
