@@ -353,7 +353,7 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 
 	for attempt := 1; attempt <= enterMaxAttempts; attempt++ {
 		if attempt > 1 {
-			if err := waitContext(ctx, retryBackoff(attempt-2)); err != nil {
+			if err := enterRetryWait(ctx, retryBackoff(attempt-2)); err != nil {
 				return SendResult{Disposition: SendUncertain, Outcome: SendInterrupted}, err
 			}
 			observed = inspect(ctx, notice)
@@ -387,14 +387,15 @@ func (t Target) sendWith(ctx context.Context, count int, owned string, beforeTyp
 	return SendResult{Disposition: SendUncertain, Outcome: SendEnterUnwitnessed}, nil
 }
 
-// redrawPoll and redrawWait bound the post-type verification. Variables only
-// so tests can shorten the window; production never changes them.
+// These variables let tests shorten verification waits and record retry wait
+// requests. Production uses the defaults.
 var (
 	redrawPoll         = 100 * time.Millisecond
 	redrawWait         = 2 * time.Second
 	enterWitnessWait   = 2 * time.Second
 	enterMaxAttempts   = 3
 	enterRetryBackoffs = []time.Duration{100 * time.Millisecond, 250 * time.Millisecond}
+	enterRetryWait     = waitContext
 )
 
 func (t Target) awaitOwnedNotice(ctx context.Context, notice string, inspect func(context.Context, string) sendInspection) (bool, SendOutcome, error) {

@@ -157,12 +157,13 @@ func TestTerminalSendRefusalLogFailureDoesNotFailCompletion(t *testing.T) {
 // keeps its attempt, notice and reservation and does not receipt mail.
 func TestTerminalNonSubmittedSendRemainsPendingAndVisible(t *testing.T) {
 	for _, c := range []struct {
-		name      string
-		result    tmuxwake.SendResult
-		wantTyped bool
+		name              string
+		result            tmuxwake.SendResult
+		wantTyped         bool
+		wantTypingStarted bool
 	}{
-		{name: "unwitnessed Enter", result: tmuxwake.SendResult{Disposition: tmuxwake.SendUncertain, Outcome: tmuxwake.SendEnterUnwitnessed}},
-		{name: "busy before Enter", result: tmuxwake.SendResult{Disposition: tmuxwake.SendDraft, Outcome: tmuxwake.SendDraftBusy}, wantTyped: true},
+		{name: "unwitnessed Enter", result: tmuxwake.SendResult{Disposition: tmuxwake.SendUncertain, Outcome: tmuxwake.SendEnterUnwitnessed}, wantTypingStarted: true},
+		{name: "busy before Enter", result: tmuxwake.SendResult{Disposition: tmuxwake.SendDraft, Outcome: tmuxwake.SendDraftBusy}, wantTyped: true, wantTypingStarted: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			isolateBindTest(t)
@@ -198,6 +199,9 @@ func TestTerminalNonSubmittedSendRemainsPendingAndVisible(t *testing.T) {
 			}
 			st := e.state("alice")
 			b := st.Terminal
+			if b.TypingStarted != c.wantTypingStarted {
+				t.Fatalf("pending send TypingStarted = %t, want %t", b.TypingStarted, c.wantTypingStarted)
+			}
 			if b.Outcome != c.result.Text() || b.Notice != expected.Notice || len(b.AttemptIDs) != 1 || b.AttemptIDs[0] != id || b.NotificationToken != expected.NotificationToken || len(b.Rung) != 0 || b.Typed != c.wantTyped || st.Notification.Reservation == nil || st.Notification.Reservation.Token != expected.NotificationToken || e.received("alice", id) {
 				t.Fatal("non-submitted send completed or lost its retry state")
 			}

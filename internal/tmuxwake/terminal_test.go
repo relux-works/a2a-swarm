@@ -19,7 +19,7 @@ import (
 // this test intended a ready renderer. Delayed rendering is tested separately.
 const inputFixture = `import os,sys,tty,json,time
 tty.setraw(0)
-text=''; submitted=[]; enters=0; pastes=0; path=sys.argv[1]; runtime=sys.argv[2]; pending=bytearray()
+text=''; submitted=[]; enters=0; pastes=0; paste_ends=0; paste_markers=[]; path=sys.argv[1]; runtime=sys.argv[2]; pending=bytearray()
 os.write(1,b'\x1b[?2004h')
 def draw():
     global text
@@ -48,7 +48,7 @@ def draw():
         if busy: footer+=' · Esc to interrupt'
         screen='\x1b[2J\x1b['+str(row)+';1H'+' '*col+'\x1b[1m›\x1b[0m '+shown+'\x1b['+str(row+2)+';1H  '+footer+extra+'\x1b['+str(cursor_row)+';'+str(3+col+len(shown)+cursor)+'H'
     os.write(1,screen.encode())
-    with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'enters':enters,'pastes':pastes,'busy':busy or 'esc to interrupt' in extra.lower(),'pid':os.getpid(),'row':row,'render':options.get('render',0)},f)
+    with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'enters':enters,'pastes':pastes,'pasteEnds':paste_ends,'pasteMarkers':paste_markers,'busy':busy or 'esc to interrupt' in extra.lower(),'pid':os.getpid(),'row':row,'render':options.get('render',0)},f)
     os.replace(path+'.next',path)
 draw()
 while True:
@@ -56,9 +56,9 @@ while True:
     while os.path.exists(path+'.hold'): time.sleep(0.005)
     while pending:
         if pending.startswith(b'\x1b[200~'):
-            del pending[:6]; pastes+=1; continue
+            del pending[:6]; pastes+=1; paste_markers.append('start'); continue
         if pending.startswith(b'\x1b[201~'):
-            del pending[:6]; continue
+            del pending[:6]; paste_ends+=1; paste_markers.append('end'); continue
         if any(marker.startswith(bytes(pending)) for marker in (b'\x1b[200~',b'\x1b[201~')): break
         c=pending[0]; del pending[0]
         if c==12: continue # fixture-only redraw without input changes
@@ -75,14 +75,16 @@ while True:
 `
 
 type fixtureState struct {
-	Text      string
-	Submitted []string
-	Enters    int
-	Pastes    int
-	Busy      bool
-	PID       int
-	Row       int
-	Render    int
+	Text         string
+	Submitted    []string
+	Enters       int
+	Pastes       int
+	PasteEnds    int
+	PasteMarkers []string
+	Busy         bool
+	PID          int
+	Row          int
+	Render       int
 }
 type terminalFixture struct {
 	target Target
@@ -468,7 +470,7 @@ func TestTerminalDroppedFirstEnterRequiresSubmitWitness(t *testing.T) {
 				t.Fatalf("dropped Enter was credited without recovery: %q %v", outcome, err)
 			}
 			s := f.wait(func(s fixtureState) bool { return len(s.Submitted) != 0 })
-			if s.Enters != 2 || s.Pastes != 1 || len(s.Submitted) != 1 || s.Submitted[0] != Notice(2) || s.Text != "" {
+			if s.Enters != 2 || s.Pastes != 1 || s.PasteEnds != 1 || strings.Join(s.PasteMarkers, ",") != "start,end" || len(s.Submitted) != 1 || s.Submitted[0] != Notice(2) || s.Text != "" {
 				t.Fatalf("unexpected submit witness: %+v", s)
 			}
 		})
@@ -478,6 +480,37 @@ func TestTerminalDroppedFirstEnterRequiresSubmitWitness(t *testing.T) {
 // A composer that never clears exhausts Enter-only retries and remains an
 // unsubmitted notice; the ready neighbor above proves the successful witness.
 func TestTerminalNeverClearedNoticeIsNotSubmitted(t *testing.T) {
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			if err := os.WriteFile(f.path+".control", []byte("never"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := f.target.Send(context.Background(), 1, nil, nil)
+			if err != nil || outcome != "uncertain: Enter not witnessed" {
+				t.Fatalf("unwitnessed notice credited: %q %v", outcome, err)
+			}
+			s := f.wait(func(s fixtureState) bool { return s.Enters >= 3 })
+			if s.Enters != 3 || s.Pastes != 1 || s.PasteEnds != 1 || strings.Join(s.PasteMarkers, ",") != "start,end" || len(s.Submitted) != 0 || s.Text != Notice(1) {
+				t.Fatalf("retry bound or pending notice lost: %+v", s)
+			}
+		})
+	}
+}
+
+func TestTerminalRetryBackoffSchedule(t *testing.T) {
+	oldWait, oldWitnessWait, oldPoll := enterRetryWait, enterWitnessWait, redrawPoll
+	var got []time.Duration
+	enterRetryWait = func(ctx context.Context, duration time.Duration) error {
+		got = append(got, duration)
+		return waitContext(ctx, duration)
+	}
+	enterWitnessWait = 10 * time.Millisecond
+	redrawPoll = time.Millisecond
+	t.Cleanup(func() {
+		enterRetryWait, enterWitnessWait, redrawPoll = oldWait, oldWitnessWait, oldPoll
+	})
+
 	f := newTerminalFixture(t, "codex")
 	if err := os.WriteFile(f.path+".control", []byte("never"), 0600); err != nil {
 		t.Fatal(err)
@@ -487,8 +520,12 @@ func TestTerminalNeverClearedNoticeIsNotSubmitted(t *testing.T) {
 		t.Fatalf("unwitnessed notice credited: %q %v", outcome, err)
 	}
 	s := f.wait(func(s fixtureState) bool { return s.Enters >= 3 })
-	if s.Enters != 3 || s.Pastes != 1 || len(s.Submitted) != 0 || s.Text != Notice(1) {
-		t.Fatalf("retry bound or pending notice lost: %+v", s)
+	if s.Enters != 3 || len(s.Submitted) != 0 || s.Text != Notice(1) {
+		t.Fatalf("retry schedule did not preserve the pending notice: %+v", s)
+	}
+	want := []time.Duration{100 * time.Millisecond, 250 * time.Millisecond}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("retry waits = %v, want %v", got, want)
 	}
 }
 
