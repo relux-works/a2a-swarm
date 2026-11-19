@@ -16,6 +16,7 @@ import (
 
 	"github.com/relux-works/a2a-swarm/internal/codexwake"
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/envelopeobserve"
 	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
 
@@ -29,14 +30,41 @@ type nativeRuntime interface {
 	Reconcile(context.Context, string, string, time.Time) (string, error)
 	Wake(context.Context, string, string) (string, error)
 	Info() (string, string)
+	Qualified() bool
 	Close()
 }
 
-func (a *App) dialNative(ctx context.Context, endpoint string) (nativeRuntime, error) {
+func (a *App) dialNativeFor(ctx context.Context, s *session, endpoint string) (nativeRuntime, error) {
 	if a.nativeDial != nil {
 		return a.nativeDial(ctx, endpoint)
 	}
-	return codexwake.Dial(ctx, endpoint)
+	return codexwake.DialQualified(ctx, endpoint, a.nativeQualification(s.paths))
+}
+
+// nativeQualification loads the protected host entry selected by the local
+// absolute-path selector. Absence or any protected-storage or parse failure
+// yields the zero entry, never a partial admission.
+func (a *App) nativeQualification(p config.Paths) codexwake.Qualification {
+	if a.loadNativeQualification != nil {
+		loaded, err := a.loadNativeQualification(p)
+		if err != nil {
+			return codexwake.Qualification{}
+		}
+		return loaded
+	}
+	path := config.NativeQualificationPath(p)
+	if path == "" {
+		return codexwake.Qualification{}
+	}
+	raw, err := envelopeobserve.ReadProtectedFile(path, codexwake.MaxQualificationBytes)
+	if err != nil {
+		return codexwake.Qualification{}
+	}
+	loaded, err := codexwake.ParseQualification(raw)
+	if err != nil {
+		return codexwake.Qualification{}
+	}
+	return loaded
 }
 
 // Process birth and uid prevent a recycled PID from inheriting a generation.
@@ -58,7 +86,7 @@ func ownerBirth(ctx context.Context, pid int) (string, error) {
 }
 
 func sameRuntime(a, b codexwake.Binding) bool {
-	return a.Identity == b.Identity && a.ThreadID == b.ThreadID && a.SessionID == b.SessionID && a.Endpoint == b.Endpoint && a.EndpointID == b.EndpointID && a.ServerVersion == b.ServerVersion && a.Host == b.Host && a.Cwd == b.Cwd && a.OwnerPID == b.OwnerPID && a.OwnerStart == b.OwnerStart
+	return a.Identity == b.Identity && a.ThreadID == b.ThreadID && a.SessionID == b.SessionID && a.Endpoint == b.Endpoint && a.EndpointID == b.EndpointID && a.ServerVersion == b.ServerVersion && a.UnderQualification == b.UnderQualification && a.Host == b.Host && a.Cwd == b.Cwd && a.OwnerPID == b.OwnerPID && a.OwnerStart == b.OwnerStart
 }
 
 func cmdRuntime(ctx context.Context, a *App, args []string) error {
@@ -90,7 +118,11 @@ func cmdRuntime(ctx context.Context, a *App, args []string) error {
 			a.printf("%s unavailable: unbound\n", s.name)
 			return nil
 		}
-		a.printf("%s generation=%s gate=%s wake=%s notification=%s\n", s.name, st.Runtime.Generation, st.Runtime.Gate, sanitizeLine(st.Wake.Outcome), notificationDiagnostic(st.Notification, a.Now()).State)
+		qualification := ""
+		if st.Runtime.UnderQualification {
+			qualification = " under qualification"
+		}
+		a.printf("%s generation=%s gate=%s wake=%s notification=%s%s\n", s.name, st.Runtime.Generation, st.Runtime.Gate, sanitizeLine(st.Wake.Outcome), notificationDiagnostic(st.Notification, a.Now()).State, qualification)
 		return nil
 	}
 	if err := refuseHostConsumer(s); err != nil {
@@ -266,7 +298,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 			if err != nil {
 				return err
 			}
-			client, err := a.dialNative(probe, *endpoint)
+			client, err := a.dialNativeFor(probe, s, *endpoint)
 			if err != nil {
 				return err
 			}
@@ -283,7 +315,7 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 			if _, err := rand.Read(random[:]); err != nil {
 				return err
 			}
-			binding = codexwake.Binding{Identity: s.name, ThreadID: *thread, SessionID: *thread, Endpoint: *endpoint, EndpointID: socket, ServerVersion: version, Generation: hex.EncodeToString(random[:]), Host: machineLabel(), Cwd: cwd, OwnerPID: *pid, OwnerStart: birth, Gate: *gate, MaxPerHour: *rate, HeartbeatEvery: *heartbeat}
+			binding = codexwake.Binding{Identity: s.name, ThreadID: *thread, SessionID: *thread, Endpoint: *endpoint, EndpointID: socket, ServerVersion: version, UnderQualification: client.Qualified(), Generation: hex.EncodeToString(random[:]), Host: machineLabel(), Cwd: cwd, OwnerPID: *pid, OwnerStart: birth, Gate: *gate, MaxPerHour: *rate, HeartbeatEvery: *heartbeat}
 			if err := binding.Validate(); err != nil {
 				return err
 			}
@@ -427,14 +459,14 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		if err != nil || socket != b.EndpointID {
 			return a.runtimeOutcome(s, generation, "unavailable: endpoint replaced")
 		}
-		client, err := a.dialNative(probe, b.Endpoint)
+		client, err := a.dialNativeFor(probe, s, b.Endpoint)
 		if err != nil {
 			fmt.Fprintln(a.Stderr, "native connection probe:", a.secrets.Scrub(sanitizeLine(err.Error())))
 			return a.runtimeOutcome(s, generation, "unavailable: native capability or transport")
 		}
 		defer client.Close()
 		version, socket := client.Info()
-		if version != b.ServerVersion || socket != b.EndpointID {
+		if version != b.ServerVersion || socket != b.EndpointID || client.Qualified() != b.UnderQualification {
 			return a.runtimeOutcome(s, generation, "unavailable: host replaced")
 		}
 		remote, err := client.Read(probe, b.ThreadID, false)

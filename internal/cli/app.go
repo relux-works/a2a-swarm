@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/codexwake"
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/e2ee"
@@ -47,8 +48,9 @@ type App struct {
 	// signer_unqualified. Tests only.
 	postQualified func(signedpost.Identity) bool
 
-	loadStationAuthors func(string) (daemon.StationAuthors, error) // Tests only; nil enforces protected host storage.
-	stationAuthorKey   string                                      // Per-invocation key selected by the authenticated peer UID, never by argv.
+	loadNativeQualification func(config.Paths) (codexwake.Qualification, error) // Tests only; nil enforces protected host storage.
+	loadStationAuthors      func(string) (daemon.StationAuthors, error)         // Tests only; nil enforces protected host storage.
+	stationAuthorKey        string                                              // Per-invocation key selected by the authenticated peer UID, never by argv.
 
 	// rosterProtection is the roster writer's ownership seam; nil selects the host predicate.
 	rosterProtection envelopeobserve.RosterProtection

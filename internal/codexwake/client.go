@@ -65,12 +65,18 @@ type Snapshot struct {
 // Client serializes RPCs and correlates replies while ignoring notifications
 // and server requests. It never acts as an approval or interactive UI client.
 type Client struct {
-	conn     *websocket.Conn
-	mu       sync.Mutex
-	next     int
-	Version  string
-	SocketID string
+	conn               *websocket.Conn
+	mu                 sync.Mutex
+	next               int
+	Version            string
+	SocketID           string
+	underQualification bool
 }
+
+// Qualified reports whether this connection's server version was admitted
+// only because a protected host entry names it under qualification, rather
+// than by the default verified-version list.
+func (c *Client) Qualified() bool { return c.underQualification }
 
 // EndpointPath admits only an explicit local Unix endpoint. Remote runtime
 // access and credentials are not part of this adapter's authority.
@@ -82,7 +88,19 @@ func EndpointPath(endpoint string) (string, error) {
 	return filepath.Clean(u.Path), nil
 }
 
+// Dial admits only the default verified server versions.
 func Dial(ctx context.Context, endpoint string) (*Client, error) {
+	return dial(ctx, endpoint, Qualification{})
+}
+
+// DialQualified additionally admits a current-protocol server version when
+// the supplied protected host qualification entry names that exact version.
+// A zero or non-naming entry refuses exactly as Dial does.
+func DialQualified(ctx context.Context, endpoint string, q Qualification) (*Client, error) {
+	return dial(ctx, endpoint, q)
+}
+
+func dial(ctx context.Context, endpoint string, q Qualification) (*Client, error) {
 	path, err := EndpointPath(endpoint)
 	if err != nil {
 		return nil, err
@@ -124,8 +142,11 @@ func Dial(ctx context.Context, endpoint string) (*Client, error) {
 		_, client.Version, _ = strings.Cut(fields[0], "/")
 	}
 	if client.Version != "0.160.0" && client.Version != "0.160.1" && client.Version != "0.161.0" {
-		client.Close()
-		return nil, errors.New("runtime native toolOutput capability unverified for this server version (supported: 0.160.0, 0.160.1, 0.161.0)")
+		if !q.Admits(client.Version) {
+			client.Close()
+			return nil, errors.New("runtime native toolOutput capability unverified for this server version (supported: 0.160.0, 0.160.1, 0.161.0)")
+		}
+		client.underQualification = true
 	}
 	client.SocketID, err = SocketIdentity(endpoint)
 	if err != nil {
@@ -360,9 +381,9 @@ func (c *Client) Wake(ctx context.Context, thread, output string) (string, error
 		"threadId": thread, "input": []any{},
 		"toolOutput": map[string]string{"name": ToolName, "namespace": ToolNamespace, "output": output},
 	}
-	// This branch is testable before native admission. Dial still refuses both
-	// current builds until exact-session qualification authorizes that change.
-	if c.Version == "0.163.0" || c.Version == "0.165.0" {
+	// Current-protocol versions reach production Wake only through
+	// DialQualified admission; the unqualified Dial still refuses them.
+	if (currentProtocol{version: c.Version}).valid() {
 		var err error
 		params, err = (currentProtocol{version: c.Version}).wakeParams(thread, output)
 		if err != nil {
