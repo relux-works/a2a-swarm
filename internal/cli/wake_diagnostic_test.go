@@ -35,8 +35,9 @@ func requireWakeDiagnostic(t *testing.T, r *wakediag.Record, kind wakediag.Kind)
 // Actual private tmux parser refusals with known eligible pending mail retain
 // one pre-Send record without typing, attempt/rate reservation, turn or receipt.
 // Human status must explain that retained pre-Send layout rejection, rather
-// than merely display its kind. Ready/no-mail and valid same-pane submission
-// below are the positive controls.
+// than merely display its kind. JSON must project only the documented kind
+// and first timestamp. Ready/no-mail and valid same-pane submission below are
+// the positive controls.
 func TestWakeDiagnosticTerminalPreSend(t *testing.T) {
 	for _, mode := range []string{"unsupported", "clipped"} {
 		t.Run(mode, func(t *testing.T) {
@@ -70,10 +71,31 @@ func TestWakeDiagnosticTerminalPreSend(t *testing.T) {
 			}
 			for _, args := range [][]string{{"bind", "status"}, {"bind", "status", "--json"}} {
 				out := readOnlyWakeStatus(t, f.e, args...)
-				if !strings.Contains(out, string(wakediag.TerminalLayoutRefused)) || strings.Contains(out, "send_refusal") {
+				if strings.Contains(out, "send_refusal") {
 					t.Fatal("pre-Send history needs later Send evidence")
 				}
-				if args[len(args)-1] != "--json" {
+				if args[len(args)-1] == "--json" {
+					var status struct {
+						WakeDiagnostic map[string]json.RawMessage `json:"wake_diagnostic"`
+					}
+					if err := json.Unmarshal([]byte(out), &status); err != nil {
+						t.Fatal("bind status must return valid JSON")
+					}
+					var kind string
+					if json.Unmarshal(status.WakeDiagnostic["kind"], &kind) != nil || kind != "terminal_pre_send_layout_refused" {
+						t.Fatal("JSON wake diagnostic must identify the pre-Send layout refusal")
+					}
+					var at time.Time
+					if json.Unmarshal(status.WakeDiagnostic["at"], &at) != nil || at.IsZero() || !at.Equal(first.At) {
+						t.Fatal("JSON wake diagnostic must retain a valid first observation time")
+					}
+					if len(status.WakeDiagnostic) != 2 {
+						t.Fatal("JSON wake diagnostic must contain only kind and at, without explanation or error text")
+					}
+				} else {
+					if !strings.Contains(out, string(wakediag.TerminalLayoutRefused)) {
+						t.Fatal("pre-Send history needs later Send evidence")
+					}
 					// The public contract identifies the observation and stage, not
 					// the cause of the unrecognized layout or a later Send result.
 					prefix := "wake_diagnostic=" + string(wakediag.TerminalLayoutRefused) + " at=" + first.At.Format(time.RFC3339Nano) + "; retained observation: "
