@@ -71,6 +71,7 @@ func (a *App) associateTerminalRoot(s *session, expected config.TerminalBinding,
 			return errors.New("binding changed before root association")
 		}
 		st.Terminal.ClaudeRegistryRoot = root
+		st.Terminal.WakeDiagnostic = nil
 		st.Terminal.Readiness = nil
 		st.Terminal.Idle = nil
 		return nil

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
+	"github.com/relux-works/a2a-swarm/internal/wakediag"
 )
 
 // NoticeRetry belongs to the identity, not a terminal generation. Only an
@@ -39,6 +40,7 @@ func (w *OwnStatusWrite) UnmarshalJSON(data []byte) error {
 // TerminalBinding contains only local process metadata and event IDs. A wake
 // reservation is independent of inbox receipts and survives an uncertain send.
 type TerminalBinding struct {
+	WakeDiagnostic     *wakediag.Record           `json:"wake_diagnostic,omitempty"`
 	WakeMuteGeneration uint64                     `json:"wake_mute_generation,omitempty"`
 	WakeMuteHold       bool                       `json:"wake_mute_hold,omitempty"`
 	RefreshStatus      string                     `json:"refresh_status,omitempty"`

@@ -133,6 +133,7 @@ func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBindi
 			b.NoticePublication = "unavailable: own notice changed"
 		}
 		b.SessionID = next
+		b.WakeDiagnostic = nil
 		b.ClaudeRegistryRoot = ""
 		b.Readiness = nil
 		b.Idle = nil

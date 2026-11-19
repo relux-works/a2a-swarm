@@ -72,6 +72,9 @@ func cloneState(src *State) (State, bool) {
 	}
 	s.Lease = copyValuePtr(src.Lease)
 	s.Runtime = copyValuePtr(src.Runtime)
+	if s.Runtime != nil {
+		s.Runtime.WakeDiagnostic = copyValuePtr(src.Runtime.WakeDiagnostic)
+	}
 	if src.Terminal != nil {
 		t, ok := cloneTerminal(src.Terminal)
 		if !ok {
@@ -108,6 +111,7 @@ func cloneState(src *State) (State, bool) {
 
 func cloneTerminal(src *TerminalBinding) (*TerminalBinding, bool) {
 	t := *src
+	t.WakeDiagnostic = copyValuePtr(src.WakeDiagnostic)
 	t.OwnNotice = cloneOwnNotice(src.OwnNotice)
 	if src.NoticeReport != nil {
 		r, ok := cloneNoticeReport(*src.NoticeReport)
@@ -252,7 +256,7 @@ func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
 // A new or changed field anywhere in that graph changes the signature: the
 // scoped decode memo and the writer working-copy clone are then disabled (the
 // ordinary decoder runs) until the clone is reviewed and this pin updated.
-const stateCloneSchemaPin = "c9607f150d3857f12e1d8e65b81f9515170bd4c14b594ce6596525a6481021b0"
+const stateCloneSchemaPin = "1f3af28b0fe708dfbbdd73dc1f3aeaab6322b2078bbaab2b5f198e5f2cad55ea"
 
 var stateCloneSchemaOK = stateSchemaReviewed(reflect.TypeFor[State](), stateCloneSchemaPin)
 
