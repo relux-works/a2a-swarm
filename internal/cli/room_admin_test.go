@@ -856,6 +856,12 @@ func TestRoomAdminPowerPolicy(t *testing.T) {
 		{"name-equal-inherited-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":75},"state_default":75`, 1), "", false, ""},
 		{"child-equal-override-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":75},"state_default":50,"events":{"m.space.child":75}`, 1), "", true, "add"},
 		{"child-equal-inherited-allowed", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":75},"state_default":75`, 1), "", true, "add"},
+		// Claim: caller one below required (74 vs 75) refuses with no PUT,
+		// for name and child, via override and via state_default alike.
+		{"name-required-minus-one-override-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":74},"state_default":50,"events":{"m.room.name":75}`, 1), "admin_power", false, ""},
+		{"name-required-minus-one-inherited-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":74},"state_default":75`, 1), "admin_power", false, ""},
+		{"child-required-minus-one-override-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":74},"state_default":50,"events":{"m.space.child":75}`, 1), "admin_power", true, "add"},
+		{"child-required-minus-one-inherited-refusal", strings.Replace(adminPolicy(), `"users":{"@alice:alpha.invalid":100},"state_default":50`, `"users":{"@alice:alpha.invalid":74},"state_default":75`, 1), "admin_power", true, "add"},
 		// Claim: with no power_levels, state_default 50 fails a non-creator.
 		{"nopower-noncreator-refusal", `[{"type":"m.room.create","state_key":"","sender":"@founder:example.invalid","content":{"type":"m.space","room_version":"12"}},{"type":"m.room.member","state_key":"@alice:alpha.invalid","content":{"membership":"join"}}]`, "admin_power", false, ""},
 		{"nopower-creator-allowed", `[{"type":"m.room.create","state_key":"","sender":"@alice:alpha.invalid","content":{"type":"m.space","room_version":"12"}},{"type":"m.room.member","state_key":"@alice:alpha.invalid","content":{"membership":"join"}}]`, "", false, ""},
