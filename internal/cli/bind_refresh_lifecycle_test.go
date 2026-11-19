@@ -381,7 +381,7 @@ func TestTerminalRefreshWaitsForSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	entered, release := filepath.Join(dir, "entered"), filepath.Join(dir, "release")
-	script := "#!/usr/bin/env python3\nimport os,sys,time\nif '-l' in sys.argv:\n open(" + strconv.Quote(entered) + ",'w').close()\n while not os.path.exists(" + strconv.Quote(release) + "): time.sleep(0.01)\nos.execv(" + strconv.Quote(real) + ",[" + strconv.Quote(real) + "]+sys.argv[1:])\n"
+	script := "#!/usr/bin/env python3\nimport os,sys,time\nif 'paste-buffer' in sys.argv:\n open(" + strconv.Quote(entered) + ",'w').close()\n while not os.path.exists(" + strconv.Quote(release) + "): time.sleep(0.01)\nos.execv(" + strconv.Quote(real) + ",[" + strconv.Quote(real) + "]+sys.argv[1:])\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

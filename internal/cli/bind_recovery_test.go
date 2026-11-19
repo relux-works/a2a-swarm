@@ -66,7 +66,7 @@ func TestTerminalLiveRecoveryOwnership(t *testing.T) {
 	}
 }
 
-// Refuse the actual first literal type command before any keystroke, leaving
+// Refuse the actual first paste command before any keystroke, leaving
 // the production durable attempt/reservation. This is not a planted journal.
 func failFirstTerminalType(t *testing.T, f *orphanDispatchFixture) {
 	t.Helper()
@@ -82,7 +82,7 @@ func failFirstTerminalType(t *testing.T, f *orphanDispatchFixture) {
 	if err := os.WriteFile(marker, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf("#!/usr/bin/env python3\nimport os,sys\nif '-l' in sys.argv and os.path.exists(%q):\n os.unlink(%q)\n sys.exit(1)\nos.execv(%q,[%q]+sys.argv[1:])\n", marker, marker, real, real)
+	script := fmt.Sprintf("#!/usr/bin/env python3\nimport os,sys\nif 'paste-buffer' in sys.argv and os.path.exists(%q):\n os.unlink(%q)\n sys.exit(1)\nos.execv(%q,[%q]+sys.argv[1:])\n", marker, marker, real, real)
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
