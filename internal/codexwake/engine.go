@@ -29,6 +29,7 @@ type Binding struct {
 	Endpoint           string           `json:"endpoint"`
 	EndpointID         string           `json:"endpoint_id"`
 	ServerVersion      string           `json:"server_version"`
+	UnderQualification bool             `json:"under_qualification,omitempty"`
 	Generation         string           `json:"generation"`
 	Host               string           `json:"host"`
 	Cwd                string           `json:"cwd"`

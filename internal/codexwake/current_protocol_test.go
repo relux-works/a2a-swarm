@@ -52,7 +52,7 @@ func currentAttempt(t *testing.T, version string) (Binding, Ledger, Attempt) {
 // history and unknown-version evidence is refused. These are source schemas,
 // not a native parser run, actual running-server identity or TUI qualification.
 func TestCurrentSchemaFingerprints(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.163.0", "0.165.0", "0.167.0"} {
 		t.Run(version, func(t *testing.T) {
 			fixtureProtocol(t, version)
 			turn := currentFixture(t, version, "TurnStartParams")
@@ -89,7 +89,7 @@ func TestCurrentSchemaFingerprints(t *testing.T) {
 // event is an argument. Caller provenance, binding and admission are prerequisites;
 // this pure constructor does not authenticate text or submit a native request.
 func TestCurrentWireAuthority(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.163.0", "0.165.0", "0.167.0"} {
 		t.Run(version, func(t *testing.T) {
 			p := fixtureProtocol(t, version)
 			b, _, attempt := currentAttempt(t, version)
@@ -164,7 +164,7 @@ func TestCurrentWireRejectsMalformedArguments(t *testing.T) {
 // generation, peer suffixes, mixed media and malformed content never match.
 // Legacy inputText remains exclusively the unchanged legacy matcher's contract.
 func TestCurrentReconciliationAuthority(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.163.0", "0.165.0", "0.167.0"} {
 		t.Run(version, func(t *testing.T) {
 			p := fixtureProtocol(t, version)
 			_, _, a := currentAttempt(t, version)
@@ -224,7 +224,7 @@ func TestCurrentReconciliationAuthority(t *testing.T) {
 // wire construction/match does not mark mail rung or authorize a second attempt.
 // These are offline ledger controls, not live lease/controller qualification.
 func TestCurrentUncertainAttemptAndLifecycle(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.163.0", "0.165.0", "0.167.0"} {
 		p := fixtureProtocol(t, version)
 		b, ledger, attempt := currentAttempt(t, version)
 		before, _ := json.Marshal(ledger)
@@ -262,10 +262,11 @@ func TestCurrentUncertainAttemptAndLifecycle(t *testing.T) {
 }
 
 // A schema descriptor MUST NOT open production admission. Actual Unix/WebSocket
-// initialization still refuses both current builds before thread/turn operations.
-// Existing TestNativeVerifiedVersions supplies the adjacent admitted old builds.
+// initialization without a qualification entry still refuses every current
+// build before thread/turn operations. Existing TestNativeVerifiedVersions
+// supplies the adjacent admitted old builds.
 func TestCurrentProductionAdmissionRemainsClosed(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.163.0", "0.165.0", "0.167.0"} {
 		t.Run(version, func(t *testing.T) {
 			var calls atomic.Int32
 			endpoint := testServer(t, func(method string, _ json.RawMessage) any {
@@ -289,10 +290,10 @@ func TestCurrentProductionAdmissionRemainsClosed(t *testing.T) {
 	}
 }
 
-// Both actual installed exports' extra experimental fields are separately
+// The actual installed exports' extra experimental fields are separately
 // fingerprinted. Acceptance is only at schema level and never opens Dial.
 func TestCurrentInstalledExperimentalSchema(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.163.0", "0.165.0", "0.167.0"} {
 		if _, err := inspectCurrentProtocol(version, currentFixture(t, version, "TurnStartParams.experimental"), currentFixture(t, version, "ThreadItemsListResponse")); err != nil {
 			t.Fatal(err)
 		}
@@ -411,7 +412,7 @@ func fixtureCurrentClient(t *testing.T, ctx context.Context, endpoint, version s
 // shape. Interleaved fixture approval requests receive no answer. This is wire
 // evidence only, not native approval/draft noninterference or model acceptance.
 func TestCurrentClientWakeWire(t *testing.T) {
-	for _, version := range []string{"0.161.0", "0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.161.0", "0.163.0", "0.165.0", "0.167.0"} {
 		t.Run(version, func(t *testing.T) {
 			b, _, attempt := currentAttempt(t, version)
 			var calls atomic.Int32
@@ -461,7 +462,7 @@ func TestCurrentClientWakeWire(t *testing.T) {
 // current snake_case and unchanged legacy camelCase arrays work; wrong generation,
 // missing history, mixed media and interrupted execution cannot fabricate success.
 func TestCurrentClientLostReplyReconciliation(t *testing.T) {
-	for _, version := range []string{"0.163.0", "0.165.0"} {
+	for _, version := range []string{"0.163.0", "0.165.0", "0.167.0"} {
 		for _, mode := range []string{"current", "legacy", "foreign-generation", "unavailable", "mixed"} {
 			t.Run(version+"/"+mode, func(t *testing.T) {
 				b, ledger, attempt := currentAttempt(t, version)

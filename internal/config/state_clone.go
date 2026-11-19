@@ -256,7 +256,7 @@ func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
 // A new or changed field anywhere in that graph changes the signature: the
 // scoped decode memo and the writer working-copy clone are then disabled (the
 // ordinary decoder runs) until the clone is reviewed and this pin updated.
-const stateCloneSchemaPin = "20e223204360995f9364fc4633dadaa28ee8987801547d636e00a0d288048589"
+const stateCloneSchemaPin = "1f3af28b0fe708dfbbdd73dc1f3aeaab6322b2078bbaab2b5f198e5f2cad55ea"
 
 var stateCloneSchemaOK = stateSchemaReviewed(reflect.TypeFor[State](), stateCloneSchemaPin)
 

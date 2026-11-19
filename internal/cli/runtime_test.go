@@ -20,6 +20,8 @@ import (
 type nativeFixture struct {
 	thread                codexwake.Snapshot
 	endpoint, socket, cwd string
+	version               string
+	qualified             bool
 	wakes                 []string
 	ambiguous             bool
 	readErr               error
@@ -34,7 +36,13 @@ func (n *nativeFixture) Read(_ context.Context, _ string, history bool) (codexwa
 	}
 	return n.thread, n.readErr
 }
-func (n *nativeFixture) Info() (string, string) { return "0.160.1", n.socket }
+func (n *nativeFixture) Info() (string, string) {
+	if n.version != "" {
+		return n.version, n.socket
+	}
+	return "0.160.1", n.socket
+}
+func (n *nativeFixture) Qualified() bool { return n.qualified }
 
 func (n *nativeFixture) Reconcile(_ context.Context, thread, output string, _ time.Time) (string, error) {
 	if thread != n.thread.ID {
