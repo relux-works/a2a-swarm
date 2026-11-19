@@ -34,7 +34,9 @@ func requireWakeDiagnostic(t *testing.T, r *wakediag.Record, kind wakediag.Kind)
 
 // Actual private tmux parser refusals with known eligible pending mail retain
 // one pre-Send record without typing, attempt/rate reservation, turn or receipt.
-// Ready/no-mail and valid same-pane submission below are the positive controls.
+// Human status must explain that retained pre-Send layout rejection, rather
+// than merely display its kind. Ready/no-mail and valid same-pane submission
+// below are the positive controls.
 func TestWakeDiagnosticTerminalPreSend(t *testing.T) {
 	for _, mode := range []string{"unsupported", "clipped"} {
 		t.Run(mode, func(t *testing.T) {
@@ -70,6 +72,21 @@ func TestWakeDiagnosticTerminalPreSend(t *testing.T) {
 				out := readOnlyWakeStatus(t, f.e, args...)
 				if !strings.Contains(out, string(wakediag.TerminalLayoutRefused)) || strings.Contains(out, "send_refusal") {
 					t.Fatal("pre-Send history needs later Send evidence")
+				}
+				if args[len(args)-1] != "--json" {
+					// The public contract identifies the observation and stage, not
+					// the cause of the unrecognized layout or a later Send result.
+					prefix := "wake_diagnostic=" + string(wakediag.TerminalLayoutRefused) + " at=" + first.At.Format(time.RFC3339Nano) + "; retained observation: "
+					var explanation string
+					for _, line := range strings.Split(out, "\n") {
+						if strings.HasPrefix(line, prefix) {
+							explanation = strings.TrimPrefix(line, prefix)
+						}
+					}
+					if !strings.Contains(explanation, "terminal readiness refused an unrecognized layout") ||
+						!strings.Contains(explanation, "before Send with pending mail") {
+						t.Fatal("human wake diagnostic must explain the retained pre-Send layout refusal with pending mail")
+					}
 				}
 			}
 			// Later generic readiness observations cannot erase the retained record.
