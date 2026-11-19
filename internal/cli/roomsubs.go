@@ -56,7 +56,7 @@ func (s *session) subscribeRoomWithPolicy(ctx context.Context, a *App, roomID, l
 		return err
 	}
 	// Principal coverage is independent of baseline exemptions and old trims.
-	if err := s.ensureRoomPrincipals(ctx, roomID, now); err != nil {
+	if _, err := s.ensureRoomPrincipals(ctx, roomID, now); err != nil {
 		return err
 	}
 	if why != "" {

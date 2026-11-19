@@ -94,7 +94,11 @@ func cmdHost(ctx context.Context, a *App, args []string) error {
 	return usagef("%s", hostUsage)
 }
 
-const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper] [--product X --preset P] [--resource ROOM] | a2a identity release [--force]"
+// identityRuntimeNames is the --runtime vocabulary of identity ensure: the
+// hook runtimes plus none for a sessionless service account.
+const identityRuntimeNames = runtimeNames + "|none"
+
+const identityUsage = "usage: a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|muse|none] [--keeper] [--product X --preset P] [--resource ROOM] | a2a identity release [--force]"
 
 // cmdIdentity: a2a identity ensure|release
 func cmdIdentity(ctx context.Context, a *App, args []string) error {
@@ -111,15 +115,15 @@ func cmdIdentity(ctx context.Context, a *App, args []string) error {
 }
 
 // cmdIdentityEnsure: a2a identity ensure --role R [--project P] [--dir D]
-// [--runtime claude|codex] [--keeper]. After the identity it onboards the
-// session (onboard.go): rooms, subscriptions, hooks, and a summary.
+// [--runtime claude|codex|muse|none] [--keeper]. After the identity it
+// onboards the session (onboard.go): rooms, subscriptions, hooks, summary.
 func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 	fs := newFlagSet("identity ensure")
 	authorized := fs.Bool("authorize-registration", false, "explicit owner-admitted named first registration")
 	role := fs.String("role", "", "the role of this session (required): [a-z0-9-], 1-24 characters")
 	project := fs.String("project", "", "the project (default: the repo name of the git remote origin of --dir)")
 	dir := fs.String("dir", "", "the project directory: its git remote names the project, its hooks file is written (the current directory when omitted)")
-	runtime := fs.String("runtime", "", "agent runtime whose hooks are installed: "+runtimeNames+" (detected only from an unambiguous CLAUDECODE=1)")
+	runtime := fs.String("runtime", "", "agent runtime whose hooks are installed: "+identityRuntimeNames+" (detected only from an unambiguous CLAUDECODE=1)")
 	keeper := fs.Bool("keeper", false, "also subscribe to every event of #system (keepers and the meta-orchestrator)")
 	product := fs.String("product", "", "product name for a preset identity")
 	preset := fs.String("preset", "", "explicit preset(s), comma-separated: orch, keeper, meta-keeper, arbiter, service")

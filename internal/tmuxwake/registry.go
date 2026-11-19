@@ -35,6 +35,8 @@ const (
 	RuntimeStatusUnqualified   RuntimeReason = "status_unqualified"
 	RuntimeVersionUnqualified  RuntimeReason = "version_unqualified"
 	RuntimeSchemaUnqualified   RuntimeReason = "schema_unqualified"
+	RuntimeSessionDead         RuntimeReason = "session_dead"
+	RuntimeSessionUnavailable  RuntimeReason = "session_unavailable"
 )
 
 // RuntimeStateFor is a closed projection. Stored telemetry never supplies
@@ -43,7 +45,7 @@ func RuntimeStateFor(reason RuntimeReason) RuntimeState {
 	switch reason {
 	case RuntimeNone:
 		return RuntimeReady
-	case RuntimeIdentityMismatch, RuntimeHeadless, RuntimeBusy, RuntimeStatusUnqualified:
+	case RuntimeIdentityMismatch, RuntimeHeadless, RuntimeBusy, RuntimeStatusUnqualified, RuntimeSessionDead:
 		return RuntimeRefused
 	default:
 		return RuntimeUnavailable
@@ -51,7 +53,7 @@ func RuntimeStateFor(reason RuntimeReason) RuntimeState {
 }
 func ValidRuntimeReason(reason RuntimeReason) bool {
 	switch reason {
-	case RuntimeNone, RuntimeTargetUnavailable, RuntimeRootUnavailable, RuntimeRegistryUnavailable, RuntimeIdentityMismatch, RuntimeHeadless, RuntimeBusy, RuntimeStatusUnqualified, RuntimeVersionUnqualified, RuntimeSchemaUnqualified:
+	case RuntimeNone, RuntimeTargetUnavailable, RuntimeRootUnavailable, RuntimeRegistryUnavailable, RuntimeIdentityMismatch, RuntimeHeadless, RuntimeBusy, RuntimeStatusUnqualified, RuntimeVersionUnqualified, RuntimeSchemaUnqualified, RuntimeSessionDead, RuntimeSessionUnavailable:
 		return true
 	default:
 		return false

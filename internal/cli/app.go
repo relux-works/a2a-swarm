@@ -21,6 +21,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 	"github.com/relux-works/a2a-swarm/internal/redact"
 	"github.com/relux-works/a2a-swarm/internal/signedpost"
+	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 	"github.com/relux-works/a2a-swarm/internal/voice"
 	"github.com/relux-works/a2a-swarm/internal/wakemute"
 )
@@ -58,6 +59,7 @@ type App struct {
 	wakeRequiredVersion      string                                       // Immutable process-start admission; never read from a daemon request or ambient selector.
 	wakeContext              context.Context                              // Bounded terminal dispatch copy; never changes ambient command cleanup.
 	terminalFixture          func(config.TerminalBinding) terminalEffects // Isolated tests only; production always uses the bound terminal.
+	museSender               tmuxwake.MuseSender                         // Tests only; nil uses the Muse CLI route.
 	admissionSessions        []*identityAdmission
 	daemonEngine             bool
 	daemonOwner              string // Root policy snapshot, inherited by requests only.

@@ -209,7 +209,7 @@ func runtimeOwnerPID(rows []bindingProcess, pid int, runtime string, uid int) (i
 		if !ok || p.UID != uid {
 			break
 		}
-		if filepath.Base(p.Name) == runtime {
+		if filepath.Base(p.Name) == runtime || runtime == "muse" && strings.HasPrefix(filepath.Base(p.Name), "muse-bin") {
 			return pid, nil
 		}
 		if p.PPID == pid {

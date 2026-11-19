@@ -277,33 +277,43 @@ func (s *session) readDeliveryPrincipals() []string {
 	return ids
 }
 
-func (s *session) ensureRoomPrincipals(ctx context.Context, room string, now time.Time) error {
+// ensureRoomPrincipals repairs the dedicated host-principal rows of one room
+// and returns every such row in effect for it after the repair, so callers
+// (the onboarding summary) can print exactly what coverage exists.
+func (s *session) ensureRoomPrincipals(ctx context.Context, room string, now time.Time) ([]Sub, error) {
 	configured, err := ownerFiles(s.paths, s.name).principals()
 	if err != nil || len(configured) == 0 {
-		return err
+		return nil, err
 	}
 	policy, err := s.subscriptionPolicy()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	principals, err := s.roomPrincipals(ctx, room, configured)
 	if err != nil || len(principals) == 0 {
-		return err
+		return nil, err
 	}
 	var added []Sub
+	var rows []Sub
 	_, _, err = s.updateSubsWithPolicy(ctx, policy, func(_ *config.State, list *SubList) (bool, error) {
 		before := len(list.Subs)
 		changed := repairPrincipalSubs(list, room, principals, now)
 		added = append(added, list.Subs[before:]...)
+		rows = rows[:0]
+		for _, sub := range list.Subs {
+			if sub.Room == room && sub.Source == principalSubSource && !sub.expiredAt(now) {
+				rows = append(rows, sub)
+			}
+		}
 		return changed, nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, sub := range added {
 		s.app.printf("subscribed %s\t%s (host principal)\n", sub.ID, sub.summary(room, s.server))
 	}
-	return nil
+	return rows, nil
 }
 
 // Preset cleanup needs every joined room, including direct rooms outside its

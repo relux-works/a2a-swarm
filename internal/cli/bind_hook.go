@@ -35,7 +35,7 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 	if manualWakeGate(st) != "" || st.Runtime != nil && !st.Runtime.Retired {
 		return nil
 	}
-	if a.Getenv("TMUX") == "" || a.Getenv("TMUX_PANE") == "" {
+	if runtime != "muse" && (a.Getenv("TMUX") == "" || a.Getenv("TMUX_PANE") == "") {
 		return errors.New("auto-bind unavailable: this session has no tmux target")
 	}
 	if !claudeSessionRE.MatchString(in.SessionID) {
@@ -51,7 +51,7 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 		// /clear's trusted hook names the new session before the runtime
 		// imports its updated environment. Do not retain the old ID here.
 		clone.Getenv = func(k string) string {
-			if k == EnvSessionID || k == "CODEX_THREAD_ID" && runtime == "codex" {
+			if k == EnvSessionID || k == "CODEX_THREAD_ID" && runtime == "codex" || runtime == "muse" && (k == "MUSE_SESSION_ID" || k == "MUSE_THREAD_ID") {
 				return in.SessionID
 			}
 			return a.Getenv(k)
@@ -63,7 +63,7 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 // Prompt/Stop take only state and birth observations for a healthy consumer.
 // Rebinding uses the full ancestry/admission checks and keeps explicit unbind.
 func (a *App) healHookBinding(ctx context.Context, runtime string, in hookInput) error {
-	if a.Getenv("TMUX") == "" || a.Getenv("TMUX_PANE") == "" {
+	if runtime != "muse" && (a.Getenv("TMUX") == "" || a.Getenv("TMUX_PANE") == "") {
 		return nil
 	}
 	s, err := a.session()

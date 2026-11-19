@@ -22,6 +22,8 @@ const (
 	SendEnterUncertain   SendOutcome     = "uncertain: Enter"
 	SendInterrupted      SendOutcome     = "uncertain: interrupted"
 	SendWakeSubmitted    SendOutcome     = "wake submitted"
+	SendMuseRefused      SendOutcome     = "suppressed: muse delivery refused"
+	SendDeliveryUncertain SendOutcome    = "uncertain: delivery"
 )
 
 type SendResult struct {
@@ -37,11 +39,11 @@ type SendResult struct {
 func (r SendResult) Valid() bool {
 	switch r.Disposition {
 	case SendRefused:
-		return r.Outcome == SendSuppressedInput || r.Outcome == SendSuppressedWidth
+		return r.Outcome == SendSuppressedInput || r.Outcome == SendSuppressedWidth || r.Outcome == SendMuseRefused
 	case SendDraft:
 		return r.Outcome == SendDraftUnavailable || r.Outcome == SendDraftChanged
 	case SendUncertain:
-		return r.Outcome == SendTypeUncertain || r.Outcome == SendEnterUncertain || r.Outcome == SendInterrupted
+		return r.Outcome == SendTypeUncertain || r.Outcome == SendEnterUncertain || r.Outcome == SendInterrupted || r.Outcome == SendDeliveryUncertain
 	case SendSubmitted:
 		return r.Outcome == SendWakeSubmitted
 	default:
@@ -56,6 +58,9 @@ func (r SendResult) Text() string {
 }
 
 func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKey, beforeType, afterType func()) (SendResult, error) {
+	if t.Target.Runtime == "muse" {
+		return t.sendMuse(ctx, count, expected, beforeType)
+	}
 	refused := SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput, Reason: ReasonUnavailable, ReasonAt: time.Now().UTC()}
 	if !expected.valid() || expected.Target != t.Target || expected.Generation != t.Generation || expected.SessionID != t.SessionID || expected.ClaudeRegistryRoot != t.ClaudeRegistryRoot {
 		return refused, nil
@@ -122,11 +127,15 @@ const (
 	ReasonAwaitingRender     SendReason = "awaiting_render"
 	ReasonRecoveryHeld       SendReason = "recovery_held"
 	ReasonFenceTimeout       SendReason = "recovery_fence_timeout"
+	ReasonSenderUnverified   SendReason = "sender_unverified"
+	ReasonSessionDead        SendReason = "dead_session"
+	ReasonSessionUnavailable SendReason = "session_unavailable"
+	ReasonIngressClosed      SendReason = "ingress_closed"
 )
 
 func SafeSendReason(r SendReason) SendReason {
 	switch r {
-	case ReasonUnavailable, ReasonKeyChanged, ReasonKeyRowChanged, ReasonKeyStatusChanged, ReasonKeyWidthChanged, ReasonTargetOrWidth, ReasonBusyOrDialog, ReasonLayoutUnrecognized, ReasonCursorMismatch, ReasonForeignInput, ReasonAwaitingRender, ReasonRecoveryHeld, ReasonFenceTimeout:
+	case ReasonUnavailable, ReasonKeyChanged, ReasonKeyRowChanged, ReasonKeyStatusChanged, ReasonKeyWidthChanged, ReasonTargetOrWidth, ReasonBusyOrDialog, ReasonLayoutUnrecognized, ReasonCursorMismatch, ReasonForeignInput, ReasonAwaitingRender, ReasonRecoveryHeld, ReasonFenceTimeout, ReasonSenderUnverified, ReasonSessionDead, ReasonSessionUnavailable, ReasonIngressClosed:
 		return r
 	}
 	return ReasonUnavailable
@@ -178,6 +187,9 @@ func sendRefusalReason(r ReadinessAssessment, expected ReadinessKey, b Box, owne
 // ResumeNotice sends Enter only, never literal text or clearing keys. The
 // consumer supplies a journal-fenced identity; each capture rechecks readiness.
 func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice string, expected ReadinessKey, beforeEnter ...func() error) (SendResult, error) {
+	if t.Target.Runtime == "muse" {
+		return t.resumeMuseNotice(ctx)
+	}
 	refused := SendResult{Disposition: SendRefused, Outcome: SendSuppressedInput, Reason: ReasonUnavailable, ReasonAt: time.Now().UTC()}
 	if count <= 0 || notice != Notice(count) || !expected.valid() || expected.Target != t.Target || expected.Generation != t.Generation || expected.SessionID != t.SessionID || expected.ClaudeRegistryRoot != t.ClaudeRegistryRoot {
 		return refused, nil

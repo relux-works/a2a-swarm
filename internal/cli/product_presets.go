@@ -107,7 +107,7 @@ func (a *App) onboardPreset(ctx context.Context, s *session, presets []string, p
 			principalRooms = append(principalRooms, onboardRoom{id: r.id, label: r.label, state: "joined"})
 		}
 	}
-	if err := s.ensureOnboardingPrincipals(ctx, principalRooms, a.Now()); err != nil {
+	if _, err := s.ensureOnboardingPrincipals(ctx, principalRooms, a.Now()); err != nil {
 		return err
 	}
 	for _, preset := range presets {

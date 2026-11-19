@@ -52,11 +52,24 @@ const (
 	defaultBindMaxWakes = 30
 )
 
+// museSessionID reads the Muse session env: MUSE_SESSION_ID, with the
+// older MUSE_THREAD_ID spelling as fallback. A set value is never skipped
+// for the other spelling, even when malformed.
+func (a *App) museSessionID() string {
+	if id := a.Getenv("MUSE_SESSION_ID"); id != "" {
+		return id
+	}
+	return a.Getenv("MUSE_THREAD_ID")
+}
+
 // Native session metadata is a selector, never binding/lease authority. Keep
 // explicit A2A and Codex precedence, and never fall through a malformed value.
 func (a *App) terminalSessionID(runtime string) string {
 	if id := a.Getenv(EnvSessionID); id != "" {
 		return id
+	}
+	if runtime == "muse" {
+		return a.museSessionID()
 	}
 	if id := a.Getenv("CODEX_THREAD_ID"); id != "" {
 		return id
@@ -105,9 +118,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	}
 
 	fs := newFlagSet("bind")
-	runtime := fs.String("runtime", "", "claude or codex")
+	runtime := fs.String("runtime", "", "claude, codex or muse")
 	owner := fs.Int("owner-pid", 0, "own live runtime PID")
-	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID, CODEX_THREAD_ID, or native Claude session)")
+	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID, CODEX_THREAD_ID, MUSE_SESSION_ID, or native Claude session)")
 	pane := fs.String("pane", a.Getenv("TMUX_PANE"), "own exact tmux pane")
 	socket := fs.String("socket", strings.Split(a.Getenv("TMUX"), ",")[0], "own tmux socket")
 	interval := fs.Duration("interval", defaultBindInterval, "idle observation and sync interval (1s..60s)")
@@ -147,22 +160,37 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	if current == "" && *runtime == "claude" && a.Getenv("CODEX_THREAD_ID") == "" {
 		current = a.Getenv("CLAUDE_CODE_SESSION_ID")
 	}
+	if current == "" && *runtime == "muse" {
+		current = a.museSessionID()
+	}
 	if current != "" && current != *sessionID {
 		return usagef("bind refuses another live session")
 	}
 	if current := a.Getenv("CODEX_THREAD_ID"); current != "" && (*runtime != "codex" || current != *sessionID) {
 		return usagef("bind refuses another live Codex session")
 	}
-	if *pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "" {
+	if current := a.museSessionID(); current != "" && (*runtime != "muse" || current != *sessionID) {
+		return usagef("bind refuses another live Muse session")
+	}
+	isMuse := *runtime == "muse"
+	if !isMuse && (*pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "") {
 		return usagef("bind requires this invocation's own tmux pane/socket")
 	}
 	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 	defer cancel()
-	target, err := tmuxwake.Pin(probe, *socket, *pane, *runtime)
+	var target tmuxwake.Target
+	if isMuse {
+		target, err = tmuxwake.PinMuse(probe, *sessionID, a.museSender)
+	} else {
+		target, err = tmuxwake.Pin(probe, *socket, *pane, *runtime)
+	}
 	if err != nil {
 		return err
 	}
-	if !descendant(probe, os.Getppid(), *owner) || !descendant(probe, *owner, target.PanePID) {
+	// The muse carrier has no pane ancestry to prove: the exact live session
+	// (PinMuse) and the live owner process birth-checked below are its
+	// binding authority.
+	if !isMuse && (!descendant(probe, os.Getppid(), *owner) || !descendant(probe, *owner, target.PanePID)) {
 		return errors.New("bind owner is not this invocation's runtime in this pane")
 	}
 	birth, err := tmuxwake.Birth(probe, *owner)
@@ -365,7 +393,11 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		}
 		return errors.New("binding did not arm; inspect own binding status/log before retrying")
 	}
-	a.printf("%s bound pid=%d; persistent terminal fallback; unbind stops it\n", s.name, child.Process.Pid)
+	carrier := "persistent terminal fallback"
+	if *runtime == "muse" {
+		carrier = "persistent muse session-message carrier"
+	}
+	a.printf("%s bound pid=%d; %s; unbind stops it\n", s.name, child.Process.Pid, carrier)
 	return nil
 }
 
@@ -1035,6 +1067,7 @@ func (a *App) terminalPreSendSuppressed(s *session, generation string, expected 
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
+	var refusal *config.TerminalSendRefusal
 	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
@@ -1047,11 +1080,30 @@ func (a *App) terminalPreSendSuppressed(s *session, generation string, expected 
 		b.Outcome = "suppressed: busy, draft or unknown input"
 		dropRetiredStrandedAlarms(st)
 		l := st.Lease
-		if r.InputObserved && r.Input == (tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonLayoutUnrecognized}) && sameTerminalScope(*b, expected) && ownTerminalTarget(b, expected.Target) && !st.HooksPaused && manualWakeGate(*st) == "" && (st.Runtime == nil || st.Runtime.Retired) && l != nil && l.Holder == b.SessionID && l.Host == machineLabel() && l.Expires.After(a.Now()) {
+		fenced := sameTerminalScope(*b, expected) && ownTerminalTarget(b, expected.Target) && !st.HooksPaused && manualWakeGate(*st) == "" && (st.Runtime == nil || st.Runtime.Retired) && l != nil && l.Holder == b.SessionID && l.Host == machineLabel() && l.Expires.After(a.Now())
+		if expected.Target.Runtime == "muse" {
+			// Session liveness is this carrier's whole pre-send gate. Record
+			// the named refusal with its time; never composer vocabulary.
+			reason := tmuxwake.ReasonSessionUnavailable
+			b.Outcome = "suppressed: muse session unavailable"
+			if r.Runtime.Reason == tmuxwake.RuntimeSessionDead {
+				reason = tmuxwake.ReasonSessionDead
+				b.Outcome = "suppressed: muse session dead"
+			}
+			if fenced {
+				refusal = &config.TerminalSendRefusal{Reason: reason, At: a.Now().UTC()}
+				b.SendRefusal = refusal
+			}
+			return nil
+		}
+		if r.InputObserved && r.Input == (tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonLayoutUnrecognized}) && fenced {
 			b.WakeDiagnostic = wakediag.Retain(b.WakeDiagnostic, wakediag.TerminalLayoutRefused, a.Now())
 		}
 		return nil
 	})
+	if err == nil && refusal != nil {
+		_ = appendSendRefusal(s, *refusal)
+	}
 	return err
 }
 
