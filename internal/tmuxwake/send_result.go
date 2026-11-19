@@ -79,8 +79,9 @@ func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKe
 			lastReason, lastAt = sendRefusalReason(r, expected, b, owned), time.Now().UTC()
 		}
 		return sendInspection{
-			box:      b,
-			eligible: ok,
+			box:            b,
+			inputAvailable: r.Input.State == InputEmpty || r.Input.State == InputNonempty,
+			eligible:       ok,
 			// Once Enter has been sent, the same qualified runtime identity with
 			// an empty composer is a submit witness; coordinates may have moved.
 			empty:   r.submitWitnessFor(expected),
@@ -210,11 +211,12 @@ func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice strin
 			}
 		}
 		return sendInspection{
-			box:      b,
-			eligible: ok,
-			empty:    r.submitWitnessFor(expected),
-			busy:     r.submitBusy,
-			foreign:  r.foreign,
+			box:            b,
+			inputAvailable: r.Input.State == InputEmpty || r.Input.State == InputNonempty,
+			eligible:       ok,
+			empty:          r.submitWitnessFor(expected),
+			busy:           r.submitBusy,
+			foreign:        r.foreign,
 		}
 	}
 	result, err := t.Target.sendWith(ctx, count, notice, nil, nil, inspect, nil, beforeEnter...)
