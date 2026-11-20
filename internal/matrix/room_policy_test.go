@@ -142,3 +142,15 @@ func TestRoomPolicyStateTransport(t *testing.T) {
 		}
 	})
 }
+
+func TestRoomPolicyStateTooLargeIsDistinguished(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(strings.Repeat(" ", VerificationEntityLimit+1)))
+	}))
+	defer server.Close()
+
+	state, err := New(server.URL, "synthetic-token").GetRoomPolicyState(context.Background(), "!selected:fixture")
+	if state != nil || !errors.Is(err, ErrRoomPolicyIncomplete) || !errors.Is(err, ErrRoomPolicyTooLarge) {
+		t.Fatalf("oversized state=%v err=%v", state, err)
+	}
+}

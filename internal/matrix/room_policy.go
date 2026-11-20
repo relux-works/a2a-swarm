@@ -21,6 +21,10 @@ type RoomPolicyEvent struct {
 // malformed policy. Callers must not interpret either as empty state.
 var ErrRoomPolicyIncomplete = errors.New("matrix: incomplete or oversized policy readback")
 
+// ErrRoomPolicyTooLarge identifies a policy-state response that exceeds the
+// shared entity bound. It also matches ErrRoomPolicyIncomplete.
+var ErrRoomPolicyTooLarge = errors.New("matrix: policy state exceeds entity bound")
+
 // GetRoomPolicyState is separate from display/bulk decoding. Like verification
 // input, it requires a complete bounded original-endpoint response, exact field
 // spelling and strict JSON. It does not change GetRoomState or owner-DM behavior.
@@ -38,11 +42,17 @@ func (c *Client) GetRoomPolicyState(ctx context.Context, roomID string) ([]RoomP
 		resp.Body.Close()
 		return nil, ErrRoomPolicyIncomplete
 	}
+	if resp.ContentLength > VerificationEntityLimit {
+		resp.Body.Close()
+		return nil, fmt.Errorf("%w: %w", ErrRoomPolicyIncomplete, ErrRoomPolicyTooLarge)
+	}
 	// Same inclusive bound and EOF/Close/context requirements as control reads.
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, VerificationEntityLimit+1))
 	closeErr := resp.Body.Close()
-	if readErr != nil || closeErr != nil || ctx.Err() != nil || len(raw) > VerificationEntityLimit ||
-		(resp.ContentLength >= 0 && int64(len(raw)) != resp.ContentLength) {
+	if len(raw) > VerificationEntityLimit {
+		return nil, fmt.Errorf("%w: %w", ErrRoomPolicyIncomplete, ErrRoomPolicyTooLarge)
+	}
+	if readErr != nil || closeErr != nil || ctx.Err() != nil || (resp.ContentLength >= 0 && int64(len(raw)) != resp.ContentLength) {
 		return nil, ErrRoomPolicyIncomplete
 	}
 	tree, err := strictJSON(raw)

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -108,16 +109,16 @@ func parseRoomAdmin(args []string) (roomAdminInput, []string, *roomAdminError) {
 		return in, nil, usage
 	}
 	in.child, in.op = local[0] == "space", local[2]
-	if in.op != "get" && (!in.child && in.op != "set" || in.child && in.op != "add" && in.op != "remove") {
+	if in.op != "get" && (!in.child && in.op != "set" || in.child && in.op != "list" && in.op != "add" && in.op != "remove") {
 		return in, nil, usage
 	}
-	in.mutate = in.op != "get"
+	in.mutate = in.op != "get" && in.op != "list"
 	fs := newFlagSet("room administration")
 	var asJSON propertyBool
 	var peer, expected, expectedPeer, name propertyScalar
 	var via stringList
 	fs.Var(&asJSON, "json", "typed result")
-	if in.child {
+	if in.child && in.op != "list" {
 		fs.Var(&peer, "child", "explicit child selector")
 	}
 	if in.mutate {
@@ -133,7 +134,7 @@ func parseRoomAdmin(args []string) (roomAdminInput, []string, *roomAdminError) {
 		}
 	}
 	pos, err := parseInterspersed(fs, local[3:])
-	if err != nil || len(pos) != 1 || in.child && !peer.seen {
+	if err != nil || len(pos) != 1 || in.child && in.op != "list" && !peer.seen {
 		return in, nil, usage
 	}
 	probe := &App{}
@@ -152,7 +153,7 @@ func parseRoomAdmin(args []string) (roomAdminInput, []string, *roomAdminError) {
 	if !validSelector(in.target) {
 		return in, nil, adminError("admin_selector", "$.target", ExitUsage)
 	}
-	if in.child && !validSelector(in.peer) {
+	if in.child && in.op != "list" && !validSelector(in.peer) {
 		return in, nil, adminError("admin_selector", "$.child", ExitUsage)
 	}
 	if in.mutate && (!matrix.ValidVerificationID(in.expected, '!') || in.child && (!matrix.ValidVerificationID(in.expectedPeer, '!') || in.expected == in.expectedPeer)) {
@@ -267,7 +268,7 @@ func (a *App) runRoomAdmin(ctx context.Context, args []string) int {
 		return preflightError("admin_target", "$.target")
 	}
 	child := ""
-	if in.child {
+	if in.child && in.op != "list" {
 		child, _, err = s.resolveRoom(ctx, in.peer)
 		if err != nil {
 			return preflightError("admin_target", "$.child")
@@ -283,20 +284,30 @@ func (a *App) runRoomAdmin(ctx context.Context, args []string) int {
 	if in.child {
 		typ, stateType = "space-child", "m.space.child"
 	}
+	var policyEvents []matrix.RoomPolicyEvent
 	if in.mutate || in.child {
-		events, err := s.client.GetRoomPolicyState(ctx, room)
+		if in.child && in.op == "list" {
+			propertyStage = true
+		}
+		policyEvents, err = s.client.GetRoomPolicyState(ctx, room)
+		if in.child && in.op == "list" {
+			propertyStage = false
+		}
 		rule, location := "admin_policy", "$.policy"
 		if in.child {
 			rule, location = "admin_space", "$.space"
 		}
 		if err != nil {
+			if in.child && in.op == "list" && errors.Is(err, matrix.ErrRoomPolicyTooLarge) {
+				return preflightError("admin_space_limit", "$.space")
+			}
 			return preflightError(rule, location)
 		}
-		if in.child && !adminSpaceSnapshot(events) {
+		if in.child && !adminSpaceSnapshot(policyEvents) {
 			return preflightError(rule, location)
 		}
 		if in.mutate {
-			power, err := projectRoomPowerForEvent(events, s.server, room, s.creds.UserID, stateType)
+			power, err := projectRoomPowerForEvent(policyEvents, s.server, room, s.creds.UserID, stateType)
 			if err != nil {
 				return preflightError("admin_policy", "$.policy")
 			}
@@ -310,6 +321,16 @@ func (a *App) runRoomAdmin(ctx context.Context, args []string) int {
 				return preflightError("admin_power", "$.policy")
 			}
 		}
+	}
+	if in.child && in.op == "list" {
+		rows, hasInvalid, overLimit := projectSpaceChildList(policyEvents)
+		if overLimit {
+			return preflightError("admin_child_limit", "$.children")
+		}
+		if guardFailed || guard() != nil {
+			return preflightError("admin_context", "$.context")
+		}
+		return a.writeSpaceChildList(room, s.creds.UserID, rows, hasInvalid, in.asJSON)
 	}
 	if guardFailed || guard() != nil {
 		return preflightError("admin_context", "$.context")
