@@ -242,6 +242,50 @@ func TestSpaceChildListEmptySpace(t *testing.T) {
 	}
 }
 
+func TestSpaceChildListPreservesExistingViaCompatibilityForms(t *testing.T) {
+	wantVia := []string{"127.0.0.1:8448", "[2001:db8::1]:8448", "EXAMPLE.invalid", "example.invalid", "example.invalid"}
+	items := make([]any, len(wantVia))
+	for i, server := range wantVia {
+		items[i] = server
+	}
+	body := spaceChildStateBody(spaceChildEvent("!compatible", map[string]any{"via": items}))
+	f, code, requests := runSpaceChildList(t, t.Context(), []string{"space", "child", "list", adminRoom, "--json"}, http.StatusOK, body, nil)
+	if code != ExitOK || f.err.String() != "" {
+		t.Fatalf("exit=%d stderr=%q", code, f.err.String())
+	}
+	assertSpaceChildListOnlyRead(t, requests)
+	rows := rawRows(t, f.out.Bytes())
+	if len(rows) != 1 || rawString(t, rows[0], "status") != "valid" {
+		t.Fatalf("compatible declaration was not accepted: %v", rows)
+	}
+	var gotVia []string
+	if err := json.Unmarshal(rows[0]["via"], &gotVia); err != nil || !reflect.DeepEqual(gotVia, wantVia) {
+		t.Fatalf("via compatibility/order got=%v err=%v", gotVia, err)
+	}
+}
+
+func TestSpaceChildListNonStringOrderIsMarkedWithoutEcho(t *testing.T) {
+	order := []any{"ORDER_PRIVATE_SENTINEL"}
+	rawOrder, err := json.Marshal(order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := spaceChildStateBody(spaceChildEvent("!child", map[string]any{"via": []any{"s.example"}, "order": order}))
+	f, code, requests := runSpaceChildList(t, t.Context(), []string{"space", "child", "list", adminRoom, "--json"}, http.StatusOK, body, nil)
+	if code != ExitOK || f.err.String() != "" || strings.Contains(f.out.String(), "ORDER_PRIVATE_SENTINEL") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, f.out.String(), f.err.String())
+	}
+	assertSpaceChildListOnlyRead(t, requests)
+	rows := rawRows(t, f.out.Bytes())
+	if len(rows) != 1 || rawString(t, rows[0], "status") != "valid" {
+		t.Fatalf("valid via row was marked invalid: %v", rows)
+	}
+	var gotLength int
+	if err := json.Unmarshal(rows[0]["order_invalid"], &gotLength); err != nil || gotLength != len(rawOrder) {
+		t.Fatalf("invalid order length=%d want=%d err=%v", gotLength, len(rawOrder), err)
+	}
+}
+
 func TestSpaceChildListInvalidRowsRemainVisible(t *testing.T) {
 	// This is the targeted control for a mutant that silently drops an invalid
 	// row instead of marking it. The same test remains in the PR; no mutation
