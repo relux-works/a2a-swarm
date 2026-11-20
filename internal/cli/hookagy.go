@@ -100,37 +100,24 @@ func (a *App) runAgyHook(ctx context.Context, ev hookEvent) error {
 // The launcher hands off its provider pipes; this operation never starts a
 // harness, resolves a pane or acknowledges inbox entries.
 func cmdAgy(ctx context.Context, a *App, args []string) error {
+	if len(args) == 3 && args[0] == "check" && args[1] == "--session" {
+		if a.Getenv(EnvSessionID) != args[2] {
+			return errors.New("agy check requires the matching station session")
+		}
+		if _, err := a.agyAdmission(args[2], true); err != nil {
+			return err
+		}
+		a.printf("agy conversation lease current; stream and delivery unverified\n")
+		return nil
+	}
 	if len(args) != 5 || args[0] != "bridge" || args[1] != "--session" || args[3] != "--model" {
 		return usagef("agy bridge --session UUID --model ID; requires matching A2A_SESSION_ID")
 	}
 	return a.agyBridge(ctx, args[2], args[4])
 }
 func (a *App) agyNotice(ctx context.Context, sid string, ev hookEvent, stream bool) (bool, error) {
-	if a.as == "" || a.Getenv(config.EnvAgent) == "" {
-		return false, errors.New("agy requires explicit --as and a matching station A2A_AGENT")
-	}
-	name, err := a.identity()
+	name, err := a.agyAdmission(sid, stream)
 	if err != nil {
-		return false, err
-	}
-	if !agyUUID.MatchString(sid) || (a.Getenv(EnvSessionID) != "" && a.Getenv(EnvSessionID) != sid) || a.Getenv("CODEX_THREAD_ID") != "" || a.Getenv("CLAUDE_CODE_SESSION_ID") != "" {
-		return false, errors.New("Antigravity conversation identity mismatch")
-	}
-	if a.daemonEngine {
-		return false, errors.New("agy local hook requires local custody")
-	}
-	p, err := a.pathsFor(name)
-	if err != nil {
-		return false, err
-	}
-	if err = config.CheckIdentityMigration(p, name); err != nil {
-		return false, err
-	}
-	st, err := config.LoadState(p, name)
-	if err != nil {
-		return false, err
-	}
-	if err := agyCustody(&st, sid, stream, a.Now()); err != nil {
 		return false, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, hookBudget)
@@ -153,9 +140,52 @@ func (a *App) agyNotice(ctx context.Context, sid string, ev hookEvent, stream bo
 	return wrote && err == nil, err
 }
 
+// Validate both ambient selectors and the existing receiver before reading
+// any provider input. The same state predicates run again under the lease
+// and reservation locks before performing delivery effects.
+func (a *App) agyIdentity(sid string) (string, error) {
+	if a.as == "" || a.Getenv(config.EnvAgent) == "" {
+		return "", errors.New("agy requires explicit --as and a matching station A2A_AGENT")
+	}
+	name, err := a.identity()
+	if err != nil {
+		return "", err
+	}
+	if !agyUUID.MatchString(sid) || (a.Getenv(EnvSessionID) != "" && a.Getenv(EnvSessionID) != sid) || a.Getenv("CODEX_THREAD_ID") != "" || a.Getenv("CLAUDE_CODE_SESSION_ID") != "" {
+		return "", errors.New("Antigravity conversation identity mismatch")
+	}
+	if a.daemonEngine {
+		return "", errors.New("agy local hook requires local custody")
+	}
+	return name, nil
+}
+func (a *App) agyAdmission(sid string, stream bool) (string, error) {
+	name, err := a.agyIdentity(sid)
+	if err != nil {
+		return "", err
+	}
+	p, err := a.pathsFor(name)
+	if err != nil {
+		return "", err
+	}
+	if err = config.CheckIdentityMigration(p, name); err != nil {
+		return "", err
+	}
+	st, err := config.LoadState(p, name)
+	if err != nil {
+		return "", err
+	}
+	if err := agyCustody(&st, sid, stream, a.Now()); err != nil {
+		return "", err
+	}
+	return name, nil
+}
 func agyCustody(st *config.State, sid string, poll bool, now time.Time) error {
 	if st.HostEnrollment != nil || st.Runtime != nil && !st.Runtime.Retired || st.Terminal != nil && !st.Terminal.Stopped || st.RefuseMonitorConsumer() != nil {
 		return errors.New("another receiver owns notification")
+	}
+	if poll && st.HooksPaused {
+		return errors.New("agy notification paused")
 	}
 	if poll && (st.Lease == nil || st.Lease.Holder != sid || st.Lease.Host != machineLabel() || !st.Lease.Expires.After(now)) {
 		return errors.New("agy notice requires an existing current conversation lease")

@@ -425,6 +425,11 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	if err != nil {
 		return err
 	}
+	if rt.name == "agy" {
+		if err := agyCustody(&st, in.SessionID, ev.arg == "notice", a.Now()); err != nil {
+			return err
+		}
+	}
 	if st.HostEnrollment != nil {
 		return nil
 	}
@@ -546,8 +551,15 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 			}
 			if writeErr != nil {
 				if written == 0 {
-					if cancelErr := a.cancelNotification(ctx, s, deadline, token); cancelErr != nil {
-						return cancelErr
+					// Only a proven zero-byte write may release the reservation.
+					// Its I/O budget can already have expired or been canceled
+					// by a provider event. Cleanup has a fresh bounded lifetime.
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), hookBudget)
+					cleanupDeadline, _ := cleanup.Deadline()
+					cancelErr := a.cancelNotification(cleanup, s, cleanupDeadline, token)
+					cancel()
+					if cancelErr != nil {
+						return errors.Join(writeErr, cancelErr)
 					}
 				}
 				return fmt.Errorf("write output: %w", writeErr)

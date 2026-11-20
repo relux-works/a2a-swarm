@@ -58,6 +58,10 @@ jobs:
             TestAgyBridgeBlockingPipeOutput
             TestAgyBridgeIdleDelivery
             TestAgyPollCustody
+            TestAgyBridgeFullPipeRollback
+            TestAgyBridgePollInvalidation
+            TestAgyBridgeColdStartRefusal
+            TestAgyCommitAfterInvalidation
           )
           selected=$(IFS='|'; printf '%s' "${tests[*]}")
           log="$RUNNER_TEMP/go-test-pr-fast.log"

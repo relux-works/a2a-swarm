@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -24,7 +25,7 @@ func (a *App) agyBridge(ctx context.Context, sid, model string) error {
 	if a.as == "" || a.Getenv("A2A_AGENT") != a.as || a.Getenv(EnvSessionID) != sid || !agyUUID.MatchString(sid) || model != agyQualifiedModel {
 		return errors.New("agy bridge requires the selected conversation and qualified model")
 	}
-	if _, err := a.identity(); err != nil {
+	if _, err := a.agyIdentity(sid); err != nil {
 		return err
 	}
 	input, ok := a.Stdin.(*os.File)
@@ -44,7 +45,16 @@ func (a *App) agyBridge(ctx context.Context, sid, model string) error {
 	defer restoreOutput()
 	a.Stdout = writer
 	defer func() { a.Stdout = output }()
-	return a.runAgyBridge(ctx, reader, sid, model, 5*time.Second)
+	p, err := a.pathsFor(a.as)
+	if err != nil {
+		return err
+	}
+	return a.withRuntimeLock(p, a.as, "consumer", time.Now().Add(100*time.Millisecond), func() error {
+		if _, err := a.agyAdmission(sid, true); err != nil {
+			return fmt.Errorf("agy bridge startup custody: %w", err)
+		}
+		return a.runAgyBridge(ctx, reader, sid, model, 5*time.Second)
+	})
 }
 func agyPipe(f *os.File) bool {
 	info, err := f.Stat()
@@ -71,10 +81,12 @@ func (f *agyObservation) decode(data []byte) error {
 	if uniqueHookObject(data) != nil || json.Unmarshal(data, &root) != nil || json.Unmarshal(root["event"], &f.Event) != nil || f.Event == "" {
 		return invalid
 	}
-	if raw, ok := root["conversation_id"]; ok && json.Unmarshal(raw, &f.Conversation) != nil {
+	if raw, ok := root["conversation_id"]; ok && (json.Unmarshal(raw, &f.Conversation) != nil || f.Conversation == "") {
 		return invalid
 	}
 	switch f.Event {
+	case "error":
+		return errors.New("agy provider reported an error")
 	case "init":
 		var init map[string]json.RawMessage
 		if json.Unmarshal(root["init"], &init) != nil || json.Unmarshal(init["model"], &f.Init.Model) != nil {
@@ -89,87 +101,198 @@ func (f *agyObservation) decode(data []byte) error {
 	return nil
 }
 
+// The reader observes the stream throughout Matrix I/O. The same mutex
+// linearizes invalidation and a single nonblocking, pipe-atomic write. A
+// frame already observed while idle can never become the next turn's result.
+type agyGate struct {
+	mu                        sync.Mutex
+	initialized, idle, closed bool
+	err                       error
+	ctx                       context.Context
+	cancel                    context.CancelFunc
+	write                     func([]byte) (int, error)
+}
+
+func (g *agyGate) finishLocked(err error) {
+	if g.closed {
+		return
+	}
+	g.closed = true
+	g.err = err
+	if g.cancel != nil {
+		g.cancel()
+	}
+}
+
+func (g *agyGate) observe(f agyObservation, sid, model string) (ready bool, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	switch {
+	case !g.initialized:
+		if f.Event != "init" || f.Conversation != sid || f.Init.Model != model {
+			err = errors.New("agy init binding mismatch")
+		} else {
+			g.initialized = true
+		}
+	case g.idle:
+		err = errors.New("unexpected activity after agy idle result")
+	case f.Event == "init" || f.Conversation != "" && f.Conversation != sid:
+		err = errors.New("agy stream binding changed")
+	case f.Event == "result":
+		if f.Result.Conversation != sid || f.Result.Status != "SUCCESS" {
+			err = errors.New("agy result did not confirm a successful turn in this conversation")
+		} else {
+			g.idle = true
+			ready = true
+		}
+	}
+	if err != nil {
+		g.finishLocked(err)
+	}
+	return
+}
+
+func (g *agyGate) finish(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err == nil && (!g.initialized || !g.idle) {
+		err = errors.New("agy stream closed before an idle result")
+	}
+	g.finishLocked(err)
+}
+
+func (g *agyGate) poll(ctx context.Context) (context.Context, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed || !g.idle {
+		return nil, false
+	}
+	g.ctx, g.cancel = context.WithCancel(ctx)
+	return g.ctx, true
+}
+
+func (g *agyGate) endPoll() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cancel != nil {
+		g.cancel()
+		g.cancel = nil
+		g.ctx = nil
+	}
+}
+
+func (g *agyGate) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed || !g.idle || g.ctx == nil || g.ctx.Err() != nil {
+		return 0, errors.New("agy idle observation invalidated")
+	}
+	if len(p) > 512 {
+		return 0, errors.New("agy notice exceeds atomic pipe budget")
+	}
+	n, err := g.write(p)
+	if n > 0 {
+		g.idle = false
+	}
+	return n, err
+}
+
 func (a *App) runAgyBridge(ctx context.Context, in io.ReadCloser, sid, model string, interval time.Duration) error {
-	ctx, cancel := context.WithCancel(ctx)
-	frames := make(chan agyObservation)
-	end := make(chan error, 1)
+	output := a.Stdout
+	gate := &agyGate{write: func(p []byte) (int, error) {
+		f, ok := output.(*os.File)
+		if !ok {
+			return 0, errors.New("agy output is not a pipe")
+		}
+		if native, ok := in.(*os.File); ok {
+			pending, err := agyPipePending(native)
+			if err != nil {
+				return 0, err
+			}
+			if pending {
+				return 0, errors.New("agy provider activity pending before write")
+			}
+		}
+		return agyPipeWrite(f, p)
+	}}
+	a.Stdout = gate
+	defer func() { a.Stdout = output }()
 	done := make(chan struct{})
+	initialized := make(chan struct{})
+	readyStatus := make(chan struct{}, 1)
 	go func() {
 		defer close(done)
 		scanner := bufio.NewScanner(in)
 		scanner.Buffer(make([]byte, 8192), 2<<20)
+		first := true
 		for scanner.Scan() {
-			var frame agyObservation
-			if err := frame.decode(scanner.Bytes()); err != nil {
-				end <- errors.New("invalid agy frame")
+			var f agyObservation
+			if err := f.decode(scanner.Bytes()); err != nil {
+				gate.finish(err)
 				return
 			}
-			select {
-			case frames <- frame:
-			case <-ctx.Done():
+			ready, err := gate.observe(f, sid, model)
+			if err != nil {
 				return
+			}
+			if first {
+				close(initialized)
+				first = false
+			}
+			if ready {
+				select {
+				case readyStatus <- struct{}{}:
+				default:
+				}
 			}
 		}
 		if scanner.Err() != nil {
-			end <- errors.New("failed to read agy stream")
+			gate.finish(errors.New("failed to read agy stream"))
 		} else {
-			end <- nil
+			gate.finish(nil)
 		}
 	}()
-	defer func() { cancel(); in.Close(); <-done }()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	initialized, idle := false, false
+	defer func() { in.Close(); <-done }()
 	first := time.NewTimer(15 * time.Second)
 	defer first.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-first.C:
+		return errors.New("missing agy init")
+	case <-done:
+		return gate.err
+	case <-initialized:
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-first.C:
-			return errors.New("missing agy init")
-		case err := <-end:
-			if err != nil {
-				return err
-			}
-			if !initialized || !idle {
-				return errors.New("agy stream closed before an idle result")
-			}
-			return nil
-		case f := <-frames:
-			if !initialized {
-				if f.Event != "init" || f.Conversation != sid || f.Init.Model != model {
-					return errors.New("agy init binding mismatch")
-				}
-				initialized = true
-				first.Stop()
+		case <-done:
+			return gate.err
+		case <-readyStatus:
+			fmt.Fprintln(a.Stderr, "agy bridge: target idle")
+		case <-ticker.C:
+			poll, ok := gate.poll(ctx)
+			if !ok {
 				continue
 			}
-			if idle {
-				return errors.New("unexpected activity after agy idle result")
-			}
-			if f.Event == "init" || (f.Conversation != "" && f.Conversation != sid) {
-				return errors.New("agy stream binding changed")
-			}
-			if f.Event == "result" {
-				if f.Result.Conversation != sid || f.Result.Status != "SUCCESS" {
-					return errors.New("agy result did not confirm a successful turn in this conversation")
+			sent, err := a.agyNotice(poll, sid, hookEvent{"notice", "PreInvocation"}, true)
+			gate.endPoll()
+			if err != nil {
+				select {
+				case <-done:
+					if gate.err != nil {
+						return errors.Join(gate.err, err)
+					}
+				default:
 				}
-				idle = true
-				fmt.Fprintln(a.Stderr, "agy bridge: target idle")
-			} else {
-				idle = false
+				return fmt.Errorf("agy idle poll: %w", err)
 			}
-		case <-ticker.C:
-			if idle {
-				sent, err := a.agyNotice(ctx, sid, hookEvent{"notice", "PreInvocation"}, true)
-				if err != nil {
-					return fmt.Errorf("agy idle poll: %w", err)
-				}
-				if sent {
-					fmt.Fprintln(a.Stderr, "agy bridge: notification submitted")
-					idle = false
-				}
+			if sent {
+				fmt.Fprintln(a.Stderr, "agy bridge: notification submitted")
 			}
 		}
 	}

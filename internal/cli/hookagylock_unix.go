@@ -76,3 +76,36 @@ func agyBridgePipe(f *os.File) (*os.File, func(), error) {
 	}
 	return pipe, restore, nil
 }
+
+// The dedicated output description is O_NONBLOCK; frames fit PIPE_BUF.
+func agyPipeWrite(f *os.File, p []byte) (int, error) {
+	raw, err := f.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	var writeErr error
+	err = raw.Control(func(fd uintptr) { n, writeErr = unix.Write(int(fd), p) })
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		n = 0
+	}
+	return n, writeErr
+}
+
+// Recheck kernel-visible input and hangup at the output boundary. Decoded
+// frames are fenced by the gate; unread bytes must also fail closed.
+func agyPipePending(in *os.File) (bool, error) {
+	raw, err := in.SyscallConn()
+	if err != nil {
+		return false, err
+	}
+	var n int
+	var pollErr error
+	if err = raw.Control(func(fd uintptr) { n, pollErr = unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, 0) }); err != nil {
+		return false, err
+	}
+	return n != 0, pollErr
+}

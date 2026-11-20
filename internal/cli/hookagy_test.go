@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -27,6 +29,9 @@ func TestAgyConversationDoorbell(t *testing.T) {
 	e.stdin = `{"conversationId":"` + agyTestID + `","hookEventName":"SessionStart","lastUserInput":"sensitive"}`
 	if s := e.as("alice", "hook", "session-start", "--runtime", "agy").ok(t).stdout; strings.TrimSpace(s) != "{}" {
 		t.Fatal(s)
+	}
+	if out := e.as("alice", "agy", "check", "--session", agyTestID).ok(t).stdout; !strings.Contains(out, "stream and delivery unverified") {
+		t.Fatal(out)
 	}
 	clk.add(time.Minute)
 	e.hs.inject(room, "@bob:test.local", toMsg("bob", "notice", "private-title-358"))
@@ -91,11 +96,20 @@ func TestAgyInstaller(t *testing.T) {
 // A mismatched event, malformed UUID or duplicate field cannot ring the hook.
 func TestAgyInvalidNativeInput(t *testing.T) {
 	e, _ := world(t)
-	for _, input := range []string{`{"conversationId":"bogus","hookEventName":"SessionStart"}`, `{"conversationId":"` + agyTestID + `","hookEventName":"PreInvocation"}`, `{"conversationId":"` + agyTestID + `","conversationId":"` + agyTestID + `","hookEventName":"SessionStart"}`} {
-		e.stdin = input
+	e.extra["A2A_AGENT"] = "alice"
+	for _, tc := range []struct{ input, reason string }{
+		{`{"conversationId":"bogus","hookEventName":"SessionStart"}`, "conversation identity mismatch"},
+		{`{"conversationId":"` + agyTestID + `","hookEventName":"PreInvocation"}`, "event mismatch"},
+		{`{"conversationId":"` + agyTestID + `","conversationId":"` + agyTestID + `","hookEventName":"SessionStart"}`, "invalid Antigravity hook input"},
+	} {
+		e.stdin = tc.input
 		r := e.as("alice", "hook", "session-start", "--runtime", "agy").ok(t)
-		if r.stdout != "" || !strings.Contains(r.stderr, "nothing new was acknowledged") {
+		if r.stdout != "" || !strings.Contains(r.stderr, tc.reason) {
 			t.Fatal(r)
+		}
+		st, err := config.LoadState(config.Paths{Base: e.dir}, "alice")
+		if err != nil || st.Lease != nil {
+			t.Fatal("invalid input claimed lease", err)
 		}
 	}
 }
@@ -109,6 +123,9 @@ func TestAgyBridgeBoundFrames(t *testing.T) {
 		{init + "\n" + ready, ""},
 		{ready, "init binding mismatch"},
 		{init + "\n" + ready + "\n" + ready, "unexpected activity"},
+		{init + "\n" + `{"event":"step_update","conversation_id":null}`, "invalid agy frame"},
+		{init + "\n" + `{"event":"step_update","conversation_id":""}`, "invalid agy frame"},
+		{init + "\n" + `{"event":"error"}`, "provider reported an error"},
 		{strings.Replace(init, agyQualifiedModel, "other", 1), "init binding mismatch"},
 		{init + "\n" + init, "binding changed"},
 		{init + "\n" + strings.Replace(ready, agyTestID, "wrong", 1), "did not confirm"},
@@ -157,6 +174,20 @@ func TestAgyPollCustody(t *testing.T) {
 // result. The bridge sends no second prompt until the provider finishes.
 func TestAgyBridgeIdleDelivery(t *testing.T) {
 	e, room := world(t)
+	var offset atomic.Int64
+	e.now = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+	committed := func() {
+		t.Helper()
+		limit := time.Now().Add(2 * time.Second)
+		for time.Now().Before(limit) {
+			st, err := config.LoadState(config.Paths{Base: e.dir}, "alice")
+			if err == nil && st.Notification.Reservation == nil && st.Notification.NotBefore.After(e.now()) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("notification completion was not recorded")
+	}
 	e.extra[EnvSessionID] = agyTestID
 	e.extra["A2A_AGENT"] = "alice"
 	e.stdin = `{"conversationId":"` + agyTestID + `","hookEventName":"SessionStart"}`
@@ -174,7 +205,7 @@ func TestAgyBridgeIdleDelivery(t *testing.T) {
 	defer output.Close()
 	defer outputWriter.Close()
 	e.configure = func(a *App) { a.Stdin = input; a.Stdout = outputWriter }
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	finished := make(chan result, 1)
 	go func() {
@@ -194,7 +225,62 @@ func TestAgyBridgeIdleDelivery(t *testing.T) {
 	if !strings.Contains(frame, `"event":"user"`) || !strings.Contains(frame, "1 pending mailbox events") || strings.Contains(frame, "private-challenge") {
 		t.Fatal(frame)
 	}
+	committed()
+	offset.Add(int64(time.Minute))
+	// No second input while this first notice-triggered turn is running.
+	e.hs.inject(room, "@bob:test.local", toMsg("bob", "request", "second-private"))
+	silent := func() {
+		t.Helper()
+		output.SetReadDeadline(time.Now().Add(5500 * time.Millisecond))
+		if _, err := rd.ReadString('\n'); !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("expected silence, got %v", err)
+		}
+	}
+	silent()
 	sendResult()
+	output.SetReadDeadline(time.Now().Add(8 * time.Second))
+	frame, err = rd.ReadString('\n')
+	if err != nil || !strings.Contains(frame, "2 pending mailbox events") {
+		t.Fatal(frame, err)
+	}
+	committed()
+	offset.Add(int64(time.Minute))
+	sendResult()
+	silent()
 	inputWriter.Close()
 	(<-finished).ok(t)
+	e.configure = nil
+	inbox := e.as("alice", "inbox").ok(t).stdout
+	if !strings.Contains(inbox, "private-challenge") || !strings.Contains(inbox, "second-private") {
+		t.Fatal("bridge receipted mail")
+	}
+}
+
+// A provider indication during a poll invalidates the grant before the write.
+// The output callback is never visited, including on a repeated idle result.
+func TestAgyCommitAfterInvalidation(t *testing.T) {
+	for _, cause := range []string{"eof", "error", "repeat-result", "activity"} {
+		t.Run(cause, func(t *testing.T) {
+			wrote := false
+			g := agyGate{initialized: true, idle: true, write: func([]byte) (int, error) { wrote = true; return 1, nil }}
+			ctx, ok := g.poll(context.Background())
+			if !ok {
+				t.Fatal("poll unavailable")
+			}
+			switch cause {
+			case "eof":
+				g.finish(nil)
+			case "error":
+				g.finish(errors.New("provider error"))
+			case "repeat-result":
+				g.observe(agyObservation{Event: "result"}, agyTestID, agyQualifiedModel)
+			case "activity":
+				g.observe(agyObservation{Event: "step_update"}, agyTestID, agyQualifiedModel)
+			}
+			n, err := g.Write([]byte("x"))
+			if ctx.Err() == nil || n != 0 || err == nil || wrote {
+				t.Fatalf("unfenced %s", cause)
+			}
+		})
+	}
 }
