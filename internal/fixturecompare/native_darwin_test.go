@@ -141,11 +141,12 @@ func TestNativeUnsignedAndArchitecture(t *testing.T) {
 		t.Fatal("unsigned image admitted", err)
 	}
 	src := filepath.Join(t.TempDir(), "main.c")
-	if err := os.WriteFile(src, []byte("int main(void) { return 0; }\n"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(src, []byte("int main(void) { return 0; }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	wrong := filepath.Join(t.TempDir(), "wrong-arch")
 	nativeCommand(t, "/usr/bin/xcrun", "clang", "-target", "x86_64-apple-macos13.0", src, "-o", wrong)
 	if _, err := inspect(wrong); err == nil || err.Error() != "fixture-darwin-arm64-executable-required" {
 		t.Fatal("wrong architecture admitted", err)
 	}
 }
-
