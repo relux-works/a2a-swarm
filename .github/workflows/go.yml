@@ -54,6 +54,8 @@ jobs:
             TestAgyInvalidNativeInput
             TestAgyConversationDoorbell
             TestAgyBridgeBoundFrames
+            TestAgyBridgeBlockingPipeRefusal
+            TestAgyBridgeBlockingPipeOutput
             TestAgyBridgeIdleDelivery
             TestAgyPollCustody
           )

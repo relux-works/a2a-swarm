@@ -4,9 +4,11 @@ package cli
 
 import (
 	"errors"
+	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // Serialize the read/merge/rename performed by concurrent a2a installers in
@@ -35,4 +37,42 @@ func lockAgySettingsDir(path string, install bool) (func(), error) {
 		return nil, errors.New("agy settings directory is busy")
 	}
 	return func() { syscall.Close(fd) }, nil
+}
+
+// An inherited fd may be blocking even when represented by *os.File. Make a
+// pollable duplicate so cancellation interrupts a read and a full output pipe
+// respects the governor's deadline. Restore the original flags on handback.
+func agyBridgePipe(f *os.File) (*os.File, func(), error) {
+	raw, err := f.SyscallConn()
+	if err != nil {
+		return nil, nil, err
+	}
+	var dup, flags int
+	var opErr error
+	err = raw.Control(func(fd uintptr) {
+		flags, opErr = unix.FcntlInt(fd, unix.F_GETFL, 0)
+		if opErr != nil {
+			return
+		}
+		dup, opErr = unix.FcntlInt(fd, unix.F_DUPFD_CLOEXEC, 0)
+		if opErr != nil {
+			return
+		}
+		if opErr = unix.SetNonblock(dup, true); opErr != nil {
+			unix.Close(dup)
+		}
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if opErr != nil {
+		return nil, nil, opErr
+	}
+	pipe := os.NewFile(uintptr(dup), "agy provider pipe")
+	restore := func() { pipe.Close(); raw.Control(func(fd uintptr) { unix.FcntlInt(fd, unix.F_SETFL, flags) }) }
+	if err = pipe.SetDeadline(time.Time{}); err != nil {
+		restore()
+		return nil, nil, err
+	}
+	return pipe, restore, nil
 }

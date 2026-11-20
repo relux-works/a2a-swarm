@@ -32,7 +32,19 @@ func (a *App) agyBridge(ctx context.Context, sid, model string) error {
 	if !ok || !outOK || !agyPipe(input) || !agyPipe(output) {
 		return errors.New("agy bridge requires dedicated provider pipes")
 	}
-	return a.runAgyBridge(ctx, input, sid, model, 5*time.Second)
+	reader, restoreInput, err := agyBridgePipe(input)
+	if err != nil {
+		return err
+	}
+	defer restoreInput()
+	writer, restoreOutput, err := agyBridgePipe(output)
+	if err != nil {
+		return err
+	}
+	defer restoreOutput()
+	a.Stdout = writer
+	defer func() { a.Stdout = output }()
+	return a.runAgyBridge(ctx, reader, sid, model, 5*time.Second)
 }
 func agyPipe(f *os.File) bool {
 	info, err := f.Stat()
