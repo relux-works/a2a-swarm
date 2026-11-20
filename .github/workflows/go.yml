@@ -50,6 +50,12 @@ jobs:
             TestTerminalPauseSendBoundary
             TestTerminalSendRefusalDiagnostic
             TestBoundSendContinuity
+            TestAgyInstaller
+            TestAgyInvalidNativeInput
+            TestAgyConversationDoorbell
+            TestAgyBridgeBoundFrames
+            TestAgyBridgeIdleDelivery
+            TestAgyPollCustody
           )
           selected=$(IFS='|'; printf '%s' "${tests[*]}")
           log="$RUNNER_TEMP/go-test-pr-fast.log"

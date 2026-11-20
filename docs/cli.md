@@ -5124,3 +5124,7 @@ independent pauses remain separate. Every result says `quiesced=false`;
 already admitted async work may complete. Read-only status does not repair or
 expire state. An installed image and exact scope still require independent
 admission; this capability does not stop processes or authorize a live run.
+
+### Antigravity CLI station hooks and idle bridge
+
+`hook install --runtime agy` and `identity ensure --runtime agy` support the native SessionStart and PreInvocation hook group. A station-owned native stream uses `agy bridge --session UUID --model gemini-4-neon-xhigh` with two exclusive provider pipes. See the [installation, custody, recovery and qualification contract](antigravity-station.md).

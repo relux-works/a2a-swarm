@@ -75,7 +75,7 @@ func stateWriterHookPath(command, name string) string {
 func stateWriterHookPaths(data []byte, name string) []string {
 	// Reuse strict duplicate-key/trailing-data rejection. Settings are input,
 	// not authority to run a command or inspect another identity's image.
-	if len(data) > 1<<20 || uniqueMuseJSON(data) != nil {
+	if len(data) > 1<<20 || uniqueHookObject(data) != nil {
 		return nil
 	}
 	var settings struct {
@@ -93,6 +93,23 @@ func stateWriterHookPaths(data []byte, name string) []string {
 				if hook.Type == "command" {
 					if path := stateWriterHookPath(hook.Command, name); path != "" {
 						paths = append(paths, path)
+					}
+				}
+			}
+		}
+	}
+	// agy uses flat handlers within a named group. Apply the same image and
+	// identity grammar before reporting a candidate state writer.
+	var groups map[string]json.RawMessage
+	if json.Unmarshal(data, &groups) == nil {
+		var handlers map[string][]nativeHookCommand
+		if json.Unmarshal(groups[agyGroup], &handlers) == nil {
+			for _, ev := range agyEvents {
+				for _, h := range handlers[ev.name] {
+					if h.Type == "command" && strings.HasSuffix(h.Command, " hook "+ev.arg+" --runtime agy") {
+						if path := stateWriterHookPath(h.Command, name); path != "" {
+							paths = append(paths, path)
+						}
 					}
 				}
 			}
