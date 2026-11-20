@@ -56,6 +56,44 @@ func TestDetachedConsumerEnvEmpty(t *testing.T) {
 	}
 }
 
+// The muse carrier keeps the bind-time XDG registry selectors in its
+// detached consumer (Muse resolves its session registry from
+// XDG_DATA_HOME), while every other XDG variable and every Muse session
+// secret stays dropped; other carriers keep dropping XDG entirely. The
+// launcher auto-update opt-out is allowlisted for operators.
+func TestDetachedConsumerEnvMuseCarrier(t *testing.T) {
+	isolateBindTest(t)
+	inherited := []string{
+		"HOME=/home/alice", "PATH=/usr/bin:/bin",
+		"XDG_DATA_HOME=/lane/data", "XDG_RUNTIME_DIR=/run/lane", "XDG_CONFIG_HOME=/lane/config", "XDG_CACHE_HOME=/lane/cache",
+		"MUSE_NO_AUTO_UPDATE=1", "MUSE_SESSION_ID=planted", "MUSE_THREAD_ID=planted",
+	}
+	muse := detachedConsumerEnvForRuntime(inherited, "/cfg", "muse-session-1", "muse")
+	for _, want := range []string{"XDG_DATA_HOME=/lane/data", "XDG_RUNTIME_DIR=/run/lane", "MUSE_NO_AUTO_UPDATE=1", "A2A_CONFIG_DIR=/cfg", "A2A_SESSION_ID=muse-session-1"} {
+		if !slices.Contains(muse, want) {
+			t.Fatalf("muse detached env %q missing %q", muse, want)
+		}
+	}
+	for _, kv := range muse {
+		if strings.HasPrefix(kv, "XDG_CONFIG_HOME=") || strings.HasPrefix(kv, "XDG_CACHE_HOME=") || strings.Contains(kv, "planted") {
+			t.Fatalf("muse detached env kept a dropped value: %q", kv)
+		}
+	}
+	for _, env := range [][]string{
+		detachedConsumerEnvForRuntime(inherited, "/cfg", "s", "codex"),
+		detachedConsumerEnv(inherited, "/cfg", "s"),
+	} {
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "XDG_") {
+				t.Fatalf("non-muse detached env kept %q", kv)
+			}
+		}
+		if !slices.Contains(env, "MUSE_NO_AUTO_UPDATE=1") {
+			t.Fatalf("detached env %q missing the operator auto-update opt-out", env)
+		}
+	}
+}
+
 // processEnviron reads a same-UID process environment for tests: exact on
 // Linux, whitespace-split `ps -E` on Darwin (values are compared, never logged).
 func processEnviron(t *testing.T, pid int) []string {

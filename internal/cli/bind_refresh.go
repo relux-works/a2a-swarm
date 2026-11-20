@@ -376,7 +376,13 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 		return
 	}
 	diagnostic = "changed_ready"
-	env := detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), sessionID)
+	// The muse carrier keeps its bind-time XDG registry selectors across
+	// the re-exec; other carriers keep the plain allowlist.
+	runtime := ""
+	if st, loadErr := config.LoadState(s.paths, s.name); loadErr == nil && st.Terminal != nil && st.Terminal.Generation == generation {
+		runtime = st.Terminal.Target.Runtime
+	}
+	env := detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), sessionID, runtime)
 	if r.probed != stamp {
 		probe := r.probe
 		if probe == nil {

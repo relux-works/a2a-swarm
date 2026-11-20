@@ -1,13 +1,14 @@
 package tmuxwake
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,7 +17,8 @@ import (
 // from the Muse session registry CLI. Pane text is never read and nothing is
 // ever typed for this runtime.
 
-var museSessionRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+// The first character is alphanumeric, so an id can never be read as a flag.
+var museSessionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // ValidMuseSessionID reports whether id can name one Muse session exactly.
 func ValidMuseSessionID(id string) bool { return museSessionRE.MatchString(id) }
@@ -41,10 +43,30 @@ type MuseSender interface {
 // museCommandTimeout bounds one Muse CLI invocation.
 var museCommandTimeout = 10 * time.Second
 
+// museWaitDelay bounds how long a cancelled invocation may linger when a
+// descendant of the Muse launcher inherited its output pipe.
+const museWaitDelay = time.Second
+
+// Output retained from one Muse invocation is bounded: the sessions
+// document is parsed whole, a send only yields classification tokens.
+const (
+	museSessionsOutputMax = 1 << 20
+	museSendOutputMax     = 64 << 10
+)
+
 // ExecMuseSender is the Muse CLI route: `muse sessions --json` for liveness
 // and `muse session-message send --target <id> --json` for delivery. Only
-// bounded classification tokens are ever read from its output.
-type ExecMuseSender struct{ Binary string }
+// bounded classification tokens are ever read from its output. Every
+// invocation runs with an explicit environment: Env when set (tests and
+// pinned callers), the process environment otherwise, always with
+// MUSE_NO_AUTO_UPDATE=1 so the supervised consumer can never trigger the
+// launcher's credential-bearing self-update. XDG_DATA_HOME in that
+// environment selects the Muse session registry, so the detached consumer
+// carries the bind-time value (see the bind environment allowlist).
+type ExecMuseSender struct {
+	Binary string
+	Env    []string
+}
 
 func (s ExecMuseSender) binary() string {
 	if s.Binary != "" {
@@ -53,17 +75,59 @@ func (s ExecMuseSender) binary() string {
 	return "muse"
 }
 
+func (s ExecMuseSender) env() []string {
+	base := s.Env
+	if base == nil {
+		base = os.Environ()
+	}
+	env := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "MUSE_NO_AUTO_UPDATE=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "MUSE_NO_AUTO_UPDATE=1")
+}
+
+func (s ExecMuseSender) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, s.binary(), args...)
+	cmd.Env = s.env()
+	cmd.WaitDelay = museWaitDelay
+	return cmd
+}
+
+// museOutput is a bounded sink: past the cap, bytes are counted and
+// dropped. One sink may serve stdout and stderr together, hence the lock.
+type museOutput struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func (o *museOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if room := o.max - len(o.buf); room > 0 {
+		o.buf = append(o.buf, p[:min(room, len(p))]...)
+	}
+	return len(p), nil
+}
+
 func (s ExecMuseSender) SessionLive(ctx context.Context, sessionID string) (bool, error) {
 	if !ValidMuseSessionID(sessionID) {
 		return false, ErrMuseSessionDead
 	}
 	ctx, cancel := context.WithTimeout(ctx, museCommandTimeout)
 	defer cancel()
-	b, err := exec.CommandContext(ctx, s.binary(), "sessions", "--json").Output()
-	if err != nil {
+	cmd := s.command(ctx, "sessions", "--json")
+	out := &museOutput{max: museSessionsOutputMax}
+	cmd.Stdout = out
+	cmd.Stderr = &museOutput{max: museSendOutputMax}
+	if err := cmd.Run(); err != nil {
 		return false, ErrMuseUnavailable
 	}
-	return parseMuseSessions(b, sessionID)
+	return parseMuseSessions(out.buf, sessionID)
 }
 
 // parseMuseSessions reads one `muse sessions --json` document and reports
@@ -91,23 +155,29 @@ func (s ExecMuseSender) SendSessionMessage(ctx context.Context, sessionID, body 
 	}
 	ctx, cancel := context.WithTimeout(ctx, museCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, s.binary(), "session-message", "send", "--target", sessionID, "--json")
+	cmd := s.command(ctx, "session-message", "send", "--target", sessionID, "--json")
 	cmd.Stdin = strings.NewReader(body)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	out := &museOutput{max: museSendOutputMax}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	err := cmd.Run()
-	if classified := classifyMuseSend(out.String()); classified != nil {
+	if err == nil {
+		// Exit 0 is the success shape. Refusal tokens are classified only
+		// on a non-zero exit, never from a successful reply's text.
+		return nil
+	}
+	if classified := classifyMuseSend(string(out.buf)); classified != nil {
 		return classified
 	}
-	if err != nil {
-		return ErrMuseUnavailable
-	}
-	return nil
+	return ErrMuseUnavailable
 }
 
 // classifyMuseSend maps the fixed refusal vocabulary of the session-message
-// route onto sentinel errors. Output text itself is never retained.
+// route onto sentinel errors. It runs only after a non-zero exit. Output
+// text itself is never retained. Tokens that name a target which cannot
+// resolve to the pinned session are dead; admission and availability
+// tokens stay unavailable, which the caller records as uncertain delivery
+// (never submitted), eligible for its one bounded fresh retry.
 func classifyMuseSend(out string) error {
 	lower := strings.ToLower(out)
 	switch {
@@ -117,12 +187,23 @@ func classifyMuseSend(out string) error {
 		return ErrMuseIngressClosed
 	case strings.Contains(lower, "target_not_found"),
 		strings.Contains(lower, "target_gone"),
+		strings.Contains(lower, "target_not_running"),
 		strings.Contains(lower, "session_not_found"),
+		strings.Contains(lower, "wrong_target"),
+		strings.Contains(lower, "ambiguous_target_name"),
 		strings.Contains(lower, "unknown session"),
 		strings.Contains(lower, "no such session"),
 		strings.Contains(lower, "session not found"),
 		strings.Contains(lower, "unknown target"):
 		return ErrMuseSessionDead
+	case strings.Contains(lower, "admission_queue_full"),
+		strings.Contains(lower, "admission_retry_later"),
+		strings.Contains(lower, "target_unavailable"),
+		strings.Contains(lower, "target_unverified"),
+		strings.Contains(lower, "self_send_wrong_path"),
+		strings.Contains(lower, "session_messaging_unavailable"),
+		strings.Contains(lower, "delivery unconfirmed"):
+		return ErrMuseUnavailable
 	}
 	return nil
 }

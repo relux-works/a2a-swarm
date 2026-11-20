@@ -135,9 +135,9 @@ func (t Target) Inspect(ctx context.Context) (int, int, int, error) {
 
 func Pin(ctx context.Context, socket, pane, runtime string) (Target, error) {
 	if runtime == "muse" {
-		// The muse carrier has no tmux target: pane carries the exact
-		// session id and socket is ignored. PinMuse is the direct form.
-		return PinMuse(ctx, pane, nil)
+		// The muse carrier has no tmux target and Pin must not silently
+		// reuse pane as a session id. PinMuse is the only muse entry point.
+		return Target{Runtime: runtime}, errors.New("runtime muse requires PinMuse")
 	}
 	t := Target{Socket: socket, Pane: pane, Runtime: runtime}
 	if runtime != "claude" && runtime != "codex" {

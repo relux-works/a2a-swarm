@@ -60,6 +60,8 @@ type App struct {
 	wakeContext              context.Context                              // Bounded terminal dispatch copy; never changes ambient command cleanup.
 	terminalFixture          func(config.TerminalBinding) terminalEffects // Isolated tests only; production always uses the bound terminal.
 	museSender               tmuxwake.MuseSender                          // Tests only; nil uses the Muse CLI route.
+	museBindAncestor         func(context.Context, int, int) bool         // Tests only; nil uses descendant.
+	museOwnerName            func(context.Context, int) (string, error)   // Tests only; nil inspects the process table.
 	admissionSessions        []*identityAdmission
 	daemonEngine             bool
 	daemonOwner              string // Root policy snapshot, inherited by requests only.

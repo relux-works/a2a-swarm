@@ -62,6 +62,35 @@ func (a *App) museSessionID() string {
 	return a.Getenv("MUSE_THREAD_ID")
 }
 
+// museAncestor reports whether pid descends from ancestor. A bind run from
+// a Muse tool shell descends from the muse-bin owner process.
+func (a *App) museAncestor(ctx context.Context, pid, ancestor int) bool {
+	if a.museBindAncestor != nil {
+		return a.museBindAncestor(ctx, pid, ancestor)
+	}
+	return descendant(ctx, pid, ancestor)
+}
+
+// museOwnerProcessName returns the image name of one own-UID process.
+func (a *App) museOwnerProcessName(ctx context.Context, pid int) (string, error) {
+	if a.museOwnerName != nil {
+		return a.museOwnerName(ctx, pid)
+	}
+	rows, err := bindingProcesses(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range rows {
+		if p.PID == pid {
+			if p.UID != os.Getuid() {
+				return "", errors.New("bind owner is not an own process")
+			}
+			return p.Name, nil
+		}
+	}
+	return "", errors.New("bind owner process unavailable")
+}
+
 // Native session metadata is a selector, never binding/lease authority. Keep
 // explicit A2A and Codex precedence, and never fall through a malformed value.
 func (a *App) terminalSessionID(runtime string) string {
@@ -173,6 +202,13 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		return usagef("bind refuses another live Muse session")
 	}
 	isMuse := *runtime == "muse"
+	if isMuse && mode == bindingManual && current == "" {
+		// A manual muse bind must run inside the Muse session it binds:
+		// a session selector (A2A_SESSION_ID, then MUSE_SESSION_ID or
+		// MUSE_THREAD_ID) must be present, and the checks above already
+		// refused any present value that names another session.
+		return usagef("bind --runtime muse requires this Muse session: run it inside the session being bound (MUSE_SESSION_ID, MUSE_THREAD_ID or A2A_SESSION_ID)")
+	}
 	if !isMuse && (*pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "") {
 		return usagef("bind requires this invocation's own tmux pane/socket")
 	}
@@ -187,10 +223,20 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	if err != nil {
 		return err
 	}
-	// The muse carrier has no pane ancestry to prove: the exact live session
-	// (PinMuse) and the live owner process birth-checked below are its
-	// binding authority.
-	if !isMuse && (!descendant(probe, os.Getppid(), *owner) || !descendant(probe, *owner, target.PanePID)) {
+	if isMuse {
+		// The muse carrier has no pane, so its authority is invocation
+		// ancestry plus the owner image: this bind must descend from the
+		// owner process (a Muse tool shell descends from muse-bin), and
+		// that owner must be a muse/muse-bin* process. The exact live
+		// session (PinMuse) and the owner birth checked below complete it.
+		if !a.museAncestor(probe, os.Getppid(), *owner) {
+			return errors.New("bind owner is not this invocation's muse runtime")
+		}
+		ownerName, err := a.museOwnerProcessName(probe, *owner)
+		if err != nil || !isMuseOwnerName(ownerName) {
+			return errors.New("bind owner is not a muse process")
+		}
+	} else if !descendant(probe, os.Getppid(), *owner) || !descendant(probe, *owner, target.PanePID) {
 		return errors.New("bind owner is not this invocation's runtime in this pane")
 	}
 	birth, err := tmuxwake.Birth(probe, *owner)
@@ -350,7 +396,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				child.Args[0] = alias
 			}
 		}
-		child.Env = detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), b.SessionID)
+		child.Env = detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), b.SessionID, b.Target.Runtime)
 		child.ExtraFiles = []*os.File{writer}
 		child.Stdout = log
 		child.Stderr = log
@@ -1091,8 +1137,14 @@ func (a *App) terminalPreSendSuppressed(s *session, generation string, expected 
 				b.Outcome = "suppressed: muse session dead"
 			}
 			if fenced {
-				refusal = &config.TerminalSendRefusal{Reason: reason, At: a.Now().UTC()}
-				b.SendRefusal = refusal
+				// The binding log gets one line per refusal reason, not
+				// one per observation cycle; the state record still
+				// carries the latest refusal time.
+				changed := b.SendRefusal == nil || b.SendRefusal.Reason != reason
+				b.SendRefusal = &config.TerminalSendRefusal{Reason: reason, At: a.Now().UTC()}
+				if changed {
+					refusal = b.SendRefusal
+				}
 			}
 			return nil
 		}

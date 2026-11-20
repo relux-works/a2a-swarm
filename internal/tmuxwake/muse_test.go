@@ -55,9 +55,18 @@ func TestPinMuse(t *testing.T) {
 	if _, err := PinMuse(context.Background(), "muse-session-1", &fakeMuseSender{liveErr: errors.New("boom")}); !errors.Is(err, ErrMuseUnavailable) {
 		t.Fatalf("unavailable pin err = %v, want ErrMuseUnavailable", err)
 	}
-	// Pin accepts the muse runtime too; a malformed id refuses before any CLI.
+	// Pin refuses the muse runtime outright: PinMuse is the only muse
+	// entry point, so a pane argument can never double as a session id.
+	if _, err := Pin(context.Background(), "", "muse-session-1", "muse"); err == nil || err.Error() != "runtime muse requires PinMuse" {
+		t.Fatalf("Pin muse err = %v, want the PinMuse refusal", err)
+	}
 	if _, err := Pin(context.Background(), "", "bad id!", "muse"); err == nil {
 		t.Fatal("Pin pinned a malformed muse session id")
+	}
+	for _, id := range []string{"-muse-session-1", ".muse-session-1", "_muse-session-1", ""} {
+		if ValidMuseSessionID(id) {
+			t.Fatalf("session id %q admitted; the first character must be alphanumeric", id)
+		}
 	}
 	if _, err := Pin(context.Background(), "", "", "other"); err == nil {
 		t.Fatal("Pin accepted an unknown runtime")
@@ -172,6 +181,15 @@ func TestMuseSendSeam(t *testing.T) {
 			`{"error":"sender_unverified"}`:                            ErrMuseSenderUnverified,
 			"external_agent_ingress_closed":                            ErrMuseIngressClosed,
 			`{"status":"target_gone","error_code":"target_not_found"}`: ErrMuseSessionDead,
+			`{"error_code":"target_not_running"}`:                      ErrMuseSessionDead,
+			`{"error_code":"wrong_target"}`:                            ErrMuseSessionDead,
+			`{"error_code":"ambiguous_target_name"}`:                   ErrMuseSessionDead,
+			`{"error_code":"admission_queue_full"}`:                    ErrMuseUnavailable,
+			`{"error_code":"admission_retry_later"}`:                   ErrMuseUnavailable,
+			`{"error_code":"target_unavailable"}`:                      ErrMuseUnavailable,
+			`{"error_code":"target_unverified"}`:                       ErrMuseUnavailable,
+			`{"error_code":"self_send_wrong_path"}`:                    ErrMuseUnavailable,
+			`{"error_code":"session_messaging_unavailable"}`:           ErrMuseUnavailable,
 			`{"ok":true}`: nil,
 		} {
 			if got := classifyMuseSend(out); got != want {

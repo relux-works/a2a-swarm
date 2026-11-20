@@ -199,6 +199,15 @@ func hookRuntimeOwner(ctx context.Context, runtime string) (int, error) {
 	}
 	return runtimeOwnerPID(rows, os.Getppid(), runtime, os.Getuid())
 }
+
+// isMuseOwnerName reports whether a process image name is the Muse
+// launcher or a versioned muse-bin binary. It is the owner-image predicate
+// of the manual muse bind; Muse hooks never reach the hook auto-bind.
+func isMuseOwnerName(name string) bool {
+	base := filepath.Base(name)
+	return base == "muse" || strings.HasPrefix(base, "muse-bin")
+}
+
 func runtimeOwnerPID(rows []bindingProcess, pid int, runtime string, uid int) (int, error) {
 	byPID := make(map[int]bindingProcess)
 	for _, p := range rows {
@@ -209,7 +218,7 @@ func runtimeOwnerPID(rows []bindingProcess, pid int, runtime string, uid int) (i
 		if !ok || p.UID != uid {
 			break
 		}
-		if filepath.Base(p.Name) == runtime || runtime == "muse" && strings.HasPrefix(filepath.Base(p.Name), "muse-bin") {
+		if filepath.Base(p.Name) == runtime {
 			return pid, nil
 		}
 		if p.PPID == pid {

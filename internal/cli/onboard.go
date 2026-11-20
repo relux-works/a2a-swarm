@@ -311,6 +311,7 @@ func (a *App) printWakeGuidance(runtime string) {
 		a.printf("Read messages with `a2a inbox`; only inbox receipts them.\n")
 		a.printf("Muse project hooks require native human trust. Start/Prompt context receipt and same-session shell/hook/inbox identity remain unqualified; Stop is a terminal systemMessage only.\n")
 		a.printf("For idle wake, bind this session: `a2a bind --runtime muse --owner-pid <own muse pid>` (session id from MUSE_SESSION_ID); inspect it with `a2a bind status`. With a live binding, use its supervised consumer; do not start a competing wait/watch or Monitor.\n")
+		a.printf("The bound Muse session must accept external session messages (Muse's external-agent ingress): a session started without it refuses every wake as `ingress_closed`; see the `a2a bind` docs.\n")
 		return
 	}
 	a.printf("Read messages with `a2a inbox`. Inspect your own binding with `a2a bind status`.\n")

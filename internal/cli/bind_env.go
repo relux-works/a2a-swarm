@@ -13,13 +13,28 @@ var detachedEnvNames = map[string]bool{
 	"https_proxy": true, "http_proxy": true, "no_proxy": true, "all_proxy": true,
 	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
 	"A2A_AGENT": true, "A2A_MATRIX_URL": true, "A2A_MATRIX_SERVER_NAME": true, envSecretStore: true,
+	// Operators may pin the Muse launcher's update opt-out in the consumer
+	// environment; the muse carrier also forces it on every invocation.
+	"MUSE_NO_AUTO_UPDATE": true,
+}
+
+// museDetachedEnvNames pass only for the muse carrier: Muse resolves its
+// live-session registry from XDG_DATA_HOME (and its runtime state from
+// XDG_RUNTIME_DIR), so the detached consumer must keep the bind-time values
+// or it would read a different registry than the one PinMuse admitted.
+var museDetachedEnvNames = map[string]bool{
+	"XDG_DATA_HOME": true, "XDG_RUNTIME_DIR": true,
 }
 
 func detachedConsumerEnv(environ []string, configRoot, sessionID string) []string {
-	env := make([]string, 0, len(detachedEnvNames)+2)
+	return detachedConsumerEnvForRuntime(environ, configRoot, sessionID, "")
+}
+
+func detachedConsumerEnvForRuntime(environ []string, configRoot, sessionID, runtime string) []string {
+	env := make([]string, 0, len(detachedEnvNames)+4)
 	for _, kv := range environ {
 		name, _, ok := strings.Cut(kv, "=")
-		if ok && (detachedEnvNames[name] || strings.HasPrefix(name, "LC_")) {
+		if ok && (detachedEnvNames[name] || runtime == "muse" && museDetachedEnvNames[name] || strings.HasPrefix(name, "LC_")) {
 			env = append(env, kv)
 		}
 	}

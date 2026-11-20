@@ -2607,8 +2607,12 @@ Run `a2a inbox` with Muse's per-command approval, outside the default Muse sandb
 Muse doorbells and hook context/Stop text include that instruction. a2a does not change Muse's sandbox configuration.
 Messages sent after the identity joined but before its first sync use the bounded post-join recovery in the delivery contract above (issue #278).
 
-Idle wake is unsupported for Muse (issue #274). Hooks run only at those
-lifecycle events; installation does not create a terminal/native consumer.
+Hooks run only at those lifecycle events; installation does not itself create
+a terminal/native consumer. For idle wake, bind the session with
+`a2a bind --runtime muse` (see the `a2a bind` section below): run it once from
+inside the Muse session being bound, with the same per-command approval
+outside the default Muse sandbox as `a2a inbox`, because the default sandbox
+cannot open the identity state lock.
 Use `a2a hook uninstall --runtime muse` to remove these hooks.
 
 #### `a2a hook pause|resume --agent NAME`
@@ -2648,9 +2652,17 @@ permission, question or plan dialog. The old bridge stays removed. The guarded f
 ### `a2a bind` / `a2a bind status` / `a2a unbind`
 
 Trusted `a2a hook session-start --runtime claude|codex` automatically binds **the session that fired the hook** in tmux.
-A muse session binds with `--runtime muse` instead: no tmux target, pane ancestry or composer observation exists on that carrier.
+A muse session binds with `--runtime muse` instead: no tmux target or composer observation exists on that carrier.
 Its session id resolves from `--session-id`, then `A2A_SESSION_ID`, then `MUSE_SESSION_ID` (or `MUSE_THREAD_ID`); the exact session
 must be live in `muse sessions --json` and `--owner-pid` names the live muse process (birth-pinned like the tmux carrier's owner).
+A manual muse bind must run inside the session it binds: one of those session selectors must be present and name the bound
+session, the bind invocation must descend from the `--owner-pid` process, and that owner must be a `muse`/`muse-bin*` process.
+The detached consumer keeps the bind-time `XDG_DATA_HOME`/`XDG_RUNTIME_DIR`, so it reads the same Muse session registry the
+bind admitted, and every Muse invocation runs with `MUSE_NO_AUTO_UPDATE=1`.
+Prerequisite on the Muse side: the bound session must accept external session messages (Muse's external-agent ingress,
+`MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS`). The consumer sends as an external sender with no `MUSE_*` session variables, so
+a target started without ingress refuses every wake as `ingress_closed` (and an unverified sender as `sender_unverified`);
+enable ingress for the target session before binding.
 Delivery sends only `a2a: N new peer events; run a2a inbox` through `muse session-message send --target <session-id>`; the mailbox
 stays first and only `inbox` receipts mail. `sender_unverified`, `dead_session`, `session_unavailable` and `ingress_closed` are named
 bind refusals recorded with their time (`send_refusal=… at=…` in `bind status` and the binding log); there is no tmux typing fallback.
@@ -2691,6 +2703,8 @@ If `bind status` shows `unbound` in your tmux session before another hook runs, 
 
 Session selection keeps explicit `--session-id`, then `A2A_SESSION_ID`, then `CODEX_THREAD_ID`; a Claude bind/unbind can also use
 `CLAUDE_CODE_SESSION_ID` when those environment selectors are absent. A conflicting current selector still refuses an explicit foreign ID.
+Symmetrically, a Claude or Codex bind refuses while `MUSE_SESSION_ID` or `MUSE_THREAD_ID` is set (`bind refuses another live Muse
+session`): from inside a Muse session, bind with `--runtime muse` or run the other runtime's bind from its own session.
 Malformed values do not enable a lower-priority bind selector. Native Claude commands use that same valid session ID for the lease,
 so a hook-owned lease is shared rather than stolen; foreign live lease holders still refuse. No environment value bypasses target/ancestry checks.
 
