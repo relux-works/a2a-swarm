@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/relux-works/a2a-swarm/internal/fixturecompare/internal/signaturetest"
 )
 
 func nativeCommand(t *testing.T, args ...string) {
@@ -188,13 +190,10 @@ func nativeRepin(t *testing.T, dir string) {
 func TestNativeStrictOnlyRefusal(t *testing.T) {
 	dir := nativePair(t, "0")
 	path := filepath.Join(dir, names[0])
-	for _, strict := range []bool{false, true} {
-		args := []string{"/usr/bin/codesign", "--verify"}
-		if strict {
-			args = append(args, "--strict")
-		}
-		nativeCommand(t, append(args, path)...)
+	if status := signaturetest.DefaultStatus(path); status != 0 {
+		t.Fatalf("valid default-validation control: %d", status)
 	}
+	nativeCommand(t, "/usr/bin/codesign", "--verify", "--strict", path)
 	positive, err := compare(dir, dir, filepath.Join(t.TempDir(), "valid"), inspect)
 	if err != nil || !positive.Completed {
 		t.Fatalf("valid strict signature control: %+v %v", positive, err)
@@ -211,7 +210,9 @@ func TestNativeStrictOnlyRefusal(t *testing.T) {
 	nativeRepin(t, dir)
 	// This positive default check prevents a generic page-hash failure from
 	// masquerading as coverage of the stricter structural signature predicate.
-	nativeCommand(t, "/usr/bin/codesign", "--verify", path)
+	if status := signaturetest.DefaultStatus(path); status != 0 {
+		t.Fatalf("specimen failed default API validation: %d", status)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	b, err := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--strict", path).CombinedOutput()
@@ -221,6 +222,7 @@ func TestNativeStrictOnlyRefusal(t *testing.T) {
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() == 0 {
 		t.Fatalf("specimen did not separate strict from default validation: %v %s", err, b)
 	}
+	t.Log("valid control: default API=0, strict CLI=0, comparator=completed; appended specimen: default API=0, strict CLI=nonzero")
 	if _, err := inspect(path); err == nil || err.Error() != "fixture-strict-signature" {
 		t.Fatal("strict-only defect admitted by native inspection", err)
 	}
