@@ -640,6 +640,9 @@ func (a *App) dispatchNative(ctx context.Context, s *session, generation string)
 		if errors.Is(err, wakemute.ErrMuted) {
 			return a.runtimeOutcome(s, generation, "wake suppressed: scope muted; attempt retained")
 		}
+		if errors.Is(err, errAddressChanged) {
+			return err
+		}
 		if err != nil {
 			if codexwake.DefinitiveRefusal(err) {
 				_, updateErr := a.updateState(s.paths, s.name, func(cur *config.State) error {
