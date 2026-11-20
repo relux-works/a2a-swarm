@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -165,6 +167,16 @@ type stuckProbeTerminal struct {
 	observations atomic.Int64
 	types        atomic.Int64
 	enters       atomic.Int64
+	obsMu        sync.Mutex
+	obs          []probeObservation
+}
+
+// probeObservation is one ObserveReadiness call's start/end window, so a
+// test can measure the gap between the end of one probe and the start of
+// the next instead of counting probes against wall time (which includes
+// the probes' and full cycles' own work on a slow host).
+type probeObservation struct {
+	start, end time.Time
 }
 
 func (f *stuckProbeTerminal) assessment() tmuxwake.ReadinessAssessment {
@@ -180,8 +192,28 @@ func (f *stuckProbeTerminal) assessment() tmuxwake.ReadinessAssessment {
 }
 
 func (f *stuckProbeTerminal) ObserveReadiness(context.Context, string) tmuxwake.ReadinessAssessment {
+	start := time.Now()
+	assessment := f.assessment()
+	f.obsMu.Lock()
+	f.obs = append(f.obs, probeObservation{start: start, end: time.Now()})
+	f.obsMu.Unlock()
 	f.observations.Add(1)
-	return f.assessment()
+	return assessment
+}
+
+// probeWindows returns the observation windows starting in [from, to).
+// Inside a stuck wait these are exactly the wait's readiness probes: full
+// cycles (and their dispatch observations) run outside the wait window.
+func (f *stuckProbeTerminal) probeWindows(from, to time.Time) []probeObservation {
+	f.obsMu.Lock()
+	defer f.obsMu.Unlock()
+	var out []probeObservation
+	for _, o := range f.obs {
+		if !o.start.Before(from) && o.start.Before(to) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 func (f *stuckProbeTerminal) AssessOwnedNotice(context.Context, string) tmuxwake.ReadinessAssessment {
@@ -281,6 +313,53 @@ func awaitEnters(t *testing.T, fake *stuckProbeTerminal, want int64, within time
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("ring not observed within %v (enters=%d)", within, fake.enters.Load())
+}
+
+func (l *terminalTraceLog) snapshot() ([]string, []time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...), append([]time.Time(nil), l.at...)
+}
+
+// stuckWaitSpan is one stuck wait measured from its own trace to the next
+// full cycle's trace: the wait itself, excluding the preceding cycle's
+// work. Counting or timing against whole wall time instead charges full
+// cycles (and probes) to the schedule, which fails on a slow host while
+// the schedule itself is exact.
+type stuckWaitSpan struct {
+	start  time.Time // wait:stuck
+	end    time.Time // next cycle; zero while the wait runs
+	probes int       // probe:stuck traces inside the wait
+	wakes  int       // wake:stuck traces inside the wait
+}
+
+func stuckWaitSpans(events []string, at []time.Time) []stuckWaitSpan {
+	var spans []stuckWaitSpan
+	for i, e := range events {
+		switch e {
+		case "wait:stuck":
+			spans = append(spans, stuckWaitSpan{start: at[i]})
+		case "probe:stuck":
+			if len(spans) > 0 && spans[len(spans)-1].end.IsZero() {
+				spans[len(spans)-1].probes++
+			}
+		case "wake:stuck":
+			if len(spans) > 0 && spans[len(spans)-1].end.IsZero() {
+				spans[len(spans)-1].wakes++
+			}
+		case "cycle":
+			if len(spans) > 0 && spans[len(spans)-1].end.IsZero() {
+				spans[len(spans)-1].end = at[i]
+			}
+		}
+	}
+	return spans
+}
+
+func medianDuration(ds []time.Duration) time.Duration {
+	sorted := append([]time.Duration(nil), ds...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return sorted[len(sorted)/2]
 }
 
 // TestTerminalStuckProbeWakesWithinInterval proves that once the stuck
@@ -388,26 +467,86 @@ func TestTerminalStuckProbeNoStateOrMailboxDecode(t *testing.T) {
 // TestTerminalStuckLoopFullCyclesBounded proves through the real loop's
 // cycle traces that a consumer whose readiness stays unavailable runs at
 // most 15 full cycles per simulated 10 minutes: Interval 50ms stands for
-// 2s and the 1.5s cap for 60s (the same ratio), so 15s of real waits stand
-// for 600s; readiness probes keep running every Interval meanwhile and
-// nothing is rung.
+// 2s and the 1.5s cap for 60s (the same ratio), so 15s of stuck waits
+// stand for 600s; readiness probes keep running every Interval meanwhile
+// and nothing is rung.
+//
+// Simulated time is accumulated from the waits themselves (wait:stuck to
+// the next cycle), never from wall time: on a slow host a full cycle's own
+// work can exceed the wait it ends, so a fixed wall window undercounts
+// both cycles and probes even though the schedule is exact. Probe cadence
+// is likewise measured inside the waits, as the gap between the end of
+// one probe and the start of the next.
 func TestTerminalStuckLoopFullCyclesBounded(t *testing.T) {
 	stuckBackoffCapForTest(t, 1500*time.Millisecond)
-	_, fake, run := startStuckLoop(t, 50*time.Millisecond)
+	interval := 50 * time.Millisecond
+	_, fake, run := startStuckLoop(t, interval)
 	from := run.trace.nth(t, "cycle", 1, 20*time.Second)
-	time.Sleep(15 * time.Second)
-	to := time.Now()
-	cycles := run.trace.count("cycle", from, to)
-	probes := run.trace.count("probe:stuck", from, to)
-	t.Logf("simulated 10 minutes stuck: %d full cycles, %d readiness probes in %v", cycles, probes, to.Sub(from))
+	const targetWaits = 15 * time.Second // stands for 600s at the 40:1 ratio
+	deadline := time.Now().Add(100 * time.Second)
+	var spans []stuckWaitSpan
+	var waited time.Duration
+	cycles := 0
+	for {
+		events, at := run.trace.snapshot()
+		spans = spans[:0]
+		waited = 0
+		for _, span := range stuckWaitSpans(events, at) {
+			if span.start.Before(from) || span.end.IsZero() {
+				continue
+			}
+			spans = append(spans, span)
+			waited += span.end.Sub(span.start)
+		}
+		cycles = 0
+		if len(spans) > 0 {
+			last := spans[len(spans)-1].end
+			for i, e := range events {
+				if e == "cycle" && !at[i].Before(from) && !at[i].After(last) {
+					cycles++
+				}
+			}
+		}
+		if waited >= targetWaits || cycles > 15 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %v of stuck waits (%d waits, %d cycles) accumulated in %v of wall time; the loop did not keep cycling while stuck", waited, len(spans), cycles, time.Since(from))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	probes := 0
+	var gaps, firstLatencies []time.Duration
+	for _, span := range spans {
+		probes += span.probes
+		windows := fake.probeWindows(span.start, span.end)
+		if len(windows) > 0 && span.end.Sub(span.start) >= 4*interval {
+			firstLatencies = append(firstLatencies, windows[0].start.Sub(span.start))
+		}
+		for i := 1; i < len(windows); i++ {
+			gaps = append(gaps, windows[i].start.Sub(windows[i-1].end))
+		}
+	}
+	t.Logf("simulated 10 minutes stuck: %d full cycles, %d readiness probes in %v of stuck waits (%v wall)", cycles, probes, waited, time.Since(from))
 	if cycles > 15 {
 		t.Fatalf("%d full cycles in simulated 10 minutes stuck, want at most 15", cycles)
 	}
 	if cycles < 5 {
 		t.Fatalf("only %d full cycles; the loop did not keep cycling while stuck", cycles)
 	}
-	if probes < 100 {
-		t.Fatalf("only %d readiness probes while stuck; probes must run every Interval", probes)
+	if len(gaps) < 20 {
+		t.Fatalf("only %d probe-to-probe gaps in %v of stuck waits; probes must run every Interval", len(gaps), waited)
+	}
+	if median := medianDuration(gaps); median < interval/2 || median > 4*interval {
+		t.Fatalf("median gap between a probe's end and the next probe's start is %v, want about Interval (%v)", median, interval)
+	} else {
+		t.Logf("probe cadence in stuck waits: median end-to-next-start gap %v over %d gaps (Interval %v)", median, len(gaps), interval)
+	}
+	if len(firstLatencies) == 0 {
+		t.Fatal("no long stuck wait had a readiness probe; probes must run every Interval")
+	}
+	if median := medianDuration(firstLatencies); median > 4*interval {
+		t.Fatalf("median first probe starts %v into a stuck wait, want about Interval (%v)", median, interval)
 	}
 	if fake.enters.Load() != 0 {
 		t.Fatal("mail was rung while readiness stayed ineligible")
@@ -418,25 +557,49 @@ func TestTerminalStuckLoopFullCyclesBounded(t *testing.T) {
 // mail during a capped stuck wait wakes at once (production decode-scope
 // branch) and resets the schedule: measuring the second wait after the
 // wake (the first can re-wake on the same foreign-write evidence the wake
-// cycle recorded), its cycle-to-cycle gap is back near Interval, not the
-// 3s cap the schedule had reached; once readiness becomes eligible the
-// appended mail is rung with the mail that was already pending.
+// cycle recorded), it is back near Interval, not the 3s cap the schedule
+// had reached; once readiness becomes eligible the appended mail is rung
+// with the mail that was already pending.
+//
+// The measurement is the wait itself (its wait:stuck trace, at the end of
+// a cycle, to the next cycle's trace), never cycle-to-cycle: on a slow
+// host the intervening full cycle's own work can exceed the reset wait,
+// so cycle-to-cycle fails even though the schedule reset exactly.
 func TestTerminalStuckWakeResetsBackoff(t *testing.T) {
 	stuckBackoffCapForTest(t, 3*time.Second)
-	f, fake, run := startStuckLoop(t, 100*time.Millisecond)
+	interval := 100 * time.Millisecond
+	f, fake, run := startStuckLoop(t, interval)
 	// Waits double 100ms, 200ms, 400ms, 800ms, 1.6s, then the 3s cap: the
 	// sixth stuck wait is the first capped one.
 	run.trace.nth(t, "wait:stuck", 6, 30*time.Second)
 	sent := time.Now()
 	appendPendingStuckMail(t, f, "$stuck00002")
-	wakeCycle := run.trace.await(t, "cycle", sent, 2*time.Second)
-	secondCycle := run.trace.await(t, "cycle", wakeCycle.Add(time.Millisecond), 5*time.Second)
-	thirdCycle := run.trace.await(t, "cycle", secondCycle.Add(time.Millisecond), 6*time.Second)
-	t.Logf("wake traces in the second post-wake wait: %d", run.trace.count("wake:stuck", secondCycle, thirdCycle))
-	if gap := thirdCycle.Sub(secondCycle); gap > 1500*time.Millisecond {
-		t.Fatalf("second wait after the mail wake was %v (cycle-to-cycle), want the back-off reset to Interval (cap is 3s)", gap)
-	} else {
-		t.Logf("cycle-to-cycle gap of the second post-wake wait: %v (Interval 100ms, cap 3s)", gap)
+	wakeCycle := run.trace.await(t, "cycle", sent, 5*time.Second)
+	secondCycle := run.trace.await(t, "cycle", wakeCycle.Add(time.Millisecond), 10*time.Second)
+	thirdCycle := run.trace.await(t, "cycle", secondCycle.Add(time.Millisecond), 10*time.Second)
+	events, at := run.trace.snapshot()
+	spans := stuckWaitSpans(events, at)
+	var second *stuckWaitSpan
+	for i := range spans {
+		if spans[i].start.After(secondCycle) && spans[i].end.Equal(thirdCycle) {
+			second = &spans[i]
+			break
+		}
+	}
+	if second == nil {
+		t.Fatalf("no stuck wait between the second and third post-wake cycles; events=%v", events)
+	}
+	t.Logf("wake traces in the second post-wake wait: %d", second.wakes)
+	if second.wakes != 0 {
+		t.Fatalf("second post-wake wait was ended by %d wake(s), so its duration does not measure the schedule", second.wakes)
+	}
+	wait := second.end.Sub(second.start)
+	t.Logf("second post-wake wait: %v wait-only (%v cycle-to-cycle; Interval %v, cap 3s)", wait, thirdCycle.Sub(secondCycle), interval)
+	if wait < interval-25*time.Millisecond {
+		t.Fatalf("second wait after the mail wake was %v (wait-only), below Interval %v; it did not run on the reset schedule", wait, interval)
+	}
+	if wait > 1500*time.Millisecond {
+		t.Fatalf("second wait after the mail wake was %v (wait-only), want the back-off reset to Interval (cap is 3s)", wait)
 	}
 	fake.eligible.Store(true)
 	awaitEnters(t, fake, 1, 5*time.Second)
