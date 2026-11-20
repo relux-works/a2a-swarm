@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -64,7 +65,14 @@ func releaseProcess(t *testing.T, extra map[string]string, args ...string) (stri
 func TestFixtureCommandRouting(t *testing.T) {
 	for _, command := range []string{"release", "prepare", "verify", "compare", "admit"} {
 		t.Run(command, func(t *testing.T) {
-			out, code := releaseProcess(t, nil, command, "fixture-compare")
+			args := []string{command, "fixture-compare"}
+			if command == "compare" {
+				args = append(args, "fixture-compare")
+			}
+			if command == "verify" || command == "compare" {
+				args = append(args, filepath.Join(t.TempDir(), "evidence"))
+			}
+			out, code := releaseProcess(t, nil, args...)
 			if code != 1 || strings.Contains(out, fixturecompare.Label) {
 				t.Fatalf("legacy command reached fixture mode: code=%d %s", code, out)
 			}
