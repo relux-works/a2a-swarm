@@ -184,10 +184,10 @@ func TestTerminalSessionIDMuse(t *testing.T) {
 	}
 }
 
-// museBindAttempt runs one manual muse bind against the authority seams.
-// HooksPaused stops an authorized bind at the manual gate, right after the
-// authority stage, so no detached consumer is armed in-process.
-func museBindAttempt(t *testing.T, env map[string]string, ancestor bool, ownerName string) error {
+// museBindSetup builds one manual muse bind world. HooksPaused stops an
+// authorized bind at the manual gate, right after the authority stage, so
+// no detached consumer is armed in-process.
+func museBindSetup(t *testing.T, env map[string]string) (*env, *App) {
 	t.Helper()
 	e, _ := world(t)
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
@@ -202,13 +202,44 @@ func museBindAttempt(t *testing.T, env map[string]string, ancestor bool, ownerNa
 	}
 	a, _ := muteApp(e)
 	a.museSender = &fakeMuseSender{live: true}
-	a.museBindAncestor = func(context.Context, int, int) bool { return ancestor }
-	a.museOwnerName = func(context.Context, int) (string, error) { return ownerName, nil }
-	err := a.bindTerminal(context.Background(), []string{"--runtime", "muse", "--owner-pid", strconv.Itoa(os.Getpid()), "--session-id", "muse-session-1"}, bindingManual)
+	return e, a
+}
+
+func museBindRun(t *testing.T, e *env, a *App, owner int) error {
+	t.Helper()
+	err := a.bindTerminal(context.Background(), []string{"--runtime", "muse", "--owner-pid", strconv.Itoa(owner), "--session-id", "muse-session-1"}, bindingManual)
 	if st := e.state("alice"); st.Terminal != nil {
 		t.Fatalf("bind persisted a terminal past the gate: %+v", st.Terminal)
 	}
 	return err
+}
+
+// museBindAttempt runs one manual muse bind against the authority seams.
+// The seams assert their pid arguments instead of ignoring them: ancestry
+// must be asked as (this invocation's parent, the --owner-pid owner) and
+// the image lookup must be asked for the owner, so a production call that
+// asks about the wrong process (for example the owner against itself)
+// fails here. The returned counts pin whether each guard ran at all.
+func museBindAttempt(t *testing.T, env map[string]string, ancestorOK bool, ownerName string) (err error, ancestorCalls, nameCalls int) {
+	t.Helper()
+	e, a := museBindSetup(t, env)
+	owner := os.Getpid()
+	a.museBindAncestor = func(_ context.Context, pid, ancestor int) bool {
+		ancestorCalls++
+		if pid != os.Getppid() || ancestor != owner {
+			t.Errorf("museBindAncestor(pid=%d, ancestor=%d), want (ppid=%d, owner=%d)", pid, ancestor, os.Getppid(), owner)
+		}
+		return ancestorOK
+	}
+	a.museOwnerName = func(_ context.Context, pid int) (string, error) {
+		nameCalls++
+		if pid != owner {
+			t.Errorf("museOwnerName(pid=%d), want owner=%d", pid, owner)
+		}
+		return ownerName, nil
+	}
+	err = museBindRun(t, e, a, owner)
+	return err, ancestorCalls, nameCalls
 }
 
 // A manual muse bind binds only its own session: a present Muse session
@@ -221,19 +252,33 @@ func TestMuseBindAuthority(t *testing.T) {
 		ancestor  bool
 		ownerName string
 		want      string
+		// authority marks rows that reach the ancestry guard; the image
+		// guard runs only after ancestry passes. Selector refusals must
+		// reach neither guard.
+		authority bool
 	}{
-		"own session":              {own, true, "muse-bin-1.4.24", "manual gate"},
-		"own session via thread":   {map[string]string{"MUSE_THREAD_ID": "muse-session-1"}, true, "/usr/local/bin/muse", "manual gate"},
-		"own session via a2a":      {map[string]string{EnvSessionID: "muse-session-1"}, true, "muse-bin", "manual gate"},
-		"unrelated owner":          {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime"},
-		"owner is not muse":        {own, true, "/bin/sleep", "not a muse process"},
-		"missing Muse session env": {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session"},
-		"foreign session id":       {map[string]string{"MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin-1.4.24", "another live"},
+		"own session":              {own, true, "muse-bin-1.4.24", "manual gate", true},
+		"own session via thread":   {map[string]string{"MUSE_THREAD_ID": "muse-session-1"}, true, "/usr/local/bin/muse", "manual gate", true},
+		"own session via a2a":      {map[string]string{EnvSessionID: "muse-session-1"}, true, "muse-bin", "manual gate", true},
+		"unrelated owner":          {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime", true},
+		"owner is not muse":        {own, true, "/bin/sleep", "not a muse process", true},
+		"missing Muse session env": {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session", false},
+		"foreign session id":       {map[string]string{"MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin-1.4.24", "another live", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := museBindAttempt(t, tc.env, tc.ancestor, tc.ownerName)
+			err, ancestorCalls, nameCalls := museBindAttempt(t, tc.env, tc.ancestor, tc.ownerName)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("bind err = %v, want it to contain %q", err, tc.want)
+			}
+			wantAncestor, wantName := 0, 0
+			if tc.authority {
+				wantAncestor = 1
+				if tc.ancestor {
+					wantName = 1
+				}
+			}
+			if ancestorCalls != wantAncestor || nameCalls != wantName {
+				t.Fatalf("guard calls: ancestry=%d image=%d, want %d/%d", ancestorCalls, nameCalls, wantAncestor, wantName)
 			}
 		})
 	}

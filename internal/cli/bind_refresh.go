@@ -377,12 +377,16 @@ func (r *terminalRefresh) poll(ctx context.Context, a *App, s *session, generati
 	}
 	diagnostic = "changed_ready"
 	// The muse carrier keeps its bind-time XDG registry selectors across
-	// the re-exec; other carriers keep the plain allowlist.
-	runtime := ""
-	if st, loadErr := config.LoadState(s.paths, s.name); loadErr == nil && st.Terminal != nil && st.Terminal.Generation == generation {
-		runtime = st.Terminal.Target.Runtime
+	// the re-exec; other carriers keep the plain allowlist. If this
+	// generation's runtime cannot be read back, fail closed for this
+	// cycle instead of re-execing with the non-muse allowlist, which
+	// would silently drop a muse binding's registry selectors.
+	st, loadErr := config.LoadState(s.paths, s.name)
+	if loadErr != nil || st.Terminal == nil || st.Terminal.Generation != generation {
+		diagnostic = "changed_safety_unavailable"
+		return
 	}
-	env := detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), sessionID, runtime)
+	env := detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), sessionID, st.Terminal.Target.Runtime)
 	if r.probed != stamp {
 		probe := r.probe
 		if probe == nil {
