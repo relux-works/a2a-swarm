@@ -53,7 +53,7 @@ func scopeFile(t *testing.T, root string) string {
 // Public status/capability/undo ignore ambient station and credentials. Muting
 // requires actual fds, explicit scope/run/budget and no approval flag fallback.
 func TestScopeMuteCLIExplicitInterface(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	file := scopeFile(t, root)
 	var out, diag bytes.Buffer
@@ -255,7 +255,7 @@ func TestScopeMuteDaemonNoticeShown(t *testing.T) {
 // Result-output loss is explicitly uncertain and never silently undoes the
 // authorized cleanup that committed before output failed.
 func TestScopeMuteCLIOutputFailure(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	op := fixture.Mute(t, scope, "output-loss")
