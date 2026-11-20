@@ -81,7 +81,7 @@ func hash(b []byte) string {
 }
 
 // Compare verifies pinned snapshots only inside a fresh evidence directory.
-// Native inspection never executes an image, signs it or opens a Keychain.
+// Native inspection never executes an image, signs it or accesses Keychain items.
 func Compare(old, next, evidence string) (Report, error) {
 	if err := StandaloneEnvironment(os.Getenv); err != nil {
 		return Report{Label: Label}, err

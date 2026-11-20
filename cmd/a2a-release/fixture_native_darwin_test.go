@@ -58,12 +58,12 @@ func commandFixturePair(t *testing.T) string {
 }
 
 // Actual CLI diagnostics exit 2 with explicit findings, never a release pass.
-// This uses self-created ad-hoc images only; no identity or Keychain access.
+// This uses self-created ad-hoc images only; no identity or Keychain item access.
 func TestNativeFixtureCommandExit(t *testing.T) {
 	dir := commandFixturePair(t)
 	out, code := releaseProcess(t, nil, "fixture-compare", dir, dir, filepath.Join(t.TempDir(), "evidence"))
 	if code != 2 || !strings.Contains(out, fixturecompare.Label) || !strings.Contains(out, "timestamp-missing") ||
-		!strings.Contains(out, "ad-hoc-companion") || !strings.Contains(out, `"release_verified":false`) {
+		!strings.Contains(out, "ad-hoc-companion") || !strings.Contains(out, `"release_verified":false`) || !strings.Contains(out, `"completed":true`) {
 		t.Fatalf("diagnostic misclassified: code=%d %s", code, out)
 	}
 }

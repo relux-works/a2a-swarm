@@ -38,7 +38,8 @@ trees. It contains exact pinned image snapshots and manifests in `0/` and `1/`,
 each image's full compiled requirement and text, and `fixture-comparison.json`.
 Native strict signature validation and full actual-DR evaluation run against the
 snapshots. No image is executed, re-signed or re-stamped, and the comparator makes
-no Keychain calls. Input bytes, file identity, modes and mtimes are rechecked.
+no Keychain item access or signing identity use. Certificate-chain validation
+can consult system trust settings. Input bytes, file identity, modes and mtimes are rechecked.
 Treat inputs and evidence parents as stable during the run; detected external
 changes invalidate completion, and the comparator does not restore those changes.
 

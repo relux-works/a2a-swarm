@@ -58,48 +58,71 @@ func readReport(t *testing.T, out string) Report {
 	return report
 }
 
-// Equal full compiled requirements produce no difference finding; changing
-// either side's full bytes reports both identities, even with equal raw text.
+// Paired equal controls and full-byte deltas on either side distinguish exact
+// compiled-DR comparison from length-only, prefix and raw-text comparisons.
 func TestCompiledRequirements(t *testing.T) {
-	for _, changed := range []string{"", names[0], names[1]} {
-		t.Run("changed="+changed, func(t *testing.T) {
-			old, next := fixturePair(t, "N"), fixturePair(t, "N+1")
-			out := filepath.Join(t.TempDir(), "evidence")
-			calls := 0
-			report, err := compare(old, next, out, func(path string) (signature, error) {
-				calls++
-				sig, _ := signatureFixture(path)
-				if filepath.Base(filepath.Dir(path)) == "1" && filepath.Base(path) == changed {
-					sig.compiled = append(sig.compiled, []byte(" and extra term")...)
-				}
-				return sig, nil
-			})
-			if err != nil || !report.Completed || calls != 4 {
-				t.Fatalf("complete comparison: %+v, %v, calls=%d", report, err, calls)
-			}
-			diff := findings(report, "requirements-differ")
-			if changed == "" {
-				if len(diff) != 0 || len(report.Findings) != 0 {
-					t.Fatalf("equal requirements: %+v", report.Findings)
-				}
-			} else if len(diff) != 1 || diff[0].Name != changed || diff[0].Old == nil || diff[0].New == nil ||
-				diff[0].Old.CompiledDR == diff[0].New.CompiledDR || diff[0].Old.SHA256 == diff[0].New.SHA256 ||
-				diff[0].Old.DR != diff[0].New.DR {
-				t.Fatalf("difference must retain both sides: %+v", diff)
-			}
-			saved := readReport(t, out)
-			if !saved.Completed || saved.ReleaseVerified || saved.Label != Label {
-				t.Fatalf("not a release pass: %+v", saved)
-			}
-			for side := range 2 {
-				for _, id := range saved.Pairs[side] {
-					b, err := os.ReadFile(filepath.Join(out, fmt.Sprint(side), id.Name+".requirement.bin"))
-					if err != nil || hash(b) != id.CompiledDR || !id.HashVerified || !id.StrictSignatureVerified {
-						t.Fatalf("raw evidence missing or unbound: %+v, %v", id, err)
+	substitute := func(b []byte) []byte { b[len(b)-1] ^= 1; return b }
+	for _, delta := range []struct {
+		name   string
+		side   string
+		change func([]byte) []byte
+	}{
+		{"next-clause", "1", func(b []byte) []byte { return append(b, []byte(" and extra term")...) }},
+		{"old-clause", "0", func(b []byte) []byte { return append(b, []byte(" and extra term")...) }},
+		{"next-same-length", "1", substitute},
+		{"old-same-length", "0", substitute},
+		{"next-truncated", "1", func(b []byte) []byte { return b[:len(b)-1] }},
+		{"old-extended", "0", func(b []byte) []byte { return append(b, 0) }},
+	} {
+		for _, name := range names {
+			for _, changed := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/changed=%t", delta.name, name, changed), func(t *testing.T) {
+					old, next := fixturePair(t, "N"), fixturePair(t, "N+1")
+					out := filepath.Join(t.TempDir(), "evidence")
+					calls := 0
+					var expected [2]string
+					report, err := compare(old, next, out, func(path string) (signature, error) {
+						calls++
+						sig, _ := signatureFixture(path)
+						side := filepath.Base(filepath.Dir(path))
+						if filepath.Base(path) == name {
+							if changed && side == delta.side {
+								sig.compiled = delta.change(sig.compiled)
+							}
+							expected[int(side[0]-'0')] = hash(sig.compiled)
+						}
+						return sig, nil
+					})
+					if err != nil || !report.Completed || calls != 4 {
+						t.Fatalf("complete comparison: %+v, %v, calls=%d", report, err, calls)
 					}
-				}
+					diff := findings(report, "requirements-differ")
+					if !changed {
+						if len(diff) != 0 || len(report.Findings) != 0 || expected[0] != expected[1] {
+							t.Fatalf("equal requirements: %+v", report.Findings)
+						}
+					} else if len(diff) != 1 || diff[0].Name != name || diff[0].Old == nil || diff[0].New == nil ||
+						diff[0].Old.Name != name || diff[0].New.Name != name ||
+						diff[0].Old.CompiledDR != expected[0] || diff[0].New.CompiledDR != expected[1] ||
+						diff[0].Old.CompiledDR == diff[0].New.CompiledDR || diff[0].Old.SHA256 == diff[0].New.SHA256 ||
+						diff[0].Old.DR != diff[0].New.DR {
+						t.Fatalf("difference must retain both ordered sides: %+v", diff)
+					}
+					saved := readReport(t, out)
+					if !saved.Completed || saved.ReleaseVerified || saved.Label != Label {
+						t.Fatalf("not a release pass: %+v", saved)
+					}
+					for side := range 2 {
+						for _, id := range saved.Pairs[side] {
+							b, err := os.ReadFile(filepath.Join(out, fmt.Sprint(side), id.Name+".requirement.bin"))
+							if err != nil || hash(b) != id.CompiledDR || !id.HashVerified || !id.StrictSignatureVerified {
+								t.Fatalf("raw evidence missing or unbound: %+v, %v", id, err)
+							}
+						}
+					}
+				})
 			}
-		})
+		}
 	}
 }
 

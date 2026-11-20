@@ -90,9 +90,11 @@ func TestFixtureReleaseTopology(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			for _, token := range []string{"fixture-compare", "fixturecompare", "fixtureCompare"} {
-				if strings.Contains(string(b), token) {
-					t.Errorf("release automation invokes diagnostic token %q in %s", token, rel)
+			for _, line := range strings.Split(string(b), "\n") {
+				for _, token := range []string{"fixture-compare", "fixturecompare", "fixtureCompare"} {
+					if strings.Contains(line, token) && !fixtureNativeTestLine(rel, line) {
+						t.Errorf("release automation invokes diagnostic token %q in %s", token, rel)
+					}
 				}
 			}
 		}
@@ -100,5 +102,32 @@ func TestFixtureReleaseTopology(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The sole allowed automation reference tests the packages; it does not invoke
+// the command. Extra shell operations or another path cannot use this allowance.
+func fixtureNativeTestLine(path, line string) bool {
+	return path == ".github/workflows/release-controls.yml" &&
+		line == "      - run: go test -p 1 -parallel 2 -race -count=1 -timeout=3m ./internal/darwinrelease ./internal/fixturecompare ./cmd/a2a-release"
+}
+
+func TestFixtureNativeTestAllowance(t *testing.T) {
+	const path = ".github/workflows/release-controls.yml"
+	const line = "      - run: go test -p 1 -parallel 2 -race -count=1 -timeout=3m ./internal/darwinrelease ./internal/fixturecompare ./cmd/a2a-release"
+	for _, tc := range []struct {
+		path, line string
+		want       bool
+	}{
+		{path, line, true},
+		{path, line + "; a2a-release fixture-compare N NEXT OUT", false},
+		{path, "      - run: a2a-release fixture-compare N NEXT OUT", false},
+		{path, "      - run: fixtureCompare N NEXT OUT", false},
+		{path, "      - run: fixturecompare N NEXT OUT", false},
+		{".scripts/release.sh", line, false},
+	} {
+		if got := fixtureNativeTestLine(tc.path, tc.line); got != tc.want {
+			t.Errorf("test allowance for %q in %s: got %t want %t", tc.line, tc.path, got, tc.want)
+		}
 	}
 }
