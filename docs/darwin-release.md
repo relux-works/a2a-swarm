@@ -16,6 +16,51 @@ unchanged. There is no optional unsigned tagged-release path or manual bypass.
 
 ## Entry points and dependencies
 
+### Read-only fixture diagnostics
+
+`a2a-release fixture-compare N_DIR NEXT_DIR NEW_EVIDENCE_DIR` is a standalone
+diagnostic command for locally signed Darwin arm64 pairs. It is **NOT RELEASE
+VERIFICATION**. A completed comparison always exits **2**, including when the
+requirements are equal and no findings exist. A refused or incomplete comparison
+exits **1**. The existing `verify`, `compare`, preparation and release gates keep
+their strict secure-timestamp and signing requirements.
+
+Each input directory must contain exactly `a2a`, `a2a-keychain-status` and
+`SHA256SUMS`. The two images must be regular executable files, at most 256 MiB
+each. Supply independently captured lowercase SHA-256 pins as exactly two records
+of `hex-digest`, two spaces and the image basename, in either order. The manifest
+may have one final newline and must be at most 4096 bytes. Symlinked images,
+unexpected members, missing images, malformed pins and hash mismatches are refused.
+The comparator never synthesizes missing pins.
+
+The evidence directory must be new, with an existing parent outside both input
+trees. It contains exact pinned image snapshots and manifests in `0/` and `1/`,
+each image's full compiled requirement and text, and `fixture-comparison.json`.
+Native strict signature validation and full actual-DR evaluation run against the
+snapshots. No image is executed, re-signed or re-stamped, and the comparator makes
+no Keychain item access or signing identity use. Certificate-chain validation
+can consult system trust settings. Input bytes, file identity, modes and mtimes are rechecked.
+Treat inputs and evidence parents as stable during the run; detected external
+changes invalidate completion, and the comparator does not restore those changes.
+
+The versioned JSON labels every result `NOT RELEASE VERIFICATION` and sets
+`release_verified` to false. Missing secure timestamps, ad-hoc signatures
+(`ad-hoc-companion` for the helper), and absent hardened runtime are explicit
+findings. A difference in either complete compiled requirement is reported with
+both identities. Such findings do not suppress the remaining comparison; strict
+signature failures do. Diagnostic equality allows byte-identical images and
+does not claim Developer ID release trust, notarization or item access.
+
+Production release code does not import the diagnostic package. The command
+admits only empty values for `CI`, `GITHUB_ACTIONS`, `RUNNER_ENVIRONMENT`,
+`RUNNER_TEMP`, `RELEASE_TAG`, `RELEASE_ADMITTED_TAG_OBJECT` and the five signing
+fields, so CI and native release jobs cannot invoke it, even through a dynamic
+command value. There is no bypass flag. Tests check this admission boundary,
+command routing and the absence of diagnostic calls in production release code,
+release scripts and workflows. This diagnostic format is not a release artifact.
+
+### Release entry points
+
 | Entry point | Purpose | Output |
 | --- | --- | --- |
 | `.scripts/release-config.sh` | Require all five nonempty fields without displaying values | Closed presence verdict; no native action |
