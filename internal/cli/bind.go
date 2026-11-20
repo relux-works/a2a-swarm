@@ -842,7 +842,6 @@ func (a *App) waitStuck(ctx context.Context, s *session, delay time.Duration, po
 		return "owner-replaced"
 	}
 	for {
-		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			return "cancelled"
