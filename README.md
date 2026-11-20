@@ -692,3 +692,5 @@ authority is integrated.
 | Ordered controller | a2a-distribution controller with source/binding/inputs/brew/output arguments | Held; fixture-qualified ordered adapter |
 | Workflow validation | Hosted python3 .github/release/controller-tools.py, then pinned actionlint | Verified tool under RUNNER_TEMP/controller-tools; no host installation |
 | Controller fixtures | go test -p 1 -parallel 2 ./internal/releasecontroller | Stage/consumer negatives; hosted dry-run JSON, fixture trust only |
+
+For Gemini review stations using Antigravity CLI, see [a2a lifecycle hooks and the launcher-owned idle stream](docs/antigravity-station.md).

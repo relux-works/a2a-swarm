@@ -157,9 +157,10 @@ var hookRuntimes = []hookRuntime{
 		},
 	},
 	{name: "muse", title: "Muse", settings: DefaultMuseHooks, render: renderMuseHook},
+	{name: "agy", title: "Antigravity CLI", settings: ".agents/hooks.json"},
 }
 
-const runtimeNames = "claude|codex|muse"
+const runtimeNames = "claude|codex|muse|agy"
 
 // lookupRuntime resolves --runtime; there is no default (owner rule: no implicit defaults).
 func lookupRuntime(name string) (hookRuntime, error) {
@@ -174,8 +175,8 @@ func lookupRuntime(name string) (hookRuntime, error) {
 	return hookRuntime{}, fmt.Errorf("unknown --runtime %q (%s)", sanitizeLine(name), runtimeNames)
 }
 
-const hookUsage = "usage: a2a hook stop|session-start|prompt|session-end --runtime claude|codex|muse  (reads the hook JSON on stdin) | " +
-	"a2a hook install --agent NAME --runtime claude|codex|muse [--settings PATH] [--executable PATH | --installed-command PATH] | a2a hook uninstall --runtime claude|codex|muse [--settings PATH] | " +
+const hookUsage = "usage: a2a hook stop|session-start|prompt|session-end --runtime claude|codex|muse|agy  (reads the hook JSON on stdin) | " +
+	"a2a hook install --agent NAME --runtime claude|codex|muse|agy [--settings PATH] [--executable PATH | --installed-command PATH] | a2a hook uninstall --runtime claude|codex|muse|agy [--settings PATH] | " +
 	"a2a hook pause|resume --agent NAME"
 
 // cmdHook: a2a hook stop|session-start|prompt|session-end|install|uninstall
@@ -235,6 +236,12 @@ func (a *App) runHook(ctx context.Context, ev hookEvent, args []string) {
 			fail(fmt.Errorf("%v; re-run a2a hook install --agent NAME --runtime %s", err, runtimeNames))
 			return
 		}
+	}
+	if rt.name == "agy" {
+		if err := a.runAgyHook(ctx, ev); err != nil {
+			fail(err)
+		}
+		return
 	}
 	if rt.name == "muse" {
 		a.runMuseHook(ctx, rt, ev)
@@ -418,6 +425,11 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	if err != nil {
 		return err
 	}
+	if rt.name == "agy" {
+		if err := agyCustody(&st, in.SessionID, ev.arg == "notice", a.Now()); err != nil {
+			return err
+		}
+	}
 	if st.HostEnrollment != nil {
 		return nil
 	}
@@ -427,7 +439,11 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 	deadline, _ := ctx.Deadline()
 	// One live session per identity: while another session's lease is live
 	// this hook stays quiet (one stderr line, exit 0).
-	if err := a.acquireLease(s, in.SessionID, deadline); err != nil {
+	var check func(*config.State) error
+	if rt.name == "agy" {
+		check = func(cur *config.State) error { return agyCustody(cur, in.SessionID, ev.arg == "notice", a.Now()) }
+	}
+	if err := a.acquireLeaseChecked(s, in.SessionID, deadline, check); err != nil {
 		return err
 	}
 	stop := ev.arg == "stop" && rt.name != "muse"
@@ -489,6 +505,11 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 			var out string
 			var keys []string
 			token, err := a.reserveNotification(ctx, s, deadline, "hook", sid, "", bypass, func(cur *config.State, mb *config.Mailbox, _ string) (bool, error) {
+				if check != nil {
+					if err := agyCustody(cur, in.SessionID, true, a.Now()); err != nil {
+						return false, err
+					}
+				}
 				if cur.HooksPaused {
 					return false, nil
 				}
@@ -536,8 +557,15 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 			}
 			if writeErr != nil {
 				if written == 0 {
-					if cancelErr := a.cancelNotification(ctx, s, deadline, token); cancelErr != nil {
-						return cancelErr
+					// Only a proven zero-byte write may release the reservation.
+					// Its I/O budget can already have expired or been canceled
+					// by a provider event. Cleanup has a fresh bounded lifetime.
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), hookBudget)
+					cleanupDeadline, _ := cleanup.Deadline()
+					cancelErr := a.cancelNotification(cleanup, s, cleanupDeadline, token)
+					cancel()
+					if cancelErr != nil {
+						return errors.Join(writeErr, cancelErr)
 					}
 				}
 				return fmt.Errorf("write output: %w", writeErr)
@@ -547,7 +575,7 @@ func (a *App) hookDeliver(ctx context.Context, rt hookRuntime, ev hookEvent, in 
 					return fmt.Errorf("flush output: %w", err)
 				}
 			}
-			if stop {
+			if stop || rt.name == "agy" {
 				*blocked = true
 			}
 			if a.afterPrint != nil {
@@ -778,6 +806,9 @@ func hookOutput(rt hookRuntime, ev hookEvent, d doorbell) (string, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	text := doorbellText(d)
+	if rt.name == "agy" {
+		text = fmt.Sprintf("a2a: %d pending mailbox events, %d history gaps.", d.total, d.gaps)
+	}
 	if rt.name == "muse" {
 		text = strings.ReplaceAll(doorbellTextLimit(d, doorbellMax-len(museInboxApproval)), "`a2a inbox`", "`a2a inbox`"+museInboxApproval)
 	}
