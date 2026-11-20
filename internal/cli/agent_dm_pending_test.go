@@ -14,9 +14,10 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
-// Pair filtering leaves opaque ordinary entries visible and incomplete or
-// non-message pair entries unread and hidden. Active peer and real principal
-// controls cover qualified, pending, corrupt and unset retained pair contexts.
+// Correctly addressed ordinary and principal events remain visible while
+// malformed, wrongly addressed and incomplete pair entries stay unread.
+// Active peer and principal controls cover qualified, pending, corrupt and
+// unset retained pair contexts.
 func TestAgentDMPendingOpaqueOrdinaryIsolation(t *testing.T) {
 	for _, mode := range []string{"qualified", "pending", "records-corrupt", "unset"} {
 		t.Run(mode, func(t *testing.T) {
@@ -46,15 +47,25 @@ func TestAgentDMPendingOpaqueOrdinaryIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			principal, err := json.Marshal(agentDirectedEvent(t, "$opaque-principal", "@parent:"+testServer, "@wrong:"+testServer))
+			ordinary, err := json.Marshal(agentDirectedEvent(t, "$ordinary", b, b))
+			if err != nil {
+				t.Fatal(err)
+			}
+			principal, err := json.Marshal(agentDirectedEvent(t, "$opaque-principal", "@parent:"+testServer, b))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrongPrincipal, err := json.Marshal(agentDirectedEvent(t, "$opaque-principal-wrong-recipient", "@parent:"+testServer, "@wrong:"+testServer))
 			if err != nil {
 				t.Fatal(err)
 			}
 			entries := []config.MailEntry{
+				{ID: "$ordinary", Kind: config.MailEvent, Room: "!ordinary:" + testServer, Rel: "to", Event: ordinary},
 				{ID: "$opaque-ordinary", Kind: config.MailEvent, Room: "!ordinary:" + testServer, Rel: "to"},
 				{ID: "$opaque-held", Kind: config.MailEvent, Room: room, Rel: "to"},
 				{ID: "$opaque-peer", Kind: config.MailEvent, Room: room, Rel: "to", Event: peer},
 				{ID: "$opaque-principal", Kind: config.MailEvent, Room: room, Rel: "to", Event: principal},
+				{ID: "$opaque-principal-wrong-recipient", Kind: config.MailEvent, Room: room, Rel: "to", Event: wrongPrincipal},
 				{ID: "$opaque-null", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`null`)},
 				{ID: "$opaque-object", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`{}`)},
 				{ID: "$opaque-array", Kind: config.MailEvent, Room: room, Rel: "to", Event: json.RawMessage(`[]`)},
@@ -74,7 +85,7 @@ func TestAgentDMPendingOpaqueOrdinaryIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !visible["$opaque-ordinary"] || !visible["$opaque-principal"] || visible["$opaque-held"] || visible["$opaque-peer"] != (mode == "qualified") || len(visible) != map[bool]int{false: 2, true: 3}[mode == "qualified"] {
+			if !visible["$ordinary"] || visible["$opaque-ordinary"] || !visible["$opaque-principal"] || visible["$opaque-principal-wrong-recipient"] || visible["$opaque-held"] || visible["$opaque-peer"] != (mode == "qualified") || len(visible) != map[bool]int{false: 2, true: 3}[mode == "qualified"] {
 				t.Fatalf("opaque ordinary/pair isolation assertion: mode=%s visible=%v", mode, visible)
 			}
 			mb := e.mailbox("bob")
