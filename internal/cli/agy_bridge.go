@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -111,6 +112,7 @@ type agyGate struct {
 	ctx                       context.Context
 	cancel                    context.CancelFunc
 	write                     func([]byte) (int, error)
+	buffered                  int // native bytes removed from the kernel and not yet validated
 }
 
 func (g *agyGate) finishLocked(err error) {
@@ -124,9 +126,13 @@ func (g *agyGate) finishLocked(err error) {
 	}
 }
 
-func (g *agyGate) observe(f agyObservation, sid, model string) (ready bool, err error) {
+func (g *agyGate) observe(f agyObservation, sid, model string, consumed int) (ready bool, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.closed {
+		return false, g.err
+	}
+	g.buffered -= consumed
 	switch {
 	case !g.initialized:
 		if f.Event != "init" || f.Conversation != sid || f.Init.Model != model {
@@ -142,8 +148,12 @@ func (g *agyGate) observe(f agyObservation, sid, model string) (ready bool, err 
 		if f.Result.Conversation != sid || f.Result.Status != "SUCCESS" {
 			err = errors.New("agy result did not confirm a successful turn in this conversation")
 		} else {
-			g.idle = true
-			ready = true
+			if g.buffered != 0 {
+				err = errors.New("unexpected activity after agy idle result")
+			} else {
+				g.idle = true
+				ready = true
+			}
 		}
 	}
 	if err != nil {
@@ -184,7 +194,7 @@ func (g *agyGate) endPoll() {
 func (g *agyGate) Write(p []byte) (int, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.closed || !g.idle || g.ctx == nil || g.ctx.Err() != nil {
+	if g.closed || !g.idle || g.buffered != 0 || g.ctx == nil || g.ctx.Err() != nil {
 		return 0, errors.New("agy idle observation invalidated")
 	}
 	if len(p) > 512 {
@@ -196,6 +206,13 @@ func (g *agyGate) Write(p []byte) (int, error) {
 	}
 	return n, err
 }
+
+type agyInputReader struct {
+	pipe *os.File
+	gate *agyGate
+}
+
+func (r agyInputReader) Read(p []byte) (int, error) { return agyReadTracked(r.pipe, r.gate, p) }
 
 func (a *App) runAgyBridge(ctx context.Context, in io.ReadCloser, sid, model string, interval time.Duration) error {
 	output := a.Stdout
@@ -222,7 +239,24 @@ func (a *App) runAgyBridge(ctx context.Context, in io.ReadCloser, sid, model str
 	readyStatus := make(chan struct{}, 1)
 	go func() {
 		defer close(done)
-		scanner := bufio.NewScanner(in)
+		var reader io.Reader = in
+		tracked := false
+		if pipe, ok := in.(*os.File); ok {
+			reader = agyInputReader{pipe, gate}
+			tracked = true
+		}
+		scanner := bufio.NewScanner(reader)
+		// Keep the delimiter in the token so the gate accounts for every byte,
+		// including a partial next frame already read into the scanner.
+		scanner.Split(func(b []byte, eof bool) (int, []byte, error) {
+			if i := bytes.IndexByte(b, '\n'); i >= 0 {
+				return i + 1, b[:i+1], nil
+			}
+			if eof && len(b) > 0 {
+				return len(b), b, nil
+			}
+			return 0, nil, nil
+		})
 		scanner.Buffer(make([]byte, 8192), 2<<20)
 		first := true
 		for scanner.Scan() {
@@ -231,7 +265,11 @@ func (a *App) runAgyBridge(ctx context.Context, in io.ReadCloser, sid, model str
 				gate.finish(err)
 				return
 			}
-			ready, err := gate.observe(f, sid, model)
+			n := 0
+			if tracked {
+				n = len(scanner.Bytes())
+			}
+			ready, err := gate.observe(f, sid, model, n)
 			if err != nil {
 				return
 			}
@@ -282,12 +320,11 @@ func (a *App) runAgyBridge(ctx context.Context, in io.ReadCloser, sid, model str
 			sent, err := a.agyNotice(poll, sid, hookEvent{"notice", "PreInvocation"}, true)
 			gate.endPoll()
 			if err != nil {
-				select {
-				case <-done:
-					if gate.err != nil {
-						return errors.Join(gate.err, err)
-					}
-				default:
+				gate.mu.Lock()
+				cause := gate.err
+				gate.mu.Unlock()
+				if cause != nil {
+					return errors.Join(cause, err)
 				}
 				return fmt.Errorf("agy idle poll: %w", err)
 			}

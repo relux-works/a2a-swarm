@@ -5,6 +5,7 @@ package cli
 import (
 	"errors"
 	"golang.org/x/sys/unix"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -108,4 +109,49 @@ func agyPipePending(in *os.File) (bool, error) {
 		return false, err
 	}
 	return n != 0, pollErr
+}
+
+// A pollable nonblocking read and its byte accounting share the submission
+// fence. RawConn.Read releases the mutex while the runtime waits for input.
+func agyReadTracked(f *os.File, g *agyGate, p []byte) (int, error) {
+	raw, err := f.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	var readErr error
+	err = raw.Read(func(fd uintptr) bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		n, readErr = unix.Read(int(fd), p)
+		if readErr == unix.EAGAIN || readErr == unix.EWOULDBLOCK || readErr == unix.EINTR {
+			return false
+		}
+		if n > 0 {
+			g.buffered += n
+			if g.idle {
+				g.finishLocked(errors.New("unexpected activity after agy idle result"))
+				n = 0
+				readErr = g.err
+			}
+		}
+		if n == 0 && readErr == nil {
+			readErr = io.EOF
+		}
+		if readErr != nil && g.idle {
+			if readErr == io.EOF {
+				g.finishLocked(nil)
+			} else {
+				g.finishLocked(errors.New("failed to read agy stream"))
+			}
+		}
+		return true
+	})
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		n = 0
+	}
+	return n, readErr
 }

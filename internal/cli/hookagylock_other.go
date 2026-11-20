@@ -18,3 +18,7 @@ func agyBridgePipe(*os.File) (*os.File, func(), error) {
 func agyPipeWrite(*os.File, []byte) (int, error) { return 0, errors.New("unsupported agy transport") }
 
 func agyPipePending(*os.File) (bool, error) { return false, errors.New("unsupported agy transport") }
+
+func agyReadTracked(*os.File, *agyGate, []byte) (int, error) {
+	return 0, errors.New("unsupported agy transport")
+}

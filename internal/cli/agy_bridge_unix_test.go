@@ -187,10 +187,10 @@ func TestAgyBridgePollInvalidation(t *testing.T) {
 	if got.code == 0 || !strings.Contains(got.stderr, config.ErrLockTimeout.Error()) {
 		t.Fatal("second bridge did not refuse custody", got)
 	}
-	io.WriteString(feed, "{\"event\":\"error\"}\n")
+	io.WriteString(feed, "{") // An incomplete frame must already invalidate the in-flight poll.
 	select {
 	case got := <-finished:
-		if got.code == 0 || !strings.Contains(got.stderr, "provider reported an error") {
+		if got.code == 0 || !strings.Contains(got.stderr, "unexpected activity after agy idle result") {
 			t.Fatal(got)
 		}
 	case <-time.After(2 * time.Second):

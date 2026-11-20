@@ -259,6 +259,21 @@ func TestAgyBridgeIdleDelivery(t *testing.T) {
 // A provider indication during a poll invalidates the grant before the write.
 // The output callback is never visited, including on a repeated idle result.
 func TestAgyCommitAfterInvalidation(t *testing.T) {
+	t.Run("buffered suffix", func(t *testing.T) {
+		var frame agyObservation
+		raw := []byte(`{"event":"result","result":{"conversation_id":"` + agyTestID + `","status":"SUCCESS"}}`)
+		if err := frame.decode(raw); err != nil {
+			t.Fatal(err)
+		}
+		for _, suffix := range []int{0, 1} {
+			g := agyGate{initialized: true, buffered: len(raw) + suffix}
+			ready, err := g.observe(frame, agyTestID, agyQualifiedModel, len(raw))
+			if suffix == 0 && (!ready || err != nil) || suffix > 0 && (ready || err == nil) {
+				t.Fatal("incorrect buffered input verdict", suffix, ready, err)
+			}
+		}
+	})
+
 	for _, cause := range []string{"eof", "error", "repeat-result", "activity"} {
 		t.Run(cause, func(t *testing.T) {
 			wrote := false
@@ -273,9 +288,9 @@ func TestAgyCommitAfterInvalidation(t *testing.T) {
 			case "error":
 				g.finish(errors.New("provider error"))
 			case "repeat-result":
-				g.observe(agyObservation{Event: "result"}, agyTestID, agyQualifiedModel)
+				g.observe(agyObservation{Event: "result"}, agyTestID, agyQualifiedModel, 0)
 			case "activity":
-				g.observe(agyObservation{Event: "step_update"}, agyTestID, agyQualifiedModel)
+				g.observe(agyObservation{Event: "step_update"}, agyTestID, agyQualifiedModel, 0)
 			}
 			n, err := g.Write([]byte("x"))
 			if ctx.Err() == nil || n != 0 || err == nil || wrote {
