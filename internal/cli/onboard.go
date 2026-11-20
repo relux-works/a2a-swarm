@@ -75,9 +75,9 @@ func (a *App) ensureRuntime(flagValue string) (hookRuntime, string, error) {
 		if cc != "" {
 			set = append([]string{envClaudeCode + "=" + sanitizeLine(cc)}, markers...)
 		}
-		return hookRuntime{}, "", usagef("the runtime is ambiguous (%s): pass --runtime %s", strings.Join(set, ", "), runtimeNames)
+		return hookRuntime{}, "", usagef("the runtime is ambiguous (%s): pass --runtime %s", strings.Join(set, ", "), identityRuntimeNames)
 	}
-	return hookRuntime{}, "", usagef("cannot detect the runtime (no %s=1 in the environment): pass --runtime %s", envClaudeCode, runtimeNames)
+	return hookRuntime{}, "", usagef("cannot detect the runtime (no %s=1 in the environment): pass --runtime %s", envClaudeCode, identityRuntimeNames)
 }
 
 // onboardRoom is one room of the onboarding.
@@ -100,18 +100,27 @@ func principalOnboardingPlan(rooms []onboardRoom) []onboardRoom {
 	return out
 }
 
-func (s *session) ensureOnboardingPrincipals(ctx context.Context, rooms []onboardRoom, now time.Time) error {
+// ensureOnboardingPrincipals repairs host-principal rows (the standing
+// principal rule, nothing beyond it) and returns one summary line per row in
+// effect, so the onboarding summary lists them next to the baseline rows.
+func (s *session) ensureOnboardingPrincipals(ctx context.Context, rooms []onboardRoom, now time.Time) ([]string, error) {
 	if len(principalOnboardingPlan(rooms)) == 0 {
-		return nil
+		return nil, nil
 	}
-	return s.app.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
+	var lines []string
+	err := s.app.withRuntimeLock(s.paths, s.name, "subscription-policy", time.Now().Add(nativeRPCTimeout), func() error {
 		for _, room := range principalOnboardingPlan(rooms) {
-			if err := s.ensureRoomPrincipals(ctx, room.id, now); err != nil {
+			rows, err := s.ensureRoomPrincipals(ctx, room.id, now)
+			if err != nil {
 				return err
+			}
+			for _, sub := range rows {
+				lines = append(lines, sub.ID+"\t"+sub.summary(room.label, s.server)+" (host principal)")
 			}
 		}
 		return nil
 	})
+	return lines, err
 }
 
 // onboard runs the onboarding steps for s and prints each one, then the summary.
@@ -205,10 +214,10 @@ func (a *App) onboard(ctx context.Context, s *session, o onboarding) error {
 	}
 
 	a.printf("subscriptions:\n")
-	if err := s.ensureOnboardingPrincipals(ctx, rooms, a.Now()); err != nil {
+	subs, err := s.ensureOnboardingPrincipals(ctx, rooms, a.Now())
+	if err != nil {
 		return err
 	}
-	var subs []string
 	sels := []struct {
 		sel   SubSelector
 		label string
@@ -305,7 +314,8 @@ func (a *App) printWakeGuidance(runtime string) {
 	if runtime == "muse" {
 		a.printf("Read messages with `a2a inbox`; only inbox receipts them.\n")
 		a.printf("Muse project hooks require native human trust. Start/Prompt context receipt and same-session shell/hook/inbox identity remain unqualified; Stop is a terminal systemMessage only.\n")
-		a.printf("Installing Muse hooks does not arm idle wake. Native Monitor/launcher supervision and idle/busy delivery require separate acceptance; do not start a competing consumer.\n")
+		a.printf("For idle wake, bind this session: `a2a bind --runtime muse --owner-pid <own muse pid>` (session id from MUSE_SESSION_ID); inspect it with `a2a bind status`. With a live binding, use its supervised consumer; do not start a competing wait/watch or Monitor.\n")
+		a.printf("The bound Muse session must accept external session messages (Muse's external-agent ingress): a session started without it refuses every wake as `ingress_closed`; see the `a2a bind` docs.\n")
 		return
 	}
 	a.printf("Read messages with `a2a inbox`. Inspect your own binding with `a2a bind status`.\n")

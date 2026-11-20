@@ -185,6 +185,76 @@ func TestTerminalRefreshSafePoint(t *testing.T) {
 	}
 }
 
+// A muse binding keeps its XDG registry selectors in the probe and re-exec
+// environments. Selecting the plain allowlist at refresh would strand the
+// re-execed consumer on a different Muse registry than bind admitted, so
+// both environments must be the muse-carrier selection for this binding.
+func TestTerminalRefreshMuseCarrierEnv(t *testing.T) {
+	isolateBindTest(t)
+	t.Setenv("XDG_DATA_HOME", "/lane/data")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/lane")
+	a, s, _ := refreshApp(t)
+	if _, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		st.Terminal.Target = tmuxwake.Target{Runtime: "muse"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := refreshExecutable(t)
+	var probeEnv, execEnv []string
+	r := &terminalRefresh{path: path,
+		probe: func(_ context.Context, _ string, env []string) error { probeEnv = slices.Clone(env); return nil },
+		exec:  func(_ string, _ []string, env []string) error { execEnv = slices.Clone(env); return syscall.ENOEXEC },
+	}
+	matureRefresh(t, r)
+	err := config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error { r.poll(context.Background(), a, s, "refresh-gen", lock); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), "refresh-session", "muse")
+	for name, got := range map[string][]string{"probe": probeEnv, "exec": execEnv} {
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s env = %q, want muse carrier env %q", name, got, want)
+		}
+		if !slices.Contains(got, "XDG_DATA_HOME=/lane/data") || !slices.Contains(got, "XDG_RUNTIME_DIR=/run/lane") {
+			t.Fatalf("%s env dropped the muse registry selectors: %q", name, got)
+		}
+	}
+}
+
+// If the binding moved on after the safety check, refresh must not guess
+// the runtime: guessing the plain allowlist would re-exec a possible muse
+// binding without its XDG registry selectors. The cycle refuses before
+// any probe or exec; the next poll retries against current state.
+func TestTerminalRefreshRefusesUnknownRuntime(t *testing.T) {
+	isolateBindTest(t)
+	a, s, _ := refreshApp(t)
+	if _, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		st.Terminal.Generation = "other-gen"
+		st.Terminal.Target = tmuxwake.Target{Runtime: "muse"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := refreshExecutable(t)
+	probes, execs := 0, 0
+	r := &terminalRefresh{path: path,
+		safety: func(context.Context, *App, *session, string) (string, bool, error) {
+			return "refresh-session", true, nil
+		},
+		probe: func(context.Context, string, []string) error { probes++; return nil },
+		exec:  func(string, []string, []string) error { execs++; return syscall.ENOEXEC },
+	}
+	matureRefresh(t, r)
+	err := config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error { r.poll(context.Background(), a, s, "refresh-gen", lock); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probes != 0 || execs != 0 {
+		t.Fatalf("unknown-runtime refresh reached probe=%d exec=%d, want neither", probes, execs)
+	}
+}
+
 // Real file observations reject truncated native images, nonexecutables,
 // directories, symlinks, FIFOs, foreign ownership and disappearance before exec.
 // Each refusal is paired with the same complete native positive image.

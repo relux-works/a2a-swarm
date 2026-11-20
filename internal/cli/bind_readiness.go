@@ -22,7 +22,9 @@ func (a *App) terminalEffects(b config.TerminalBinding) terminalEffects {
 	if a.terminalFixture != nil {
 		return a.terminalFixture(b)
 	}
-	return boundTerminal(b)
+	bound := boundTerminal(b)
+	bound.Muse = a.museSender
+	return bound
 }
 
 func boundTerminal(b config.TerminalBinding) tmuxwake.BoundTerminal {

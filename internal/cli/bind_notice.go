@@ -224,6 +224,11 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		}
 		projected := readinessStatus(live.Runtime, b.Readiness, a.Now())
 		input = &live.Input
+		if b.Target.Runtime == "muse" {
+			// No composer exists on this carrier: readiness is session
+			// liveness, delivery history is the send refusal above.
+			input = nil
+		}
 		readiness = &projected
 	}
 	if noticeValid(n) != nil {

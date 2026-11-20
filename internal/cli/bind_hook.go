@@ -35,6 +35,8 @@ func (a *App) autoBindHook(ctx context.Context, runtime string, in hookInput, mo
 	if manualWakeGate(st) != "" || st.Runtime != nil && !st.Runtime.Retired {
 		return nil
 	}
+	// Muse hooks return through runMuseHook before this path, so every
+	// runtime here is a tmux carrier and needs its pane selectors.
 	if a.Getenv("TMUX") == "" || a.Getenv("TMUX_PANE") == "" {
 		return errors.New("auto-bind unavailable: this session has no tmux target")
 	}

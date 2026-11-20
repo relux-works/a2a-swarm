@@ -52,11 +52,53 @@ const (
 	defaultBindMaxWakes = 30
 )
 
+// museSessionID reads the Muse session env: MUSE_SESSION_ID, with the
+// older MUSE_THREAD_ID spelling as fallback. A set value is never skipped
+// for the other spelling, even when malformed.
+func (a *App) museSessionID() string {
+	if id := a.Getenv("MUSE_SESSION_ID"); id != "" {
+		return id
+	}
+	return a.Getenv("MUSE_THREAD_ID")
+}
+
+// museAncestor reports whether pid descends from ancestor. A bind run from
+// a Muse tool shell descends from the muse-bin owner process.
+func (a *App) museAncestor(ctx context.Context, pid, ancestor int) bool {
+	if a.museBindAncestor != nil {
+		return a.museBindAncestor(ctx, pid, ancestor)
+	}
+	return descendant(ctx, pid, ancestor)
+}
+
+// museOwnerProcessName returns the image name of one own-UID process.
+func (a *App) museOwnerProcessName(ctx context.Context, pid int) (string, error) {
+	if a.museOwnerName != nil {
+		return a.museOwnerName(ctx, pid)
+	}
+	rows, err := bindingProcesses(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range rows {
+		if p.PID == pid {
+			if p.UID != os.Getuid() {
+				return "", errors.New("bind owner is not an own process")
+			}
+			return p.Name, nil
+		}
+	}
+	return "", errors.New("bind owner process unavailable")
+}
+
 // Native session metadata is a selector, never binding/lease authority. Keep
 // explicit A2A and Codex precedence, and never fall through a malformed value.
 func (a *App) terminalSessionID(runtime string) string {
 	if id := a.Getenv(EnvSessionID); id != "" {
 		return id
+	}
+	if runtime == "muse" {
+		return a.museSessionID()
 	}
 	if id := a.Getenv("CODEX_THREAD_ID"); id != "" {
 		return id
@@ -105,9 +147,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	}
 
 	fs := newFlagSet("bind")
-	runtime := fs.String("runtime", "", "claude or codex")
+	runtime := fs.String("runtime", "", "claude, codex or muse")
 	owner := fs.Int("owner-pid", 0, "own live runtime PID")
-	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID, CODEX_THREAD_ID, or native Claude session)")
+	sessionID := fs.String("session-id", "", "own live session (default A2A_SESSION_ID, CODEX_THREAD_ID, MUSE_SESSION_ID, or native Claude session)")
 	pane := fs.String("pane", a.Getenv("TMUX_PANE"), "own exact tmux pane")
 	socket := fs.String("socket", strings.Split(a.Getenv("TMUX"), ",")[0], "own tmux socket")
 	interval := fs.Duration("interval", defaultBindInterval, "idle observation and sync interval (1s..60s)")
@@ -147,22 +189,54 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	if current == "" && *runtime == "claude" && a.Getenv("CODEX_THREAD_ID") == "" {
 		current = a.Getenv("CLAUDE_CODE_SESSION_ID")
 	}
+	if current == "" && *runtime == "muse" {
+		current = a.museSessionID()
+	}
 	if current != "" && current != *sessionID {
 		return usagef("bind refuses another live session")
 	}
 	if current := a.Getenv("CODEX_THREAD_ID"); current != "" && (*runtime != "codex" || current != *sessionID) {
 		return usagef("bind refuses another live Codex session")
 	}
-	if *pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "" {
+	if current := a.museSessionID(); current != "" && (*runtime != "muse" || current != *sessionID) {
+		return usagef("bind refuses another live Muse session")
+	}
+	isMuse := *runtime == "muse"
+	if isMuse && mode == bindingManual && current == "" {
+		// A manual muse bind must run inside the Muse session it binds:
+		// a session selector (A2A_SESSION_ID, then MUSE_SESSION_ID or
+		// MUSE_THREAD_ID) must be present, and the checks above already
+		// refused any present value that names another session.
+		return usagef("bind --runtime muse requires this Muse session: run it inside the session being bound (MUSE_SESSION_ID, MUSE_THREAD_ID or A2A_SESSION_ID)")
+	}
+	if !isMuse && (*pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "") {
 		return usagef("bind requires this invocation's own tmux pane/socket")
 	}
 	probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 	defer cancel()
-	target, err := tmuxwake.Pin(probe, *socket, *pane, *runtime)
+	var target tmuxwake.Target
+	if isMuse {
+		target, err = tmuxwake.PinMuse(probe, *sessionID, a.museSender)
+	} else {
+		target, err = tmuxwake.Pin(probe, *socket, *pane, *runtime)
+	}
 	if err != nil {
 		return err
 	}
-	if !descendant(probe, os.Getppid(), *owner) || !descendant(probe, *owner, target.PanePID) {
+	if isMuse {
+		// The muse carrier has no pane, so its authority is invocation
+		// ancestry plus the owner image: this bind must descend from the
+		// owner process (a Muse tool shell descends from muse-bin), and
+		// that owner must be a muse/muse-bin* process. The exact live
+		// session (PinMuse) and the owner birth checked below complete it.
+		if !a.museAncestor(probe, os.Getppid(), *owner) {
+			return errors.New("bind owner is not this invocation's muse runtime")
+		}
+		ownerName, err := a.museOwnerProcessName(probe, *owner)
+		if err != nil || !isMuseOwnerName(ownerName) {
+			return errors.New("bind owner is not a muse process")
+		}
+	} else if !descendant(probe, os.Getppid(), *owner) || !descendant(probe, *owner, target.PanePID) {
 		return errors.New("bind owner is not this invocation's runtime in this pane")
 	}
 	birth, err := tmuxwake.Birth(probe, *owner)
@@ -322,7 +396,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				child.Args[0] = alias
 			}
 		}
-		child.Env = detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), b.SessionID)
+		child.Env = detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), b.SessionID, b.Target.Runtime)
 		child.ExtraFiles = []*os.File{writer}
 		child.Stdout = log
 		child.Stderr = log
@@ -365,7 +439,11 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		}
 		return errors.New("binding did not arm; inspect own binding status/log before retrying")
 	}
-	a.printf("%s bound pid=%d; persistent terminal fallback; unbind stops it\n", s.name, child.Process.Pid)
+	carrier := "persistent terminal fallback"
+	if *runtime == "muse" {
+		carrier = "persistent muse session-message carrier"
+	}
+	a.printf("%s bound pid=%d; %s; unbind stops it\n", s.name, child.Process.Pid, carrier)
 	return nil
 }
 
@@ -1159,6 +1237,7 @@ func (a *App) terminalPreSendSuppressed(s *session, generation string, expected 
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
+	var refusal *config.TerminalSendRefusal
 	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
@@ -1171,11 +1250,36 @@ func (a *App) terminalPreSendSuppressed(s *session, generation string, expected 
 		b.Outcome = "suppressed: busy, draft or unknown input"
 		dropRetiredStrandedAlarms(st)
 		l := st.Lease
-		if r.InputObserved && r.Input == (tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonLayoutUnrecognized}) && sameTerminalScope(*b, expected) && ownTerminalTarget(b, expected.Target) && !st.HooksPaused && manualWakeGate(*st) == "" && (st.Runtime == nil || st.Runtime.Retired) && l != nil && l.Holder == b.SessionID && l.Host == machineLabel() && l.Expires.After(a.Now()) {
+		fenced := sameTerminalScope(*b, expected) && ownTerminalTarget(b, expected.Target) && !st.HooksPaused && manualWakeGate(*st) == "" && (st.Runtime == nil || st.Runtime.Retired) && l != nil && l.Holder == b.SessionID && l.Host == machineLabel() && l.Expires.After(a.Now())
+		if expected.Target.Runtime == "muse" {
+			// Session liveness is this carrier's whole pre-send gate. Record
+			// the named refusal with its time; never composer vocabulary.
+			reason := tmuxwake.ReasonSessionUnavailable
+			b.Outcome = "suppressed: muse session unavailable"
+			if r.Runtime.Reason == tmuxwake.RuntimeSessionDead {
+				reason = tmuxwake.ReasonSessionDead
+				b.Outcome = "suppressed: muse session dead"
+			}
+			if fenced {
+				// The binding log gets one line per refusal reason, not
+				// one per observation cycle; the state record still
+				// carries the latest refusal time.
+				changed := b.SendRefusal == nil || b.SendRefusal.Reason != reason
+				b.SendRefusal = &config.TerminalSendRefusal{Reason: reason, At: a.Now().UTC()}
+				if changed {
+					refusal = b.SendRefusal
+				}
+			}
+			return nil
+		}
+		if r.InputObserved && r.Input == (tmuxwake.InputAssessment{State: tmuxwake.InputUnavailable, Reason: tmuxwake.InputReasonLayoutUnrecognized}) && fenced {
 			b.WakeDiagnostic = wakediag.Retain(b.WakeDiagnostic, wakediag.TerminalLayoutRefused, a.Now())
 		}
 		return nil
 	})
+	if err == nil && refusal != nil {
+		_ = appendSendRefusal(s, *refusal)
+	}
 	return err
 }
 

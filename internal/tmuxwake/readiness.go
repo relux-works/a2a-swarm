@@ -47,9 +47,17 @@ type BoundTerminal struct {
 	Generation         string
 	SessionID          string
 	NoticePosition     *ComposerPosition
+	// Muse is the session-message seam of the muse carrier; nil selects
+	// the Muse CLI route. It is never read for claude or codex targets.
+	Muse MuseSender
 }
 
 func (k ReadinessKey) valid() bool {
+	if k.Route == MuseSessionRoute {
+		// The muse carrier pins owner process, generation and the exact
+		// session id; it has no pane, registry or composer geometry.
+		return k.Target.Runtime == "muse" && k.Target.OwnerPID > 1 && k.Target.OwnerBirth != "" && k.Target.Pane == "" && k.Target.SocketID == "" && k.Generation != "" && ValidMuseSessionID(k.SessionID) && k.ClaudeRegistryRoot == "" && k.RegistrySessionID == "" && k.RegistryVersion == "" && k.RegistryStatus == "" && k.RegistryStatusAt == 0 && k.ComposerRow == 0 && k.ComposerColumn == 0 && k.PaneWidth == 0
+	}
 	if k.Target.OwnerPID <= 1 || k.Target.OwnerBirth == "" || k.Target.Pane == "" || k.Target.SocketID == "" || k.Generation == "" || k.SessionID == "" || k.ComposerRow < 0 || k.ComposerColumn < 0 || k.PaneWidth <= 0 || k.ComposerColumn >= k.PaneWidth {
 		return false
 	}
@@ -76,7 +84,7 @@ func (r ReadinessAssessment) runtimeEligible() bool {
 		return false
 	}
 	switch r.Key.Route {
-	case LegacyCodex, RegistryLegacy, RegistryNamed:
+	case LegacyCodex, RegistryLegacy, RegistryNamed, MuseSessionRoute:
 		return r.Runtime.State == RuntimeReady && r.Runtime.Reason == RuntimeNone
 	case LegacyFallback:
 		switch r.Runtime.Reason {
@@ -176,6 +184,9 @@ func (t BoundTerminal) assess(ctx context.Context, owned string) (ReadinessAsses
 // One logical assessment comprises several independent reads, not an atomic
 // snapshot. The same observation supplies telemetry, parser result and key.
 func (t BoundTerminal) assessWithNotice(ctx context.Context, owned, diagnosticNotice string) (ReadinessAssessment, Box) {
+	if t.Target.Runtime == "muse" {
+		return t.assessMuse(ctx), Box{}
+	}
 	r := ReadinessAssessment{Runtime: runtimeResult(RuntimeTargetUnavailable, ""), Input: InputAssessment{InputUnavailable, InputReasonTargetUnavailable}}
 	x, y, width, err := t.Target.Inspect(ctx)
 	if err != nil || ctx.Err() != nil {

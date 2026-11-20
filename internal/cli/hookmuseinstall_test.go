@@ -178,12 +178,12 @@ func TestMuseInstallLeaseAndPause(t *testing.T) {
 }
 
 // The existing identity ensure dispatch selects Muse and installs its project
-// config idempotently. Guidance explicitly leaves idle/context/session gates
-// unqualified instead of advertising a nonexistent binding controller.
+// config idempotently. Guidance leaves the context/session gates unqualified
+// and names bind --runtime muse as the idle-wake carrier.
 func TestMuseEnsure(t *testing.T) {
 	e := newEnv(t)
 	r := e.ensure("--role", "dev", "--project", "sample", "--runtime", "muse").ok(t)
-	if !strings.Contains(r.stdout, "does not arm idle wake") || !strings.Contains(r.stdout, "same-session") {
+	if !strings.Contains(r.stdout, "a2a bind --runtime muse") || !strings.Contains(r.stdout, "same-session") {
 		t.Fatalf("missing limits: %+v", r)
 	}
 	path := filepath.Join(e.projDir, DefaultMuseHooks)

@@ -40,7 +40,7 @@ func main() {
 		{"internal/cli/bind.go", "for i := 0; i < 64 && pid > 1; i++ {", "for i := 0; i < 64 && pid > 1; i++ {\n if n1fixture.Require(pid)!=nil { return false }"},
 		{"internal/cli/bind.go", "\t\tif st.HostEnrollment != nil {", "\t\tif err = n1AfterLoad(ctx, st); err != nil { return err }\n\t\tif st.HostEnrollment != nil {"},
 		{"internal/cli/bind.go", "child = exec.Command(exe, append(pin, \"--as\", s.name, \"bind\", \"--run-generation\", b.Generation)...)", "child = n1ConsumerCommand(exe, append(pin, \"--as\", s.name, \"bind\", \"--run-generation\", b.Generation), b.Generation)"},
-		{"internal/cli/bind.go", "child.Env = detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), b.SessionID)", "child.Env = n1ConsumerEnv(detachedConsumerEnv(os.Environ(), s.paths.ConfigRoot(), b.SessionID), b.Generation)"},
+		{"internal/cli/bind.go", "child.Env = detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), b.SessionID, b.Target.Runtime)", "child.Env = n1ConsumerEnv(detachedConsumerEnvForRuntime(os.Environ(), s.paths.ConfigRoot(), b.SessionID, b.Target.Runtime), b.Generation)"},
 		{"internal/cli/bind.go", "if err = child.Start(); err != nil {", "if err = n1Started(child, b.Generation); err != nil {"},
 		{"internal/cli/bind.go", "go child.Wait()", "// Wait owner was installed immediately by n1Started."},
 		{"internal/cli/bind.go", "\t\tvar runErr error\n", "\t\tif err = n1fixture.Latch(ctx, os.Getenv(\"N1_ROLE\")+\"-startup\"); err != nil { return err }\n\t\tvar runErr error\n"},

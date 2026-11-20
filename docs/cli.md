@@ -98,7 +98,7 @@ until it is set. `a2a host show` prints the slug.
 a2a host init workstation
 ```
 
-### `a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|none] [--keeper] [--preset P[,P...] [--product X] [--resource ROOM]]`
+### `a2a identity ensure --role R [--project P] [--dir D] [--runtime claude|codex|muse|none] [--keeper] [--preset P[,P...] [--product X] [--resource ROOM]]`
 Onboards a new orchestrator in one command (owner requirement, 2026-09-29): it provisions this session's stable identity
 `<host>_<project>_<role>`, then joins the swarm rooms, creates the onboarding subscriptions, installs the notification hooks and prints a
 summary. Every step is printed; nothing is a hidden default; a re-run changes nothing and says `already` / `unchanged`.
@@ -127,15 +127,20 @@ a missing room. The implementation still has that capability (step 2 below); it 
    - with `--keeper`, `#system`.
 3. **Subscriptions** (`subscriptions:`), idempotent: a live subscription with an equal selector (kinds compared as a set) is reused, never
    duplicated. Each line is `created|already <sub-id><TAB><summary>`.
-   - `--room #<project> --kind system,owner-needed,decision` (one subscription);
+   - `--room #<project> --kind system,owner-needed,decision` (one subscription), and the same for `#lobby`;
+   - the dedicated host-principal rows of every joined room (`--from <principal> --all-events`, the standing principal rule; nothing
+     beyond it is created for any runtime, muse included);
    - with `--keeper` only: `--room system --all-events`.
+   The summary's `subscriptions:` list contains every row in effect after onboarding, principal rows included (`(host principal)`).
 4. **Hooks** (`hooks (<runtime>, <source>):`). The runtime is `--runtime`; without it, it is detected ONLY from an unambiguous Claude Code
    environment: `CLAUDECODE=1` and none of the Codex markers `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`
    (source `detected: CLAUDECODE=1`). `CLAUDECODE` with another value, `CLAUDECODE=1` next to a Codex marker, or a Codex marker alone is
    `the runtime is ambiguous (…)`; no marker is `cannot detect the runtime`: both are usage errors (exit 2, before any traffic) asking for
    `--runtime`. Codex is never auto-detected.
    - claude: `a2a hook install --agent <name> --runtime claude --settings <dir>/.claude/settings.local.json`;
-   - codex: `a2a hook install --agent <name> --runtime codex --settings <dir>/.codex/hooks.json`, plus the one-time Codex trust step it prints.
+   - codex: `a2a hook install --agent <name> --runtime codex --settings <dir>/.codex/hooks.json`, plus the one-time Codex trust step it prints;
+   - muse: `a2a hook install --agent <name> --runtime muse --settings <dir>/.muse/hooks.json`, plus the native human trust step it prints.
+     Its wake guidance names `a2a bind --runtime muse` as the idle-wake carrier.
    - `<dir>` is `--dir` (the current directory when omitted), printed as an absolute path. The file is merged as by `hook install` and left
      byte-identical on a re-run (`unchanged …`).
    - For session runtimes, prints conditional wake guidance: inspect your own `a2a bind status` and read with `a2a inbox`.
@@ -2602,8 +2607,12 @@ Run `a2a inbox` with Muse's per-command approval, outside the default Muse sandb
 Muse doorbells and hook context/Stop text include that instruction. a2a does not change Muse's sandbox configuration.
 Messages sent after the identity joined but before its first sync use the bounded post-join recovery in the delivery contract above (issue #278).
 
-Idle wake is unsupported for Muse (issue #274). Hooks run only at those
-lifecycle events; installation does not create a terminal/native consumer.
+Hooks run only at those lifecycle events; installation does not itself create
+a terminal/native consumer. For idle wake, bind the session with
+`a2a bind --runtime muse` (see the `a2a bind` section below): run it once from
+inside the Muse session being bound, with the same per-command approval
+outside the default Muse sandbox as `a2a inbox`, because the default sandbox
+cannot open the identity state lock.
 Use `a2a hook uninstall --runtime muse` to remove these hooks.
 
 #### `a2a hook pause|resume --agent NAME`
@@ -2643,6 +2652,23 @@ permission, question or plan dialog. The old bridge stays removed. The guarded f
 ### `a2a bind` / `a2a bind status` / `a2a unbind`
 
 Trusted `a2a hook session-start --runtime claude|codex` automatically binds **the session that fired the hook** in tmux.
+A muse session binds with `--runtime muse` instead: no tmux target or composer observation exists on that carrier.
+Its session id resolves from `--session-id`, then `A2A_SESSION_ID`, then `MUSE_SESSION_ID` (or `MUSE_THREAD_ID`); the exact session
+must be live in `muse sessions --json` and `--owner-pid` names the live muse process (birth-pinned like the tmux carrier's owner).
+A manual muse bind must run inside the session it binds: one of those session selectors must be present and name the bound
+session, the bind invocation must descend from the `--owner-pid` process, and that owner must be a `muse`/`muse-bin*` process.
+The detached consumer keeps the bind-time `XDG_DATA_HOME`/`XDG_RUNTIME_DIR`, so it reads the same Muse session registry the
+bind admitted, and every Muse invocation runs with `MUSE_NO_AUTO_UPDATE=1`.
+Prerequisite on the Muse side: the bound session must accept external session messages (Muse's external-agent ingress,
+`MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS`). The consumer sends as an external sender with no `MUSE_*` session variables, so
+a target started without ingress refuses every wake as `ingress_closed` (and an unverified sender as `sender_unverified`);
+enable ingress for the target session before binding.
+Delivery sends only `a2a: N new peer events; run a2a inbox` through `muse session-message send --target <session-id>`; the mailbox
+stays first and only `inbox` receipts mail. `sender_unverified`, `dead_session`, `session_unavailable` and `ingress_closed` are named
+bind refusals recorded with their time (`send_refusal=… at=…` in `bind status` and the binding log); there is no tmux typing fallback.
+Readiness for muse is session liveness plus the last delivery outcome (`session_dead` / `session_unavailable`), never composer or
+registry vocabulary. Lease, hourly rate cap, two-sample qualification, duplicate suppression and one bounded retry of an uncertain
+send are the same supervised consumer contract as the tmux carrier.
 It discovers the nearest own-UID runtime ancestor (not the hook shell), validates its birth and pane ancestry, and uses the hook JSON session ID.
 Its explicit policy is a 2s observation interval, 30s maximum retry backoff and 30 wake attempts/hour. Startup, resume, compact and clear preserve
 an existing matching live generation/PID. Clear with a new session ID atomically hands its binding and own lease to that ID only after host,
@@ -2667,6 +2693,8 @@ native version, attach a second app-server, resume a thread, or change hooks/tru
 a2a bind --runtime codex --owner-pid 12345 --session-id "$CODEX_THREAD_ID" \
   --interval 2s --retry-max 30s --max-wakes-per-hour 30
 # Claude: --runtime claude, and its own A2A_SESSION_ID, CLAUDE_CODE_SESSION_ID, or explicit --session-id.
+# Muse: no pane; the session id defaults to MUSE_SESSION_ID and the session must be live.
+a2a bind --runtime muse --owner-pid 12345 --interval 2s --retry-max 30s --max-wakes-per-hour 30
 a2a bind status
 a2a unbind
 ```
@@ -2675,6 +2703,8 @@ If `bind status` shows `unbound` in your tmux session before another hook runs, 
 
 Session selection keeps explicit `--session-id`, then `A2A_SESSION_ID`, then `CODEX_THREAD_ID`; a Claude bind/unbind can also use
 `CLAUDE_CODE_SESSION_ID` when those environment selectors are absent. A conflicting current selector still refuses an explicit foreign ID.
+Symmetrically, a Claude or Codex bind refuses while `MUSE_SESSION_ID` or `MUSE_THREAD_ID` is set (`bind refuses another live Muse
+session`): from inside a Muse session, bind with `--runtime muse` or run the other runtime's bind from its own session.
 Malformed values do not enable a lower-priority bind selector. Native Claude commands use that same valid session ID for the lease,
 so a hook-owned lease is shared rather than stolen; foreign live lease holders still refuse. No environment value bypasses target/ancestry checks.
 
