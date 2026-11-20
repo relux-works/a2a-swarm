@@ -335,31 +335,36 @@ func TestProjectionRingsSystemRoomSubscription(t *testing.T) {
 	e.project().ok(t)
 	incSub, _ := e.subscribe("carol", "--room", "system", "--subtype", "incident")
 	e.as("carol", "wait", "--timeout", "10ms").ok(t)
-	incident := func(subtype string) {
+	incident := func(subtype, recipient string) {
 		e.hs.inject(room, "@bob:test.local", msg("- from: bob\n\nrunner down", map[string]any{
-			ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{"dave"}, Kind: "system", Subtype: subtype, Slug: "alpha"}}))
+			ContentKey: Header{V: 1, Type: "message", From: "bob", To: []string{recipient}, Kind: "system", Subtype: subtype, Slug: "alpha"}}))
 		e.project().ok(t)
 	}
-	incident("landing")
+	incident("landing", "all")
 	if r := e.as("carol", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
 		t.Fatalf("a landing rang the incident subscription: %q", r.stdout)
 	}
-	incident("incident")
+	incident("incident", "all")
 	r := e.as("carol", "wait", "--timeout", "2s").ok(t)
 	tuitestkit.ContainsStr(t, r.stdout, "sub #system ")
 	if strings.Count(r.stdout, "\n") != 1 {
 		t.Fatalf("want exactly the incident projection: %q", r.stdout)
 	}
+	// A matching projection subscription cannot override another audience.
+	incident("incident", "dave")
+	if r := e.as("carol", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
+		t.Fatal("nonrecipient projection bypassed audience gate")
+	}
 
 	e.as("carol", "unsubscribe", incSub).ok(t)
 	e.as("carol", "subscribe", "--room", "system", "--from", "mallory", "--kind", "system").ok(t)
 	e.as("carol", "subscribe", "--kind", "system").ok(t)
-	incident("incident")
+	incident("incident", "all")
 	if r := e.as("carol", "wait", "--timeout", "80ms").ok(t); r.stdout != "timeout\n" {
 		t.Fatalf("another sender or a room=all subscription rang: %q", r.stdout)
 	}
 	e.as("carol", "subscribe", "--room", "system", "--from", "bob", "--kind", "system").ok(t)
-	incident("incident")
+	incident("incident", "all")
 	r = e.as("carol", "wait", "--timeout", "2s").ok(t)
 	tuitestkit.ContainsStr(t, r.stdout, "sub #system ")
 }

@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/audience"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
 
@@ -68,14 +70,26 @@ type MailEntry struct {
 }
 
 type mailLine struct {
-	Op      string      `json:"op"` // add, rcpt, shown, redact, seenby
-	Entry   *MailEntry  `json:"entry,omitempty"`
-	IDs     []string    `json:"ids,omitempty"`
-	Targets []Redaction `json:"targets,omitempty"`
+	Op         string              `json:"op"` // add, rcpt, shown, redact, seenby, audience, select
+	Entry      *MailEntry          `json:"entry,omitempty"`
+	IDs        []string            `json:"ids,omitempty"`
+	Targets    []Redaction         `json:"targets,omitempty"`
+	Audiences  []audience.Evidence `json:"audiences,omitempty"`
+	At         time.Time           `json:"at,omitempty"`
+	Selections []MailSelection     `json:"selections,omitempty"`
 	// SeenBy on a rcpt line (or op seenby, as compaction writes it) is the
 	// Seen by fence: this mailbox has received entries under a read-receipt
 	// ledger. Older readers ignore both forms.
 	SeenBy bool `json:"seenby,omitempty"`
+}
+
+// MailSelection resolves a deferred entry's ordinary relevance without
+// replacing its payload, receiving it or changing the immutable audience.
+type MailSelection struct {
+	Room    string `json:"room"`
+	EventID string `json:"event_id"`
+	Rel     string `json:"rel"`
+	Sub     string `json:"sub,omitempty"`
 }
 
 // Redaction is scoped to a room, independently of delivery receipts. Keep it
@@ -98,6 +112,8 @@ type Mailbox struct {
 	needsRedactionRewrite bool // stale payload scrubbed while opening an older mailbox
 	seenBy                bool // the Seen by fence is durable in the file
 	fenceNext             bool // the next receipt line carries the fence
+	audiences             map[audience.Key]audience.Evidence
+	readCache             *ReadCache
 }
 
 // OpenMailbox loads state/<name>.mailbox.jsonl. A missing file is an empty
@@ -106,7 +122,7 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
-	m := &Mailbox{path: p.MailboxFile(name), live: map[string]*MailEntry{}, recv: map[string]bool{}, redacted: map[Redaction]bool{}}
+	m := &Mailbox{path: p.MailboxFile(name), live: map[string]*MailEntry{}, recv: map[string]bool{}, redacted: map[Redaction]bool{}, audiences: map[audience.Key]audience.Evidence{}, readCache: p.readCache}
 	if err := checkSecretFile(m.path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return m, nil
@@ -311,6 +327,16 @@ func (c *ReadCache) openMailboxIncremental(name, path string, stamp FileStamp) (
 
 func (m *Mailbox) apply(l mailLine) {
 	switch l.Op {
+	case "select":
+		for _, selected := range l.Selections {
+			if e := m.live[selected.EventID]; e != nil && e.Room == selected.Room && e.Rel == "" {
+				e.Rel, e.Sub = selected.Rel, selected.Sub
+			}
+		}
+	case "audience":
+		for _, e := range l.Audiences {
+			m.audiences[audience.Key{Room: e.Room, EventID: e.EventID}] = e
+		}
 	case "add":
 		if l.Entry == nil || l.Entry.ID == "" || m.Has(l.Entry.ID) {
 			m.dead++
@@ -328,7 +354,8 @@ func (m *Mailbox) apply(l mailLine) {
 		}
 		m.dead++
 		for _, id := range l.IDs {
-			if _, ok := m.live[id]; ok {
+			if entry, ok := m.live[id]; ok {
+				m.retainAudience(entry.Room, id, l.At)
 				delete(m.live, id)
 				m.dead++
 			}
@@ -349,6 +376,7 @@ func (m *Mailbox) apply(l mailLine) {
 	case "redact":
 		for _, target := range l.Targets {
 			m.redacted[target] = true
+			m.retainAudience(target.Room, target.EventID, l.At)
 		}
 		for _, e := range m.live {
 			if m.scrub(e) {
@@ -384,11 +412,17 @@ func (m *Mailbox) scrub(e *MailEntry) bool {
 // pending entries, shown marks, receipts and permanent target tombstones. It
 // must complete before the sync cursor advances. Other copies are untouched.
 func (m *Mailbox) Redact(targets []Redaction) error {
+	return m.RedactAt(targets, time.Now().UTC())
+}
+
+// RedactAt permits the caller's delivery clock to govern evidence retention.
+func (m *Mailbox) RedactAt(targets []Redaction, now time.Time) error {
 	changed := m.needsRedactionRewrite
 	for _, target := range targets {
 		if target.Room != "" && target.EventID != "" && !m.redacted[target] {
 			m.redacted[target] = true
 			changed = true
+			m.retainAudience(target.Room, target.EventID, now)
 		}
 	}
 	for _, e := range m.live {
@@ -500,8 +534,20 @@ func (m *Mailbox) Received(id string) bool { return m.recv[id] }
 // Pending returns the unreceipted entries in append order.
 func (m *Mailbox) Pending() []MailEntry {
 	var out []MailEntry
+	for _, e := range m.RawPending() {
+		if m.pendingFilter == nil || m.pendingFilter(e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// RawPending is reserved for scrubbing and security/audit checks. Delivery
+// consumers install a narrowing view and use Pending instead.
+func (m *Mailbox) RawPending() []MailEntry {
+	var out []MailEntry
 	for _, id := range m.order {
-		if e, ok := m.live[id]; ok && (m.pendingFilter == nil || m.pendingFilter(*e)) {
+		if e, ok := m.live[id]; ok {
 			out = append(out, *e)
 		}
 	}
@@ -511,6 +557,104 @@ func (m *Mailbox) Pending() []MailEntry {
 // SetPendingFilter restricts this in-memory delivery view only. Entries,
 // receipts, deduplication and durable history are preserved.
 func (m *Mailbox) SetPendingFilter(filter func(MailEntry) bool) { m.pendingFilter = filter }
+
+// AddPendingFilter intersects another consumer-local view with any installed
+// view. A mailbox may have multiple independent admission filters.
+func (m *Mailbox) AddPendingFilter(filter func(MailEntry) bool) {
+	if filter == nil {
+		return
+	}
+	if prior := m.pendingFilter; prior != nil {
+		m.pendingFilter = func(entry MailEntry) bool { return prior(entry) && filter(entry) }
+		return
+	}
+	m.pendingFilter = filter
+}
+
+func (m *Mailbox) Audience(k audience.Key) (audience.Evidence, bool) {
+	e, ok := m.audiences[k]
+	return e, ok
+}
+
+func (m *Mailbox) retainAudience(room, id string, at time.Time) {
+	k := audience.Key{Room: room, EventID: id}
+	if e, ok := m.audiences[k]; ok && !at.IsZero() {
+		until := at.Add(14 * 24 * time.Hour)
+		if until.After(e.RetainUntil) {
+			e.RetainUntil = until
+			m.audiences[k] = e
+		}
+	}
+}
+
+// SaveAudiences durably records minimal per-event decisions before payload
+// scrubbing or cursor advance. Known immutable decisions cannot be overwritten
+// by a later edit; unresolved records may be resolved on a bounded retry.
+func (m *Mailbox) SaveAudiences(evidence []audience.Evidence) error {
+	var changed []audience.Evidence
+	for _, e := range evidence {
+		k := audience.Key{Room: e.Room, EventID: e.EventID}
+		if old, ok := m.audiences[k]; ok {
+			if old.Version >= audience.Version && old.Decision != audience.Unresolved {
+				continue
+			}
+			prior, next := old, e
+			prior.ObservedAt, next.ObservedAt = time.Time{}, time.Time{}
+			prior.RetainUntil, next.RetainUntil = time.Time{}, time.Time{}
+			if prior == next {
+				continue
+			}
+			if old.RetainUntil.After(e.RetainUntil) {
+				e.RetainUntil = old.RetainUntil
+			}
+		}
+		if e.RetainUntil.IsZero() {
+			e.RetainUntil = e.ObservedAt.Add(14 * 24 * time.Hour)
+		}
+		changed = append(changed, e)
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	sort.Slice(changed, func(i, j int) bool {
+		if changed[i].Room != changed[j].Room {
+			return changed[i].Room < changed[j].Room
+		}
+		return changed[i].EventID < changed[j].EventID
+	})
+	var buf bytes.Buffer
+	l := mailLine{Op: "audience", Audiences: changed}
+	if err := writeLine(&buf, l); err != nil {
+		return err
+	}
+	if err := m.write(buf.Bytes()); err != nil {
+		return err
+	}
+	m.apply(l)
+	return nil
+}
+
+func (m *Mailbox) ResolveSelections(selections []MailSelection) error {
+	var changed []MailSelection
+	for _, selected := range selections {
+		if e := m.live[selected.EventID]; e != nil && e.Room == selected.Room && e.Rel == "" && selected.Rel != "" {
+			changed = append(changed, selected)
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	l := mailLine{Op: "select", Selections: changed}
+	var buf bytes.Buffer
+	if err := writeLine(&buf, l); err != nil {
+		return err
+	}
+	if err := m.write(buf.Bytes()); err != nil {
+		return err
+	}
+	m.apply(l)
+	return nil
+}
 
 // Append adds the entries that are not in the mailbox yet (by id) and fsyncs
 // the file before it returns; it returns how many were added.
@@ -568,7 +712,7 @@ func (m *Mailbox) receive(ids []string, index bool) (int, error) {
 	if len(keep) == 0 {
 		return 0, nil
 	}
-	line := mailLine{Op: "rcpt", IDs: keep, SeenBy: m.fenceNext && !m.seenBy}
+	line := mailLine{Op: "rcpt", IDs: keep, SeenBy: m.fenceNext && !m.seenBy, At: time.Now().UTC()}
 	var buf bytes.Buffer
 	if err := writeLine(&buf, line); err != nil {
 		return 0, err
@@ -611,6 +755,7 @@ func (m *Mailbox) MarkShown(ids []string) error {
 // ReceiptIndexMax received ids), then every unreceipted entry and its shown
 // mark. Unreceipted entries are never dropped.
 func (m *Mailbox) compact() error {
+	m.readCache.invalidateMailbox(m.path)
 	if len(m.received) > ReceiptIndexMax {
 		drop := m.received[:len(m.received)-ReceiptIndexMax]
 		for _, id := range drop {
@@ -619,6 +764,29 @@ func (m *Mailbox) compact() error {
 		m.received = append([]string(nil), m.received[len(m.received)-ReceiptIndexMax:]...)
 	}
 	var buf bytes.Buffer
+	// Retain evidence while its mail is live, and for at least fourteen days
+	// after receipt/redaction. Only compaction removes expired orphan evidence.
+	var evidence []audience.Evidence
+	now := time.Now().UTC()
+	for k, e := range m.audiences {
+		entry := m.live[k.EventID]
+		if (entry == nil || entry.Room != k.Room) && !e.RetainUntil.After(now) {
+			delete(m.audiences, k)
+			continue
+		}
+		evidence = append(evidence, e)
+	}
+	sort.Slice(evidence, func(i, j int) bool {
+		if evidence[i].Room != evidence[j].Room {
+			return evidence[i].Room < evidence[j].Room
+		}
+		return evidence[i].EventID < evidence[j].EventID
+	})
+	if len(evidence) > 0 {
+		if err := writeLine(&buf, mailLine{Op: "audience", Audiences: evidence}); err != nil {
+			return err
+		}
+	}
 	var targets []Redaction
 	for target := range m.redacted {
 		targets = append(targets, target)
@@ -689,6 +857,7 @@ func writeLine(buf *bytes.Buffer, l mailLine) error {
 // write appends data to the file (created 0600, never through a symlink) and
 // fsyncs it; a newly created file also syncs its directory.
 func (m *Mailbox) write(data []byte) error {
+	m.readCache.invalidateMailbox(m.path)
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
 		return err
 	}

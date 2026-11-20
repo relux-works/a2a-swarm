@@ -59,7 +59,6 @@ func richState(t *testing.T, p Paths) []byte {
 		for i := 0; i < 3; i++ {
 			s.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: fmt.Sprintf("$e%d", i), Root: "$r1"})
 		}
-		s.AgentDMContexts = json.RawMessage(`{"!dm":{"kind":"agent","n":1.000000000000000000001}}`)
 		s.Lease = &Lease{Holder: "sess", Host: "h", PID: 7, Expires: time.Unix(2000000000, 0).UTC()}
 		s.Terminal = &TerminalBinding{Generation: "g1", SessionID: "sess", Host: "h", Rung: []string{"$e1"}, AttemptIDs: []string{"$e1"},
 			Reservations: []time.Time{time.Unix(1900000000, 0).UTC()}, OwnNotice: OwnNoticeObservation{PossiblyOrphaned: &orphaned, Reason: "r"},
@@ -997,6 +996,88 @@ func TestStateCloneCoversWholeGraph(t *testing.T) {
 	}
 }
 
+// TestStateOpaqueReaderDetectorControl proves the complete-value oracle has a
+// valid baseline neighbor and detects a bounded lossy-reader plant. The expected
+// names and exact numeric lexemes come from the fixture, not a second decoder.
+func TestStateOpaqueReaderDetectorControl(t *testing.T) {
+	input := []byte(`{"next_batch":"s0","future_integer":9007199254740993,"future_decimal":1.000000000000000000001,"future_nested":{"values":[true,null,0,1.0,1e0,-0]},"future_null":null}`)
+	want := []struct{ name, value string }{
+		{"future_integer", `9007199254740993`},
+		{"future_decimal", `1.000000000000000000001`},
+		{"future_nested", `{"values":[true,null,0,1.0,1e0,-0]}`},
+		{"future_null", `null`},
+	}
+	check := func(st State) error {
+		if st.NextBatch != "s0" {
+			return errors.New("known cursor changed")
+		}
+		for _, expected := range want {
+			value, ok := st.opaque[expected.name]
+			if !ok {
+				return fmt.Errorf("opaque member %q missing", expected.name)
+			}
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, value); err != nil || compact.String() != expected.value {
+				return fmt.Errorf("opaque member %q=%s, want %s (compact error %v)", expected.name, compact.String(), expected.value, err)
+			}
+		}
+		if len(st.opaque) != len(want) {
+			return fmt.Errorf("opaque names count=%d, want %d", len(st.opaque), len(want))
+		}
+		return nil
+	}
+	var actual State
+	if err := unmarshalState(input, &actual); err != nil {
+		t.Fatalf("valid opaque baseline refused: %v", err)
+	}
+	if err := check(actual); err != nil {
+		t.Fatalf("valid opaque baseline lost data: %v", err)
+	}
+	lossyReader := func(data []byte) (State, error) {
+		var st State
+		if err := unmarshalState(data, &st); err != nil {
+			return State{}, err
+		}
+		delete(st.opaque, "future_integer") // bounded negative plant
+		return st, nil
+	}
+	planted, err := lossyReader(input)
+	if err != nil {
+		t.Fatalf("lossy-reader plant setup: %v", err)
+	}
+	if err := check(planted); err == nil || !strings.Contains(err.Error(), `"future_integer" missing`) {
+		t.Fatalf("lossy-reader plant escaped intended exact-value assertion: %v", err)
+	}
+}
+
+func stateCloneContractViolation(got, want State) error {
+	if !reflect.DeepEqual(got, want) {
+		return errors.New("typed State differs from the independent expected value")
+	}
+	if path := sharedMutable(reflect.ValueOf(got), reflect.ValueOf(want), "State"); path != "" {
+		return fmt.Errorf("typed State aliases mutable value at %s", path)
+	}
+	return nil
+}
+
+// TestStateCloneOmittedFieldDetectorControl runs the production clone through
+// the same independent-value oracle as a clone with a planted omitted field.
+func TestStateCloneOmittedFieldDetectorControl(t *testing.T) {
+	source, expected := populatedState(41), populatedState(41)
+	clone, ok := cloneState(&source)
+	if !ok {
+		t.Fatal("production clone rejected supported fixture")
+	}
+	if err := stateCloneContractViolation(clone, expected); err != nil {
+		t.Fatalf("production clone failed independent oracle: %v", err)
+	}
+	planted := source
+	planted.ThreadEvents = nil // bounded omitted-field plant
+	if err := stateCloneContractViolation(planted, expected); err == nil || !strings.Contains(err.Error(), "differs") {
+		t.Fatalf("omitted-field plant escaped intended clone assertion: %v", err)
+	}
+}
+
 // Claim: nil versus non-nil empty containers survive cloning exactly.
 func TestStateClonePreservesNilAndEmpty(t *testing.T) {
 	var s State
@@ -1005,9 +1086,9 @@ func TestStateClonePreservesNilAndEmpty(t *testing.T) {
 	}
 	e := populatedState(2)
 	e.Threads, e.ThreadEvents, e.opaque, e.LivenessAlerts = []string{}, []ThreadEvent{}, map[string]json.RawMessage{}, map[string]LivenessAlert{}
-	e.Terminal.Rung, e.rawState, e.AgentDMContexts = []string{}, []byte{}, json.RawMessage{}
+	e.Terminal.Rung, e.rawState = []string{}, []byte{}
 	c, _ := cloneState(&e)
-	if !reflect.DeepEqual(c, e) || c.Threads == nil || c.opaque == nil || c.Terminal.Rung == nil || c.rawState == nil || c.AgentDMContexts == nil {
+	if !reflect.DeepEqual(c, e) || c.Threads == nil || c.opaque == nil || c.Terminal.Rung == nil || c.rawState == nil {
 		t.Fatal("empty containers became nil")
 	}
 }

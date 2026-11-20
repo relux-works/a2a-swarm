@@ -119,6 +119,9 @@ type App struct {
 	// quiescentExchangeHook, when set by a test, runs before each quiescent
 	// exchange (foreign-writer fixtures).
 	quiescentExchangeHook func()
+	// inspectTerminalTarget is package-test-only. Production leaves it nil and
+	// uses the pinned OS-backed owner/pane checks.
+	inspectTerminalTarget func(context.Context, config.TerminalBinding) (string, error, error)
 	// hookBudget, when set (tests only), replaces the hook budget.
 	hookBudget time.Duration
 	// hookSelection replaces executable selection in installer merge tests only.
@@ -616,6 +619,7 @@ type session struct {
 	checkBinding        func() error // Immutable operational snapshot; nil for legacy sessions.
 	principals          []string     // Local snapshot for this delivery cycle; no lock spans I/O.
 	principalWarning    bool         // Emit malformed/unreadable metadata warning once per session.
+	addressWarnings     uint32       // Bounded fixed audience diagnostics, once per session.
 	longConsumer        bool         // Process-owned watch/unbounded wait; ignore ambient runtime session IDs.
 }
 

@@ -14,7 +14,7 @@ import (
 type terminalEffects interface {
 	ObserveReadiness(context.Context, string) tmuxwake.ReadinessAssessment
 	AssessOwnedNotice(context.Context, string) tmuxwake.ReadinessAssessment
-	Send(context.Context, int, tmuxwake.ReadinessKey, func(), func()) (tmuxwake.SendResult, error)
+	Send(context.Context, int, tmuxwake.ReadinessKey, func(), func(), ...func() error) (tmuxwake.SendResult, error)
 	ResumeNotice(context.Context, int, string, tmuxwake.ReadinessKey, ...func() error) (tmuxwake.SendResult, error)
 }
 

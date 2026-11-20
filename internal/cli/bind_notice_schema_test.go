@@ -222,10 +222,12 @@ func TestNoticeErrorPublication(t *testing.T) {
 				if kind == "publication-failed" {
 					f.e.hs.fail("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}", 503, "M_UNKNOWN", "synthetic publish interruption")
 				}
+				inspectionCalls := installSuccessfulTerminalInspector(f.a, *f.binding())
 				ctx, cancel := context.WithCancel(context.Background())
 				done := make(chan error, 1)
 				go func() { _, err := f.a.runTerminal(ctx, f.s, "orphan-gen", *f.binding()); done <- err }()
 				awaitBinding(t, f.e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "consumer unavailable; retrying" })
+				requireTerminalInspectorCalled(t, inspectionCalls)
 				cancel()
 				select {
 				case err := <-done:

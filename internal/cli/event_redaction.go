@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/relux-works/a2a-swarm/internal/audience"
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
@@ -142,9 +143,9 @@ func (s *session) installRedactionCacheContext(ctx context.Context) {
 			// delivery opens the mailbox. Report only a fixed diagnostic, never the
 			// cache path or arbitrary file/transport data.
 			if info, statErr := os.Lstat(s.paths.MailboxFile(s.name)); statErr == nil && !info.Mode().IsRegular() {
-				return nil, errors.New("local redaction cache unavailable: mailbox is not a regular file; refusing to use it")
+				return nil, errors.New(audience.AddressStateUnavailable + ": local redaction cache unavailable: mailbox is not a regular file; refusing to use it")
 			}
-			return nil, errors.New("local redaction cache unavailable")
+			return nil, errors.New(audience.AddressStateUnavailable + ": local redaction cache unavailable")
 		}
 		// A peer's claim alone is not evidence that the server applied it.
 		// Exact sender equality requires a real target observation, either in
@@ -182,12 +183,18 @@ func (s *session) installRedactionCacheContext(ctx context.Context) {
 			seen[target] = true
 		}
 		out := make([]matrix.Event, len(events))
+		// Capture only minimal audience evidence before authorized payload
+		// scrubbing. This local-only field cannot be supplied by wire JSON.
+		audiences := audience.NewCycle(s.creds.UserID, s.name, s.app.Now(), mb.Audience, nil)
+		audiences.Add(room, events)
 		for i, ev := range events {
 			known := func(id string) bool {
 				return id != "" && (mb.IsRedacted(room, id) || seen[config.Redaction{Room: room, EventID: id}])
 			}
 			if known(ev.EventID) || known(ev.ReplacementTarget()) {
+				evidence := audiences.Resolve(room, ev)
 				ev = ev.WithoutContent()
+				ev.NotificationAudience, _ = json.Marshal(evidence)
 			}
 			out[i] = ev
 		}

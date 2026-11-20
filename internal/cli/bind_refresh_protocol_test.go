@@ -300,7 +300,7 @@ func TestTerminalRefreshLazyObservation(t *testing.T) {
 	if r.path == "" || r.current != (terminalExecutable{}) {
 		t.Fatal("launch path missing or eager image inspection")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
 	reads := 0
 	r.observe = func(string) (terminalExecutable, error) {

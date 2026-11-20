@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -169,9 +170,23 @@ func TestNoticeRecoveryFenceAuthority(t *testing.T) {
 	isolateBindTest(t)
 	for _, mode := range []string{"valid", "paused", "manual", "stopped", "generation", "session", "target", "lease", "budget", "route", "version", "position-row", "position-column"} {
 		t.Run(mode, func(t *testing.T) {
-			e, a, s, _ := reportFixture(t)
+			e, a, s, room := reportFixture(t)
 			now := a.Now()
+			// Authority controls reach their intended fence with real eligible
+			// mail, rather than a synthetic non-existent pending ID.
+			mb, err := config.OpenMailbox(e.paths(), "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(firstSyncMessage("$eligible", "@sender:example.org", toMsg("alice", "notice", "fixture")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = mb.Append([]config.MailEntry{{ID: "$eligible", Kind: config.MailEvent, Room: room, Rel: "to", Event: raw}}); err != nil {
+				t.Fatal(err)
+			}
 			b := *e.state("alice").Terminal
+			b.AttemptIDs = []string{"$eligible"}
 			b.SessionID = "s"
 			b.Host = machineLabel()
 			b.OwnerPID = 123
@@ -186,7 +201,7 @@ func TestNoticeRecoveryFenceAuthority(t *testing.T) {
 			k := tmuxwake.ReadinessKey{Generation: b.Generation, SessionID: b.SessionID, Target: b.Target, Route: tmuxwake.LegacyCodex, PaneWidth: 120, ComposerRow: 19, ComposerColumn: 2}
 			b.NoticeOrigin = &config.TerminalIdle{Generation: b.Generation, SessionID: b.SessionID, Host: b.Host, Target: b.Target, ReadinessRoute: k.Route, PaneWidth: 120}
 			b.NoticePosition = &tmuxwake.ComposerPosition{Row: 19, Column: 2}
-			_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+			_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 				st.Terminal = &b
 				st.Lease = &config.Lease{Holder: b.SessionID, Host: b.Host, Expires: now.Add(time.Hour)}
 				token, err := st.Notification.Reserve("terminal", b.SessionID, b.Generation, b.AttemptAt, false)

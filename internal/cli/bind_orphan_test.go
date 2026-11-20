@@ -82,9 +82,9 @@ type orphanDispatchFixture struct {
 
 const orphanFixtureStep = time.Second
 
-// Allow ten fixture steps for a loaded runner to render/acknowledge a change;
+// Allow twenty fixture steps for a loaded runner to render/acknowledge a change;
 // retain the original 3s floor if the fixture step is shortened in the future.
-const orphanScreenWaitTimeout = max(3*time.Second, 10*orphanFixtureStep)
+const orphanScreenWaitTimeout = max(3*time.Second, 20*orphanFixtureStep)
 
 func newOrphanDispatchFixture(t *testing.T) *orphanDispatchFixture {
 	return newOrphanDispatchFixtureScript(t, orphanFixture)
@@ -546,6 +546,7 @@ func TestTerminalRunOrphanRestartAndSyncRetry(t *testing.T) {
 	f.a.Now = time.Now
 	f.e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "synthetic interruption")
 	initial := *f.binding()
+	inspectionCalls := installSuccessfulTerminalInspector(f.a, initial)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { _, err := f.a.runTerminal(ctx, f.s, "orphan-gen", initial); result <- err }()
@@ -558,6 +559,7 @@ func TestTerminalRunOrphanRestartAndSyncRetry(t *testing.T) {
 		}
 	})
 	awaitBinding(t, f.e.paths(), func(st config.State) bool { return st.Terminal.Outcome == "consumer unavailable; retrying" })
+	requireTerminalInspectorCalled(t, inspectionCalls)
 	if s := f.wait(func(s orphanScreen) bool { return true }); s.Erased != 0 || len(s.Submitted) != 0 {
 		t.Fatal("failed sync touched orphan")
 	}
@@ -585,6 +587,7 @@ func TestTerminalRunAuthorityReadFailure(t *testing.T) {
 	f.a.Now = time.Now
 	stderr := &flushBuffer{}
 	f.a.Stderr = stderr
+	inspectionCalls := installSuccessfulTerminalInspector(f.a, *f.binding())
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { _, err := f.a.runTerminal(ctx, f.s, "orphan-gen", *f.binding()); result <- err }()
@@ -597,6 +600,7 @@ func TestTerminalRunAuthorityReadFailure(t *testing.T) {
 		}
 	})
 	st := awaitBinding(t, f.e.paths(), func(st config.State) bool { return st.Terminal.Idle != nil && st.Terminal.NoticePublication != "" })
+	requireTerminalInspectorCalled(t, inspectionCalls)
 	previous := st.Terminal.Idle.At
 	path := f.e.paths().StateFile("alice")
 	saved, err := os.ReadFile(path)

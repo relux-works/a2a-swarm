@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,13 +21,33 @@ func TestElementMediaProjectionIsInboxOnly(t *testing.T) {
 			content := elementContent("m.file")
 			content["filename"] = "PEER-DECLARED-NAME-ONLY-IN-INBOX"
 			id := e.hs.inject(room, "@bob:"+testServer, content)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := testDeadlineContext(t)
 			defer cancel()
 			args := []string{"--as", "alice", consumer, "--json"}
 			if consumer == "read" {
 				args = append(args, room, "--event", id)
 			}
-			r := e.runCtx(ctx, args...)
+			var r result
+			if consumer == "watch" {
+				done := make(chan result, 1)
+				go func() { done <- e.runCtx(ctx, args...) }()
+				for {
+					if entry, ok := e.pendingEntry("alice", id); ok && entry.Shown {
+						break
+					}
+					select {
+					case r = <-done:
+						t.Fatalf("watch exited before marking event shown: %+v", r)
+					case <-ctx.Done():
+						t.Fatal("watch did not mark event shown before test deadline")
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+				cancel()
+				r = <-done
+			} else {
+				r = e.runCtx(ctx, args...)
+			}
 			if !strings.Contains(r.stdout, id) {
 				t.Fatalf("consumer did not output selected fixture: %+v", r)
 			}

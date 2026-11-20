@@ -789,13 +789,14 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 		return old, nil
 	}
 	if inputSealed && !strict && unchangedSealedState(old, s) {
-		elided, err := elideUnchangedOrdinaryState(path, old.rawState, ordinaryStateSync)
+		evidence, elided, err := elideUnchangedOrdinaryStateWithEvidence(path, old.rawState, ordinaryStateSync)
 		if err != nil {
 			return old, err
 		}
 		if elided {
 			// old is the independent snapshot decoded from these exact bytes; the
 			// callback only ever received a separately decoded working copy.
+			p.readCache.rememberWrittenState(p, name, old, old.rawState, evidence)
 			return old, nil
 		}
 	}
@@ -803,11 +804,11 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	if err != nil {
 		return old, err
 	}
-	var writtenStamp FileStamp
+	var writtenEvidence stateWriteEvidence
 	if strict {
 		err = writeHostStateAtomic(p, name, append(data, '\n'))
 	} else {
-		writtenStamp, err = writeOrdinaryStateAtomicStamped(path, name, append(data, '\n'), syncStateDirectory)
+		writtenEvidence, err = writeOrdinaryStateAtomicStamped(path, name, append(data, '\n'), syncStateDirectory)
 	}
 	if err != nil {
 		return old, err
@@ -819,7 +820,7 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	if err != nil {
 		return old, err
 	}
-	p.readCache.rememberWrittenState(p, name, saved, written, writtenStamp)
+	p.readCache.rememberWrittenState(p, name, saved, written, writtenEvidence)
 	return saved, nil
 }
 

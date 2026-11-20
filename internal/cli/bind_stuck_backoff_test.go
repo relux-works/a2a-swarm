@@ -220,7 +220,7 @@ func (f *stuckProbeTerminal) AssessOwnedNotice(context.Context, string) tmuxwake
 	return f.assessment()
 }
 
-func (f *stuckProbeTerminal) Send(ctx context.Context, _ int, _ tmuxwake.ReadinessKey, before, after func()) (tmuxwake.SendResult, error) {
+func (f *stuckProbeTerminal) Send(ctx context.Context, _ int, _ tmuxwake.ReadinessKey, before, after func(), _ ...func() error) (tmuxwake.SendResult, error) {
 	if before != nil {
 		before()
 	}

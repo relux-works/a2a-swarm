@@ -64,7 +64,7 @@ func TestReviewerFreshRecoveryQualification(t *testing.T) {
 	if err = os.WriteFile(marker, []byte("1"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf("#!/usr/bin/env python3\nimport os,sys\nif '-l' in sys.argv and os.path.exists(%q):\n os.unlink(%q)\n sys.exit(1)\nos.execv(%q,[%q]+sys.argv[1:])\n", marker, marker, real, real)
+	script := fmt.Sprintf("#!/usr/bin/env python3\nimport os,sys\nif 'paste-buffer' in sys.argv and os.path.exists(%q):\n os.unlink(%q)\n sys.exit(1)\nos.execv(%q,[%q]+sys.argv[1:])\n", marker, marker, real, real)
 	if err = os.WriteFile(filepath.Join(wrapper, "tmux"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

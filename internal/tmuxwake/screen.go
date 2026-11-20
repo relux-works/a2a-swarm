@@ -264,3 +264,98 @@ func inputLine(line, glyph string, row int) (Box, bool) {
 	}
 	return Box{Text: text, Row: row, Column: indent + 2 + len(text)}, true
 }
+
+// foreignComposerText is refusal-only evidence. It reads the current prompt
+// line even when a filled Codex composer has hidden its normal footer hint; it
+// never makes that input eligible for Enter.
+func foreignComposerText(screen, runtime, notice string) bool {
+	text, ok := diagnosticComposerText(screen, runtime)
+	return ok && foreignText(notice, text)
+}
+
+func diagnosticComposerText(screen, runtime string) (string, bool) {
+	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+	start := max(0, len(lines)-18)
+	if runtime == "claude" {
+		var rules []int
+		for i := start; i < len(lines); i++ {
+			if rule.MatchString(strings.TrimSpace(plain(lines[i]))) {
+				rules = append(rules, i)
+			}
+		}
+		if len(rules) < 2 {
+			return "", false
+		}
+		a, b := rules[len(rules)-2], rules[len(rules)-1]
+		if b != a+2 {
+			return "", false
+		}
+		return promptText(lines[a+1], "❯")
+	}
+	if runtime != "codex" {
+		return "", false
+	}
+	for i := len(lines) - 1; i >= start; i-- {
+		line := plain(lines[i])
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed != "›" && !strings.HasPrefix(trimmed, "› ") && !strings.HasPrefix(trimmed, "›\u00a0") {
+			continue
+		}
+		if i+1 >= len(lines) || strings.TrimSpace(plain(lines[i+1])) != "" {
+			return "", false
+		}
+		return promptText(line, "›")
+	}
+	return "", false
+}
+
+func promptText(line, glyph string) (string, bool) {
+	text := strings.TrimLeft(visible(line), " ")
+	if text == glyph {
+		return "", true
+	}
+	if strings.HasPrefix(text, glyph+"\u00a0") {
+		return strings.TrimRight(strings.TrimPrefix(text, glyph+"\u00a0"), " "), true
+	}
+	if strings.HasPrefix(text, glyph+" ") {
+		return strings.TrimRight(strings.TrimPrefix(text, glyph+" "), " "), true
+	}
+	return "", false
+}
+
+// runtimeBusyMarker recognizes only the runtime's interrupt marker in the
+// qualified footer area. Dialog text and unrelated transcript matches do not
+// count as a submit witness.
+func runtimeBusyMarker(screen, runtime string) bool {
+	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+	start := max(0, len(lines)-18)
+	footerStart := -1
+	if runtime == "claude" {
+		var rules []int
+		for i := start; i < len(lines); i++ {
+			if rule.MatchString(strings.TrimSpace(plain(lines[i]))) {
+				rules = append(rules, i)
+			}
+		}
+		if len(rules) < 2 || rules[len(rules)-1] != rules[len(rules)-2]+2 {
+			return false
+		}
+		footerStart = rules[len(rules)-1] + 1
+	} else if runtime == "codex" {
+		for i := len(lines) - 1; i >= start; i-- {
+			line := strings.TrimLeft(plain(lines[i]), " ")
+			if line == "›" || strings.HasPrefix(line, "› ") || strings.HasPrefix(line, "›\u00a0") {
+				if i+1 >= len(lines) || strings.TrimSpace(plain(lines[i+1])) != "" {
+					return false
+				}
+				footerStart = i + 1
+				break
+			}
+		}
+	}
+	if footerStart < 0 || footerStart >= len(lines) {
+		return false
+	}
+	footer := strings.ToLower(plain(strings.Join(lines[footerStart:], "\n")))
+	return strings.Contains(footer, "esc to interrupt") || strings.Contains(footer, "escape to interrupt")
+}

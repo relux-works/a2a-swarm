@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/audience"
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/deliverypolicy"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
@@ -65,6 +66,11 @@ func deliveryTopicRoot(ev matrix.Event, roomID string, st config.State) string {
 // lists the subscriptions that deliver the event, whatever its relevance, so
 // that the caller can close --until-kind subscriptions.
 func classify(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub) (rel relevance, learnedRoot string, matched []string) {
+	c := audience.NewCycle(me, myName, time.Time{}, nil, nil)
+	return audienceClassify(ev, roomID, me, myName, st, subs, nil, c.Resolve(roomID, ev))
+}
+
+func classifyEligible(ev matrix.Event, roomID, me, myName string, st config.State, subs []Sub) (rel relevance, learnedRoot string, matched []string) {
 	if ev.Type != "m.room.message" {
 		return "", "", nil
 	}

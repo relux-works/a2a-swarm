@@ -118,6 +118,34 @@ It uses an explicit protected local host roster and refuses nothing.
 
 ## Tools
 
+Notification audiences are checked before subscriptions, followed threads,
+mandatory-principal routing and notification reservations. A well-formed a2a
+recipient list is authoritative over Matrix mentions. Without that list,
+intentional Matrix user mentions restrict the audience; a room mention is
+general. Addressed nonrecipients remain excluded after mailbox reopen. Explicit
+room and thread reads retain their existing authorization and redaction rules.
+Replies use their own recipients. Edits and redactions inherit an immutable
+audience ceiling without creating new notification eligibility; reactions do
+not notify. Malformed metadata from a pinned mandatory principal uses the
+existing general owner route and emits `ADDRESS_METADATA_INVALID`. The same
+malformed metadata from a peer is suppressed, and a well-formed owner message
+addressed to someone else remains excluded.
+
+Minimal versioned audience evidence is stored with the private mailbox without
+message bodies, replacement text or recipient lists. Unavailable relation
+targets are deferred without notifying, with at most four distinct target
+fetches per cycle, one fetch per target and eight relation hops. Unknown evidence
+versions fail closed for the affected event and appear as
+`ADDRESS_STATE_UNAVAILABLE` in `a2a bind status`. Redacted originals whose audience
+cannot be recovered are not automatically announced. Evidence survives while
+mail is retained and for at least fourteen days after an original is redacted or
+compacted; later compaction can remove expired evidence.
+
+Run the audience and affected delivery checks with
+`go test -race -count=1 ./internal/audience ./internal/config ./internal/cli ./internal/matrix ./internal/tmuxwake`.
+Results go to standard test output; private command captures belong under
+`.temp/`.
+
 | Tool | Purpose | How to run | Output |
 | Signed-envelope observation (Go >=1.26.8) | Verify received envelopes locally using pinned host evidence, with delivery unchanged | `a2a inbox [--json]`; `a2a read ROOM [--json]`; [configuration and tests](docs/envelope-observe.md) | `verification` label on stdout and saved inbox frames; no network lookup or trust-store writes |
 | --- | --- | --- | --- |
@@ -157,7 +185,7 @@ It uses an explicit protected local host roster and refuses nothing.
 Principal coverage accepts a permanent all-events manual row for the principal's
 exact ID in that room, without extra selector filters or future creation/since
 gates. Sync then adds no `host-principal` row. Such a manual row is removable
-without a typed refusal; mandatory delivery still carries principal mail. Kind trim preserves coverage:
+without a typed refusal; mandatory delivery still carries audience-eligible principal mail. Kind trim preserves coverage:
 only a real loss warrants refusal, while invalid policy or unreadable membership
 fails closed.
 

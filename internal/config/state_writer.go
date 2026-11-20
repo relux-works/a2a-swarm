@@ -82,18 +82,67 @@ func writeOrdinaryStateAtomic(path, name string, data []byte, syncDir func(strin
 	return err
 }
 
-func writeOrdinaryStateAtomicStamped(path, name string, data []byte, syncDir func(string) error) (FileStamp, error) {
+type stateWriteEvidence struct {
+	file      FileStamp
+	directory directoryStamp
+}
+
+func writeOrdinaryStateAtomicStamped(path, name string, data []byte, syncDir func(string) error) (stateWriteEvidence, error) {
 	dir := filepath.Dir(path)
 	if err := syncDir(filepath.Dir(dir)); err != nil {
-		return FileStamp{}, err
+		return stateWriteEvidence{}, err
 	}
-	stamp, err := writeSecretAtomicStamped(path, name, data)
+	fileStamp, err := writeStateSecretAtomicStamped(path, name, data)
+	if err != nil {
+		return stateWriteEvidence{}, err
+	}
+	globalStateStats.stateWriteBytes.Add(int64(len(data)))
+	beforeDirectorySync := stampStateDirectory(dir)
+	if err := syncDir(dir); err != nil {
+		return stateWriteEvidence{}, ErrStateWriteUncertain
+	}
+	afterDirectorySync := stampStateDirectory(dir)
+	if !beforeDirectorySync.Equal(afterDirectorySync) {
+		afterDirectorySync = directoryStamp{}
+	}
+	return stateWriteEvidence{file: fileStamp, directory: afterDirectorySync}, nil
+}
+
+// writeStateSecretAtomicStamped is the State-only counterpart of
+// writeSecretAtomic. It returns the identity of the descriptor that was
+// synced and renamed, without changing the credential writer path.
+func writeStateSecretAtomicStamped(path, name string, data []byte) (FileStamp, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+name+".*.tmp")
 	if err != nil {
 		return FileStamp{}, err
 	}
-	globalStateStats.stateWriteBytes.Add(int64(len(data)))
-	if err := syncDir(dir); err != nil {
-		return FileStamp{}, ErrStateWriteUncertain
+	tmpName := tmp.Name()
+	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
+	if err := tmp.Chmod(SecretFileMode); err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	info, err := tmp.Stat()
+	if err != nil {
+		cleanup()
+		return FileStamp{}, err
+	}
+	stamp := stampInfo(info)
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return FileStamp{}, err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return FileStamp{}, err
 	}
 	return stamp, nil
 }
@@ -202,16 +251,12 @@ func stateDigest(data []byte) (string, error) {
 	return hex.EncodeToString(h[:]), nil
 }
 
-// The seal digest is a pure function of the exact State bytes, so a digest
-// computed for one write or verification is reused for every later check on
-// byte-identical input instead of canonicalizing the same bytes again. The
-// memo is keyed by the full bytes (compared with bytes.Equal, never by
-// length, stamp or a hash alone), retains only a few recent inputs within a
-// fixed byte budget, and never records errors. A miss always recomputes, so
-// no writer, seal or fence decision changes.
+// The seal digest is a pure function of exact State bytes, so a digest
+// computed for one write or verification is reused for later byte-identical
+// input. The bounded memo never stores errors or changes writer decisions.
 const (
 	sealDigestMemoEntries = 4
-	sealDigestMemoMaxRaw  = 16 << 20 // total retained input bytes
+	sealDigestMemoMaxRaw  = 16 << 20
 )
 
 type sealDigestEntry struct {
@@ -221,7 +266,7 @@ type sealDigestEntry struct {
 
 var sealDigestMemo struct {
 	sync.Mutex
-	entries []sealDigestEntry // most recent first
+	entries []sealDigestEntry
 }
 
 func memoizedStateDigest(data []byte) (string, error) {
@@ -274,9 +319,8 @@ func ordinaryWriterFence(old State, now time.Time) time.Time {
 	return fence
 }
 
-// ordinaryWriterFenceSealed is ordinaryWriterFence that also reports the result
-// of its own seal verification of this exact disk input. The fence decision
-// is unchanged; the result is not cached beyond the caller's lock.
+// ordinaryWriterFenceSealed also reports whether it verified this exact disk
+// input's compatible-writer seal while computing the unchanged fence result.
 func ordinaryWriterFenceSealed(old State, now time.Time) (time.Time, bool) {
 	// Verify every disk input before a callback/effect, including inputs that
 	// already carry a sticky fence. Retaining the timestamp is not a shortcut
@@ -297,12 +341,7 @@ func ordinaryWriterFenceSealed(old State, now time.Time) (time.Time, bool) {
 }
 
 // unchangedSealedState reports whether sealing s would reproduce old's exact
-// disk input. The caller must already have verified old's seal under the same
-// lock. canonicalState drops writer.seal, so marshalling s with old's seal
-// yields bytes whose digest equals that of old's input exactly when they are
-// byte-identical; that digest is old's verified seal, so sealedState(s) would
-// emit the same bytes. Any difference, or a marshal error, reports false and
-// leaves the ordinary sealed write (and its error) to the caller.
+// disk input. The caller must have verified old's seal under the same lock.
 func unchangedSealedState(old, s State) bool {
 	if old.Writer == nil || s.Writer == nil {
 		return false
@@ -318,67 +357,63 @@ func unchangedSealedState(old, s State) bool {
 	return len(old.rawState) == n+1 && old.rawState[n] == '\n' && bytes.Equal(old.rawState[:n], data)
 }
 
-// stateSyncer holds the durability operations of an elided ordinary write.
 type stateSyncer struct {
 	file func(*os.File) error
 	dir  func(string) error
 }
 
-// ordinaryStateSync is a package-private seam: production code never replaces
-// it, and no flag or environment value can reach it. Package tests swap it to
-// observe or fail the file and directory syncs of the elided path.
+// Tests replace this package-private seam to witness durability requirements.
 var ordinaryStateSync = stateSyncer{file: (*os.File).Sync, dir: syncStateDirectory}
 
-// elideUnchangedOrdinaryState establishes, under the state lock, the
-// postconditions an ordinary replacement with byte-identical content would:
-//   - the path names a 0600 regular file whose content, read through one
-//     descriptor opened without following links, is exactly input;
-//   - that file's content is synced through the same verified descriptor, since
-//     a valid seal and equal bytes do not prove that an earlier writer's file
-//     sync completed;
-//   - the path still names that synced file;
-//   - the parent and state directory entries are synced as
-//     writeOrdinaryStateAtomic does.
-//
-// It returns elided=false with a nil error when the unchanged premise does not
-// hold or the file sync fails. Nothing is then claimed durable, and the caller
-// runs the ordinary replacement. Directory sync failures keep the replacement's
-// taxonomy: a parent failure is returned as is, and a state-directory failure
-// is ErrStateWriteUncertain.
+// elideUnchangedOrdinaryState proves exact current bytes and persists them
+// through the verified descriptor before syncing both directory entries. A
+// mismatch or file-sync failure falls back to atomic replacement.
 func elideUnchangedOrdinaryState(path string, input []byte, sync stateSyncer) (bool, error) {
+	_, elided, err := elideUnchangedOrdinaryStateWithEvidence(path, input, sync)
+	return elided, err
+}
+
+// elideUnchangedOrdinaryStateWithEvidence proves exact current bytes and
+// persists them through the verified descriptor before syncing both directory
+// entries. The returned directory evidence is reusable only when its identity
+// and change time stayed stable across the state-directory sync.
+func elideUnchangedOrdinaryStateWithEvidence(path string, input []byte, sync stateSyncer) (stateWriteEvidence, bool, error) {
 	if checkSecretFile(path) != nil {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != SecretFileMode || opened.Size() != int64(len(input)) {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
-	// One spare byte detects growth after the size check: only a short read of
-	// exactly len(input) bytes, ending at EOF, can match.
 	data := make([]byte, len(input)+1)
 	n, err := io.ReadFull(f, data)
 	if err != io.ErrUnexpectedEOF || n != len(input) || !bytes.Equal(data[:n], input) {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	if sync.file(f) != nil {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	if current, err := os.Lstat(path); err != nil || !os.SameFile(opened, current) {
-		return false, nil
+		return stateWriteEvidence{}, false, nil
 	}
 	dir := filepath.Dir(path)
 	if err := sync.dir(filepath.Dir(dir)); err != nil {
-		return false, err
+		return stateWriteEvidence{}, false, err
 	}
+	beforeDirectorySync := stampStateDirectory(dir)
 	if err := sync.dir(dir); err != nil {
-		return false, ErrStateWriteUncertain
+		return stateWriteEvidence{}, false, ErrStateWriteUncertain
 	}
-	return true, nil
+	afterDirectorySync := stampStateDirectory(dir)
+	if !beforeDirectorySync.Equal(afterDirectorySync) {
+		afterDirectorySync = directoryStamp{}
+	}
+	return stateWriteEvidence{file: stampInfo(opened), directory: afterDirectorySync}, true, nil
 }
 
 func sealedState(s State) ([]byte, error) {
@@ -398,9 +433,6 @@ func sealedState(s State) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// canonicalState drops writer.seal, so the sealed bytes and their
-	// on-disk newline-terminated form have this same digest; recording them
-	// lets the verification that follows this write reuse it.
 	rememberSealDigest(sealed, digest)
 	rememberSealDigest(append(cloneBytes(sealed), '\n'), digest)
 	return sealed, nil

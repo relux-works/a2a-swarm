@@ -1842,8 +1842,8 @@ A successful response just before expiry is ingested and delivered normally. Can
 `--timeout 0` keeps retrying temporary failures until canceled or an event arrives. Authentication,
 configuration, permanent transport/API errors and malformed successful sync responses still fail promptly. Backfill and local delivery failures
 retain their existing refusal behavior. Retries emit no new result type or outage notification.
-The very first run retains pending invites and performs the bounded post-join recovery in the delivery contract above, including principal mail under the same rules. Earlier history is not replayed. `--room` limits ordinary rooms that can ring; principal messages bypass it. Relevant events
-in other rooms are still persisted (the next wait without that filter, or `inbox`, shows them). `--all` adds every message of the `--room` rooms that
+The very first run retains pending invites and performs the bounded post-join recovery in the delivery contract above, including principal mail under the same rules. Earlier history is not replayed. `--room` limits ordinary rooms that can ring; audience-eligible principal messages bypass it. Relevant events
+in other rooms are still persisted (the next wait without that filter, or `inbox`, shows them). `--all` adds every audience-eligible message of the `--room` rooms that
 this wait syncs; for durable room-wide delivery that every consumer sees, use `a2a subscribe --room R --all-events`.
 Excerpts are one line, stripped of control characters, and never longer than 200 characters.
 
@@ -1895,19 +1895,25 @@ before leases, liveness writes or HTTP. Whitespace around comma-list entries
 is ignored. These settings are read at command start and apply to `wait`/`watch`
 only; hooks, bound consumers and `inbox` retain their existing behavior.
 
-Host-configured principals bypass these predicates and `--room` selection in
+Audience-eligible host-configured principals bypass these predicates and `--room` selection in
 wait/watch. Their real Matrix sender is checked against the current local list
 before each display pass; keywords, kind, text, sender and addressing filters
-cannot suppress their wake. Ordinary senders still obey every predicate.
+cannot suppress their wake. The hard notification audience gate runs first:
+a well-formed message addressed only to others never rings, even from a
+principal. These optional filters cannot disable that gate. Ordinary senders
+still obey every predicate.
 
-Filtering does not change ingestion or receipts. Rejected message entries
-remain pending and unshown after the cursor advances; a later less restrictive
+These optional predicates do not change ingestion or receipts. Entries rejected
+only by these predicates remain pending and unshown after the cursor advances; a later less restrictive
 wait/watch can show them and `inbox` can still print and receipt them. Matching
 delivery marks only its printed entries shown and introduces no ACK. Invites
 and history-gap control entries retain their existing delivery behavior,
 including the invite exception to `--room`; message predicates do not suppress
 those control entries. No wake-policy, retry/backoff or subscription-expiry
-policy is changed.
+policy is changed by these optional predicates. Audience-excluded entries stay
+durable but are absent from notification, pending and inbox views; suppression
+does not mark them shown, rung or received. Explicit room/thread read remains
+available under its existing authorization and redaction rules.
 
 For a bound session, do not start a parallel `wait` or `watch`: it uses its supervised consumer already. A live terminal binding refuses both
 with `ErrWaitWhileBound`, identifying the live binding and directing you to your own `a2a bind status` and `a2a inbox`. The refusal does not
