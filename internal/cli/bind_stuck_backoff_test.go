@@ -255,8 +255,19 @@ func stuckBackoffCapForTest(t *testing.T, d time.Duration) {
 
 func appendPendingStuckMail(t *testing.T, f *terminalWorkFixture, id string) {
 	t.Helper()
-	event, _ := json.Marshal(map[string]any{"type": "m.room.message", "content": map[string]string{"body": "x"}})
-	line, _ := json.Marshal(map[string]any{"op": "add", "entry": config.MailEntry{ID: id, Kind: config.MailEvent, Room: "!fixture:fixture.invalid", Event: event}})
+	// These loop tests need eligible pending mail so the audience filter keeps
+	// it visible to the consumer while the terminal remains unavailable.
+	const room, sender = "!fixture:fixture.invalid", "@sender:fixture.invalid"
+	event, _ := json.Marshal(map[string]any{
+		"event_id": id,
+		"sender":   sender,
+		"type":     "m.room.message",
+		"content": map[string]any{
+			"body":         "x",
+			"ai.relux.a2a": map[string]any{"to": []string{"@fixture:fixture.invalid"}},
+		},
+	})
+	line, _ := json.Marshal(map[string]any{"op": "add", "entry": config.MailEntry{ID: id, Kind: config.MailEvent, Room: room, Rel: string(relTo), Sender: sender, Event: event}})
 	file, err := os.OpenFile(f.s.paths.MailboxFile(f.s.name), os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
