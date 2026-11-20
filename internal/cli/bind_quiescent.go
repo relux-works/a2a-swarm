@@ -21,12 +21,13 @@ import (
 // authority. These values are package-private test seams; production code,
 // flags and environment never change them.
 var (
-	terminalQuietAfter     = 30 * time.Second // continuous quiescence before waiting for reasons
-	terminalReconcileEvery = 60 * time.Second // maximum interval between full cycles
-	terminalLongPoll       = 25 * time.Second // server-side /sync wait
-	terminalQuietTickMax   = time.Second      // owner liveness and local-change checks
-	terminalQuiescence     = true             // matched comparisons: false keeps the active loop
-	terminalExchangeInline = false            // calibration: the earlier synchronous exchange
+	terminalQuietAfter      = 30 * time.Second // continuous quiescence before waiting for reasons
+	terminalReconcileEvery  = 60 * time.Second // maximum interval between full cycles
+	terminalLongPoll        = 25 * time.Second // server-side /sync wait
+	terminalQuietTickMax    = time.Second      // owner liveness and local-change checks
+	terminalQuiescence      = true             // matched comparisons: false keeps the active loop
+	terminalExchangeInline  = false            // calibration: the earlier synchronous exchange
+	terminalStuckBackoffMax = 60 * time.Second // longest wait between full cycles while stuck unavailable
 )
 
 // terminalQuiescent reports whether a freshly loaded State leaves the binding
@@ -59,6 +60,59 @@ func terminalQuiescent(st config.State, generation string, pid int, now time.Tim
 	}
 	return !st.Notification.NotBefore.After(now)
 }
+
+// terminalStuckUnavailable reports whether readiness stayed unavailable on a
+// cycle with no outstanding work: the same conditions as terminalQuiescent
+// except the readiness outcome — the terminal was observed busy, draft or
+// unknown, so pending mail could not be rung. An attempt, a notice, a
+// reservation or a notification cooldown pending is outstanding work and is
+// never stuck. Unknown or unsettled means active, exactly as quiescent.
+func terminalStuckUnavailable(st config.State, generation string, pid int, now time.Time) bool {
+	b := st.Terminal
+	if b == nil || b.DaemonPID != pid {
+		return false
+	}
+	if terminalRefreshBlockReason(st, generation, b.DaemonBirth, machineLabel(), pid, now) != "" {
+		return false
+	}
+	if b.Outcome != "suppressed: busy, draft or unknown input" || st.HooksPaused || manualWakeGate(st) != "" {
+		return false
+	}
+	if b.Idle != nil || b.NoticeOrigin != nil || b.NoticePosition != nil || b.TypingStarted {
+		return false
+	}
+	if b.NoticeReport != nil || b.ConsumerReport != nil || b.OwnNotice.PossiblyOrphaned != nil && *b.OwnNotice.PossiblyOrphaned {
+		return false
+	}
+	if st.NoticeRetry != nil || st.NoticeWriteUncertain {
+		return false
+	}
+	if len(b.AttemptIDs) != 0 || b.Notice != "" || st.Notification.Reservation != nil {
+		return false
+	}
+	return !st.Notification.NotBefore.After(now)
+}
+
+// stuckBackoff is the wait schedule between full cycles while a consumer
+// stays stuck unavailable: Interval, doubling to at most
+// terminalStuckBackoffMax. reset returns it to Interval; the loop resets on
+// any non-stuck cycle and on every early wake from the stuck wait.
+type stuckBackoff struct {
+	delay time.Duration
+}
+
+func (b *stuckBackoff) next(interval time.Duration) time.Duration {
+	limit := max(terminalStuckBackoffMax, interval)
+	if b.delay < interval {
+		b.delay = interval
+	} else {
+		b.delay = min(b.delay*2, limit)
+	}
+	return b.delay
+}
+
+func (b *stuckBackoff) reset()       { b.delay = 0 }
+func (b *stuckBackoff) active() bool { return b.delay > 0 }
 
 type quiescentResult int
 

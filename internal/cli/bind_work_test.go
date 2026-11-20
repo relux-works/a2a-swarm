@@ -151,9 +151,9 @@ func TestTerminalCycleWork(t *testing.T) {
 }
 func terminalWorkBudget(name string) terminalWorkCounts {
 	if name == "full" {
-		return terminalWorkCounts{2, 6, 15, 0, 960000}
+		return terminalWorkCounts{2, 6, 4, 0, 960000}
 	}
-	return terminalWorkCounts{0, 0, 2, 0, 0}
+	return terminalWorkCounts{0, 0, 1, 0, 0}
 }
 
 // TestTerminalCycleWorkBudgetControl proves the checker accepts each frozen budget and rejects one-unit overruns of every measured dimension.
@@ -161,7 +161,7 @@ func TestTerminalCycleWorkBudgetControl(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		budget terminalWorkCounts
-	}{{"full", terminalWorkCounts{2, 6, 15, 0, 960000}}, {"quiescent", terminalWorkCounts{0, 0, 2, 0, 0}}} {
+	}{{"full", terminalWorkCounts{2, 6, 4, 0, 960000}}, {"quiescent", terminalWorkCounts{0, 0, 1, 0, 0}}} {
 		limit := terminalWorkBudget(tc.name)
 		if err := checkTerminalWork(tc.budget, limit); err != nil {
 			t.Fatal("valid budget refused", err)
@@ -182,6 +182,63 @@ func checkTerminalWork(got, limit terminalWorkCounts) error {
 		return fmt.Errorf("work %+v exceeds %+v", got, limit)
 	}
 	return nil
+}
+
+// TestTerminalCycleWorkIncrementalMailbox proves a warmed full cycle over a
+// 30 MB mailbox parses only the bytes appended since the previous cycle:
+// appending about 1 KB costs at most 64 KB of parsed mailbox bytes and no
+// full mailbox decode, while the warmed control cycle already ran on the
+// same 30 MB file with nothing appended.
+func TestTerminalCycleWorkIncrementalMailbox(t *testing.T) {
+	f := newTerminalWorkFixture(t)
+	var mail bytes.Buffer
+	ids := []string{}
+	body := strings.Repeat("x", 9800)
+	for i := 0; i < 3200; i++ {
+		id := fmt.Sprintf("$mail%05d", i)
+		ids = append(ids, id)
+		event, _ := json.Marshal(map[string]any{"type": "m.room.message", "content": map[string]string{"body": body}})
+		line, _ := json.Marshal(map[string]any{"op": "add", "entry": config.MailEntry{ID: id, Kind: config.MailEvent, Room: "!fixture:fixture.invalid", Event: event}})
+		mail.Write(line)
+		mail.WriteByte('\n')
+	}
+	line, _ := json.Marshal(map[string]any{"op": "rcpt", "ids": ids})
+	mail.Write(line)
+	mail.WriteByte('\n')
+	if mail.Len() < 30<<20 {
+		t.Fatalf("large mailbox fixture = %d bytes, want at least %d", mail.Len(), 30<<20)
+	}
+	if err := os.WriteFile(f.s.paths.MailboxFile(f.s.name), mail.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.full(t) // warmed control: first cycle on the 30 MB mailbox
+	path := f.s.paths.MailboxFile(f.s.name)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pad := append([]byte(`{"op":"padding"}`), bytes.Repeat([]byte(" "), 1024)...)
+	pad = append(pad, '\n')
+	if _, err := file.Write(pad); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := config.ReadStateDecodeStats()
+	f.full(t)
+	after := config.ReadStateDecodeStats()
+	parsed := after.MailboxParseBytes - before.MailboxParseBytes
+	t.Logf("incremental cycle: parsed=%d bytes appended=%d file=%d", parsed, len(pad), mail.Len())
+	if after.MailboxDecodes != before.MailboxDecodes {
+		t.Fatal("appended cycle took a full mailbox decode")
+	}
+	if parsed > 64<<10 {
+		t.Fatalf("appended cycle parsed %d mailbox bytes, want near the %d appended", parsed, len(pad))
+	}
+	if after.MailboxIncrementalReads <= before.MailboxIncrementalReads {
+		t.Fatal("appended cycle was not served incrementally")
+	}
 }
 
 // BenchmarkTerminalCycleWork measures one warmed full cycle or cursor-stable quiescent exchange, including the in-process HTTP and file paths.

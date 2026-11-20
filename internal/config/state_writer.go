@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -201,12 +202,70 @@ func stateDigest(data []byte) (string, error) {
 	return hex.EncodeToString(h[:]), nil
 }
 
+// The seal digest is a pure function of the exact State bytes, so a digest
+// computed for one write or verification is reused for every later check on
+// byte-identical input instead of canonicalizing the same bytes again. The
+// memo is keyed by the full bytes (compared with bytes.Equal, never by
+// length, stamp or a hash alone), retains only a few recent inputs within a
+// fixed byte budget, and never records errors. A miss always recomputes, so
+// no writer, seal or fence decision changes.
+const (
+	sealDigestMemoEntries = 4
+	sealDigestMemoMaxRaw  = 16 << 20 // total retained input bytes
+)
+
+type sealDigestEntry struct {
+	raw    []byte
+	digest string
+}
+
+var sealDigestMemo struct {
+	sync.Mutex
+	entries []sealDigestEntry // most recent first
+}
+
+func memoizedStateDigest(data []byte) (string, error) {
+	sealDigestMemo.Lock()
+	for i, e := range sealDigestMemo.entries {
+		if bytes.Equal(e.raw, data) {
+			sealDigestMemo.entries = append([]sealDigestEntry{e}, append(sealDigestMemo.entries[:i], sealDigestMemo.entries[i+1:]...)...)
+			sealDigestMemo.Unlock()
+			return e.digest, nil
+		}
+	}
+	sealDigestMemo.Unlock()
+	digest, err := stateDigest(data)
+	if err != nil {
+		return "", err
+	}
+	rememberSealDigest(data, digest)
+	return digest, nil
+}
+
+func rememberSealDigest(raw []byte, digest string) {
+	if len(raw) == 0 || len(raw) > sealDigestMemoMaxRaw {
+		return
+	}
+	sealDigestMemo.Lock()
+	defer sealDigestMemo.Unlock()
+	kept := sealDigestMemo.entries[:0]
+	total := len(raw)
+	for _, e := range sealDigestMemo.entries {
+		if bytes.Equal(e.raw, raw) || len(kept)+1 >= sealDigestMemoEntries || total+len(e.raw) > sealDigestMemoMaxRaw {
+			continue
+		}
+		kept = append(kept, e)
+		total += len(e.raw)
+	}
+	sealDigestMemo.entries = append([]sealDigestEntry{{raw: cloneBytes(raw), digest: digest}}, kept...)
+}
+
 func validWriterSeal(s State) bool {
 	globalStateStats.writerSealChecks.Add(1)
 	if s.Writer == nil || s.Writer.ambiguous || s.Writer.Protocol < stateProtocol || !lowerHex(s.Writer.Seal, 64) {
 		return false
 	}
-	digest, err := stateDigest(s.rawState)
+	digest, err := memoizedStateDigest(s.rawState)
 	return err == nil && s.Writer.Seal == digest
 }
 
@@ -328,14 +387,23 @@ func sealedState(s State) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	digest, err := stateDigest(data)
+	digest, err := memoizedStateDigest(data)
 	if err != nil {
 		return nil, err
 	}
 	w := *s.Writer
 	w.Seal = digest
 	s.Writer = &w
-	return marshalState(s)
+	sealed, err := marshalState(s)
+	if err != nil {
+		return nil, err
+	}
+	// canonicalState drops writer.seal, so the sealed bytes and their
+	// on-disk newline-terminated form have this same digest; recording them
+	// lets the verification that follows this write reuse it.
+	rememberSealDigest(sealed, digest)
+	rememberSealDigest(append(cloneBytes(sealed), '\n'), digest)
+	return sealed, nil
 }
 
 // rejectAuthorityAliases retains the existing non-authority typed case-fold

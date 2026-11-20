@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,18 +120,36 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 	if cached, ok := p.readCache.mailboxHit(name, m.path, stamp); ok {
 		return cached, nil
 	}
+	if cached, ok := p.readCache.openMailboxIncremental(name, m.path, stamp); ok {
+		return cached, nil
+	}
 	f, err := os.OpenFile(m.path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
 		return nil, fmt.Errorf("mailbox: %w", err)
 	}
 	defer f.Close()
 	globalStateStats.mailboxDecodes.Add(1)
+	var opened FileStamp
+	if p.readCache != nil {
+		if info, serr := f.Stat(); serr == nil {
+			opened = stampInfo(info)
+		}
+	}
 	r := bufio.NewReader(f)
 	var raw []byte
 	retainRaw := stamp.Known && stamp.Size <= mailboxCacheMaxInput
 	if retainRaw {
 		raw = make([]byte, 0, int(stamp.Size))
 	}
+	// Incremental bookkeeping: the digest of the complete-line prefix, the
+	// digest of everything read, and a snapshot from before an unterminated
+	// final line is applied, so a later read can re-verify the prefix and
+	// parse only what was appended past it.
+	prefixHash := sha256.New()
+	totalHash := sha256.New()
+	var completeBytes, totalRead int64
+	var baseBeforeTail *Mailbox
+	var tailApplied bool
 	for n := 1; ; n++ {
 		line, err := r.ReadBytes('\n')
 		// Retain exactly the parsed input (including a torn tail), bounded even
@@ -142,8 +161,14 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 				raw = append(raw, line...)
 			}
 		}
+		totalHash.Write(line)
+		totalRead += int64(len(line))
 		if len(line) > 0 {
 			complete := line[len(line)-1] == '\n'
+			if !complete && p.readCache != nil {
+				baseBeforeTail = cloneMailbox(m)
+			}
+			globalStateStats.mailboxParseBytes.Add(int64(len(line)))
 			var l mailLine
 			if jerr := json.Unmarshal(bytes.TrimSpace(line), &l); jerr != nil {
 				if !complete {
@@ -152,6 +177,12 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 				return nil, fmt.Errorf("mailbox %s: line %d is not valid JSON", m.path, n)
 			}
 			m.apply(l)
+			if complete {
+				prefixHash.Write(line)
+				completeBytes += int64(len(line))
+			} else {
+				tailApplied = true
+			}
 		}
 		if err == io.EOF {
 			break
@@ -161,7 +192,121 @@ func OpenMailbox(p Paths, name string) (*Mailbox, error) {
 		}
 	}
 	p.readCache.rememberMailbox(name, m.path, stamp, raw, m)
+	if p.readCache != nil && stamp.Known && stamp.Present && opened.Known && opened.Dev == stamp.Dev && opened.Ino == stamp.Ino && stamp.Size == totalRead && stamp.Equal(StampFile(m.path)) {
+		inc := &mailboxIncState{path: m.path, dev: stamp.Dev, ino: stamp.Ino, offset: completeBytes, fileSize: totalRead, base: cloneMailbox(m)}
+		copy(inc.prefixSum[:], prefixHash.Sum(nil))
+		copy(inc.fileSum[:], totalHash.Sum(nil))
+		if tailApplied && baseBeforeTail != nil {
+			inc.base = baseBeforeTail
+			inc.visible = cloneMailbox(m)
+		}
+		p.readCache.rememberInc(name, inc)
+	}
 	return m, nil
+}
+
+// openMailboxIncremental serves a consumer's next read from its incremental
+// snapshot when the file is still the same (device, inode), did not shrink
+// below the parsed offset, and its already-parsed prefix is byte-identical
+// (digest of the same range, read and hashed now). Only complete lines past
+// the offset are parsed; an unterminated final line is kept unparsed and
+// retried on a later read. Any other outcome — new identity, shrink, prefix
+// mismatch, unreadable file, or a line the full parser would reject —
+// reports a miss so the ordinary full parse runs with its exact semantics.
+// There is no size ceiling on this path; mailboxCacheMaxInput bounds only
+// the retained raw bytes of the exact-byte cache, never accepted input, and
+// no mailbox size limit refuses an oversize mailbox.
+func (c *ReadCache) openMailboxIncremental(name, path string, stamp FileStamp) (*Mailbox, bool) {
+	inc := c.incSnapshot(name, path)
+	if inc == nil || !stamp.Known || !stamp.Present || stamp.Dev != inc.dev || stamp.Ino != inc.ino || stamp.Size < inc.offset {
+		return nil, false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, false
+	}
+	opened := stampInfo(info)
+	if !opened.Known || opened.Dev != inc.dev || opened.Ino != inc.ino || opened.Size < inc.offset {
+		return nil, false
+	}
+	h := sha256.New()
+	if _, err := io.CopyN(h, f, inc.offset); err != nil {
+		return nil, false
+	}
+	var prefixSum [32]byte
+	copy(prefixSum[:], h.Sum(nil))
+	if prefixSum != inc.prefixSum {
+		return nil, false
+	}
+	m := cloneMailbox(inc.base)
+	m.path = path
+	retain := opened.Size <= mailboxCacheMaxInput
+	var appended []byte
+	newOffset := inc.offset
+	prefixSumNew := inc.prefixSum
+	var tailLen, parsedBytes int64
+	r := bufio.NewReader(f)
+	for {
+		line, rerr := r.ReadBytes('\n')
+		if len(line) > 0 {
+			if retain {
+				appended = append(appended, line...)
+			}
+			h.Write(line)
+			if line[len(line)-1] == '\n' {
+				parsedBytes += int64(len(line))
+				var l mailLine
+				if json.Unmarshal(bytes.TrimSpace(line), &l) != nil {
+					return nil, false // the full parse reproduces the exact error
+				}
+				m.apply(l)
+				newOffset += int64(len(line))
+				copy(prefixSumNew[:], h.Sum(nil))
+			} else {
+				tailLen = int64(len(line)) // torn: kept unparsed, retried later
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, false
+		}
+	}
+	var fileSum [32]byte
+	copy(fileSum[:], h.Sum(nil))
+	total := newOffset + tailLen
+	globalStateStats.mailboxParseBytes.Add(parsedBytes)
+	globalStateStats.mailboxIncrementalReads.Add(1)
+	// Identical content under a changed stamp: return the remembered visible
+	// mailbox, which carries a valid unterminated final line a full parse of
+	// these bytes applied.
+	result := m
+	var newVisible *Mailbox
+	if total == inc.fileSize && fileSum == inc.fileSum {
+		newVisible = inc.visible
+		if inc.visible != nil {
+			result = cloneMailbox(inc.visible)
+			result.path = path
+		}
+	}
+	// Remember the extended snapshot only for the exact bytes consumed to
+	// EOF; an append since then leaves the previous snapshot in place, and
+	// its prefix digest re-verifies on the next attempt either way.
+	if after := StampFile(path); after.Known && after.Present && after.Dev == inc.dev && after.Ino == inc.ino && after.Size == total {
+		c.rememberInc(name, &mailboxIncState{path: path, dev: inc.dev, ino: inc.ino, offset: newOffset, prefixSum: prefixSumNew, fileSize: total, fileSum: fileSum, base: cloneMailbox(m), visible: newVisible})
+		if retain {
+			c.updateRawAfterIncremental(name, path, after, inc, appended, result, total)
+		} else {
+			c.updateRawAfterIncremental(name, path, after, inc, nil, result, total)
+		}
+	}
+	return result, true
 }
 
 func (m *Mailbox) apply(l mailLine) {
