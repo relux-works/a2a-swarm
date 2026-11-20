@@ -301,7 +301,7 @@ func TestReadCacheOversizeMailboxFallsBack(t *testing.T) {
 			t.Fatalf("oversize mailbox read %d: err=%v", i, err)
 		}
 	}
-	if after := ReadStateDecodeStats(); after.MailboxDecodes-before.MailboxDecodes != 2 || p.readCache.mailbox != nil || p.readCache.mailboxRaw != nil {
+	if after := ReadStateDecodeStats(); after.MailboxDecodes-before.MailboxDecodes != 2 || p.readCache.mailbox != nil || p.readCache.mailboxRaw != nil || p.readCache.mailboxInc != nil {
 		t.Fatalf("oversize input was cached or refused: decodes=%d cache=%p", after.MailboxDecodes-before.MailboxDecodes, p.readCache.mailbox)
 	}
 }
@@ -480,6 +480,12 @@ func TestReadCacheDurableByteConfirmation(t *testing.T) {
 	p := cachedPaths(t)
 	old := cachedLoad(t, p)
 	path := p.StateFile("fixture")
+	if !stampStateDirectory(filepath.Dir(path)).known {
+		if p.readCache.unchangedDurable("fixture", path, old, old) {
+			t.Fatal("unqualified directory version enabled the own-durable shortcut")
+		}
+		t.Skip("filesystem does not expose a qualified directory version; exact-byte cache checks remain covered separately")
+	}
 	if !p.readCache.unchangedDurable("fixture", path, old, old) {
 		t.Fatal("own durable unchanged-byte control missed")
 	}
