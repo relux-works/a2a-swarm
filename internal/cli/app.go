@@ -27,10 +27,11 @@ import (
 
 // Exit codes.
 const (
-	ExitOK     = 0
-	ExitError  = 1
-	ExitUsage  = 2
-	ExitConfig = 64
+	ExitOK          = 0
+	ExitError       = 1
+	ExitUsage       = 2
+	ExitInvalidRows = 3
+	ExitConfig      = 64
 )
 
 // App carries the process environment so tests can run commands in-process.
@@ -213,7 +214,7 @@ func commands() []command {
 		{"whoami", "whoami                               show the current identity", cmdWhoami},
 		{"rooms", "rooms                                list joined rooms (alias, name, id)", cmdRooms},
 		{"room", "room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] | room retire <alias> | room members <room> [--membership join|invite|join,invite] [--json] | room power <room> [--json]   create, retire an EMPTY room, or read current members/power; room name get|set / room avatar get|set / room parent get|set: typed property results v1, see docs/cli.md", cmdRoom},
-		{"space", "space child get|add|remove SPACE --child CHILD   inspect or replace one Space-side child declaration; see docs/cli.md", cmdSpace},
+		{"space", "space child get|add|remove SPACE --child CHILD | space child list SPACE [--json]   inspect, list or replace Space-side child declarations; see docs/cli.md", cmdSpace},
 		{"product", "product new X [--private] [--keeper NAME] [--projector NAME] | adopt X <room> | list | show X   manage product spaces and rooms", cmdProduct},
 		{"broadcast-room", "broadcast-room init   create the global #broadcast room", cmdBroadcastRoom},
 		{"join", "join <room>                          join a room", cmdJoin},

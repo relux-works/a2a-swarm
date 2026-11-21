@@ -1,12 +1,14 @@
 # Room names and Space child declarations
 
-Use the selected own account and connection, with authority for the target room.
-These commands change a display name or one Space-side child declaration:
+Use the selected own account and connection. Read access is decided by the
+selected server; mutations require authority for the target. These commands
+read, list, or change name and Space-side child declarations:
 
 ```text
 a2a room name get ROOM [--json]
 a2a room name set ROOM --expect-room-id !ROOM --name NAME [--json]
 a2a space child get SPACE --child CHILD [--json]
+a2a space child list SPACE [--json]
 a2a space child add SPACE --child CHILD --expect-space-id !SPACE --expect-child-id !CHILD --via SERVER [--via SERVER ...] [--json]
 a2a space child remove SPACE --child CHILD --expect-space-id !SPACE --expect-child-id !CHILD [--json]
 ```
@@ -18,6 +20,61 @@ Room selectors use existing alias/default-server forms or opaque IDs such as
 beginning with `!`, without Unicode spaces or controls. Aliases resolve once;
 every mutation requires matching explicit expected IDs. Space and child differ.
 No implicit join or same-name substitution occurs.
+
+## Read-only child list
+
+`a2a space child list SPACE [--json]` reads the direct `m.space.child`
+declarations from one complete, bounded Space-state snapshot. Use the selected
+identity joined to the Space; no write power is required. The server decides
+whether that identity may read the snapshot. The command makes no writes or
+joins, requests no child-room state, and does not recursively walk child
+Spaces.
+
+The response is limited to 1024 child state entries and 1 MiB of state data,
+inclusive. Exceeding either limit refuses the whole command without printing a
+partial list. A missing `via` property is a removed link and is omitted. A
+present but malformed `via` is kept as an `invalid` row so it cannot disappear
+silently; this includes an empty array, more than 16 entries, entries over 261
+UTF-8 bytes, an aggregate over 4096 bytes, invalid UTF-8, and server names
+rejected by the existing `ValidateParentVia` grammar. Valid `via` entries
+retain server order. Rows sort by child ID, except rows with an invalid `order`
+are placed after valid or unset orders.
+
+An invalid `via` row has `status=invalid` and one fixed `reason` code matching
+the existing single-child reader:
+
+| Reason | Meaning |
+| --- | --- |
+| `ambiguous_property_field` | A noncanonical case variant of the `via` field is present |
+| `malformed_child_via` | `via` is not an array |
+| `malformed_child_server` | An array entry is not a string |
+| `invalid_child_via` | Entry count, entry or aggregate length, UTF-8, or server-name validation failed |
+
+The command prints every row and exits 3 if any `via` row is invalid. A bad
+`order` does not change the row status or exit code. `order` is valid when it
+contains at most 50 printable ASCII characters (`\x20`–`\x7E`). An invalid
+value is represented by `order_invalid`, containing only its raw byte length;
+for non-string JSON values the length is that of their compact JSON encoding.
+The value itself is never printed. A missing order remains distinct from a
+present empty string. No room name, topic, unknown event extension, or invalid
+field content is included in the result.
+
+JSON emits one version 1 object with `type=space-child-list`, `operation=list`,
+the selected caller and Space ID, `state_type=m.space.child`, and a `children`
+array. Rows contain `child_id`, `via`, `order` or `order_invalid`, `status`, and
+`reason`. An invalid `via` row has no `via` field; text shows `via=invalid`.
+Unset order is omitted in JSON and shown as `order=unset` in text. For example:
+
+```text
+space-child-list v1 room="!space:example.org" state_type="m.space.child" rows=1
+child="!child:example.org" via=["example.org"] order="alpha" status=valid reason=
+```
+
+Exit 0 means the complete result contains no invalid `via` rows. Exit 1 means
+the snapshot or output failed; limit refusals print `RULE admin_space_limit: $.space`
+or `RULE admin_child_limit: $.children` with no rows. Exit 2 is invalid command
+input. Exit 3 means a complete list was printed with at least one invalid `via`
+row and `RULE admin_child_invalid: $.children` on stderr.
 
 Names contain 1..255 UTF-8 bytes and no Unicode control characters. Spaces,
 case and Unicode spelling remain literal; there is no trimming or implicit

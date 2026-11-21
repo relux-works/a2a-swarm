@@ -342,9 +342,11 @@ a2a --profile work room members '!room:example.org' --membership invite --json
 
 ### Room names and Space children
 
-`room name get|set` and `space child get|add|remove` provide typed, bounded
-operations on one exact property. Mutations require expected resolved IDs and
-concrete-event authority; child operations verify an actual Space. See the
+`room name get|set` and `space child get|list|add|remove` provide typed,
+bounded operations on Space-side declarations. `list` reads a complete bounded
+Space snapshot and reports direct child declarations without requesting child
+rooms; mutations require expected resolved IDs and concrete-event authority.
+See the
 [complete command, outcome and diagnostic contract](room-administration.md).
 
 ### Typed room properties

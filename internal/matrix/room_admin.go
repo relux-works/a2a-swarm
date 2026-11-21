@@ -91,7 +91,7 @@ func (c *Client) readAdminProperty(ctx context.Context, room, key string, child 
 				return nil, true, errors.New("matrix: malformed child server")
 			}
 		}
-		if _, bad := RoomChildViaError(via); len(via) != 0 && bad {
+		if _, bad := RoomChildViaError(via); bad {
 			return nil, true, errors.New("matrix: invalid child via")
 		}
 		out[field] = via
