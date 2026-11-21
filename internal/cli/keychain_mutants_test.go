@@ -178,7 +178,8 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 			copyRoot := t.TempDir()
 			// CLI tests and matrixtransport import the module's transport seam,
 			// including conformancetest; keep its real source/fixtures in every copy.
-			for _, name := range []string{"go.mod", "go.sum", "internal", "transport"} {
+			// internal/daemon imports runorigin.
+			for _, name := range []string{"go.mod", "go.sum", "internal", "runorigin", "transport"} {
 				src := filepath.Join(root, name)
 				err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 					if err != nil {
