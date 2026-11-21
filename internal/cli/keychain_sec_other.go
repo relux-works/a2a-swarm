@@ -2,14 +2,12 @@
 
 package cli
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
 // Keychain mode needs the macOS Security.framework, built with cgo. Every
-// other build refuses it; file mode remains available.
-var errKeychainUnsupported = errors.New("keychain requires a macOS cgo build")
+// other build refuses it at store selection; file mode remains available. The
+// backend below refuses too, for a caller that reaches it another way.
+const keychainBuildSupported = false
 
 type unsupportedBackend struct{}
 

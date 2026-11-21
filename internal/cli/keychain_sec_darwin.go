@@ -103,6 +103,9 @@ import (
 	"unsafe"
 )
 
+// keychainBuildSupported reports that this build has the native backend.
+const keychainBuildSupported = true
+
 type secBackend struct{}
 
 func defaultKeychainBackend() keychainBackend { return secBackend{} }
