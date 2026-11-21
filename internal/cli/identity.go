@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -354,10 +355,39 @@ func (a *App) leaseHolderFor(p config.Paths, sessionID string, deadline time.Tim
 	// recognised. Without a readable start time it stays in the legacy form.
 	ctx, cancel := probeContext(deadline)
 	defer cancel()
-	if birth, err := a.pidBirth(ctx, pid); err == nil {
+	if birth, err := a.ownBirth(ctx); err == nil {
 		holder += "#" + strconv.FormatInt(birth, 10)
 	}
 	return holder
+}
+
+// ownProcessBirth holds this process's own start time once pidBirth has read
+// it. The value cannot change while the process lives.
+var ownProcessBirth struct {
+	sync.Mutex
+	pid   int
+	birth int64
+}
+
+// ownBirth returns the start time of this process as pidBirth reports it. One
+// successful read serves the whole process lifetime, so a long-lived consumer
+// does not start one `ps` for every lease holder and cursor owner it names. A
+// failed read is not remembered, and a test seam is asked every time.
+func (a *App) ownBirth(ctx context.Context) (int64, error) {
+	pid := os.Getpid()
+	if a.leaseBirth != nil || a.leaseGOOS != "" {
+		return a.pidBirth(ctx, pid)
+	}
+	ownProcessBirth.Lock()
+	defer ownProcessBirth.Unlock()
+	if ownProcessBirth.pid == pid {
+		return ownProcessBirth.birth, nil
+	}
+	birth, err := a.pidBirth(ctx, pid)
+	if err == nil {
+		ownProcessBirth.pid, ownProcessBirth.birth = pid, birth
+	}
+	return birth, err
 }
 
 // pidBirthTimeout caps one start-time read; callers may shorten it further.
@@ -570,7 +600,7 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 
 func (a *App) bindOperationOwner(ctx context.Context, s *session, deadline time.Time) (config.BindOperationOwner, error) {
 	pid := os.Getpid()
-	birth, err := a.pidBirth(ctx, pid)
+	birth, err := a.ownBirth(ctx)
 	if err != nil {
 		return config.BindOperationOwner{}, err
 	}
