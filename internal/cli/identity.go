@@ -598,13 +598,31 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 	return err
 }
 
+// operationOwnerStart returns the start token that tells one process from a
+// later one with the same PID, for the owner of a cursor or status
+// reservation. It is the native token processStart reads without a helper
+// process, on macOS and on Linux; the `ps` start time that names a lease
+// holder is not available on Linux and would leave a marked identity without
+// any reservation there. An App whose start-time reader a test replaced
+// answers through that reader, so fixtures can model a reused PID.
+func (a *App) operationOwnerStart(ctx context.Context, pid int) (string, error) {
+	if a.leaseBirth != nil {
+		birth, err := a.pidBirth(ctx, pid)
+		if err != nil {
+			return "", err
+		}
+		return strconv.FormatInt(birth, 10), nil
+	}
+	return processStart(pid)
+}
+
 func (a *App) bindOperationOwner(ctx context.Context, s *session, deadline time.Time) (config.BindOperationOwner, error) {
 	pid := os.Getpid()
-	birth, err := a.ownBirth(ctx)
+	start, err := a.operationOwnerStart(ctx, pid)
 	if err != nil {
 		return config.BindOperationOwner{}, err
 	}
-	return config.BindOperationOwner{Holder: a.leaseHolderFor(s.paths, "", deadline, s.longConsumer), Host: machineLabel(), PID: pid, Birth: strconv.FormatInt(birth, 10)}, nil
+	return config.BindOperationOwner{Holder: a.leaseHolderFor(s.paths, "", deadline, s.longConsumer), Host: machineLabel(), PID: pid, Birth: start}, nil
 }
 
 func (a *App) bindOperationOwnerDead(ctx context.Context) func(config.BindOperationOwner) bool {
@@ -615,12 +633,10 @@ func (a *App) bindOperationOwnerDead(ctx context.Context) func(config.BindOperat
 		if processGone(owner.PID) {
 			return true
 		}
-		want, err := strconv.ParseInt(owner.Birth, 10, 64)
-		if err != nil {
-			return false
-		}
-		got, err := a.pidBirth(ctx, owner.PID)
-		return err == nil && got != want
+		// A live PID is another process only when its start token is known and
+		// differs from the recorded one. An unreadable token proves nothing.
+		got, err := a.operationOwnerStart(ctx, owner.PID)
+		return err == nil && got != owner.Birth
 	}
 }
 
