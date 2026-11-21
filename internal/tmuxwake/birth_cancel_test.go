@@ -14,15 +14,19 @@ import (
 )
 
 // pipeHoldingPS puts a fake ps first on PATH. It starts a background child
-// that inherits stdout and holds it for holdSeconds, then waits itself, so
-// killing ps alone does not close the pipe Birth reads.
+// that inherits stdout and holds it for holdSeconds, publishes its PID by
+// atomic rename, then waits itself, so killing ps alone does not close the
+// pipe Birth reads.
 func pipeHoldingPS(t *testing.T, holdSeconds string) string {
 	t.Helper()
 	dir := t.TempDir()
 	childPIDFile := filepath.Join(dir, "child.pid")
 	script := "#!/bin/sh\nsleep " + holdSeconds + " &\nchild=$!\n" +
 		"if ! kill -0 \"$child\" 2>/dev/null; then exit 1; fi\n" +
-		"printf '%s\\n' \"$child\" > \"$TMUXWAKE_TEST_CHILD_PID_FILE\"\nwait\n"
+		"pidfile=\"$TMUXWAKE_TEST_CHILD_PID_FILE\"\n" +
+		"tmpfile=\"${pidfile}.tmp.$$\"\n" +
+		"printf '%s\\n' \"$child\" > \"$tmpfile\"\n" +
+		"mv \"$tmpfile\" \"$pidfile\"\nwait\n"
 	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +39,7 @@ func waitForPipeHolder(t *testing.T, childPIDFile string) {
 	t.Helper()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.NewTimer(time.Second)
+	timeout := time.NewTimer(5 * time.Second)
 	defer timeout.Stop()
 	for {
 		data, err := os.ReadFile(childPIDFile)
@@ -82,14 +86,14 @@ func TestBirthCancellationBoundedWithInheritedPipe(t *testing.T) {
 }
 
 // Proves: with no WaitDelay, cancellation waits at least 1.5s after the fake
-// ps has written a live child PID, showing that child already holds stdout.
+// ps has published a live child PID, showing that child already holds stdout.
 // Limit: a shell-script ps and sleep child stand in for a real pipe-inheriting
 // descendant.
 func TestBirthCancellationBoundedWithInheritedPipeCalibration(t *testing.T) {
 	old := birthWaitDelay
 	birthWaitDelay = 0
 	t.Cleanup(func() { birthWaitDelay = old })
-	childPIDFile := pipeHoldingPS(t, "2")
+	childPIDFile := pipeHoldingPS(t, "4")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	type birthResult struct {
