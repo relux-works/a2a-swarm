@@ -341,6 +341,7 @@ func TestReadCacheOversizeMailboxKeepsIncrementalSnapshot(t *testing.T) {
 
 // TestReadCacheByteConfirmationOnUpdate proves a locked update sees a same-stamp foreign sealed change and both stable and foreign no-ops use the ordinary durability path when namespace proof is unavailable.
 func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
 	p := cachedPaths(t)
 	var rec syncRecord
 	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
@@ -370,6 +371,57 @@ func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
 	finalBytes, readErr := os.ReadFile(p.StateFile("fixture"))
 	if err != nil || readErr != nil || got.NextBatch != "s1" || !got.Writer.ForeignSeen.IsZero() || !validWriterSeal(got) || !bytes.Equal(finalBytes, foreignBytes) || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
 		t.Fatalf("same-stamp compatible foreign change: err=%v readErr=%v State=%q bytesPreserved=%v syncs=%+v durable=%v", err, readErr, got.NextBatch, bytes.Equal(finalBytes, foreignBytes), rec, p.readCache.durable)
+	}
+}
+
+// TestReadCacheByteConfirmationOnUpdateWithQualifiedDirectoryTime proves a stable qualified own write may skip syncs, while same-stamp foreign bytes still fail byte confirmation and use ordinary durability.
+func TestReadCacheByteConfirmationOnUpdateWithQualifiedDirectoryTime(t *testing.T) {
+	p := cachedPaths(t)
+	path := p.StateFile("fixture")
+	dir := filepath.Dir(path)
+	beforeDir := stampStateDirectory(dir)
+	if !beforeDir.known {
+		t.Skip("platform does not qualify directory ctime")
+	}
+	if !p.readCache.durable {
+		t.Fatal("qualified directory ctime did not preserve the own-write durability proof")
+	}
+
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(s *State) error {
+		if s.NextBatch != "s0" {
+			t.Fatal("qualified own-write control loaded different content")
+		}
+		return nil
+	}); err != nil || len(rec.files) != 0 || len(rec.dirs) != 0 || !p.readCache.durable {
+		t.Fatalf("qualified stable own-write control: %v, syncs=%+v durable=%v", err, rec, p.readCache.durable)
+	}
+	rec = syncRecord{}
+	old := cachedLoad(t, p)
+	foreign := old
+	foreign.NextBatch = "s1"
+	raw, err := sealedState(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignBytes := append(raw, '\n')
+	cacheRestamp(t, path, foreignBytes)
+	if !beforeDir.Equal(stampStateDirectory(dir)) {
+		t.Fatal("in-place foreign write changed qualified directory ctime")
+	}
+	if p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("qualified own-durable shortcut trusted changed foreign bytes")
+	}
+	got, err := UpdateState(p, "fixture", func(s *State) error {
+		if s.NextBatch != "s1" {
+			t.Fatal("qualified locked update loaded stale cached State")
+		}
+		return nil
+	})
+	finalBytes, readErr := os.ReadFile(path)
+	if err != nil || readErr != nil || got.NextBatch != "s1" || !got.Writer.ForeignSeen.IsZero() || !validWriterSeal(got) || !bytes.Equal(finalBytes, foreignBytes) || len(rec.files) != 1 || len(rec.dirs) != 2 || !p.readCache.durable {
+		t.Fatalf("qualified same-stamp foreign change: err=%v readErr=%v State=%q bytesPreserved=%v syncs=%+v durable=%v", err, readErr, got.NextBatch, bytes.Equal(finalBytes, foreignBytes), rec, p.readCache.durable)
 	}
 }
 
