@@ -32,6 +32,55 @@ func (e *env) project(extra ...string) result {
 	return e.as("proj", append([]string{"project", "--system", "system", "--source", "proj", "--once", "--poll", "50ms"}, extra...)...)
 }
 
+// TestProjectNoopInitialReservationReleasesCursor proves a projector
+// that reserves the cursor and finds it already positioned releases the
+// reservation, so a later control reservation is not blocked by it.
+func TestProjectNoopInitialReservationReleasesCursor(t *testing.T) {
+	isolateBindTest(t)
+	e, _ := world(t)
+	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	p := e.paths()
+	legacy := e.state("alice")
+	if legacy.Lease == nil {
+		t.Fatal("fixture has no lease to migrate")
+	}
+	marked, err := config.EnsureBindPart(p, "alice", config.BindPartOpenOptions{Holder: legacy.Lease.Holder})
+	if err != nil || !config.BindPartActive(marked) {
+		t.Fatalf("migrate fixture: active=%t err=%v", config.BindPartActive(marked), err)
+	}
+	cursor := marked.NextBatch
+	if cursor == "" {
+		t.Fatal("fixture has no initial cursor")
+	}
+	owner := config.BindOperationOwner{Holder: "projector", Host: "host-1", PID: 2345, Birth: "birth-1"}
+	token, err := config.NewBindToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := func(config.BindOperationOwner) bool { return false }
+	if _, err := config.BeginBindCursor(p, "alice", token, "projector", cursor, "", owner, dead); err != nil {
+		t.Fatalf("reserve initial cursor: %v", err)
+	}
+
+	a := &App{}
+	s := &session{app: a, paths: p, name: "alice"}
+	finished, err := s.finishProjectNoopCursor(a, marked, token)
+	if err != nil || finished.NextBatch != cursor {
+		t.Fatalf("finish already-positioned cursor=%q err=%v", finished.NextBatch, err)
+	}
+
+	retryToken, err := config.NewBindToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.BeginBindCursor(p, "alice", retryToken, "projector", cursor, "", owner, dead); err != nil {
+		t.Fatalf("no-op initial path left a cursor reservation behind: %v", err)
+	}
+	if err := config.AbortBindCursor(p, "alice", retryToken); err != nil {
+		t.Fatalf("release retry control reservation: %v", err)
+	}
+}
+
 // projections returns the projector's messages in the projection room.
 func (e *env) projections(system string) []matrix.Event {
 	e.hs.mu.Lock()

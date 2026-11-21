@@ -227,7 +227,7 @@ func TestWaitRetryBoundedTimingAndReset(t *testing.T) {
 
 // Temporary HTTP and request timeouts retry, while subscription reads retain the fetched batch.
 func TestWaitRetryTemporaryReads(t *testing.T) {
-	for _, phase := range []string{"startup", "after-sync", "sync-statuses"} {
+	for _, phase := range []string{"startup", "after-sync", "after-sync-marked", "sync-statuses"} {
 		t.Run(phase, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				syncCalls, subCalls := 0, 0
@@ -253,12 +253,17 @@ func TestWaitRetryTemporaryReads(t *testing.T) {
 				a.HTTP.Transport = waitRoundTrip(func(r *http.Request) (*http.Response, error) {
 					if strings.HasSuffix(r.URL.Path, "/account_data/"+SubsType) {
 						subCalls++
-						if phase == "startup" && subCalls <= 2 || phase == "after-sync" && subCalls >= 2 && subCalls <= 3 {
+						if phase == "startup" && subCalls <= 2 || (phase == "after-sync" || phase == "after-sync-marked") && subCalls >= 2 && subCalls <= 3 {
 							return nil, waitRefused()
 						}
 					}
 					return base.RoundTrip(r)
 				})
+				if phase == "after-sync-marked" {
+					if _, err := config.EnsureBindPart(p, "alice", config.BindPartOpenOptions{Now: time.Now()}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if code := a.Run(context.Background(), []string{"--as", "alice", "wait", "--timeout", "1h", "--json"}); code != ExitOK || strings.Count(out.String(), "$neighbor") != 1 {
 					t.Fatalf("read recovery: code=%d sync=%d subs=%d stdout=%q stderr=%q", code, syncCalls, subCalls, out, errb)
 				}

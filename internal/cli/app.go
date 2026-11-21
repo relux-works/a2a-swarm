@@ -109,6 +109,9 @@ type App struct {
 	// afterOwnStatusPending observes local contention after releasing the state
 	// lock (tests only), so fixtures can clear a seeded fence deterministically.
 	afterOwnStatusPending func()
+	// afterMarkedOwnStatusNoticeRecord interrupts the marked provider path after
+	// its notice CAS, so tests can exercise a concurrent control handover.
+	afterMarkedOwnStatusNoticeRecord func()
 	// runtimeBindStatusBudget shortens only the one-shot bind publication in tests.
 	runtimeBindStatusBudget time.Duration
 	// beforeDeliver, when set (tests only), runs after a consumer synced and
@@ -120,6 +123,11 @@ type App struct {
 	// quiescentExchangeHook, when set by a test, runs before each quiescent
 	// exchange (foreign-writer fixtures).
 	quiescentExchangeHook func()
+	// beforeBindCursorCommit interrupts a marked cursor write after mailbox and
+	// thread persistence, so retry/dedup behavior can be checked.
+	beforeBindCursorCommit func()
+	// afterBindingCycleError observes a private fixture's failed consumer cycle.
+	afterBindingCycleError func(string, error)
 	// inspectTerminalTarget is package-test-only. Production leaves it nil and
 	// uses the pinned OS-backed owner/pane checks.
 	inspectTerminalTarget func(context.Context, config.TerminalBinding) (string, error, error)

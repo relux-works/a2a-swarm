@@ -78,6 +78,20 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 	if err := writeCtx.Err(); err != nil {
 		return err
 	}
+	current, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if config.BindPartMarked(current) {
+		if !config.BindPartActive(current) {
+			return config.ErrBindPartOperation
+		}
+		err := s.writeMarkedOwnStatus(writeCtx, deadline, prepare, finish)
+		if errors.Is(err, ErrOwnStatusPending) && s.app.afterOwnStatusPending != nil {
+			s.app.afterOwnStatusPending()
+		}
+		return err
+	}
 	token := matrix.NewTxnID()
 	var record config.AgentStatus
 	var send, priorUncertain bool
@@ -151,6 +165,134 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 		return err
 	}
 	return publicationErr
+}
+
+// writeMarkedOwnStatus keeps the provider notice/publication pair in its
+// sidecar and durably pins both the sidecar operation and State token before
+// the status PUT. State uncertainty is overlaid while a sidecar operation is
+// pending, so a failed final sidecar write can never report published.
+func (s *session) writeMarkedOwnStatus(ctx context.Context, deadline time.Time, prepare func(*config.State) (config.AgentStatus, bool, error), finish func(*config.State, error)) error {
+	dead := s.app.bindOperationOwnerDead(ctx)
+	if err := config.RecoverBindOwnStatus(s.paths, s.name, dead, s.app.Now()); err != nil {
+		if errors.Is(err, config.ErrBindPartOperation) {
+			return ErrOwnStatusPending
+		}
+		return err
+	}
+	current, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if !config.BindPartActive(current) {
+		return config.ErrBindPartOperation
+	}
+	view, err := config.ReadBindPartView(s.paths, s.name, current)
+	if err != nil {
+		return err
+	}
+	candidate := ownStatusCandidate(current)
+	record, send, err := prepare(&candidate)
+	if err != nil {
+		return err
+	}
+	if candidate.Terminal != nil && (candidate.Terminal.Generation != view.Generation || candidate.Terminal.SessionID != view.SessionID || candidate.Terminal.Stopped != view.Stopped) {
+		return config.ErrBindPartStale
+	}
+	if candidate.Terminal != nil && (!reflect.DeepEqual(candidate.Terminal.OwnNotice, view.OwnNotice) || candidate.Terminal.NoticePublication != view.NoticePublication) {
+		view, err = config.RecordBindNotice(s.paths, s.name, view.Revision, view.Generation, candidate.Terminal.OwnNotice, candidate.Terminal.NoticePublication)
+		if err != nil {
+			return err
+		}
+		if s.app.afterMarkedOwnStatusNoticeRecord != nil {
+			s.app.afterMarkedOwnStatusNoticeRecord()
+		}
+		current, err = config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		view, err = config.ReadBindPartView(s.paths, s.name, current)
+		if err != nil {
+			return err
+		}
+	}
+	if candidate.Terminal != nil && (candidate.Terminal.Generation != view.Generation || candidate.Terminal.SessionID != view.SessionID || candidate.Terminal.Stopped != view.Stopped) {
+		return config.ErrBindPartStale
+	}
+	if !send {
+		if !reflect.DeepEqual(candidate.NoticeRetry, current.NoticeRetry) {
+			_, err = config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(st *config.State) error {
+				if st.Terminal == nil || st.Terminal.Generation != view.Generation || st.Terminal.SessionID != view.SessionID || st.Terminal.Stopped != view.Stopped {
+					return config.ErrBindPartStale
+				}
+				st.NoticeRetry = candidate.NoticeRetry
+				return nil
+			})
+		}
+		return err
+	}
+	if candidate.Terminal == nil || !reflect.DeepEqual(record.OwnNotice, view.OwnNotice) {
+		return config.ErrBindPartStale
+	}
+	token, err := config.NewBindToken()
+	if err != nil {
+		return err
+	}
+	owner, err := s.app.bindOperationOwner(ctx, s, deadline)
+	if err != nil {
+		return err
+	}
+	if err := config.BeginBindOwnStatus(s.paths, s.name, token, view.Revision, view.Generation, view.SessionID, owner, deadline, s.app.Now()); err != nil {
+		if errors.Is(err, config.ErrBindPartOperation) {
+			return ErrOwnStatusPending
+		}
+		return err
+	}
+
+	snapshot := ownStatusCandidate(current)
+	snapshot.NoticeWriteUncertain = current.NoticeWriteUncertain
+	publicationErr := s.putOwnStatus(ctx, &snapshot, record)
+	finished := ownStatusCandidate(snapshot)
+	if finish != nil {
+		finish(&finished, publicationErr)
+	}
+	var status *config.AgentStatus
+	if publicationErr == nil {
+		if record.State == "unknown" {
+			status = finished.NoticeStatus
+		} else {
+			status = finished.Liveness
+		}
+	}
+	publication := "unavailable: own liveness publication failed"
+	if finished.Terminal != nil && finished.Terminal.NoticePublication != "" {
+		publication = finished.Terminal.NoticePublication
+	}
+	result := config.BindOwnStatusResult{
+		Token: token, Status: status, Published: publicationErr == nil,
+		Uncertain: snapshot.NoticeWriteUncertain, Publication: publication,
+		Retry: finished.NoticeRetry,
+	}
+	if err := config.FinishBindOwnStatus(s.paths, s.name, result, s.app.Now()); err != nil {
+		if abortErr := config.AbortBindOwnStatus(s.paths, s.name, token, s.app.Now()); abortErr != nil {
+			return errors.Join(err, abortErr)
+		}
+		return err
+	}
+	return publicationErr
+}
+
+func ownStatusCandidate(state config.State) config.State {
+	candidate := state
+	if state.Terminal != nil {
+		terminal := *state.Terminal
+		terminal.OwnNotice.PossiblyOrphaned = cloneBool(state.Terminal.OwnNotice.PossiblyOrphaned)
+		candidate.Terminal = &terminal
+	}
+	if state.NoticeRetry != nil {
+		retry := *state.NoticeRetry
+		candidate.NoticeRetry = &retry
+	}
+	return candidate
 }
 
 // putOwnStatus performs HTTP and updates a private snapshot, without locks.

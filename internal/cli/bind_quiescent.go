@@ -523,27 +523,45 @@ func (a *App) quiescentExchange(ctx context.Context, s *session, writes *quiesce
 	a.traceTerminal("deliver")
 	writes.set(true)
 	op, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-	st, list, err := s.startDelivery(op, a.Now())
+	start, list, err := s.startBindDelivery(op, a.Now())
 	cancel()
 	writes.set(false)
 	if err != nil {
 		return "delivery"
 	}
-	if st.NextBatch == "" {
+	// A stable marked binding starts from its cached view and the sidecar's
+	// cursor; every other case starts from the State the writer path returned.
+	since := start.state.NextBatch
+	if start.cached {
+		since = start.view.NextBatch
+	}
+	if since == "" {
 		return "cursor"
 	}
 	s.principals = s.readDeliveryPrincipals()
 	mailbox := s.paths.MailboxFile(s.name)
 	before := config.StampFile(mailbox)
 	a.traceTerminal("poll")
-	resp, err := s.client.Sync(ctx, st.NextBatch, terminalLongPoll, syncFilter)
+	resp, err := s.client.Sync(ctx, since, terminalLongPoll, syncFilter)
 	if err != nil {
 		return "sync"
 	}
 	a.traceTerminal("ingest")
 	writes.set(true)
 	op, cancel = context.WithTimeout(ctx, nativeRPCTimeout)
-	_, err = s.ingest(op, resp, st.NextBatch, list.Subs, nil, time.Now().Add(nativeRPCTimeout))
+	deadline := time.Now().Add(nativeRPCTimeout)
+	// The cursor is reserved only now, after the long-poll: a reservation held
+	// across it would refuse every other cursor owner for its whole wait. The
+	// reservation itself refuses a cursor that moved meanwhile. An unmarked
+	// State reserves nothing and is persisted as before.
+	var token string
+	if start.cached {
+		if token, err = s.beginBindCursorView(op, start.view, "delivery", deadline); err == nil {
+			_, err = s.finishIdleBindSync(op, start.view, token, resp, list.Subs, deadline)
+		}
+	} else if token, err = s.beginBindCursor(op, start.state, "delivery", deadline); err == nil {
+		_, err = s.ingestReserved(op, resp, since, list.Subs, nil, deadline, token)
+	}
 	cancel()
 	writes.set(false)
 	if err != nil {
@@ -578,13 +596,12 @@ func (a *App) quiescentOwnerTeardown(ctx context.Context, s *session, generation
 		}
 	}
 	if s.checkConnection() == nil {
-		_, _ = a.updateStateBy(s.paths, s.name, time.Now().Add(500*time.Millisecond), func(st *config.State) error {
-			if b := st.Terminal; b != nil && b.Generation == generation && !b.Stopped {
-				b.Stopped = true
-				b.Outcome = "target exited or replaced"
-				dropRetiredStrandedAlarms(st)
-			}
-			return nil
+		// terminalUpdateBy records the stop where the binding keeps it: in the
+		// sidecar for a marked State, in State otherwise. It refuses a retired
+		// or replaced generation itself and drops the retired alarms.
+		_ = a.terminalUpdateBy(s, generation, time.Now().Add(500*time.Millisecond), func(b *config.TerminalBinding) {
+			b.Stopped = true
+			b.Outcome = "target exited or replaced"
 		})
 	}
 	return "owner gone or replaced", true

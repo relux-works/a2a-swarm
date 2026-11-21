@@ -150,6 +150,40 @@ func TestReadinessDispatch(t *testing.T) {
 	}
 }
 
+// A provider-marked binding must still deliver an addressed pending event to
+// its freshly pinned owner, while retaining the event until inbox receipt.
+func TestMarkedReadinessDispatchAddressedMail(t *testing.T) {
+	isolateBindTest(t)
+	f := newOrphanDispatchFixture(t)
+	id := f.mail()
+	dispatchRegistry(t, f, "idle")
+	legacy := f.e.state("alice")
+	if legacy.Lease == nil {
+		t.Fatal("setup: delivery lease missing before provider migration")
+	}
+	marked, err := config.EnsureBindPart(f.e.paths(), "alice", config.BindPartOpenOptions{Holder: legacy.Lease.Holder, Now: f.now})
+	if err != nil || !config.BindPartActive(marked) {
+		t.Fatalf("activate provider-marked binding: active=%t err=%v", config.BindPartActive(marked), err)
+	}
+	f.control(map[string]any{"claude": true, "named": true})
+	f.dispatch()
+	first := f.binding()
+	screen := f.wait(func(s orphanScreen) bool { return s.PID > 1 })
+	if screen.Text != "" || len(screen.Submitted) != 0 || len(first.Reservations) != 0 {
+		t.Fatal("first readiness observation had effects", screen)
+	}
+	f.now = f.now.Add(time.Second)
+	f.dispatch()
+	screen = f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 })
+	current := f.binding()
+	if screen.Submitted[0] != tmuxwake.Notice(1) || current == nil || current.Generation != "orphan-gen" || current.SessionID != "owned-thread" || current.Stopped || len(current.Rung) != 1 || current.Rung[0] != id {
+		t.Fatalf("fresh marked owner did not dispatch the addressed event once: screen=%+v terminal=%+v event=%s", screen, current, id)
+	}
+	if f.e.received("alice", id) {
+		t.Fatal("terminal dispatch receipted the addressed event before inbox receipt")
+	}
+}
+
 // Each Linux identity refusal has a valid named readiness control on the same
 // isolated target. Two dispatch cycles must retain mail without input, attempts,
 // reservations or changes to binding custody; readiness diagnostics may change.

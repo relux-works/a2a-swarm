@@ -380,8 +380,8 @@ func (a *App) publishTerminalNotice(ctx context.Context, s *session, generation 
 func (a *App) unknownTerminalNotice(ctx context.Context, s *session, generation string, consumer bool) {
 	// A consumer/read failure cannot indefinitely silence an aged notice journal.
 	// This is suspicion from retained journal evidence, not a fresh screen claim.
-	if st, err := config.LoadState(s.paths, s.name); err == nil && st.Terminal != nil && st.Terminal.Generation == generation && !st.Terminal.Stopped {
-		if a.observeTerminalNotice(s, generation, *st.Terminal, "unknown") == nil {
+	if b, err := config.LoadBindTerminal(s.paths, s.name); err == nil && b != nil && b.Generation == generation && !b.Stopped {
+		if a.observeTerminalNotice(s, generation, *b, "unknown") == nil {
 			a.reportTerminalIncident(ctx, s, generation)
 		}
 	}
@@ -415,7 +415,32 @@ func (a *App) clearTerminalNoticeOnTurn(ctx context.Context, s *session, session
 		deadline = d
 	}
 	return a.withRuntimeLock(s.paths, s.name, "control", deadline, func() error {
-		_, err := a.updateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
+		current, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		b := current.Terminal
+		if current.HooksPaused || b == nil || b.Stopped || b.SessionID != sessionID || b.Host != machineLabel() {
+			return nil
+		}
+		if b.OwnNotice.PossiblyOrphaned != nil && !*b.OwnNotice.PossiblyOrphaned && b.Notice == "" {
+			return nil
+		}
+		if config.BindPartMarked(current) {
+			return a.terminalUpdate(s, b.Generation, func(current *config.TerminalBinding) {
+				if current.Stopped || current.SessionID != sessionID || current.Host != machineLabel() ||
+					current.OwnNotice.PossiblyOrphaned != nil && !*current.OwnNotice.PossiblyOrphaned && current.Notice == "" {
+					return
+				}
+				clear := false
+				current.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
+				current.NoticeReport = nil
+				current.AttemptIDs, current.Notice, current.Typed, current.TypingStarted = nil, "", false, false
+				current.NoticeOrigin, current.NoticePosition, current.Idle = nil, nil, nil
+				current.NoticePublication = "unavailable: own notice changed"
+			})
+		}
+		_, err = a.updateStateBy(s.paths, s.name, deadline, func(st *config.State) error {
 			b := st.Terminal
 			if st.HooksPaused || b == nil || b.Stopped || b.SessionID != sessionID || b.Host != machineLabel() {
 				return nil

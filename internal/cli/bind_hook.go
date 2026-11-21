@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -106,6 +107,58 @@ func ownTerminalTarget(b *config.TerminalBinding, target tmuxwake.Target) bool {
 }
 
 func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBinding, target tmuxwake.Target, next string) (config.State, error) {
+	current, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return config.State{}, err
+	}
+	if config.BindPartMarked(current) {
+		if !config.BindPartActive(current) {
+			return config.State{}, config.ErrBindPartOperation
+		}
+		b := current.Terminal
+		if b == nil || !ownTerminalTarget(b, target) || b.Generation != expected.Generation || b.SessionID != expected.SessionID || b.Host != expected.Host || b.OwnerPID != expected.OwnerPID || b.OwnerBirth != expected.OwnerBirth || b.Target != expected.Target {
+			return config.State{}, errors.New("binding changed before session handover")
+		}
+		view, err := config.ReadBindPartView(s.paths, s.name, current)
+		if err != nil {
+			return config.State{}, err
+		}
+		ttl := config.LeaseTTL
+		if a.leaseTTL != 0 {
+			ttl = a.leaseTTL
+		}
+		proof := config.BindControlProof{OwnerPID: expected.OwnerPID, OwnerBirth: expected.OwnerBirth, Target: target, TargetVerified: true}
+		view, err = config.TransferBindSessionAndLease(s.paths, s.name,
+			config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
+			config.BindControlTarget{Generation: view.Generation, SessionID: next, Stopped: view.Stopped, Kind: "handover"},
+			config.BindLeaseTransfer{OldHolder: expected.SessionID, NewHolder: next, Host: machineLabel(), PID: os.Getpid(), Now: a.Now(), TTL: ttl, Dead: a.leaseDead(s.paths)}, proof)
+		if err != nil {
+			return config.State{}, err
+		}
+		publication := view.NoticePublication
+		if !reflect.DeepEqual(view.OwnNotice, config.OwnNoticeObservation{}) && publication == "published" {
+			publication = "unavailable: own notice changed"
+		}
+		view, err = config.RecordBindNotice(s.paths, s.name, view.Revision, view.Generation, config.OwnNoticeObservation{}, publication)
+		if err != nil {
+			return config.State{}, err
+		}
+		return a.updateState(s.paths, s.name, func(st *config.State) error {
+			b := st.Terminal
+			if b == nil || !ownTerminalTarget(b, target) || b.Generation != expected.Generation || b.SessionID != next || b.Host != expected.Host || b.OwnerPID != expected.OwnerPID || b.OwnerBirth != expected.OwnerBirth || b.Target != expected.Target {
+				return errors.New("binding changed before session handover")
+			}
+			b.NoticeReport = nil
+			dropRetiredStrandedAlarms(st)
+			b.ClaudeRegistryRoot = ""
+			b.Readiness = nil
+			b.Idle = nil
+			b.OwnNotice = view.OwnNotice
+			b.NoticePublication = view.NoticePublication
+			b.OwnNotice.PossiblyOrphaned = cloneBool(view.OwnNotice.PossiblyOrphaned)
+			return nil
+		})
+	}
 	return a.updateState(s.paths, s.name, func(st *config.State) error {
 		b := st.Terminal
 		if b == nil || !ownTerminalTarget(b, target) || b.Generation != expected.Generation || b.SessionID != expected.SessionID || b.Host != expected.Host || b.OwnerPID != expected.OwnerPID || b.OwnerBirth != expected.OwnerBirth || b.Target != expected.Target {

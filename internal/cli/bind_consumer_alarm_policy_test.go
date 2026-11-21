@@ -84,3 +84,37 @@ func TestBindingConsumerAlarmHasNoDeliveryAuthority(t *testing.T) {
 		t.Fatal("alarm observation changed mailbox bytes or receipts", err)
 	}
 }
+
+// TestBindingConsumerSteadyReadySkipsStateWriter proves a healthy
+// consumer observation with nothing to report neither copies nor seals State.
+func TestBindingConsumerSteadyReadySkipsStateWriter(t *testing.T) {
+	isolateBindTest(t)
+	_, a, s, _ := strandedFallbackFixture(t)
+	before := config.ReadStateDecodeStats()
+	a.observeBindingConsumer(s, "gen", &bindingAvailability{}, true)
+	after := config.ReadStateDecodeStats()
+	if after.LoadStateCalls != before.LoadStateCalls || after.WriterClones != before.WriterClones || after.StateDigests != before.StateDigests || after.CanonicalStates != before.CanonicalStates || after.WriterSealChecks != before.WriterSealChecks {
+		t.Fatalf("healthy observer copied or sealed State: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestBindingConsumerReadyClearsPersistedReportAfterRestart proves a
+// restarted consumer that finds a persisted unavailability report clears it on
+// its first healthy observation instead of carrying it forward.
+func TestBindingConsumerReadyClearsPersistedReportAfterRestart(t *testing.T) {
+	isolateBindTest(t)
+	e, a, s, _ := strandedFallbackFixture(t)
+	notificationState(t, e, func(st *config.State) {
+		st.Terminal.ConsumerReport = &config.NoticeReport{Since: time.Now().UTC().Format(time.RFC3339Nano)}
+	})
+	initial := e.state("alice").Terminal
+	if initial.ConsumerReport == nil {
+		t.Fatal("setup omitted the persisted consumer report")
+	}
+	episode := &bindingAvailability{reported: initial.ConsumerReport != nil}
+	a.observeBindingConsumer(s, "gen", episode, true)
+	after := e.state("alice")
+	if after.Terminal.ConsumerReport != nil || episode.reported || episode.failed {
+		t.Fatalf("ready restarted observer retained its report: terminal=%+v episode=%+v", after.Terminal, episode)
+	}
+}

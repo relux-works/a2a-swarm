@@ -12,6 +12,34 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
+// TestMarkedStrandedNoticeSteadyPathAvoidsStateLoad proves the
+// stranded-notice check of a marked binding with nothing to report costs no
+// State load and no decode.
+func TestMarkedStrandedNoticeSteadyPathAvoidsStateLoad(t *testing.T) {
+	isolateBindTest(t)
+	f := newOrphanDispatchFixture(t)
+	legacy := f.e.state("alice")
+	if legacy.Lease == nil {
+		t.Fatal("setup: delivery lease missing before provider migration")
+	}
+	if _, err := config.EnsureBindPart(f.e.paths(), "alice", config.BindPartOpenOptions{Holder: legacy.Lease.Holder, Now: f.now}); err != nil {
+		t.Fatal("activate provider-marked binding:", err)
+	}
+	f.s.paths = f.s.paths.WithReadCache(config.NewReadCache(f.s.name))
+	if _, err := config.LoadState(f.s.paths, f.s.name); err != nil {
+		t.Fatal("warm consumer cache:", err)
+	}
+	before := config.ReadStateDecodeStats()
+	if err := f.a.reportStrandedTerminalNotice(context.Background(), f.s, "orphan-gen"); err != nil {
+		t.Fatal("steady no-notice observation:", err)
+	}
+	after := config.ReadStateDecodeStats()
+	// The cache hit confirms the State bytes, so a read is expected; a load or a decode is not.
+	if after.LoadStateCalls != before.LoadStateCalls || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
+		t.Fatalf("steady marked observation loaded the large State: before=%+v after=%+v", before, after)
+	}
+}
+
 // A genuinely typed, unsubmitted notice with all attempt IDs still pending
 // must surface without inbox receipts; later mail cannot hide the suspicion.
 // These synthetic screens prove diagnostics, not provider responsiveness.

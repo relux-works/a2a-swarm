@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"testing"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
+	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
 // This deterministic state-boundary witness takes a stale load, commits a real
@@ -18,10 +20,17 @@ func TestNoticeReplacementCurrentState(t *testing.T) {
 	for _, mode := range []string{"pin-after-load", "ack-after-load", "unchanged"} {
 		t.Run(mode, func(t *testing.T) {
 			e, a, s, room := reportFixture(t)
-			_, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+			ownerBirth, err := tmuxwake.Birth(context.Background(), os.Getpid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 				b := st.Terminal
 				b.Host = machineLabel()
 				b.SessionID = "fixture-session"
+				b.OwnerPID = os.Getpid()
+				b.OwnerBirth = ownerBirth
+				b.Target = tmuxwake.Target{Socket: "/tmp/bind-fixture", SocketID: "fixture-socket", Pane: "%0", PanePID: os.Getpid(), PaneBirth: ownerBirth, OwnerPID: os.Getpid(), OwnerBirth: ownerBirth, Runtime: "codex"}
 				b.Typed = true
 				b.NoticeCount = 1
 				b.Notice = "fixture-journal"
@@ -60,7 +69,10 @@ func TestNoticeReplacementCurrentState(t *testing.T) {
 				t.Fatal("setup: report not applied and acknowledged")
 			}
 			next := *loaded
-			next.Generation = "replacement"
+			next.Generation, err = config.NewBindToken()
+			if err != nil {
+				t.Fatal(err)
+			}
 			next.OwnNotice = config.OwnNoticeObservation{}
 			next.NoticeReport = nil
 			if err := persistTerminalReplacement(s, &next, true); err != nil {
