@@ -527,7 +527,12 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
+		// An App without a context waits as the unmarked path does, which
+		// defaults the same nil context inside UpdateStateContext.
 		leaseCtx := a.ctx
+		if leaseCtx == nil {
+			leaseCtx = context.Background()
+		}
 		cancel := func() {}
 		if !deadline.IsZero() {
 			leaseCtx, cancel = context.WithDeadline(leaseCtx, deadline)

@@ -898,6 +898,16 @@ func (s *session) syncIdleBindNow(ctx context.Context, state config.BindIdleDeli
 		}
 		return bindIdleSyncResult{}, err
 	}
+	return s.finishIdleBindSync(ctx, state, token, resp, subs, deadline)
+}
+
+// finishIdleBindSync persists one sync response of a marked binding under the
+// cursor reservation token, which the caller took for state.NextBatch. A
+// response without events advances the sidecar cursor alone when the mailbox
+// and the legacy delivery fields are empty; everything else goes through the
+// ordinary delivery persistence, which commits the cursor through the same
+// reservation. The reservation is released on every refusal.
+func (s *session) finishIdleBindSync(ctx context.Context, state config.BindIdleDeliveryState, token string, resp matrix.SyncResponse, subs []Sub, deadline time.Time) (bindIdleSyncResult, error) {
 	if resp.NextBatch != "" && len(resp.Rooms.Join) == 0 && len(resp.Rooms.Invite) == 0 {
 		if _, err := s.principalLiveSubscriptions(subs); err != nil {
 			if abortErr := s.abortBindCursor(token); abortErr != nil {
@@ -915,7 +925,7 @@ func (s *session) syncIdleBindNow(ctx context.Context, state config.BindIdleDeli
 			return bindIdleSyncResult{mailboxProvenEmpty: true}, nil
 		}
 	}
-	_, err = s.ingestReserved(ctx, resp, state.NextBatch, subs, nil, deadline, token)
+	_, err := s.ingestReserved(ctx, resp, state.NextBatch, subs, nil, deadline, token)
 	return bindIdleSyncResult{}, err
 }
 

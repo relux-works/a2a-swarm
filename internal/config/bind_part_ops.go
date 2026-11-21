@@ -869,6 +869,18 @@ func bindNoticeFromObservation(n OwnNoticeObservation) bindPartOwnNotice {
 }
 
 func SetBindControl(p Paths, name string, expected BindControlExpectation, target BindControlTarget, proof BindControlProof) (BindPartView, error) {
+	return setBindControlBy(p, name, expected, target, proof, lockFile)
+}
+
+// SetBindControlContext is SetBindControl with a bounded wait for the State
+// lock: when ctx ends first nothing is written. It serves a caller that must
+// not be held by another writer, such as a consumer recording that its owner
+// is gone.
+func SetBindControlContext(ctx context.Context, p Paths, name string, expected BindControlExpectation, target BindControlTarget, proof BindControlProof) (BindPartView, error) {
+	return setBindControlBy(p, name, expected, target, proof, func(path string) (func(), error) { return lockFileContext(ctx, path) })
+}
+
+func setBindControlBy(p Paths, name string, expected BindControlExpectation, target BindControlTarget, proof BindControlProof, lock func(string) (func(), error)) (BindPartView, error) {
 	if target.Kind != "create" && target.Kind != "stop" && target.Kind != "handover" && target.Kind != "recover" {
 		return BindPartView{}, ErrBindPartInvalid
 	}
@@ -889,7 +901,7 @@ func SetBindControl(p Paths, name string, expected BindControlExpectation, targe
 	if err != nil {
 		return BindPartView{}, err
 	}
-	_, err = withBindPartOperationLock(p, name, false, func(state State, part *bindPartDisk) error {
+	_, err = withBindPartOperationLockBy(p, name, false, lock, func(state State, part *bindPartDisk) error {
 		if part.StatusOp != nil || part.CursorOp != nil {
 			return ErrBindPartOperation
 		}

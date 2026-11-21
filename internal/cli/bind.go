@@ -555,6 +555,27 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 var errTerminalBindingRetired = errors.New("binding retired")
 
 func (a *App) terminalUpdate(s *session, generation string, fn func(*config.TerminalBinding)) error {
+	return a.terminalUpdateBy(s, generation, time.Time{}, fn)
+}
+
+// terminalUpdateBy is terminalUpdate with a bound on every wait for the State
+// lock: with a set deadline a stop and the State write give up when another
+// writer still holds the lock at that time. A zero deadline waits as before.
+func (a *App) terminalUpdateBy(s *session, generation string, deadline time.Time, fn func(*config.TerminalBinding)) error {
+	update := func(fn func(*config.State) error) (config.State, error) {
+		if deadline.IsZero() {
+			return a.updateState(s.paths, s.name, fn)
+		}
+		return a.updateStateBy(s.paths, s.name, deadline, fn)
+	}
+	setControl := func(expected config.BindControlExpectation, target config.BindControlTarget) (config.BindPartView, error) {
+		if deadline.IsZero() {
+			return config.SetBindControl(s.paths, s.name, expected, target, config.BindControlProof{})
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		return config.SetBindControlContext(ctx, s.paths, s.name, expected, target, config.BindControlProof{})
+	}
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -599,9 +620,9 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 			if !after.Stopped {
 				return config.ErrBindPartOwned
 			}
-			view, err = config.SetBindControl(s.paths, s.name,
+			view, err = setControl(
 				config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
-				config.BindControlTarget{Generation: view.Generation, SessionID: view.SessionID, Stopped: true, Kind: "stop"}, config.BindControlProof{})
+				config.BindControlTarget{Generation: view.Generation, SessionID: view.SessionID, Stopped: true, Kind: "stop"})
 			if err != nil {
 				return err
 			}
@@ -626,7 +647,7 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 		if bytes.Equal(beforeJSON, stateAfterJSON) && !hasRetiredIncidentAlarms(&state) {
 			return s.checkConnection()
 		}
-		_, err = a.updateState(s.paths, s.name, func(st *config.State) error {
+		_, err = update(func(st *config.State) error {
 			if err := s.checkConnection(); err != nil {
 				return err
 			}
@@ -645,7 +666,7 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 		})
 		return err
 	}
-	_, err = a.updateState(s.paths, s.name, func(st *config.State) error {
+	_, err = update(func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
