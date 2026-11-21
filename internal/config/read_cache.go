@@ -12,12 +12,12 @@ import (
 )
 
 // ReadCache belongs to one consumer and identity. It retains at most one State
-// and one mailbox, never errors or absent files. Legacy State hits compare exact
-// bytes; marked State hits reuse the validated State by stamp, then reread and
-// validate the current sidecar before using its provider-owned projection.
-// Idle bind reuses its writer-seal result only for that exact cached State
-// stamp; current connection, migration, sidecar and operation-fence checks run
-// on every use.
+// and one mailbox, never errors or absent files. Stamps only pre-check reuse:
+// every State hit, marked or not, also compares the exact file bytes without
+// decoding them. A marked hit then rereads and validates the current sidecar
+// before using its provider-owned projection. Idle bind reuses its writer-seal
+// result only for that exact cached State; current connection, migration,
+// sidecar and operation-fence checks run on every use.
 // Paths without an explicitly attached cache retain the ordinary read path.
 // Cache admission limits retained data, never accepted input.
 type ReadCache struct {
@@ -174,6 +174,56 @@ func (c *ReadCache) invalidateMailbox(path string) {
 	}
 }
 
+// confirmStateBytesLocked compares the State file at path with the cached
+// bytes, retaining nothing it reads. An equal stamp only pre-checks reuse: an
+// in-place overwrite of equal size with a restored modification time leaves
+// every stamp field equal. A file that differs forgets the cached State; one
+// that cannot be read forgets only the durability shortcut. Both are a miss.
+func (c *ReadCache) confirmStateBytesLocked(path string) bool {
+	same, err := stateFileEquals(path, c.state.rawState)
+	if err != nil {
+		c.forgetStateDurabilityLocked()
+		return false
+	}
+	if !same {
+		c.forgetStateLocked()
+		return false
+	}
+	return true
+}
+
+// stateFileEquals reports whether the State file at path holds exactly want.
+// It reads in fixed blocks and stops at the first difference, so a hit costs
+// one pass over the file and no allocation proportional to its size.
+func stateFileEquals(path string, want []byte) (bool, error) {
+	globalStateStats.stateReadAttempts.Add(1)
+	f, err := os.Open(path)
+	if err != nil {
+		globalStateStats.stateReadErrors.Add(1)
+		return false, err
+	}
+	defer f.Close()
+	var block [32 << 10]byte
+	seen := 0
+	for {
+		n, err := f.Read(block[:])
+		globalStateStats.stateReadBytes.Add(int64(n))
+		if n > 0 {
+			if seen+n > len(want) || !bytes.Equal(block[:n], want[seen:seen+n]) {
+				return false, nil
+			}
+			seen += n
+		}
+		if err == io.EOF {
+			return seen == len(want), nil
+		}
+		if err != nil {
+			globalStateStats.stateReadErrors.Add(1)
+			return false, err
+		}
+	}
+}
+
 func (c *ReadCache) stateHit(name, path string, stamp, partStamp FileStamp) (State, bool) {
 	if c == nil || name != c.identity {
 		return State{}, false
@@ -196,9 +246,12 @@ func (c *ReadCache) stateHit(name, path string, stamp, partStamp FileStamp) (Sta
 		c.forgetStateDurabilityLocked()
 	}
 	if bindPartMarker(c.state) {
-		// The State stamp protects the cached legacy document. The sidecar is
-		// reopened and authenticated by LoadState on every hit, so its revision
-		// can advance without forcing a large State read or trusting its stamp.
+		// The sidecar is reopened and authenticated by LoadState on every hit,
+		// so its revision can advance without a decode of the large State. The
+		// State bytes themselves are confirmed here, as for an unmarked hit.
+		if !c.confirmStateBytesLocked(path) {
+			return State{}, false
+		}
 		return cloneState(&c.state)
 	}
 	if partStamp.Present {
@@ -247,6 +300,9 @@ func (c *ReadCache) markedStateGuardHit(name, path string, stamp FileStamp) (Sta
 	if !bindPartMarker(c.state) {
 		return State{}, false
 	}
+	if !c.confirmStateBytesLocked(path) {
+		return State{}, false
+	}
 	return c.state, true
 }
 
@@ -267,12 +323,11 @@ func (c *ReadCache) identityMigrationHit(p Paths, name string, stamp FileStamp) 
 	if c.durable && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
 		c.forgetStateDurabilityLocked()
 	}
-	state := c.state
-	if !bindPartMarker(state) {
-		// Unmarked State cache hits require exact-byte comparison. Leave that
-		// legacy behavior to LoadState instead of treating a stat stamp as proof.
+	if !bindPartMarker(c.state) || !c.confirmStateBytesLocked(path) {
+		// An unmarked hit is left to LoadState, which confirms the bytes itself.
 		return nil, false, nil
 	}
+	state := c.state
 	part, sidecarStamp, err := readBindPart(p, name)
 	if err != nil {
 		return nil, true, err
@@ -311,10 +366,10 @@ func (c *ReadCache) terminalBindingHit(p Paths, name string, stamp FileStamp) (*
 	if c.durable && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
 		c.forgetStateDurabilityLocked()
 	}
-	state := c.state
-	if !bindPartMarker(state) {
+	if !bindPartMarker(c.state) || !c.confirmStateBytesLocked(path) {
 		return nil, false, nil
 	}
+	state := c.state
 	part, sidecarStamp, err := readBindPart(p, name)
 	if err != nil {
 		return nil, true, err
@@ -360,10 +415,10 @@ func (c *ReadCache) bindIdleDeliveryHit(p Paths, name string, stamp FileStamp) (
 	if c.durable && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
 		c.forgetStateDurabilityLocked()
 	}
-	state := c.state
-	if !bindPartMarker(state) {
+	if !bindPartMarker(c.state) || !c.confirmStateBytesLocked(path) {
 		return BindIdleDeliveryState{}, false, nil
 	}
+	state := c.state
 	part, sidecarStamp, err := readBindPart(p, name)
 	if err != nil {
 		return BindIdleDeliveryState{}, true, err

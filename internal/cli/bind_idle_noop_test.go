@@ -105,6 +105,10 @@ func markedBindDeliveryFixture(t *testing.T, legacy bool) (*env, *App, *session,
 	return e, a, s, generation, room
 }
 
+// TestMarkedBindDeliverySteadyStartSkipsStateWriter proves a steady
+// delivery start of a marked binding with nothing expired returns the cached
+// view, changes neither State nor the subscription list on the server, and
+// does not enter the State writer.
 func TestMarkedBindDeliverySteadyStartSkipsStateWriter(t *testing.T) {
 	e, a, s, _, _ := markedBindDeliveryFixture(t, false)
 	beforeState, err := os.ReadFile(s.paths.StateFile("alice"))
@@ -122,11 +126,17 @@ func TestMarkedBindDeliverySteadyStartSkipsStateWriter(t *testing.T) {
 	if readErr != nil || string(beforeState) != string(afterState) || e.hs.CallCount(accountDataPut) != beforePuts {
 		t.Fatalf("steady start changed State or subscriptions: readErr=%v StateSame=%t PUTs=%d->%d", readErr, string(beforeState) == string(afterState), beforePuts, e.hs.CallCount(accountDataPut))
 	}
-	if afterStats.WriterClones != beforeStats.WriterClones || afterStats.StateDigests-beforeStats.StateDigests != 1 || afterStats.WriterSealChecks-beforeStats.WriterSealChecks != 1 || afterStats.StateWriteBytes != beforeStats.StateWriteBytes {
+	// The view's writer seal is checked once. That costs at most one digest:
+	// none when the seal-digest memo already holds these bytes.
+	if afterStats.WriterClones != beforeStats.WriterClones || afterStats.StateDigests-beforeStats.StateDigests > 1 || afterStats.WriterSealChecks-beforeStats.WriterSealChecks != 1 || afterStats.StateWriteBytes != beforeStats.StateWriteBytes {
 		t.Fatalf("steady start entered State writer: before=%+v after=%+v", beforeStats, afterStats)
 	}
 }
 
+// TestMarkedBindDeliveryLegacySubscriptionsUseWriterPath proves a
+// marked binding that still holds legacy subscriptions in State takes the
+// ordinary writer path: the migration to the server list is persisted and the
+// State copy cleared.
 func TestMarkedBindDeliveryLegacySubscriptionsUseWriterPath(t *testing.T) {
 	e, a, s, _, _ := markedBindDeliveryFixture(t, true)
 	start, list, err := s.startBindDelivery(context.Background(), a.Now())
@@ -143,6 +153,10 @@ func TestMarkedBindDeliveryLegacySubscriptionsUseWriterPath(t *testing.T) {
 	}
 }
 
+// TestMarkedBindEmptySyncAdvancesCursorAndKeepsMailboxEmpty proves an
+// empty sync of a marked binding advances the cursor in the sidecar only:
+// State and mailbox bytes are unchanged, the State writer is not used, and the
+// cycle reports the mailbox as proven empty.
 func TestMarkedBindEmptySyncAdvancesCursorAndKeepsMailboxEmpty(t *testing.T) {
 	e, a, s, _, _ := markedBindDeliveryFixture(t, false)
 	if _, err := config.UpdateState(s.paths, "alice", func(state *config.State) error {
@@ -194,6 +208,10 @@ func TestMarkedBindEmptySyncAdvancesCursorAndKeepsMailboxEmpty(t *testing.T) {
 	}
 }
 
+// TestMarkedBindNonEmptySyncFallsBackToDeliveryPersistence proves a
+// sync that carries mail does not claim an empty mailbox: the mail is appended
+// through the ordinary delivery persistence and only then the cursor is
+// committed through the sidecar.
 func TestMarkedBindNonEmptySyncFallsBackToDeliveryPersistence(t *testing.T) {
 	e, a, s, _, room := markedBindDeliveryFixture(t, false)
 	start, subs, err := s.startBindDelivery(context.Background(), a.Now())
@@ -217,6 +235,9 @@ func TestMarkedBindNonEmptySyncFallsBackToDeliveryPersistence(t *testing.T) {
 	}
 }
 
+// TestMarkedBindHeldStorageFailureRetainsCursor proves that when held
+// peer mail cannot be stored, principal mail is still delivered, the replay
+// signal is kept and the marked cursor does not advance.
 func TestMarkedBindHeldStorageFailureRetainsCursor(t *testing.T) {
 	e, a, s, _, room := markedBindDeliveryFixture(t, false)
 	start, subs, err := s.startBindDelivery(context.Background(), a.Now())
@@ -243,6 +264,9 @@ func TestMarkedBindHeldStorageFailureRetainsCursor(t *testing.T) {
 	}
 }
 
+// TestMarkedTerminalStaleHandover proves a terminal update from a
+// generation that has been replaced is refused as retired and leaves the new
+// binding unchanged, while the current generation's update is stored.
 func TestMarkedTerminalStaleHandover(t *testing.T) {
 	isolateBindTest(t)
 	e, _ := world(t)
@@ -314,6 +338,11 @@ func TestMarkedTerminalStaleHandover(t *testing.T) {
 	}
 }
 
+// TestMarkedTerminalUpdateNoopSkipsLargeStateWriter proves three
+// terminal updates of a marked binding on a large State: a no-op and a change
+// of sidecar-held fields alone do not decode, clone, digest, reseal, encode or
+// write State and leave its bytes equal, and a change of a State-held terminal
+// field is still persisted.
 func TestMarkedTerminalUpdateNoopSkipsLargeStateWriter(t *testing.T) {
 	isolateBindTest(t)
 	e, _ := world(t)
@@ -358,8 +387,10 @@ func TestMarkedTerminalUpdateNoopSkipsLargeStateWriter(t *testing.T) {
 	if err != nil || string(unchanged) != string(beforeBytes) {
 		t.Fatalf("marked no-op changed State bytes: err=%v equal=%t", err, string(unchanged) == string(beforeBytes))
 	}
-	if d := after.StateReadAttempts - before.StateReadAttempts; d != 0 {
-		t.Errorf("marked no-op read large State %d times", d)
+	// The cache hit confirms the State bytes, so a read is expected; decoding,
+	// cloning, digesting or rewriting the unchanged State is not.
+	if d := after.UnmarshalStatePasses - before.UnmarshalStatePasses; d != 0 {
+		t.Errorf("marked no-op decoded large State %d times", d)
 	}
 	if d := after.WriterClones - before.WriterClones; d != 0 {
 		t.Errorf("marked no-op cloned large State %d times", d)

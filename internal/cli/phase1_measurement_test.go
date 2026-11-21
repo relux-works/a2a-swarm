@@ -10,12 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -216,9 +218,18 @@ func phase1RunIdleBindChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	imageHash := fmt.Sprintf("%x", sha256.Sum256(imageBytes))
+	// The consumer's own trace events are counted over the sample, so the CPU
+	// can be attributed to full cycles, wake reasons and ticks.
+	var traceMu sync.Mutex
+	trace := map[string]int{}
 	a := &App{
 		as: "alice", Getenv: os.Getenv, HTTP: http.DefaultClient, Now: time.Now,
 		Stdout: io.Discard, Stderr: os.Stderr, ctx: context.Background(),
+		terminalTrace: func(event string) {
+			traceMu.Lock()
+			trace[event]++
+			traceMu.Unlock()
+		},
 		afterBindingCycleError: func(stage string, err error) {
 			t.Logf("idle-bind fixture consumer retry stage=%s error=%T: %v", stage, err, err)
 		},
@@ -319,12 +330,18 @@ func phase1RunIdleBindChild(t *testing.T) {
 			}
 		}()
 	}
+	traceMu.Lock()
+	clear(trace)
+	traceMu.Unlock()
 	startStats := config.ReadStateDecodeStats()
 	startSelfCPU, startChildCPU := phase1BindCPUUsage(t)
 	sampleStart := time.Now()
 	timer := time.NewTimer(sample)
 	<-timer.C
 	endStats := config.ReadStateDecodeStats()
+	traceMu.Lock()
+	traced := maps.Clone(trace)
+	traceMu.Unlock()
 	endSelfCPU, endChildCPU := phase1BindCPUUsage(t)
 	elapsed := time.Since(sampleStart)
 	if profileStarted {
@@ -399,7 +416,8 @@ func phase1RunIdleBindChild(t *testing.T) {
 		OneCorePct       float64                 `json:"one_core_percent"`
 		Counters         config.StateDecodeStats `json:"counter_deltas"`
 		Reason           string                  `json:"exit_reason"`
-	}{ImageSHA256: imageHash, Sample: sample.String(), Elapsed: elapsed.String(), StateBytes: len(stateBytes), ThreadCount: len(viewState.Threads), ThreadEventCount: len(viewState.ThreadEvents), CPU: cpuUsed.String(), SelfCPU: selfCPU.String(), ChildCPU: childCPU.String(), OneCorePct: share, Counters: delta, Reason: result.reason}
+		Trace            map[string]int          `json:"trace"`
+	}{ImageSHA256: imageHash, Sample: sample.String(), Elapsed: elapsed.String(), StateBytes: len(stateBytes), ThreadCount: len(viewState.Threads), ThreadEventCount: len(viewState.ThreadEvents), CPU: cpuUsed.String(), SelfCPU: selfCPU.String(), ChildCPU: childCPU.String(), OneCorePct: share, Counters: delta, Reason: result.reason, Trace: traced}
 	encoded, _ := json.Marshal(metrics)
 	fmt.Printf("PHASE1_IDLE_BIND_RESULT=%s\n", encoded)
 	if result.err != nil || result.reason != "cancelled" {
@@ -411,9 +429,11 @@ func phase1RunIdleBindChild(t *testing.T) {
 	if fixtureDir != "" && (!fixtureStateEqual || !fixtureMailboxEqual) {
 		t.Errorf("steady idle sample changed State or mailbox bytes: StateEqual=%t MailboxEqual=%t", fixtureStateEqual, fixtureMailboxEqual)
 	}
-	if delta.StateReadAttempts != 0 || delta.StateReadErrors != 0 || delta.StateReadBytes != 0 ||
-		delta.UnmarshalStatePasses != 0 || delta.UnmarshalStateBytes != 0 || delta.SealedStates != 0 || delta.StateWriteBytes != 0 {
-		t.Errorf("unchanged idle ticks read, decoded, resealed, or wrote the large State: %+v", delta)
+	// Reads are the cache's byte confirmation of an unchanged file and are
+	// reported, not refused; decoding, resealing or writing the large State is.
+	if delta.StateReadErrors != 0 || delta.UnmarshalStatePasses != 0 || delta.UnmarshalStateBytes != 0 ||
+		delta.WriterClones != 0 || delta.StateEncodes != 0 || delta.SealedStates != 0 || delta.StateWriteBytes != 0 {
+		t.Errorf("unchanged idle ticks decoded, cloned, encoded, resealed, or wrote the large State: %+v", delta)
 	}
 	// CPU remains an observed metric; this phase has no percentage failure threshold.
 }

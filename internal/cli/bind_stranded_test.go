@@ -12,6 +12,9 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
+// TestMarkedStrandedNoticeSteadyPathAvoidsStateLoad proves the
+// stranded-notice check of a marked binding with nothing to report costs no
+// State load and no decode.
 func TestMarkedStrandedNoticeSteadyPathAvoidsStateLoad(t *testing.T) {
 	isolateBindTest(t)
 	f := newOrphanDispatchFixture(t)
@@ -31,7 +34,8 @@ func TestMarkedStrandedNoticeSteadyPathAvoidsStateLoad(t *testing.T) {
 		t.Fatal("steady no-notice observation:", err)
 	}
 	after := config.ReadStateDecodeStats()
-	if after.LoadStateCalls != before.LoadStateCalls || after.StateReadAttempts != before.StateReadAttempts || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
+	// The cache hit confirms the State bytes, so a read is expected; a load or a decode is not.
+	if after.LoadStateCalls != before.LoadStateCalls || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
 		t.Fatalf("steady marked observation loaded the large State: before=%+v after=%+v", before, after)
 	}
 }

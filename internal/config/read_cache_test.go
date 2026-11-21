@@ -132,7 +132,8 @@ func TestReadCacheReplacement(t *testing.T) {
 }
 
 // TestIdentityMigrationCacheProjection proves repeated migration guards reuse
-// only the cached migration field instead of cloning the large delivery State.
+// only the cached migration field instead of cloning the large delivery State,
+// after confirming the cached State against the file bytes.
 // Its negative controls retain the full-load refusal for a changed migration
 // and a missing sidecar behind the permanent marker.
 func TestIdentityMigrationCacheProjection(t *testing.T) {
@@ -166,8 +167,12 @@ func TestIdentityMigrationCacheProjection(t *testing.T) {
 			t.Fatalf("clean cached identity refused: %v", err)
 		}
 		after := ReadStateDecodeStats()
-		if after.LoadStateCalls != before.LoadStateCalls || after.StateReadAttempts != before.StateReadAttempts || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
+		if after.LoadStateCalls != before.LoadStateCalls || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
 			t.Fatalf("migration guard loaded or decoded the complete State: before=%+v after=%+v", before, after)
+		}
+		// The hit is confirmed against the file bytes, exactly once.
+		if after.StateReadAttempts-before.StateReadAttempts != 1 || after.StateReadBytes <= before.StateReadBytes {
+			t.Fatalf("marked migration guard skipped exact-byte State validation: before=%+v after=%+v", before, after)
 		}
 	})
 

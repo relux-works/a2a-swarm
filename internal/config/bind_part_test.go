@@ -15,6 +15,10 @@ import (
 
 const bindTestName = "bind-fixture"
 
+// TestAcquireOrRenewBindLeaseCheckedContextChecksEveryMarkedLeasePath proves the caller's check runs
+// against the merged State under the lease lock on both lease paths: the first
+// acquisition and the steady renewal inside the margin. A check that refuses
+// leaves the sidecar view unchanged.
 func TestAcquireOrRenewBindLeaseCheckedContextChecksEveryMarkedLeasePath(t *testing.T) {
 	p, state, _ := bindFixture(t, "cursor", false)
 	if !BindPartActive(state) {
@@ -90,6 +94,10 @@ func bindFixture(t *testing.T, cursor string, terminal bool) (Paths, State, Bind
 	return p, state, view
 }
 
+// TestBindPartMigrationOwnsProjectionAndKeepsMarker proves the first
+// migration moves the cursor into the sidecar, a generic State write of the
+// cursor is then refused with ErrBindPartOwned, an ordinary field is still
+// written, and that ordinary write keeps the marker on disk.
 func TestBindPartMigrationOwnsProjectionAndKeepsMarker(t *testing.T) {
 	p, _, view := bindFixture(t, "legacy-cursor", false)
 	if view.NextBatch != "legacy-cursor" || view.Revision == 0 {
@@ -121,6 +129,10 @@ func TestBindPartMigrationOwnsProjectionAndKeepsMarker(t *testing.T) {
 	}
 }
 
+// TestBindPartPreservesLegacyGenerationAndRequiresFreshReplacementToken proves
+// migration keeps a binding's existing generation and session, and that a
+// replacement generation is admitted only as a fresh 128-bit hex token: any
+// other value is refused with ErrBindPartInvalid.
 func TestBindPartPreservesLegacyGenerationAndRequiresFreshReplacementToken(t *testing.T) {
 	p := testPaths(t)
 	state := State{Terminal: &TerminalBinding{
@@ -150,6 +162,9 @@ func TestBindPartPreservesLegacyGenerationAndRequiresFreshReplacementToken(t *te
 	}
 }
 
+// TestBindPartLeaseRefusesLiveForeignOwner proves a live foreign holder is
+// refused with LeaseHeldError and the lease in the sidecar is unchanged, and
+// that the same holder acquires it once the owner has released it.
 func TestBindPartLeaseRefusesLiveForeignOwner(t *testing.T) {
 	p, _, _ := bindFixture(t, "s0", false)
 	now := time.Now().UTC()
@@ -182,6 +197,9 @@ func TestBindPartLeaseRefusesLiveForeignOwner(t *testing.T) {
 	}
 }
 
+// TestAcquireBindLeaseReturnsLockedSidecarView proves a lease acquisition
+// returns the view it committed under the lock, with one State load and no
+// second one to read the result back.
 func TestAcquireBindLeaseReturnsLockedSidecarView(t *testing.T) {
 	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache(bindTestName))
 	if err := SaveState(p, bindTestName, State{Threads: []string{"$thread"}}); err != nil {
@@ -208,6 +226,11 @@ func TestAcquireBindLeaseReturnsLockedSidecarView(t *testing.T) {
 	}
 }
 
+// TestLoadBindTerminalAvoidsLargeStateClone proves the terminal projection of
+// a cached marked State is returned without a full State load or decode, and
+// carries both the State-held and the sidecar-held terminal fields. The cache
+// hit may read the file: it compares the bytes with the cached ones, which is
+// what keeps a same-stamp overwrite from being served.
 func TestLoadBindTerminalAvoidsLargeStateClone(t *testing.T) {
 	name := bindTestName
 	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache(name))
@@ -249,8 +272,8 @@ func TestLoadBindTerminalAvoidsLargeStateClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := ReadStateDecodeStats()
-	if after.LoadStateCalls != before.LoadStateCalls || after.StateReadAttempts != before.StateReadAttempts || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
-		t.Fatalf("terminal projection loaded or decoded the full State: before=%+v after=%+v", before, after)
+	if after.LoadStateCalls != before.LoadStateCalls || after.UnmarshalStatePasses != before.UnmarshalStatePasses || after.WriterClones != before.WriterClones {
+		t.Fatalf("terminal projection loaded, decoded or cloned the full State: before=%+v after=%+v", before, after)
 	}
 	if terminal == nil || terminal.Generation != provider.Generation || terminal.SessionID != provider.SessionID || terminal.Outcome != "running" || len(terminal.Rung) != 1 || terminal.Rung[0] != "$retained" || terminal.NoticePublication != publication {
 		t.Fatalf("terminal projection lost State or provider fields: %+v", terminal)
@@ -268,6 +291,11 @@ func TestLoadBindTerminalAvoidsLargeStateClone(t *testing.T) {
 	}
 }
 
+// TestLoadBindTerminalRefreshesAndRejectsChangedState proves the terminal
+// projection is not answered from the cache after another writer replaced
+// State: the new State is read once in full, and a replacement whose
+// provider-owned fields disagree with the sidecar is refused with
+// ErrBindPartInvalid, after full validation and without changing the file.
 func TestLoadBindTerminalRefreshesAndRejectsChangedState(t *testing.T) {
 	name := bindTestName
 	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache(name))
@@ -332,6 +360,9 @@ func TestLoadBindTerminalRefreshesAndRejectsChangedState(t *testing.T) {
 	}
 }
 
+// TestMarkedStateWriteDoesNotMutateCallbackOwnedTerminal proves a write of a
+// marked State does not alter the terminal value its callback owns, while the
+// merged State read back carries the sidecar's generation and session.
 func TestMarkedStateWriteDoesNotMutateCallbackOwnedTerminal(t *testing.T) {
 	p, _, view := bindFixture(t, "s0", false)
 	generation := strings.Repeat("d", 32)
@@ -358,6 +389,10 @@ func TestMarkedStateWriteDoesNotMutateCallbackOwnedTerminal(t *testing.T) {
 	}
 }
 
+// TestBindPartCursorReservationAndDeadOwnerReplay proves the cursor
+// reservation: a second live owner is refused and the cursor stays, a
+// reservation of a dead owner may be replayed under a new token, the replaced
+// token can no longer commit (ErrBindPartStale), and the new one commits.
 func TestBindPartCursorReservationAndDeadOwnerReplay(t *testing.T) {
 	p, state, view := bindFixture(t, "s0", false)
 	owner1 := BindOperationOwner{Holder: "projector-1", Host: "host-1", PID: 2345, Birth: "birth-1"}
@@ -392,6 +427,11 @@ func TestBindPartCursorReservationAndDeadOwnerReplay(t *testing.T) {
 	_ = state
 }
 
+// TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters proves that
+// while a cursor operation is reserved every other writer of provider fields is
+// refused - a second cursor owner, a lease release, a monitor renewal, a control
+// change and a generic State cursor write - and that none of the refusals
+// changes State or the sidecar.
 func TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters(t *testing.T) {
 	p := monitorSeed(t)
 	state, err := LoadState(p, "a")
@@ -462,6 +502,10 @@ func TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters(t *testing.T) {
 	}
 }
 
+// TestBindPartOwnStatusRequiresTwoReservationsAndFencesTransfer proves an own
+// status publication is reserved in State and in the sidecar, is not reported
+// published while pending, blocks a control transfer for its duration, and
+// records its publication result when it finishes.
 func TestBindPartOwnStatusRequiresTwoReservationsAndFencesTransfer(t *testing.T) {
 	p, state, view := bindFixture(t, "s0", true)
 	now := time.Now().UTC()
@@ -502,6 +546,9 @@ func TestBindPartOwnStatusRequiresTwoReservationsAndFencesTransfer(t *testing.T)
 	}
 }
 
+// TestBindPartControlTransactionResumesExactPendingTarget proves a control
+// change whose final write failed stays recorded as a pending transaction and
+// completes only when the same target is presented again.
 func TestBindPartControlTransactionResumesExactPendingTarget(t *testing.T) {
 	p, state, view := bindFixture(t, "s0", true)
 	target := BindControlTarget{Generation: strings.Repeat("b", 32), SessionID: "session-2", Kind: "create"}
@@ -533,6 +580,9 @@ func TestBindPartControlTransactionResumesExactPendingTarget(t *testing.T) {
 	}
 }
 
+// TestBindPartFailedOwnStatusFinalizationStaysUncertain proves a status
+// finalization that fails before its rename leaves the publication marked
+// uncertain in State and in the sidecar view, never published.
 func TestBindPartFailedOwnStatusFinalizationStaysUncertain(t *testing.T) {
 	p, _, view := bindFixture(t, "s0", true)
 	now := time.Now().UTC()
@@ -559,6 +609,10 @@ func TestBindPartFailedOwnStatusFinalizationStaysUncertain(t *testing.T) {
 	}
 }
 
+// TestBindPartRollbackKeepsPermanentTombstone proves rollback keeps the
+// marker: export copies the sidecar's cursor into State and admits a legacy
+// writer, import adopts that writer's cursor, and a State whose sidecar was
+// then removed is refused with ErrBindPartMissing.
 func TestBindPartRollbackKeepsPermanentTombstone(t *testing.T) {
 	p, _, _ := bindFixture(t, "provider-cursor", false)
 	if err := ExportBindPartForRollback(p, bindTestName, time.Now()); err != nil {
@@ -586,6 +640,10 @@ func TestBindPartRollbackKeepsPermanentTombstone(t *testing.T) {
 	}
 }
 
+// TestBindPartStrictSidecarRejectsAliasesUnknownFieldsAndUnsafeFiles proves
+// each malformed or unsafe sidecar in the table - a duplicate key, a case
+// alias, an unknown field, a file mode other than 0600 and a symlink - is
+// refused when State is loaded, and that the refusal leaves State unchanged.
 func TestBindPartStrictSidecarRejectsAliasesUnknownFieldsAndUnsafeFiles(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -651,6 +709,11 @@ func TestBindPartStrictSidecarRejectsAliasesUnknownFieldsAndUnsafeFiles(t *testi
 	}
 }
 
+// TestBindPartNoticeAllowlistMatchesExistingObservationForms proves the
+// sidecar's own-notice validation accepts the three observation forms in its
+// table (empty, cleared, and suspected orphan with the timestamp spellings
+// State accepts) and refuses the malformed forms listed after them. The table
+// is written by hand; it is not derived from the writers.
 func TestBindPartNoticeAllowlistMatchesExistingObservationForms(t *testing.T) {
 	trueValue, falseValue := true, false
 	valid := []bindPartOwnNotice{
@@ -677,6 +740,11 @@ func TestBindPartNoticeAllowlistMatchesExistingObservationForms(t *testing.T) {
 	}
 }
 
+// TestBindPartPublicationAllowlistMatchesExistingResults proves the
+// sidecar's publication validation accepts the empty value and the six result
+// strings the binding assigns, and refuses an unknown reason and a result with
+// an embedded line break. The list is written by hand; it is not derived from
+// the writers.
 func TestBindPartPublicationAllowlistMatchesExistingResults(t *testing.T) {
 	valid := []string{
 		"", "published", "unavailable: own notice changed",
@@ -697,6 +765,9 @@ func TestBindPartPublicationAllowlistMatchesExistingResults(t *testing.T) {
 	}
 }
 
+// TestBindPartCursorKeepsExistingOpaqueTokenBudget proves an 8 KiB opaque
+// sync cursor, the size State accepted before, fits the sidecar and reads back
+// unchanged.
 func TestBindPartCursorKeepsExistingOpaqueTokenBudget(t *testing.T) {
 	cursor := strings.Repeat("c", 8<<10)
 	p, _, view := bindFixture(t, "s0", false)
@@ -713,6 +784,9 @@ func TestBindPartCursorKeepsExistingOpaqueTokenBudget(t *testing.T) {
 	}
 }
 
+// TestMarkedNoopWriteCachesLegacyShadowForNextRead proves an ordinary
+// no-op write of a marked State leaves the State bytes unchanged and the next
+// cached read still returns the lease held in the sidecar.
 func TestMarkedNoopWriteCachesLegacyShadowForNextRead(t *testing.T) {
 	p := Paths{Base: t.TempDir()}
 	state := State{NextBatch: "s0", Threads: []string{"$keep"}}
@@ -751,7 +825,12 @@ func TestMarkedNoopWriteCachesLegacyShadowForNextRead(t *testing.T) {
 	}
 }
 
-func TestBindPartIdleLeaseRenewalDoesNotReadOrRewriteLargeState(t *testing.T) {
+// TestBindPartIdleLeaseRenewalDoesNotDecodeOrRewriteLargeState proves a lease
+// that is inside its renewal margin costs no State load, decode, encode or
+// write on repeated ticks, and that a live cursor operation of another owner
+// is still refused on that short path. Byte confirmation of the cached State
+// is allowed and is not counted against the claim.
+func TestBindPartIdleLeaseRenewalDoesNotDecodeOrRewriteLargeState(t *testing.T) {
 	name := bindTestName
 	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache(name))
 	state := State{NextBatch: "s0", Threads: make([]string, 450), ThreadEvents: make([]ThreadEvent, 2000)}
@@ -788,8 +867,8 @@ func TestBindPartIdleLeaseRenewalDoesNotReadOrRewriteLargeState(t *testing.T) {
 		}
 	}
 	after := ReadStateDecodeStats()
-	if d := after.StateReadAttempts - before.StateReadAttempts; d != 0 {
-		t.Fatalf("steady lease ticks read %d State files", d)
+	if d := after.UnmarshalStatePasses - before.UnmarshalStatePasses; d != 0 {
+		t.Fatalf("steady lease ticks decoded State %d times", d)
 	}
 	if d := after.LoadStateCalls - before.LoadStateCalls; d != 0 {
 		t.Fatalf("steady lease ticks loaded or cloned State %d times", d)
@@ -809,11 +888,15 @@ func TestBindPartIdleLeaseRenewalDoesNotReadOrRewriteLargeState(t *testing.T) {
 		t.Fatalf("same-owner lease borrowed across a live cursor operation: %v", err)
 	}
 	after = ReadStateDecodeStats()
-	if after.LoadStateCalls != before.LoadStateCalls || after.StateReadAttempts != before.StateReadAttempts {
-		t.Fatalf("pending-operation refusal fell back to a full State read: before=%+v after=%+v", before, after)
+	if after.LoadStateCalls != before.LoadStateCalls || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
+		t.Fatalf("pending-operation refusal fell back to a full State load: before=%+v after=%+v", before, after)
 	}
 }
 
+// TestBindPartCursorAdvanceReusesLargeStateCache proves a cursor commit to the
+// sidecar leaves a large cached State undecoded, unencoded and unwritten, and
+// that a later change of the State file by another writer is decoded afresh
+// instead of being answered from the cache.
 func TestBindPartCursorAdvanceReusesLargeStateCache(t *testing.T) {
 	name := bindTestName
 	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache(name))
@@ -861,9 +944,8 @@ func TestBindPartCursorAdvanceReusesLargeStateCache(t *testing.T) {
 		t.Fatalf("sidecar cursor commit rewrote State: err=%v equal=%t", err, bytes.Equal(stateBefore, stateAfter))
 	}
 	after := ReadStateDecodeStats()
-	if d := after.StateReadAttempts - before.StateReadAttempts; d != 0 {
-		t.Errorf("sidecar cursor commit reread large State %d times", d)
-	}
+	// Reads are the cache's byte confirmation of the unchanged State and are
+	// not refused; a decode, an encode or a write of it is.
 	if d := after.UnmarshalStatePasses - before.UnmarshalStatePasses; d != 0 {
 		t.Errorf("sidecar cursor commit decoded State %d times", d)
 	}
@@ -940,6 +1022,10 @@ func TestBindIdleDeliveryViewUsesValidatedCache(t *testing.T) {
 	}
 }
 
+// TestTryCommitEmptyBindCursorRequiresEmptyMailbox proves the short cursor
+// commit is taken only for an empty mailbox: it advances the sidecar cursor and
+// a later cache hit sees the new value, and with pending mail it declines and
+// leaves mailbox, State and cursor as they were for the ordinary path.
 func TestTryCommitEmptyBindCursorRequiresEmptyMailbox(t *testing.T) {
 	p, state, view := bindFixture(t, "s0", true)
 	p = p.WithReadCache(NewReadCache(bindTestName))
@@ -998,8 +1084,4 @@ func TestTryCommitEmptyBindCursorRequiresEmptyMailbox(t *testing.T) {
 	if err := AbortBindCursor(p, bindTestName, secondToken); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestBindPartSchemaSignature(t *testing.T) {
-	t.Logf("reviewed State schema signature: %s", stateSchemaSignature())
 }
