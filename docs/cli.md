@@ -3103,6 +3103,72 @@ own publication/readback failures, receipt/restart/unknown neighbors, interval/g
 tmux and python3 are required for terminal fixtures (absence is a skip, not passing evidence). Private handled exits remain in
 `state/NAME.binding.log`; screens and peer bodies are not persisted there. No shared guidance is installed by these commands.
 
+#### Bind state sidecar: `state/NAME.bind.json`
+
+The first `a2a bind` of an identity moves the fields its consumer owns out of the State document into a small
+sidecar next to it, `state/NAME.bind.json`, and marks State with the permanent top-level key `"bind_part": true`.
+An idle consumer then renews its lease, moves the sync cursor and records its own-notice observation without
+decoding, cloning, encoding, sealing or writing the State document, whose size no longer sets the cost of an
+idle bind. An identity that never binds keeps its State as it is.
+
+| In the sidecar | Still in State |
+| --- | --- |
+| lease; sync cursor (`next_batch`); terminal generation, session and stopped flag; own-notice observation and its publication result | everything else, including the rest of the terminal binding (target, owner, interval, outcome, rung and attempt ids, notice text) |
+
+The sidecar is a strict format-1 JSON document of mode 0600 and at most 16 KiB, with a revision, a seal and
+records of a cursor, status or control operation in progress. Readers merge it into the State they return, so
+`a2a bind status` and every command see one consistent view. State keeps a copy of the moved fields as they
+were at migration; that copy is not current and is never read as authority while the marker is present.
+
+Refusals, all without changing either file:
+
+| Condition | Error |
+| --- | --- |
+| Marked State, sidecar missing | `marked bind state sidecar is missing` |
+| Sidecar present, State not marked | `bind state sidecar exists without its permanent State marker` |
+| Sidecar malformed: duplicate or unknown key, key in another case, mode other than 0600, symlink, bad seal, values that disagree with State's copy | `bind state sidecar is invalid` |
+| A generic State write that changes a field the sidecar owns | `provider-owned State fields require a typed bind-state operation` |
+| A cursor, status or control operation of another live owner is in progress | `bind-state operation is held by another owner` |
+| An operation presented with an outdated revision or token | `stale bind-state revision or operation token` |
+
+A consumer's cache reuses a decoded State only while the file's stamp and its exact bytes are unchanged; the
+bytes are compared on every use, for a marked State as for an unmarked one.
+
+**Older images.** An image that does not know the sidecar must not write the lease or the sync cursor of a
+marked identity. Two kinds exist:
+
+- An image built before unknown top-level State keys were preserved (before `5f2b843`) drops the marker whenever
+  it writes State. This version then refuses the identity's State with `bind state sidecar exists without its
+  permanent State marker`.
+- A later image that keeps unknown keys leaves the marker in place. Its writes of ordinary fields (for example
+  the threads a post learns) are harmless. A write of the lease or the cursor, which every delivery command and
+  hook makes, leaves State's copy at odds with the sidecar, and this version refuses the identity with `bind
+  state sidecar is invalid`.
+
+Before an identity binds with this version, replace every older image that can write its State: stop its
+consumer and check that the process has exited, reinstall the hooks of its session from the new image, restart
+the session, and replace any older command-line image it uses. `a2a bind status` names images of the first kind
+(`libexec image predates 5f2b843`).
+
+**Going back, and repair.** There is no command that hands a marked identity back to an older image; export and
+import of the moved fields exist in the State library only. Going back is therefore forward-only with a repair:
+
+1. Stop the identity's session and check that its consumer has exited.
+2. Put the older image back. It reads State's own copy of the moved fields, which is as old as the migration, so
+   it fetches again the mail that arrived since; mail already received is not delivered a second time.
+3. Before this version is used for the identity again, remove `state/NAME.bind.json`. If the older image kept the
+   marker (the second kind above), also delete the `"bind_part"` key from `state/NAME.json`.
+4. The next bind of this version migrates afresh from State, which now carries the older image's lease and
+   cursor.
+
+The same steps 3 and 4 repair an identity that an older image wrote by mistake. The cost of the repair is the
+sidecar's own cursor and lease, which are discarded in favour of State's.
+
+The idle cost is measured by `go test -tags phase1measure -run '^TestPhase1IdleBindCPUWorkload$' ./internal/cli`
+(darwin/arm64, ten minutes, a private tmux and homeserver fixture): it reports the consumer's own and helper CPU
+and the State read, decode, clone, encode, seal and write counters, and fails if steady idle decodes, clones,
+encodes, seals or writes State.
+
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
 `wait` rings on every reply in a thread the agent created or posted in. `mute` suppresses those replies and ordinary room-scoped subscription matches in that canonical thread root, including kind and topic filters when there is no `--from` sender filter. Suppressed matches do not close `--until-kind` subscriptions, even when the event separately delivers by address or mention.
 
