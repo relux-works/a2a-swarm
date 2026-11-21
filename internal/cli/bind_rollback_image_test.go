@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -113,9 +114,10 @@ func TestBindRollbackToOlderImage(t *testing.T) {
 	if r := inbox("older image", older("inbox")); r.code != 0 {
 		t.Fatalf("older image on the migrated identity: exit %d, stderr=%q", r.code, r.stderr)
 	}
-	if marked() {
-		t.Fatal("premise: the older image's State write kept the marker; this image is not one that drops unknown keys")
-	}
+	// An image from before unknown State keys were preserved drops the marker;
+	// a later one keeps it. The refusal and the repair differ accordingly.
+	kept := marked()
+	t.Logf("older image kept the marker: %t", kept)
 	m3 := post("three, still the older image")
 	ids = append(ids, m3)
 	if r := inbox("older image", older("inbox")); r.code != 0 {
@@ -130,7 +132,11 @@ func TestBindRollbackToOlderImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	refused := inbox("this version, before the repair", e.as("alice", "inbox"))
-	if refused.code == 0 || !strings.Contains(refused.stderr, config.ErrBindPartUnmarked.Error()) || printed[m4] != 0 {
+	want := config.ErrBindPartUnmarked
+	if kept {
+		want = config.ErrBindPartInvalid
+	}
+	if refused.code == 0 || !strings.Contains(refused.stderr, want.Error()) || printed[m4] != 0 {
 		t.Fatalf("control: this version before the repair: exit=%d stderr=%q m4 printed %d times", refused.code, refused.stderr, printed[m4])
 	}
 	if stateAfter, err := os.ReadFile(e.paths().StateFile("alice")); err != nil || !bytes.Equal(stateAfter, stateBefore) {
@@ -141,6 +147,21 @@ func TestBindRollbackToOlderImage(t *testing.T) {
 	// next bind migrates afresh from the older image's cursor.
 	if err := os.Remove(e.paths().BindPartFile("alice")); err != nil {
 		t.Fatal(err)
+	}
+	if kept {
+		// Second step for a marker-keeping image: delete the one key from State.
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(stateBefore, &doc); err != nil {
+			t.Fatal(err)
+		}
+		delete(doc, "bind_part")
+		edited, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(e.paths().StateFile("alice"), append(edited, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	inbox("this version, after the repair", e.as("alice", "inbox")).ok(t)
 	resumed := e.state("alice")
