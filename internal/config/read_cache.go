@@ -72,11 +72,6 @@ func (c *ReadCache) rememberInc(name string, inc *mailboxIncState) {
 		return
 	}
 	c.mu.Lock()
-	if inc.fileSize > mailboxCacheMaxInput {
-		c.mailboxInc = nil
-		c.mu.Unlock()
-		return
-	}
 	c.mailboxInc = inc
 	c.mu.Unlock()
 }
@@ -98,7 +93,6 @@ func (c *ReadCache) updateRawAfterIncremental(name, path string, stamp FileStamp
 			c.mailboxRaw = nil
 			c.mailboxPath = ""
 		}
-		c.mailboxInc = nil
 		return
 	}
 	if c.mailboxPath != path || int64(len(c.mailboxRaw)) != inc.fileSize {

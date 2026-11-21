@@ -53,8 +53,8 @@ func stampInfo(info os.FileInfo) FileStamp {
 }
 
 // fileChangeTimeNS returns a timestamp value and whether its source is
-// qualified as a namespace version for durability elision. Current platform
-// stat timestamps are retained only as observations; none is qualified yet.
+// qualified as a namespace version for durability elision. Linux and Darwin
+// qualify the stat change-time field; unsupported platforms report unknown.
 var fileChangeTimeNS = platformFileChangeTimeNS
 
 // directoryStamp records the identity and change time of the directory that

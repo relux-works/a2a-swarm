@@ -12,5 +12,5 @@ func platformFileChangeTimeNS(info os.FileInfo) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return st.Ctimespec.Sec*1_000_000_000 + st.Ctimespec.Nsec, false
+	return st.Ctimespec.Sec*1_000_000_000 + st.Ctimespec.Nsec, true
 }
