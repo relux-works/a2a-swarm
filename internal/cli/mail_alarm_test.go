@@ -33,6 +33,9 @@ func alarmFixture(t *testing.T) (*env, *App, *session, string, alarmSample) {
 	return e, a, s, room, alarmSample{Count: 1, Oldest: now.Add(-time.Hour), At: now, Reason: string(tmuxwake.RuntimeNone)}
 }
 
+// TestDisabledMailAlarmDoesNotRecordObservationOrWake proves a disabled
+// alarm destination queues no alarm work, admits no worker cycle, and records
+// no observation: State bytes and LastObserved are unchanged.
 func TestDisabledMailAlarmDoesNotRecordObservationOrWake(t *testing.T) {
 	e, a, s, _, sample := alarmFixture(t)
 	notificationState(t, e, func(st *config.State) {

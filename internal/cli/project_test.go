@@ -32,6 +32,9 @@ func (e *env) project(extra ...string) result {
 	return e.as("proj", append([]string{"project", "--system", "system", "--source", "proj", "--once", "--poll", "50ms"}, extra...)...)
 }
 
+// TestProjectNoopInitialReservationReleasesCursor proves a projector
+// that reserves the cursor and finds it already positioned releases the
+// reservation, so a later control reservation is not blocked by it.
 func TestProjectNoopInitialReservationReleasesCursor(t *testing.T) {
 	isolateBindTest(t)
 	e, _ := world(t)

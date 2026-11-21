@@ -13,6 +13,9 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
+// TestMarkedWaitRefusesMissingSidecarAfterRollbackImport proves a
+// marked identity whose sidecar is missing is refused before any sync
+// request, and that the refusal changes neither State nor the mailbox.
 func TestMarkedWaitRefusesMissingSidecarAfterRollbackImport(t *testing.T) {
 	e, _ := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -69,6 +72,11 @@ func TestMarkedWaitRefusesMissingSidecarAfterRollbackImport(t *testing.T) {
 	}
 }
 
+// TestMarkedWaitCursorFailureKeepsOldCursorAndDeduplicatesRetry proves a
+// cursor commit that fails after the mailbox append keeps the old cursor and
+// the appended mail; the interrupted reservation is recovered once its owner
+// process is known to be gone; and the retry delivers the retained event once,
+// without duplicating it in the mailbox.
 func TestMarkedWaitCursorFailureKeepsOldCursorAndDeduplicatesRetry(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -143,6 +151,10 @@ func TestMarkedWaitCursorFailureKeepsOldCursorAndDeduplicatesRetry(t *testing.T)
 		t.Fatalf("deduplicated replay duplicated the mailbox event: %+v", pending)
 	}
 }
+
+// TestMarkedWatchDeliveryUsesProviderCursor proves watch on a marked
+// identity prints the retained event, advances the cursor held in the sidecar,
+// marks the entry shown and sends no receipt.
 func TestMarkedWatchDeliveryUsesProviderCursor(t *testing.T) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
@@ -179,6 +191,11 @@ func TestMarkedWatchDeliveryUsesProviderCursor(t *testing.T) {
 	}
 }
 
+// TestBindProcessGuardRefusesSameImageProjector proves the process guard
+// treats a running `project` process of the same image as a conflict
+// (ErrBindingParallelProject) and a running `bind` of the same image as none,
+// and that a project command line yields the identity, a root and the command
+// the guard compares.
 func TestBindProcessGuardRefusesSameImageProjector(t *testing.T) {
 	if err := bindingProcessConflict("same-image", "same-image", "project", 42); !errors.Is(err, ErrBindingParallelProject) {
 		t.Fatalf("same-image projector conflict=%v", err)

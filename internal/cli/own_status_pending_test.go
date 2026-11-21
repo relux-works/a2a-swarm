@@ -30,6 +30,10 @@ func liveOwnStatusFence() *config.OwnStatusWrite {
 	return &config.OwnStatusWrite{Token: "seeded-live-writer", Until: time.Now().Add(2 * testDeadline)}
 }
 
+// TestMarkedOwnStatusStaleHandover proves an own-status result that
+// arrives for a replaced generation is refused, sends no PUT, and leaves the
+// replacement binding and its fence unchanged, while the current generation
+// publishes with exactly one PUT.
 func TestMarkedOwnStatusStaleHandover(t *testing.T) {
 	isolateBindTest(t)
 	e, a, s := noticeDeadlineFixture(t)

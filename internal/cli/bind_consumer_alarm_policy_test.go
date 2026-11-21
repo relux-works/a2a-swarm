@@ -85,6 +85,8 @@ func TestBindingConsumerAlarmHasNoDeliveryAuthority(t *testing.T) {
 	}
 }
 
+// TestBindingConsumerSteadyReadySkipsStateWriter proves a healthy
+// consumer observation with nothing to report neither copies nor seals State.
 func TestBindingConsumerSteadyReadySkipsStateWriter(t *testing.T) {
 	isolateBindTest(t)
 	_, a, s, _ := strandedFallbackFixture(t)
@@ -96,6 +98,9 @@ func TestBindingConsumerSteadyReadySkipsStateWriter(t *testing.T) {
 	}
 }
 
+// TestBindingConsumerReadyClearsPersistedReportAfterRestart proves a
+// restarted consumer that finds a persisted unavailability report clears it on
+// its first healthy observation instead of carrying it forward.
 func TestBindingConsumerReadyClearsPersistedReportAfterRestart(t *testing.T) {
 	isolateBindTest(t)
 	e, a, s, _ := strandedFallbackFixture(t)
