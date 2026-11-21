@@ -56,7 +56,7 @@ func newAdmin198(t *testing.T, mode string) *admin198Fixture {
 
 func newAdmin198Backend(t *testing.T, mode, backend string) *admin198Fixture {
 	t.Helper()
-	f := &admin198Fixture{t: t, root: t.TempDir(), now: time.Now().UTC().Truncate(time.Millisecond), mode: mode, store: &namedTestStore{items: map[config.SecretReference]string{}}}
+	f := &admin198Fixture{t: t, root: canonicalTempDir(t), now: time.Now().UTC().Truncate(time.Millisecond), mode: mode, store: &namedTestStore{items: map[config.SecretReference]string{}}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	f.c = config.Connection{ID: "private-test", URL: f.server.URL, ServerName: "test.invalid", Store: config.CredentialStore{Backend: "keychain", AccessTokenService: "test.access", PasswordService: "test.password"}, AdminRegistration: &config.AdminRegistration{Method: "tuwunel-v1.9.4-admin-room", AdminUserID: admin198User, ServerBotUserID: admin198Bot, RoomID: admin198Room, ExpectedMembers: []string{admin198User, admin198Bot}, ReplyDeadlineSeconds: 1}}

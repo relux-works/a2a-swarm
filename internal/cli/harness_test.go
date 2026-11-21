@@ -72,7 +72,7 @@ func requireTerminalInspectorCalled(t *testing.T, calls func() int32) {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	hs := newFakeHS(t)
-	dir := t.TempDir()
+	dir := canonicalTempDir(t)
 	envFile := "A2A_MATRIX_URL=" + hs.srv.URL + "\nA2A_MATRIX_SERVER_NAME=" + testServer + "\nA2A_MATRIX_REGISTRATION_TOKEN=" + hs.regToken + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "matrix.env"), []byte(envFile), 0o600); err != nil {
 		t.Fatal(err)
