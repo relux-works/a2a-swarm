@@ -1085,3 +1085,58 @@ func TestTryCommitEmptyBindCursorRequiresEmptyMailbox(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestBindControlToleratesSyncBetweenReadAndWrite proves a control change is
+// decided by the binding's generation and session, not by the sidecar revision
+// the caller happened to read: after a cursor commit and a lease renewal have
+// moved the revision, a stop presented with the earlier revision still
+// succeeds. A stop presented for another generation or another session is
+// refused with ErrBindPartStale and changes nothing.
+//
+// Regression witness: with the exact revision required, a stop, a replacement
+// or a handover failed whenever a live consumer had synced between the
+// caller's read and its write.
+func TestBindControlToleratesSyncBetweenReadAndWrite(t *testing.T) {
+	p, _, seen := bindFixture(t, "s0", true)
+	owner := BindOperationOwner{Holder: "test-holder", Host: "host-1", PID: os.Getpid(), Birth: "1"}
+	token, err := NewBindToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BeginBindCursor(p, bindTestName, token, "bind", seen.NextBatch, seen.Generation, owner, nil); err != nil {
+		t.Fatalf("consumer cursor reservation: %v", err)
+	}
+	if _, err := CommitBindCursor(p, bindTestName, token, "s1"); err != nil {
+		t.Fatalf("consumer cursor commit: %v", err)
+	}
+	if _, err := AcquireOrRenewBindLease(p, bindTestName, "test-holder", "host-1", os.Getpid(), time.Now(), LeaseTTL, 0, nil); err != nil {
+		t.Fatalf("consumer lease renewal: %v", err)
+	}
+	state, err := LoadState(p, bindTestName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := ReadBindPartView(p, bindTestName, state)
+	if err != nil || moved.Revision <= seen.Revision {
+		t.Fatalf("premise: sidecar revision %d did not move past %d (err=%v)", moved.Revision, seen.Revision, err)
+	}
+	stop := BindControlTarget{Generation: seen.Generation, SessionID: seen.SessionID, Stopped: true, Kind: "stop"}
+
+	for name, expected := range map[string]BindControlExpectation{
+		"another generation": {Revision: moved.Revision, Generation: strings.Repeat("b", 32), SessionID: seen.SessionID},
+		"another session":    {Revision: moved.Revision, Generation: seen.Generation, SessionID: "session-other"},
+	} {
+		if _, err := SetBindControl(p, bindTestName, expected, stop, BindControlProof{}); !errors.Is(err, ErrBindPartStale) {
+			t.Fatalf("stop for %s = %v, want ErrBindPartStale", name, err)
+		}
+		if after, err := ReadBindPartView(p, bindTestName, state); err != nil || after.Stopped || after.Revision != moved.Revision {
+			t.Fatalf("refused stop for %s changed the sidecar: %+v err=%v", name, after, err)
+		}
+	}
+
+	earlier := BindControlExpectation{Revision: seen.Revision, Generation: seen.Generation, SessionID: seen.SessionID}
+	stopped, err := SetBindControl(p, bindTestName, earlier, stop, BindControlProof{})
+	if err != nil || !stopped.Stopped || stopped.Generation != seen.Generation || stopped.NextBatch != "s1" {
+		t.Fatalf("stop with the earlier revision: view=%+v err=%v", stopped, err)
+	}
+}

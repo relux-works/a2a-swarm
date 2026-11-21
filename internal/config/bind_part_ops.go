@@ -910,7 +910,14 @@ func setBindControlBy(p Paths, name string, expected BindControlExpectation, tar
 			if txn.ExpectedRevision != expected.Revision || txn.OldGeneration != expected.Generation || txn.OldSessionID != expected.SessionID || txn.Generation != target.Generation || txn.SessionID != target.SessionID || txn.Stopped != target.Stopped || txn.Kind != target.Kind {
 				return ErrBindPartOperation
 			}
-		} else if part.Revision != expected.Revision || part.Generation != expected.Generation || part.SessionID != expected.SessionID {
+		} else if part.Generation != expected.Generation || part.SessionID != expected.SessionID {
+			// The binding the caller decided about is named by its generation and
+			// session. The revision also moves with every cursor commit and lease
+			// renewal of a live consumer, which change nothing a control decision
+			// rests on: the transaction below takes lease and notice from the
+			// sidecar as it is now, under this lock. Requiring the caller's
+			// revision made a stop, a replacement or a handover fail whenever the
+			// consumer had synced in between.
 			return ErrBindPartStale
 		}
 		if proof.TargetVerified && state.Terminal != nil && expected.Generation != "" {
@@ -991,7 +998,9 @@ func TransferBindSessionAndLease(p Paths, name string, expected BindControlExpec
 			part.ControlTxn = nil
 			return nil
 		}
-		if part.Revision != expected.Revision || part.Generation != expected.Generation || part.SessionID != expected.SessionID || part.Stopped != target.Stopped {
+		// As in SetBindControl: generation and session name the binding; the
+		// revision moves with every sync of a live consumer and decides nothing.
+		if part.Generation != expected.Generation || part.SessionID != expected.SessionID || part.Stopped != target.Stopped {
 			return ErrBindPartStale
 		}
 		if state.Terminal == nil || state.Terminal.OwnerPID != proof.OwnerPID || state.Terminal.OwnerBirth != proof.OwnerBirth || !reflect.DeepEqual(state.Terminal.Target, proof.Target) {
