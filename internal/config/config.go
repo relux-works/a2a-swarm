@@ -884,6 +884,13 @@ func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monito
 // runs the ordinary replacement or returns its directory sync error taxonomy.
 func persistStateLocked(p Paths, name string, old, s State, fence time.Time, monitor, migration, inputSealed bool) (State, error) {
 	if bindPartMarker(old) {
+		// The marker is permanent. A replacement State that does not carry it
+		// (a value built from scratch instead of the loaded one) would leave the
+		// sidecar without its marker, and every later read and write of the
+		// identity would then be refused.
+		if !bindPartMarker(s) {
+			return old, ErrBindPartOwned
+		}
 		if old.bindPartShadow == nil || old.bindPartRollback == bindPartRollbackPre {
 			return old, ErrBindPartOwned
 		}

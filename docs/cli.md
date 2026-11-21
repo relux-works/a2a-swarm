@@ -3127,7 +3127,7 @@ Refusals, all without changing either file:
 | Marked State, sidecar missing | `marked bind state sidecar is missing` |
 | Sidecar present, State not marked | `bind state sidecar exists without its permanent State marker` |
 | Sidecar malformed: duplicate or unknown key, key in another case, mode other than 0600, symlink, bad seal, values that disagree with State's copy | `bind state sidecar is invalid` |
-| A generic State write that changes a field the sidecar owns | `provider-owned State fields require a typed bind-state operation` |
+| A generic State write that changes a field the sidecar owns, or that would replace a marked State by one without the marker | `provider-owned State fields require a typed bind-state operation` |
 | A cursor, status or control operation of another live owner is in progress | `bind-state operation is held by another owner` |
 | An operation presented with an outdated revision or token | `stale bind-state revision or operation token` |
 
