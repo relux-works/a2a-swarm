@@ -36,9 +36,10 @@ It returns only principals/membership after a complete validated response and
 refuses archived caller state; it does not export history or change the room.
 See [the command contract](docs/cli.md#commands) for completeness and error limits.
 
-`a2a room name get|set` and `a2a space child get|add|remove` inspect or replace
-one exact name/child property. Writes require expected IDs and concrete-event
-authority; uncertain acknowledgements never trigger automatic retries. See
+`a2a room name get|set` and `a2a space child get|list|add|remove` inspect,
+list, or replace exact name/child properties. Writes require expected IDs and
+concrete-event authority; uncertain acknowledgements never trigger automatic
+retries. See
 [room administration](docs/room-administration.md) for bounds and result rules.
 
 `a2a room power ROOM --json` reads current room power and creation facts on the

@@ -295,6 +295,9 @@
     },
     {
       "id": "space-child-get-empty-explicit",
+      "input_content": {
+        "via": []
+      },
       "expected_json": {
         "type": "space-child",
         "version": 1,
@@ -303,16 +306,13 @@
         "room_id": "!space:example.invalid",
         "state_type": "m.space.child",
         "state_key": "!child:example.invalid",
-        "outcome": "EMPTY",
+        "outcome": "UNKNOWN",
         "acknowledged": false,
-        "readback": "present",
-        "content": {
-          "via": []
-        }
+        "readback": "unavailable"
       },
-      "expected_text": "space-child v1 get room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=EMPTY acknowledged=false event_id=\"\" readback=present content={\"via\":[]}\n",
-      "exit": 0,
-      "stderr": ""
+      "expected_text": "space-child v1 get room=\"!space:example.invalid\" key=\"!child:example.invalid\" outcome=UNKNOWN acknowledged=false event_id=\"\" readback=unavailable content=null\n",
+      "exit": 1,
+      "stderr": "RULE admin_state: $.content\n"
     },
     {
       "id": "space-child-get-absent",

@@ -25,11 +25,12 @@ const adminChild = "!child:example.invalid"
 const adminMarker = "INPUT_SENTINEL_DO_NOT_ECHO"
 
 type adminSpecimen struct {
-	ID     string         `json:"id"`
-	JSON   map[string]any `json:"expected_json"`
-	Text   string         `json:"expected_text"`
-	Exit   int            `json:"exit"`
-	Stderr string         `json:"stderr"`
+	ID           string         `json:"id"`
+	InputContent map[string]any `json:"input_content,omitempty"`
+	JSON         map[string]any `json:"expected_json"`
+	Text         string         `json:"expected_text"`
+	Exit         int            `json:"exit"`
+	Stderr       string         `json:"stderr"`
 }
 
 func adminSpecimens(t *testing.T) []adminSpecimen {
@@ -382,9 +383,17 @@ func TestRoomAdminContractRecords(t *testing.T) {
 					putBody = `{"via":["example.invalid","EXAMPLE.invalid","example.invalid"]}`
 				}
 				if op == "get" {
-					if c, ok := specimen.JSON["content"]; ok {
+					if specimen.InputContent != nil {
+						b, _ := json.Marshal(specimen.InputContent)
+						stored = string(b)
+					} else if c, ok := specimen.JSON["content"]; ok {
 						b, _ := json.Marshal(c)
 						stored = string(b)
+					} else if specimen.JSON["outcome"] == "UNKNOWN" {
+						stored = `{"name":null,"via":null,"private":"` + adminMarker + `"}`
+					}
+					if specimen.JSON["outcome"] != "ABSENT" {
+						states[propertyPath] = stored
 					}
 					want = append(want, adminRequest{"GET", propertyPath, ""})
 				} else if !strings.Contains(specimen.ID, "guard-refused") {
@@ -392,6 +401,10 @@ func TestRoomAdminContractRecords(t *testing.T) {
 					if specimen.JSON["acknowledged"] == true {
 						want = append(want, adminRequest{"GET", propertyPath, ""})
 					}
+				}
+				initialStates := make(map[string]string, len(states))
+				for path, body := range states {
+					initialStates[path] = body
 				}
 				entered := 0
 				a.beforeAdminPropertyRequest = func() {
@@ -426,7 +439,7 @@ func TestRoomAdminContractRecords(t *testing.T) {
 					if op == "get" && specimen.JSON["outcome"] == "ABSENT" || strings.Contains(specimen.ID, "readback-absent") {
 						return propertyCLIReply(r, 404, `{"errcode":"M_NOT_FOUND"}`), nil
 					}
-					if op == "get" && specimen.JSON["outcome"] == "UNKNOWN" {
+					if op == "get" && specimen.JSON["outcome"] == "UNKNOWN" && specimen.InputContent == nil {
 						return propertyCLIReply(r, 200, `{"name":null,"via":null,"private":"`+adminMarker+`"}`), nil
 					}
 					if strings.Contains(specimen.ID, "readback-mismatch") {
@@ -464,6 +477,9 @@ func TestRoomAdminContractRecords(t *testing.T) {
 				}
 				if !reflect.DeepEqual(before, memberFiles(t, f.root)) || len(f.store.creates) != 0 {
 					t.Fatal("local state changed")
+				}
+				if op == "get" && !reflect.DeepEqual(initialStates, states) {
+					t.Fatal("getter changed remote state")
 				}
 				if states[reversePath] != "reverse-preserved" || states["/other-room"] != "other-preserved" {
 					t.Fatal("reverse/other-room sentinel changed")

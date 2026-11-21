@@ -30,6 +30,7 @@ func TestRoomAdminGetterNeighbors(t *testing.T) {
 			outcome    string
 		}{
 			{"valid-extensions", valid, 200, "PRESENT"},
+			{"empty-list", `{"via":[]}`, 200, "UNKNOWN"},
 			{"empty-extensions", `{"private":"` + adminMarker + `"}`, 200, "EMPTY"},
 			{"null", `{"` + field + `":null}`, 200, "UNKNOWN"},
 			{"wrong-type", `{"` + field + `":4}`, 200, "UNKNOWN"},
@@ -45,9 +46,13 @@ func TestRoomAdminGetterNeighbors(t *testing.T) {
 			{"notfound", `{"errcode":"M_NOT_FOUND"}`, 404, "ABSENT"},
 			{"truncated-notfound", `{"errcode":"M_NOT_FOUND"`, 404, "UNKNOWN"},
 		} {
+			if tc.name == "empty-list" && !child {
+				continue
+			}
 			t.Run(fmt.Sprintf("child%t/%s", child, tc.name), func(t *testing.T) {
 				f := newNamedFixture(t, true)
 				a := f.app()
+				before := memberFiles(t, f.root)
 				requests := 0
 				properties := 0
 				a.HTTP = &http.Client{Transport: memberReadTransport(func(r *http.Request) (*http.Response, error) {
@@ -77,12 +82,37 @@ func TestRoomAdminGetterNeighbors(t *testing.T) {
 				if err != nil || m["outcome"] != tc.outcome {
 					t.Fatalf("getter result %s err%v", f.out.String(), err)
 				}
+				if child {
+					switch tc.name {
+					case "valid-extensions":
+						content, ok := m["content"].(map[string]any)
+						if !ok || !reflect.DeepEqual(content["via"], []any{"EXAMPLE.invalid"}) {
+							t.Fatalf("valid via projection: %v", m["content"])
+						}
+					case "empty-list":
+						if _, ok := m["content"]; ok {
+							t.Fatalf("refused content leaked: %v", m["content"])
+						}
+					case "empty-extensions":
+						content, ok := m["content"].(map[string]any)
+						if !ok || len(content) != 0 {
+							t.Fatalf("absent via result changed: %v", m["content"])
+						}
+					case "notfound":
+						if m["readback"] != "absent" {
+							t.Fatalf("tombstone result changed: %v", m["readback"])
+						}
+					}
+				}
 				wantErr := ""
 				if code != 0 {
 					wantErr = "RULE admin_state: $.content\n"
 				}
 				if f.err.String() != wantErr || strings.Contains(f.out.String()+f.err.String(), adminMarker) {
 					t.Fatal("diagnostic/projection boundary")
+				}
+				if !reflect.DeepEqual(before, memberFiles(t, f.root)) || len(f.store.creates) != 0 {
+					t.Fatal("getter changed local state")
 				}
 			})
 		}
