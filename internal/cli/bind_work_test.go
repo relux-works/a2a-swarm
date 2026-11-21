@@ -43,7 +43,9 @@ func newTerminalWorkFixture(tb testing.TB) *terminalWorkFixture {
 		}
 	}))
 	tb.Cleanup(srv.Close)
-	p := config.Paths{Base: tb.TempDir()}
+	// Wake-mute admission refuses noncanonical roots; keep this fixture canonical
+	// so the work test reaches its cycle and budget assertions.
+	p := config.Paths{Base: canonicalRoot(tb)}
 	now := time.Now().UTC()
 	errLog := &bytes.Buffer{}
 	a := &App{as: "fixture", Now: func() time.Time { return now }, Getenv: func(string) string { return "" }, Stdout: io.Discard, Stderr: errLog, HTTP: srv.Client()}

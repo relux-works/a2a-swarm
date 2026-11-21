@@ -29,6 +29,7 @@ import (
 type c5Station struct {
 	home, socket string
 	done         chan error
+	doneResult   *error // non-nil after the server result has been consumed
 	cancel       context.CancelFunc
 }
 
@@ -55,8 +56,12 @@ func newC5Station(t *testing.T, handler daemon.Handler) *c5Station {
 	go func() { s.done <- daemon.ServeWithHandler(ctx, serverHome, socket, io.Discard, handler) }()
 	t.Cleanup(func() {
 		cancel()
+		if s.doneResult != nil {
+			return
+		}
 		select {
 		case err := <-s.done:
+			s.doneResult = &err
 			if err != nil {
 				t.Error(err)
 			}
@@ -75,6 +80,7 @@ func newC5Station(t *testing.T, handler daemon.Handler) *c5Station {
 		}
 		select {
 		case err := <-s.done:
+			s.doneResult = &err
 			t.Fatal("serve refused", err)
 		case <-timer.C:
 			t.Fatal("startup timeout")

@@ -127,6 +127,7 @@ func cmRefusal(t *testing.T, l *cmListenerRun, cap, reason string, status int) {
 	}
 }
 
+// TestCMListenerAdmission proves unauthenticated and command requests are refused while an admitted client still receives notices.
 func TestCMListenerAdmission(t *testing.T) {
 	emit := make(chan struct{})
 	s := newC5Station(t, func(ctx context.Context, inv daemon.Invocation) int {

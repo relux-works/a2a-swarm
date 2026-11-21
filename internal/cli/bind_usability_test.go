@@ -24,8 +24,13 @@ import (
 // read-only command fixture, not a real tmux server, pane or provider.
 func usabilityTarget(t testing.TB, runtime string) (tmuxwake.Target, string, string) {
 	t.Helper()
-	dir := t.TempDir()
+	// Keep the inert fixture socket short and canonical so Darwin reaches the
+	// readiness assertions instead of rejecting a path beyond its 103-byte cap.
+	dir := shortDaemonBase(t)
 	socket := filepath.Join(dir, "s")
+	if len(socket) > 103 {
+		t.Fatalf("fixture Unix socket path is %d bytes, want at most 103", len(socket))
+	}
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
