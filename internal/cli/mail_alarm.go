@@ -360,39 +360,26 @@ func alarmBody(j config.MailAlarmJob) string {
 }
 
 // One independent worker per consumer. It never opens the mailbox or touches a pane.
+// runMailAlarm is the consumer's alarm worker. It runs one cycle on every
+// notification from dispatch and on every tick, whether or not a job is
+// queued: incidents are also queued by cycles that fail before dispatch and by
+// other processes, and a worker that waited for dispatch alone would leave the
+// consumer-unavailable incident unsent for as long as the consumer stays
+// unavailable. An idle cycle reads the cached State and returns.
 func (a *App) runMailAlarm(ctx context.Context, s *session, generation string, wake <-chan struct{}) {
+	ticker := time.NewTicker(alarmWorkerInterval)
+	defer ticker.Stop()
 	for {
-		if !a.mailAlarmHasWork(s, generation) {
-			select {
-			case <-ctx.Done():
-				return
-			case _, ok := <-wake:
-				if !ok {
-					wake = nil
-				}
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-wake:
+			if !ok {
+				wake = nil
 			}
-			continue
+		case <-ticker.C:
 		}
 		a.mailAlarmCycle(ctx, s, generation)
-		ticker := time.NewTicker(alarmWorkerInterval)
-	active:
-		for {
-			select {
-			case <-ctx.Done():
-				ticker.Stop()
-				return
-			case _, ok := <-wake:
-				if !ok {
-					wake = nil
-				}
-			case <-ticker.C:
-			}
-			if !a.mailAlarmHasWork(s, generation) {
-				ticker.Stop()
-				break active
-			}
-			a.mailAlarmCycle(ctx, s, generation)
-		}
 	}
 }
 

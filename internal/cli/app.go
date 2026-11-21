@@ -615,6 +615,10 @@ type session struct {
 	// generation-consistent delivery view: un-rung pending entries, or -1
 	// when that dispatch did not compute the view.
 	terminalUndelivered int
+	// mailboxProvenEmpty is the consumer loop's one-cycle hint to the next
+	// dispatch: its sync just committed a cursor with proof that the mailbox
+	// is empty. Dispatch consumes and clears it.
+	mailboxProvenEmpty  bool
 	agentDelivery       *agentDMDelivery
 	agentDeliveryWarned bool
 	agentReplayDeferred bool

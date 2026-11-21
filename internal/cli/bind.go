@@ -851,7 +851,8 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 		}
 		if err == nil {
 			stage = "dispatch"
-			err = a.dispatchTerminalWithMailbox(ctx, s, generation, mailboxProvenEmpty, alarmWake)
+			s.mailboxProvenEmpty = mailboxProvenEmpty
+			err = a.dispatchTerminal(ctx, s, generation, alarmWake)
 		}
 		if ctx.Err() != nil {
 			return "cancelled", nil
@@ -1084,15 +1085,14 @@ func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config
 	}
 }
 
+// dispatchTerminal keeps terminal readiness and own-notice observation on
+// every successful bind cycle. When the consumer loop's sync has just
+// committed a cursor with an empty-mailbox proof (session.mailboxProvenEmpty,
+// consumed here), it avoids reopening and rewriting the unchanged delivery
+// State merely to discover that the mailbox is empty.
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string, alarmWakes ...chan<- struct{}) error {
-	return a.dispatchTerminalWithMailbox(ctx, s, generation, false, alarmWakes...)
-}
-
-// dispatchTerminalWithMailbox keeps terminal readiness and own-notice
-// observation on every successful bind cycle. When sync has just committed a
-// cursor with an empty-mailbox proof, it avoids reopening and rewriting the
-// unchanged delivery State merely to discover that the mailbox is empty.
-func (a *App) dispatchTerminalWithMailbox(ctx context.Context, s *session, generation string, mailboxProvenEmpty bool, alarmWakes ...chan<- struct{}) error {
+	mailboxProvenEmpty := s.mailboxProvenEmpty
+	s.mailboxProvenEmpty = false
 	// State/control waits inside and after root admission share one finite cycle
 	// budget. Copy only the App; preserve the shared monotonic spacing clock.
 	ctx, cancelCycle := context.WithTimeout(ctx, nativeRPCTimeout)
@@ -1184,7 +1184,8 @@ func (a *App) dispatchTerminalWithMailbox(ctx context.Context, s *session, gener
 			// checks the persisted generation-scoped typing origin.
 			readiness := a.terminalEffects(*b).ObserveReadiness(ctx, b.Notice)
 			observation := readinessInput(readiness)
-			if alarmWake != nil && a.observeMailAlarm(s, generation, alarmObservation(alarm, readiness)) {
+			if alarmWake != nil {
+				a.observeMailAlarm(s, generation, alarmObservation(alarm, readiness))
 				select {
 				case alarmWake <- struct{}{}:
 				default:
