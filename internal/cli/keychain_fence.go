@@ -76,6 +76,13 @@ func (k *keychainStore) ownerLiveness(ctx context.Context, fence *keychainFence)
 	return processLiveness(ctx, fence.PID, fence.Birth)
 }
 
+func (k *keychainStore) syncFenceDir(dir string) error {
+	if k.dirSync != nil {
+		return k.dirSync(dir)
+	}
+	return syncDir(dir)
+}
+
 func (k *keychainStore) bootSession() (string, error) {
 	if k.boot != nil {
 		return k.boot()
@@ -151,10 +158,15 @@ func (k *keychainStore) writeFence(ctx context.Context, uid, op string, intended
 	if err == nil {
 		err = os.Rename(f.Name(), path)
 	}
-	if err == nil {
-		err = syncDir(filepath.Dir(path))
-	}
 	if err != nil {
+		return nil, err
+	}
+	if err = k.syncFenceDir(filepath.Dir(path)); err != nil {
+		// The fence is in place but its directory entry is not durable, and the
+		// caller will not start the mutation: remove it, so that the identity
+		// is not fenced for a write that never began. If the removal fails the
+		// fence stays and later operations refuse.
+		_ = os.Remove(path)
 		return nil, err
 	}
 	return fence, nil

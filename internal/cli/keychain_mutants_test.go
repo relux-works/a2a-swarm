@@ -84,6 +84,11 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		// each alone still refuses with zero effects, so this plant removes both.
 		{"nocgo-named-both-layers-admitted", "credentials.go", `if c.Store.Backend == "keychain" && !keychainBuildSupported && a.keychain == nil && a.connectionSecretStore == nil {`, `if false {`, "TestKeychainUnsupportedBuildRefusesNamedBeforeEffects/whoami"},
 
+		// A mutation that never started leaves no fence (#157 L2).
+		{"unstarted-sync-fence-kept", "keychain_fence.go", "\t\t_ = os.Remove(path)\n\t\treturn nil, err", "\t\treturn nil, err", "TestKeychainUnstartedWriteSyncFailureLeavesNoFence/add"},
+		{"unstarted-sync-failure-admitted", "keychain_fence.go", "if err = k.syncFenceDir(filepath.Dir(path)); err != nil {", "if err = k.syncFenceDir(filepath.Dir(path)); err != nil && false {", "TestKeychainUnstartedWriteSyncFailureLeavesNoFence/update"},
+		{"unstarted-deadline-mutation-runs", "keychain.go", "if fence != nil && ctx.Err() != nil {", "if false {", "TestKeychainUnstartedWriteDeadlineLeavesNoFence"},
+		{"unstarted-deadline-fence-kept", "keychain.go", "fails the fence stays and later operations refuse.\n\t\t_ = k.clearFence(uid, fence)\n\t} else {", "fails the fence stays and later operations refuse.\n\t} else {", "TestKeychainUnstartedWriteDeadlineLeavesNoFence"},
 		{"fence-digest-not-recorded", "keychain_fence.go", "Digest: tokenDigest(intended)}", "Digest: tokenDigest(nil)}", "TestKeychainAbandonedWriteStaysFenced"},
 		{"acl-requirement-ignored", "keychain_acl_test.go", "if app.requirement != requirement {", "if false && app.requirement != requirement {", "TestKeychainACLCreatorOnly/broadened-requirement.txt"},
 		{"acl-status-ignored", "keychain_acl_test.go", "if app.status != \"OK\" {", "if false {", "TestKeychainACLCreatorOnly/status-not-ok.txt"},

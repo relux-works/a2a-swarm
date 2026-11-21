@@ -547,3 +547,179 @@ func TestKeychainBootSessionReadable(t *testing.T) {
 		}
 	}
 }
+
+// mutationsReached counts the add and update calls that reached the fake
+// backend, successful or not.
+func mutationsReached(t *testing.T, dir string) int {
+	t.Helper()
+	return countOps(records(t, dir), "add", "update")
+}
+
+// Proves that a fence whose directory sync fails after its rename is removed,
+// because the mutation is not started: the write refuses, no add or update
+// reaches the backend, no fence and no cooldown remain, the stored value is
+// unchanged, and the next write of the same identity succeeds. The started
+// half is TestKeychainAbandonedWriteStaysFenced; an ordinary write is
+// TestKeychainCompletedWriteLeavesNoFence. It injects the sync error; it does
+// not show that a real file system can fail there.
+func TestKeychainUnstartedWriteSyncFailureLeavesNoFence(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		items map[string]string
+		prior string
+	}{
+		{"add", map[string]string{}, ""},
+		{"update", nil, "token-old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			uid := e.agent("alice")
+			items := tc.items
+			if items == nil {
+				items = map[string]string{uid: tc.prior}
+			}
+			dir := fakeKeychain(e, items, "")
+			failing := true
+			k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: fakeBackend{dir},
+				dirSync: func(string) error {
+					if failing {
+						return syscall.EIO
+					}
+					return nil
+				}})
+			ctx := context.Background()
+			err := k.write(ctx, uid, "token-new")
+			if err == nil || !strings.Contains(err.Error(), "write fence unavailable") {
+				t.Fatalf("write = %v, want the fence refusal", err)
+			}
+			if n := mutationsReached(t, dir); n != 0 {
+				t.Fatalf("%d mutations reached the backend", n)
+			}
+			if _, err := os.Stat(k.fencePath(uid)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("a fence for a mutation that never started was left in place", err)
+			}
+			if _, err := os.Stat(k.identityPath(uid) + ".cooldown"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("a local fence failure recorded a Keychain cooldown", err)
+			}
+			if got := readModel(t, dir).Items[uid]; got != tc.prior {
+				t.Fatal("the stored value changed although the write refused")
+			}
+			failing = false
+			if err := k.write(ctx, uid, "token-new"); err != nil {
+				t.Fatal("the identity stayed unusable after the refused write", err)
+			}
+			if token, err := k.read(ctx, uid); err != nil || token != "token-new" {
+				t.Fatal("the retried write was not stored", err)
+			}
+		})
+	}
+}
+
+// Proves the fail-closed side of the same path: when the fence cannot be
+// removed either, it stays, and the next operation refuses as fenced without
+// reaching the backend. The removal is made to fail by taking write permission
+// from the state directory, so the test needs a non-root user.
+func TestKeychainUnstartedWriteKeepsFenceWhenRemovalFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	e := newEnv(t)
+	uid := e.agent("alice")
+	dir := fakeKeychain(e, map[string]string{}, "")
+	var locked string
+	t.Cleanup(func() {
+		if locked != "" {
+			os.Chmod(locked, 0o700)
+		}
+	})
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: fakeBackend{dir},
+		dirSync: func(d string) error {
+			locked = d
+			if err := os.Chmod(d, 0o500); err != nil {
+				return err
+			}
+			return syscall.EIO
+		}})
+	ctx := context.Background()
+	if err := k.write(ctx, uid, "token-a"); err == nil || !strings.Contains(err.Error(), "write fence unavailable") {
+		t.Fatalf("write = %v, want the fence refusal", err)
+	}
+	if locked == "" {
+		t.Fatal("the fence directory was never synced")
+	}
+	if err := os.Chmod(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(k.fencePath(uid)); err != nil {
+		t.Fatal("the fence that could not be removed is gone", err)
+	}
+	k.dirSync = nil
+	if err := k.write(ctx, uid, "token-b"); !errors.Is(err, errKeychainFenced) {
+		t.Fatal("a write was admitted over a fence that could not be removed", err)
+	}
+	if _, err := k.read(ctx, uid); !errors.Is(err, errKeychainFenced) {
+		t.Fatal("a read was admitted over a fence that could not be removed", err)
+	}
+	if n := mutationsReached(t, dir); n != 0 {
+		t.Fatalf("%d mutations reached the backend", n)
+	}
+}
+
+// Proves that when writing the fence uses up the deadline, the native call is
+// not made and the fence is removed: the attempt is an ordinary timeout with
+// its cooldown, no add reaches the backend then or later, and once the
+// cooldown has passed the same identity writes. A mutation that did start and
+// outlives its deadline keeps its fence: TestKeychainAbandonedWriteStaysFenced.
+func TestKeychainUnstartedWriteDeadlineLeavesNoFence(t *testing.T) {
+	e := newEnv(t)
+	uid := e.agent("alice")
+	dir := fakeKeychain(e, map[string]string{}, "")
+	var mu sync.Mutex
+	now := time.Now()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	slow := true
+	// A started add would announce itself and then block, so it is seen even
+	// though nothing waits for its result.
+	b := &blockingBackend{fakeBackend: fakeBackend{dir}, started: make(chan struct{}), release: make(chan struct{})}
+	k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b,
+		timeout: 300 * time.Millisecond, now: clock,
+		birth: func(ctx context.Context, pid int) (string, error) {
+			if slow {
+				<-ctx.Done() // the fence is written only after the deadline
+			}
+			return processIdentity(context.Background(), pid)
+		}})
+	ctx := context.Background()
+	err := k.write(ctx, uid, "token-a")
+	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "cause=security_timeout") {
+		t.Fatalf("write = %v, want the timeout with its cooldown", err)
+	}
+	if _, err := os.Stat(k.fencePath(uid)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a fence for a mutation that never started was left in place", err)
+	}
+	select {
+	case <-b.started:
+		t.Fatal("the native call was made after the deadline had passed")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if n := mutationsReached(t, dir); n != 0 {
+		t.Fatalf("%d mutations reached the backend after the deadline", n)
+	}
+	slow = false
+	close(b.release)
+	if err := k.write(ctx, uid, "token-b"); err == nil || !strings.Contains(err.Error(), "cooldown") {
+		t.Fatal("the timeout recorded no cooldown", err)
+	}
+	mu.Lock()
+	now = now.Add(2 * securityCooldown)
+	mu.Unlock()
+	if err := k.write(ctx, uid, "token-b"); err != nil {
+		t.Fatal("the identity stayed unusable after the unstarted write", err)
+	}
+	if got := readModel(t, dir).Items[uid]; got != "token-b" {
+		t.Fatal("the retried write was not stored, or the abandoned one landed")
+	}
+	if n := mutationsReached(t, dir); n != 1 {
+		t.Fatalf("%d mutations reached the backend, want only the retried one", n)
+	}
+}

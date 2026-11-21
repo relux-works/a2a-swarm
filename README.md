@@ -523,7 +523,10 @@ before the modify path. Writers serialize per identity, with one
 duplicate-create recovery and matching readback
 after every write. Every add and update first records a durable write fence. A
 mutation that the deadline abandons stays fenced until its native call returns, so it
-cannot overwrite a newer write. A dead writer's fence never expires: `a2a creds
+cannot overwrite a newer write. A mutation whose native call is never made leaves
+no fence: when the fence's directory sync fails the write refuses, and when
+writing the fence uses up the deadline the attempt is an ordinary timeout; if
+the fence cannot be removed it stays and later operations refuse. A dead writer's fence never expires: `a2a creds
 reconcile` clears it only when the writer is confirmed gone and its intended value is
 observed in the item, or the kernel boot-session UUID shows the host restarted since. The
 calendar boot time is never used, and an out-of-band writer of the same value is not
@@ -614,11 +617,11 @@ throwaway keychain file only, with the user search list and default keychain
 compared before and after. The phase-1 sentinels' records stay in git history.
 
 Source integration does not qualify native behavior or authorize adoption.
-One recorded pre-adoption follow-up is closed in source with fixture tests:
-the Darwin cgo-off refusal now happens at selection. These remain open: rare
-directory-sync/deadline paths that can strand an unstarted mutation's fence;
-test gaps in ACL change-authorization analysis and update-not-found/add; the
-native success-find buffer is not zeroed;
+Two recorded pre-adoption follow-ups are closed in source with fixture tests:
+the Darwin cgo-off refusal now happens at selection, and the directory-sync and
+deadline paths no longer leave a fence for a mutation that never started.
+These remain open: test gaps in ACL change-authorization analysis and
+update-not-found/add; the native success-find buffer is not zeroed;
 reconciliation addresses only the access-token service. Timeout fixtures
 distinguish held-write fences from cooldown after backend return and observed
 fence removal. The native sentinel has not run

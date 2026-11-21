@@ -53,9 +53,10 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 
 ## Commands
 
-Recorded pre-adoption limitations remain open: rare sync/deadline paths that
-strand an unstarted mutation fence; ACL change-authorization and
-update-not-found/add test gaps. The native sentinel
+Recorded pre-adoption limitations remain open: ACL change-authorization and
+update-not-found/add test gaps. A mutation whose native call is never made
+(the fence's directory sync failed, or writing the fence used up the deadline)
+leaves no fence; a started or uncertain mutation keeps it. The native sentinel
 has not run for this candidate. Native ACL/partition/no-dialog/refusal
 measurements, stable designated requirement and N-to-N+1 survival, item
 rotation/rollback and signing-key custody remain separate adoption gates.
