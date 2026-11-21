@@ -204,6 +204,9 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 						}
 						if v.Code != 0 || want == "" && v.Err != "" || want != "" && !strings.Contains(v.Err, want) {
 							observation, _ := os.ReadFile(filepath.Join(home, "hook-observation.json"))
+							if strings.Contains(v.Err, "bind state sidecar") || strings.Contains(v.Err, "bind-state") {
+								t.Log(bindPartDiagnosis(e.paths(), "alice", e.dir))
+							}
 							t.Fatalf("hook %d: code%d %s %s; observation: %s", id, v.Code, v.Out, v.Err, observation)
 						}
 						return
