@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"testing"
+	"time"
 )
 
 // TestMarkedStateCacheSameStampForeignBytes proves a consumer's cache never
@@ -11,7 +12,8 @@ import (
 // bytes of the same size and its modification time restored, so that inode,
 // size, mtime and mode all still match the cached stamp. Each reader a bind
 // consumer uses on its idle path is checked: the full State, the terminal
-// projection and the idle-delivery view. The edited field is an ordinary one
+// projection, the idle-delivery view and the short lease-renewal path, which
+// must fall back to a full load. The edited field is an ordinary one
 // (a followed thread, the terminal outcome) that the sidecar does not carry,
 // so only the State bytes can reveal the change.
 //
@@ -94,6 +96,33 @@ func TestMarkedStateCacheSameStampForeignBytes(t *testing.T) {
 		}
 		if hit && view.SealValid {
 			t.Fatalf("idle-delivery view served from cache after a same-stamp overwrite: %+v", view)
+		}
+	})
+
+	t.Run("short lease renewal", func(t *testing.T) {
+		p, _, _ := bindFixture(t, "s0", true)
+		p = p.WithReadCache(NewReadCache(bindTestName))
+		now := time.Now().UTC()
+		renew := func(after time.Duration) {
+			t.Helper()
+			if _, err := AcquireOrRenewBindLease(p, bindTestName, "holder", "host-1", os.Getpid(), now.Add(after), LeaseTTL, LeaseTTL/2, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		renew(0)
+		if _, err := LoadState(p, bindTestName); err != nil {
+			t.Fatal(err)
+		}
+		before := ReadStateDecodeStats()
+		renew(time.Second)
+		if d := ReadStateDecodeStats().LoadStateCalls - before.LoadStateCalls; d != 0 {
+			t.Fatalf("control: the steady renewal loaded State %d times, so the short path was not taken", d)
+		}
+		overwrite(t, p, bindTestName, `"$keep"`, `"$keeP"`)
+		before = ReadStateDecodeStats()
+		renew(2 * time.Second)
+		if d := ReadStateDecodeStats().LoadStateCalls - before.LoadStateCalls; d == 0 {
+			t.Fatal("short lease renewal answered from the cached State after a same-stamp overwrite")
 		}
 	})
 }
