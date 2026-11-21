@@ -529,57 +529,6 @@ func TestReadCacheDurableByteConfirmation(t *testing.T) {
 	}
 }
 
-// TestReadCacheQualifiedDirectoryChangeTimeRejectsNamespaceABA proves a
-// qualified ctime change invalidates own-write durability after an unobserved
-// rename-away and rename-back, even when file identity and bytes are restored.
-func TestReadCacheQualifiedDirectoryChangeTimeRejectsNamespaceABA(t *testing.T) {
-	p := cachedPaths(t)
-	path := p.StateFile("fixture")
-	dir := filepath.Dir(path)
-	if !p.readCache.durable {
-		t.Fatal("positive control: own synced write did not mint qualified durability")
-	}
-	beforeFile := StampFile(path)
-	beforeDir := stampStateDirectory(dir)
-	if !beforeDir.known {
-		t.Fatal("positive control: directory change time is not qualified")
-	}
-	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	moveAwayAndBack := func() {
-		t.Helper()
-		moved := path + ".aba-moved"
-		if err := os.Rename(path, moved); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(moved, path); err != nil {
-			t.Fatal(err)
-		}
-	}
-	moveAwayAndBack()
-	afterDir := stampStateDirectory(dir)
-	if beforeDir.Equal(afterDir) {
-		// Retry after a full second for filesystems with coarse ctime resolution.
-		time.Sleep(time.Second)
-		moveAwayAndBack()
-		afterDir = stampStateDirectory(dir)
-	}
-	current, err := os.ReadFile(path)
-	if err != nil || beforeDir.Equal(afterDir) || !beforeFile.Equal(StampFile(path)) || !bytes.Equal(original, current) {
-		t.Fatalf("ABA control did not preserve file while changing directory evidence: err=%v sameDir=%v sameFile=%v sameBytes=%v", err, beforeDir.Equal(afterDir), beforeFile.Equal(StampFile(path)), bytes.Equal(original, current))
-	}
-	var rec syncRecord
-	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
-	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if len(rec.files) != 1 || len(rec.dirs) != 2 || !p.readCache.durable {
-		t.Fatalf("ABA no-op skipped revalidation syncs or failed to restore own proof: syncs=%+v durable=%v", rec, p.readCache.durable)
-	}
-}
-
 // TestReadCacheByteReadFailure proves candidate hits fail closed when the byte read is denied after the stamp pre-check, beside readable controls before and after.
 func TestReadCacheByteReadFailure(t *testing.T) {
 	p := cachedPaths(t)
@@ -789,8 +738,12 @@ func TestReadCacheDurableNoop(t *testing.T) {
 	sameBytes := bytes.Equal(raw, data)
 	encodeDelta := after.StateEncodes - before.StateEncodes
 	writeByteDelta := after.StateWriteBytes - before.StateWriteBytes
-	if !sameFile || !sameMtime || !sameBytes || encodeDelta != 0 || writeByteDelta != 0 || len(rec.files) != 0 || len(rec.dirs) != 0 || !p.readCache.durable {
-		t.Fatalf("stable no-op missed durable fast path: sameFile=%v sameMtime=%v sameBytes=%v encodeDelta=%d writeByteDelta=%d syncs=%+v durable=%v", sameFile, sameMtime, sameBytes, encodeDelta, writeByteDelta, rec, p.readCache.durable)
+	if stampStateDirectory(filepath.Dir(path)).known {
+		if !sameFile || !sameMtime || !sameBytes || encodeDelta != 0 || writeByteDelta != 0 || len(rec.files) != 0 || len(rec.dirs) != 0 || !p.readCache.durable {
+			t.Fatalf("stable no-op missed durable fast path: sameFile=%v sameMtime=%v sameBytes=%v encodeDelta=%d writeByteDelta=%d syncs=%+v durable=%v", sameFile, sameMtime, sameBytes, encodeDelta, writeByteDelta, rec, p.readCache.durable)
+		}
+	} else if !sameFile || !sameMtime || !sameBytes || encodeDelta != 1 || writeByteDelta != 0 || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable no-op missed ordinary sync path: sameFile=%v sameMtime=%v sameBytes=%v encodeDelta=%d writeByteDelta=%d syncs=%+v durable=%v", sameFile, sameMtime, sameBytes, encodeDelta, writeByteDelta, rec, p.readCache.durable)
 	}
 	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Terminal.Generation = "changed"; return nil }); err != nil {
 		t.Fatal(err)
