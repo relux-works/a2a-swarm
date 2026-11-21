@@ -75,6 +75,15 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 		{"write-boot-unnormalized", "keychain_fence.go", "if err != nil || !validBootSession(boot) {", "if err != nil {", "TestKeychainFenceRecordsNoInvalidBoot"},
 		{"fence-without-boot-counts", "keychain_fence.go", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && fence.Boot != \"\" && boot != fence.Boot {", "if boot, err := k.bootSession(); err == nil && validBootSession(boot) && boot != fence.Boot {", "TestKeychainFenceReconcile/gone-fence-without-boot"},
 		{"write-rewrites-present-value", "keychain.go", "\t\tif existing && prior == token {\n\t\t\treturn nil\n\t\t}\n", "\t\t_ = prior\n", "TestKeychainWriteSkipsPresentValue/existing-equal"},
+		// Keychain mode needs the native backend (#157 L1). These refusals exist
+		// only in a build without it, so the nocgo- mutants run only when this
+		// harness is itself built with CGO_ENABLED=0 (or on Linux).
+		{"nocgo-legacy-selection-admitted", "credentials.go", "if !keychainBuildSupported && a.keychain == nil {", "if false && a.keychain == nil {", "TestKeychainUnsupportedBuildRefusesLegacyBeforeEffects/register"},
+		{"nocgo-named-selection-admitted", "credentials.go", `if c.Store.Backend == "keychain" && !keychainBuildSupported && a.keychain == nil && a.connectionSecretStore == nil {`, `if false {`, "TestNamedBackendPlatform/keychain"},
+		// The named refusal has two layers, command preflight and store selection;
+		// each alone still refuses with zero effects, so this plant removes both.
+		{"nocgo-named-both-layers-admitted", "credentials.go", `if c.Store.Backend == "keychain" && !keychainBuildSupported && a.keychain == nil && a.connectionSecretStore == nil {`, `if false {`, "TestKeychainUnsupportedBuildRefusesNamedBeforeEffects/whoami"},
+
 		{"fence-digest-not-recorded", "keychain_fence.go", "Digest: tokenDigest(intended)}", "Digest: tokenDigest(nil)}", "TestKeychainAbandonedWriteStaysFenced"},
 		{"acl-requirement-ignored", "keychain_acl_test.go", "if app.requirement != requirement {", "if false && app.requirement != requirement {", "TestKeychainACLCreatorOnly/broadened-requirement.txt"},
 		{"acl-status-ignored", "keychain_acl_test.go", "if app.status != \"OK\" {", "if false {", "TestKeychainACLCreatorOnly/status-not-ok.txt"},
@@ -175,6 +184,9 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 	}
 	for _, m := range mutants {
 		t.Run(m.name, func(t *testing.T) {
+			if strings.HasPrefix(m.name, "nocgo-") && keychainBuildSupported {
+				t.Skip("this build has the native backend; run the harness with CGO_ENABLED=0")
+			}
 			copyRoot := t.TempDir()
 			// CLI tests and matrixtransport import the module's transport seam,
 			// including conformancetest; keep its real source/fixtures in every copy.
@@ -232,6 +244,20 @@ func TestKeychainNarrowingMutants(t *testing.T) {
 			}
 			if err := os.WriteFile(target, []byte(next), 0o600); err != nil {
 				t.Fatal(err)
+			}
+			if m.name == "nocgo-named-both-layers-admitted" {
+				path := filepath.Join(copyRoot, "internal", "cli", "connections.go")
+				b, e := os.ReadFile(path)
+				if e != nil {
+					t.Fatal(e)
+				}
+				guard := `if c.Store.Backend == "keychain" && !keychainBuildSupported && a.keychain == nil && a.connectionSecretStore == nil {`
+				if strings.Count(string(b), guard) != 1 {
+					t.Fatal("preflight guard plant must apply exactly once")
+				}
+				if e := os.WriteFile(path, []byte(strings.Replace(string(b), guard, `if false {`, 1)), 0o600); e != nil {
+					t.Fatal(e)
+				}
 			}
 			if m.name == "empty-only-admitted" {
 				path := filepath.Join(copyRoot, "internal", "cli", "credentials.go")

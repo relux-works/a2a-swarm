@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -64,8 +63,8 @@ func (a *App) selectedStore() (string, error) {
 		return "", e
 	}
 	if c != nil {
-		if c.Store.Backend == "keychain" && runtime.GOOS != "darwin" && a.keychain == nil && a.connectionSecretStore == nil {
-			return "", fmt.Errorf("keychain secret store requires macOS")
+		if c.Store.Backend == "keychain" && !keychainBuildSupported && a.keychain == nil && a.connectionSecretStore == nil {
+			return "", errKeychainUnsupported
 		}
 		return c.Store.Backend, nil
 	}
@@ -73,8 +72,8 @@ func (a *App) selectedStore() (string, error) {
 	case "", "file":
 		return "file", nil
 	case "keychain":
-		if runtime.GOOS != "darwin" && a.keychain == nil {
-			return "", fmt.Errorf("keychain secret store requires macOS")
+		if !keychainBuildSupported && a.keychain == nil {
+			return "", errKeychainUnsupported
 		}
 		return "keychain", nil
 	case config.BackendVaultV1:

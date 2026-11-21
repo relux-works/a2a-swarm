@@ -536,9 +536,10 @@ Because the item ACL binds the creating binary, Keychain mode needs a binary
 signed with a stable identity. An ad-hoc build is trusted only by its own code
 hash, so a rebuilt binary cannot read items its predecessor created: it fails
 closed without a prompt. Signing and the per-identity migration (P3) are held for
-the owner's rollout. Non-macOS selection refuses Keychain mode. A Darwin build without cgo
-currently refuses late through the unsupported backend; early selection refusal
-remains a required pre-adoption follow-up.
+the owner's rollout. A build without the native backend, which is every build
+other than Darwin with cgo, refuses Keychain mode at store selection with
+`keychain requires a macOS cgo build`, before any item operation or homeserver
+request. File mode stays available in every build.
 
 Before **every** item operation, a separate repo-built Swift companion checks
 `SecKeychainGetStatus` without accessing items. Both the probe and the item
@@ -613,13 +614,14 @@ throwaway keychain file only, with the user search list and default keychain
 compared before and after. The phase-1 sentinels' records stay in git history.
 
 Source integration does not qualify native behavior or authorize adoption.
-The recorded pre-adoption follow-ups remain open: Darwin cgo-off late refusal;
-rare directory-sync/deadline paths that can strand an unstarted mutation's fence;
-and test gaps in ACL change-authorization analysis and update-not-found/add.
-The native success-find buffer is not zeroed, reconciliation addresses only the
-access-token service. Timeout fixtures distinguish held-write fences from cooldown
-after backend return and observed fence removal.
-None is declared repaired by this integration. The native sentinel has not run
+One recorded pre-adoption follow-up is closed in source with fixture tests:
+the Darwin cgo-off refusal now happens at selection. These remain open: rare
+directory-sync/deadline paths that can strand an unstarted mutation's fence;
+test gaps in ACL change-authorization analysis and update-not-found/add; the
+native success-find buffer is not zeroed;
+reconciliation addresses only the access-token service. Timeout fixtures
+distinguish held-write fences from cooldown after backend return and observed
+fence removal. The native sentinel has not run
 for this candidate. Actual ACL/partition/no-dialog/refusal behavior, stable
 signing requirement and N-to-N+1 item survival, existing-item rotation/rollback,
 and signing-key custody require separate approval and evidence. Existing item

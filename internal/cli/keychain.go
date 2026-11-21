@@ -325,6 +325,8 @@ func (k *keychainStore) run(ctx context.Context, uid, mutation string, intended 
 		return nil, errKeychainMissing
 	case errors.Is(r.err, errKeychainDuplicate):
 		return nil, errKeychainDuplicate
+	case errors.Is(r.err, errKeychainUnsupported):
+		return nil, errKeychainUnsupported
 	}
 	return nil, fmt.Errorf("keychain operation failed for %s", uid)
 }
