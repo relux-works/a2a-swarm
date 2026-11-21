@@ -127,7 +127,13 @@ func bindFixtureReaper() (bindFixtureProcess, error) {
 }
 
 func bindFixtureRoot() (string, error) {
-	root := filepath.Join(os.TempDir(), "a2a-bind-fixtures-"+strconv.Itoa(os.Getuid()))
+	// Admission rejects the temporary directory's symlink alias on Darwin.
+	// The short name keeps the private tmux socket under its pathname limit.
+	base, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(base, "a2a-bf-"+strconv.Itoa(os.Getuid()))
 	if err := os.Mkdir(root, 0700); err != nil && !os.IsExist(err) {
 		return "", err
 	}

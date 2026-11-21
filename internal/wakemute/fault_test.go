@@ -19,7 +19,7 @@ func TestScopeMuteDurabilityFaultsAndPartialUndo(t *testing.T) {
 	for _, point := range []string{"before-create", "before-file-sync", "after-file-sync", "before-rename", "after-rename", "after-directory-sync"} {
 		for _, write := range []int{1, 2, 3, 4, 5, 6, 7, 8} {
 			t.Run(point+string(rune('0'+write)), func(t *testing.T) {
-				scope := append(fixture.Scope(t.TempDir()), fixture.Scope(t.TempDir())...)
+				scope := append(fixture.Scope(canonicalTempDir(t)), fixture.Scope(canonicalTempDir(t))...)
 				scope, _ = wakemute.Normalize(scope)
 				fixture.Enroll(t, scope)
 				op := fixture.Confirm(t, scope, "fault", "mute")
@@ -81,7 +81,7 @@ func TestScopeMuteDurabilityFaultsAndPartialUndo(t *testing.T) {
 // Losing stdout is caller-side loss, not an invisible operation or rollback.
 // A newly constructed status reader finds the same committed run and exact ID.
 func TestScopeMuteLostResultRecovery(t *testing.T) {
-	scope := fixture.Scope(t.TempDir())
+	scope := fixture.Scope(canonicalTempDir(t))
 	fixture.Enroll(t, scope)
 	approved := fixture.Confirm(t, scope, "lost-result", "mute")
 	if _, err := wakemute.Mute(fixture.Context(t), approved); err != nil {
@@ -99,7 +99,7 @@ func TestScopeMuteLostResultRecovery(t *testing.T) {
 func TestScopeMuteUnmuteFaultsRetainOverlap(t *testing.T) {
 	for _, point := range []string{"before-create", "after-file-sync", "after-rename", "after-directory-sync"} {
 		t.Run(point, func(t *testing.T) {
-			scope := append(fixture.Scope(t.TempDir()), fixture.Scope(t.TempDir())...)
+			scope := append(fixture.Scope(canonicalTempDir(t)), fixture.Scope(canonicalTempDir(t))...)
 			scope, _ = wakemute.Normalize(scope)
 			fixture.Enroll(t, scope)
 			a := fixture.Mute(t, scope, "A")
@@ -147,7 +147,7 @@ func TestScopeMuteUnmuteFaultsRetainOverlap(t *testing.T) {
 // Owner/type/mode failures are rejected before creating even a temporary entry.
 // A read-only scope report does not repair missing or unreadable enrollment.
 func TestScopeMuteEnrollmentAbsenceSafety(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	os.Chmod(filepath.Join(root, wakemute.Ledger), 0000)
