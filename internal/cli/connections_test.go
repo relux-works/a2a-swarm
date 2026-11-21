@@ -66,7 +66,7 @@ type namedFixture struct {
 
 func newNamedFixture(t *testing.T, metadata bool) *namedFixture {
 	t.Helper()
-	f := &namedFixture{t: t, root: t.TempDir(), env: map[string]string{}, store: &namedTestStore{items: map[config.SecretReference]string{}}}
+	f := &namedFixture{t: t, root: canonicalTempDir(t), env: map[string]string{}, store: &namedTestStore{items: map[config.SecretReference]string{}}}
 	f.r = config.ConnectionRegistry{SchemaVersion: 1, Current: "alpha", Profiles: map[string]config.Connection{}}
 	for _, label := range []string{"alpha", "beta"} {
 		label := label

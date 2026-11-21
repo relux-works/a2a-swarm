@@ -33,27 +33,47 @@ func capacityContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// A reader-validated 499-operation history reaches 998. All four selected
-// connection counters and the root then cross 999 -> 1000 at cleanup.
+// A reader-validated 499-operation history reaches 998. Every selected
+// connection counter and the root then cross 999 -> 1000 at cleanup.
 // The finite reserved envelope includes newline, maximum uint64 decimal widths
 // and installing (the longest nonclosed state, including recovery unions).
 // Fixtures synthesize retained history; they are not 499 live owner operations.
 func cleanupCapacityFixture(t *testing.T, target int, reserved bool, overlapping ...bool) (wakemute.Scope, wakemute.Operation) {
 	t.Helper()
-	root := t.TempDir()
-	connections := make([]wakemute.Connection, 4)
-	for i := range connections {
-		name := strings.Repeat(string(rune('a'+i)), 63) + fmt.Sprint(i)
-		connections[i] = wakemute.Connection{Name: name, Path: "connections/" + name}
+	root := canonicalTempDir(t)
+	var connections []wakemute.Connection
+	var extra int
+	const maxFixtureRootPath = 900
+	for count := 1; count <= 64; count++ {
+		candidate := make([]wakemute.Connection, count)
+		for i := range candidate {
+			name := fmt.Sprintf("conn-%02d-%s", i, strings.Repeat("x", 56))
+			candidate[i] = wakemute.Connection{Name: name, Path: "connections/" + name}
+		}
+		prototype, err := wakemute.NewOperation(wakemute.Scope{{Root: root, Connections: candidate}}, "history-00000000")
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(prototype)
+		if err != nil {
+			t.Fatal(err)
+		}
+		needed := (wakemute.MaxBytes-32000)/500 - len(raw)
+		extra = needed
+		if needed >= 0 && needed <= maxFixtureRootPath-len(root) {
+			connections = candidate
+			extra = needed
+			break
+		}
+		if needed < 0 {
+			break
+		}
 	}
-	// Lengthen only private fixture paths so 499 bounded run references can
-	// reach the byte boundary without unbounded or invalid operation fields.
-	prototype, err := wakemute.NewOperation(wakemute.Scope{{Root: root, Connections: connections}}, "history-00000000")
-	if err != nil {
-		t.Fatal(err)
+	if connections == nil {
+		t.Fatalf("capacity fixture cannot fit below the %d-byte Darwin path budget: root=%d extra=%d", maxFixtureRootPath, len(root), extra)
 	}
-	raw, _ := json.Marshal(prototype)
-	extra := (wakemute.MaxBytes-32000)/500 - len(raw)
+	// Keep the root path below Darwin's path limit while still sizing the
+	// persisted fixture to the one-megabyte state boundary.
 	for extra > 1 {
 		n := min(extra-1, 180)
 		root = filepath.Join(root, strings.Repeat("r", n))
@@ -264,7 +284,7 @@ func TestR3CapacityOverlapAndRetry(t *testing.T) {
 // A known capacity refusal in a later root must not publish an earlier root's
 // coordinator intent; actual I/O faults retain the existing partial semantics.
 func TestR3CapacityPreflightAllRoots(t *testing.T) {
-	first := fixture.Scope(t.TempDir())
+	first := fixture.Scope(canonicalTempDir(t))
 	fixture.Enroll(t, first)
 	last, _ := cleanupCapacityFixture(t, wakemute.MaxBytes+1, true)
 	scope, err := wakemute.Normalize(append(first, last...))

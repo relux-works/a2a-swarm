@@ -34,7 +34,7 @@ func ledger(t *testing.T, root string) []byte {
 // Exact-operation cleanup composes overlapping mutes, rejects stale/wrong/run
 // and narrowed scopes byte-for-byte, and never claims drained remote work.
 func TestScopeMuteExactCleanupAndOverlap(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	if err := admission(t, root); err != nil {
@@ -71,7 +71,7 @@ func TestScopeMuteExactCleanupAndOverlap(t *testing.T) {
 // ACK waits for a previously admitted local effect. No new effect can enter
 // after ACK, while a receiver's already-admitted asynchronous work may finish.
 func TestScopeMuteAdmissionRaceNotQuiesced(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	approved := fixture.Confirm(t, scope, "race", "mute")
@@ -123,7 +123,7 @@ func TestScopeMuteAdmissionRaceNotQuiesced(t *testing.T) {
 // Status is a shared-lock read: even age calculation and errors leave every
 // root directory entry and file unchanged. Unsupported never means whole-host.
 func TestScopeMuteStatusReadOnlyAndPulse(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	out, err := wakemute.Status(fixture.Context(t), scope)
 	if !errors.Is(err, wakemute.ErrUnsupported) || out.Status != "unsupported" {
@@ -152,7 +152,7 @@ func TestScopeMuteStatusReadOnlyAndPulse(t *testing.T) {
 func TestScopeMuteUnsafeRecordsAndOverrides(t *testing.T) {
 	for _, kind := range []string{"truncated", "symlink", "mode", "missing-ledger", "missing-marker", "replaced-root", "foreign-host", "foreign-owner", "connection", "version", "duplicate-json"} {
 		t.Run(kind, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "root")
+			root := filepath.Join(canonicalTempDir(t), "root")
 			if e := os.Mkdir(root, 0700); e != nil {
 				t.Fatal(e)
 			}
@@ -220,7 +220,7 @@ func TestScopeMuteUnsafeRecordsAndOverrides(t *testing.T) {
 			}
 		})
 	}
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	nested := filepath.Join(root, "connections", "other")
@@ -232,7 +232,7 @@ func TestScopeMuteUnsafeRecordsAndOverrides(t *testing.T) {
 
 // Lock contention has a finite backoff budget and makes no ledger write.
 func TestScopeMuteLockBudget(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	entered := make(chan struct{})
@@ -260,7 +260,7 @@ func TestScopeMuteLockBudget(t *testing.T) {
 // Namespace selection is explicit: a muted connection does not claim another
 // connection, and changing the recorded cleanup list is refused without writes.
 func TestScopeMuteConnectionSelectionAndUndoScope(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	all := wakemute.Scope{{Root: root, Connections: []wakemute.Connection{{Path: "."}, {Name: "one", Path: "connections/one"}}}}
 	fixture.Enroll(t, all)
 	one := wakemute.Scope{{Root: root, Connections: []wakemute.Connection{{Name: "one", Path: "connections/one"}}}}
@@ -293,7 +293,7 @@ func TestScopeMuteConnectionSelectionAndUndoScope(t *testing.T) {
 // process restart. Legacy absence is explicitly outside admitted coverage; it
 // cannot substitute for version-1 required participation or an unknown version.
 func TestScopeMuteRequiredAdmissionLossAndOverride(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	called := false
@@ -308,7 +308,7 @@ func TestScopeMuteRequiredAdmissionLossAndOverride(t *testing.T) {
 	if err := wakemute.AdmissionRequired(fixture.Context(t), root, ".", 1, effect); !errors.Is(err, wakemute.ErrUnsafe) || called {
 		t.Fatal("lost admitted control silently enabled a wake")
 	}
-	if err := wakemute.AdmissionRequired(fixture.Context(t), t.TempDir(), ".", 1, effect); !errors.Is(err, wakemute.ErrUnsafe) || called {
+	if err := wakemute.AdmissionRequired(fixture.Context(t), canonicalTempDir(t), ".", 1, effect); !errors.Is(err, wakemute.ErrUnsafe) || called {
 		t.Fatal("config-root override bypassed required control")
 	}
 	if err := wakemute.AdmissionRequired(fixture.Context(t), root, ".", 2, effect); !errors.Is(err, wakemute.ErrUnsupported) || called {
@@ -338,7 +338,7 @@ func TestScopeMuteOutputBudget(t *testing.T) {
 // credential, principal/filter, pause, lease, manual and UNKNOWN bytes survive
 // both overlapping operations, including an independent re-pause during undo.
 func TestScopeMutePreservesIndependentStateBytes(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	paths := []string{"agents/member.json", "humans/operator.json", "owner-dm/member.principals.json", "state/member.json", "state/member.mailbox.jsonl", "subscriptions.json"}
@@ -382,7 +382,7 @@ func TestScopeMutePreservesIndependentStateBytes(t *testing.T) {
 // coordinator. Status shows exact covered/not-covered rows without repair;
 // restoring the fixture root permits the originally authorized cleanup.
 func TestScopeMuteStatusUnavailableRootDiscovery(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	a, b := filepath.Join(base, "a"), filepath.Join(base, "b")
 	os.Mkdir(a, 0700)
 	os.Mkdir(b, 0700)
@@ -409,7 +409,7 @@ func TestScopeMuteStatusUnavailableRootDiscovery(t *testing.T) {
 // Explicit selection refuses path traversal, duplicates, aliases, overlapping
 // roots and oversized finite lists; valid neighboring selections remain usable.
 func TestScopeMuteSelectionBoundaries(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	base := fixture.Scope(filepath.Join(root, "a"))
 	cases := []wakemute.Scope{
 		nil,
@@ -436,7 +436,7 @@ func TestScopeMuteSelectionBoundaries(t *testing.T) {
 func TestScopeMuteReplacedLedgerRetainsRecovery(t *testing.T) {
 	for _, replace := range []string{"ledger", "snapshot"} {
 		t.Run(replace, func(t *testing.T) {
-			root := t.TempDir()
+			root := canonicalTempDir(t)
 			scope := fixture.Scope(root)
 			fixture.Enroll(t, scope)
 			a := fixture.Mute(t, scope, "replace-A")

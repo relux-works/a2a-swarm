@@ -40,7 +40,7 @@ func (f *adapterFixture) clock() time.Time {
 }
 func withAdapter(t *testing.T, run func(*adapterFixture)) {
 	t.Helper()
-	f := &adapterFixture{paths: config.Paths{Base: t.TempDir()}}
+	f := &adapterFixture{paths: config.Paths{Base: canonicalTempDir(t)}}
 	f.now.Store(time.Now().UTC().UnixNano())
 	scope := config.HostScope{Agent: "member", Member: "member", Connection: "connection", Configuration: "config", Session: "source-session", NativeThread: "thread", Generation: "generation", Consumer: "consumer"}
 	f.attachment = config.HostAttachment{Reference: "admitted-attachment", Scope: scope, Lease: config.Lease{Holder: scope.Session, Host: "host", PID: 42, Expires: f.clock().Add(10 * time.Minute)}}

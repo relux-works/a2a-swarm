@@ -19,7 +19,7 @@ import (
 
 // A bounded regular scope input remains usable beside FIFO refusal.
 func TestReviewScopeRegularBudget(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	fixture.Enroll(t, fixture.Scope(root))
 	var stdout, stderr bytes.Buffer
 	app := NewApp()
