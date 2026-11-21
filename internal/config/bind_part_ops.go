@@ -1068,7 +1068,12 @@ func BeginBindOwnStatus(p Paths, name, token string, expectedRevision uint64, ge
 		if err != nil {
 			return state, err
 		}
-		if part.Revision != expectedRevision || part.Generation != generation || part.SessionID != sessionID || part.Stopped {
+		// A stopped binding is admitted: its owner still publishes its own
+		// status by hand after the session has ended, and that publication
+		// carries and records the binding's notice exactly as it does for an
+		// unmarked State. Refusing it left every identity that had bound once
+		// unable to set its status while unbound.
+		if part.Revision != expectedRevision || part.Generation != generation || part.SessionID != sessionID {
 			return state, ErrBindPartStale
 		}
 		if part.CursorOp != nil || part.StatusOp != nil || part.ControlTxn != nil {

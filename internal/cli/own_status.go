@@ -82,15 +82,21 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 	if err != nil {
 		return err
 	}
-	if config.BindPartMarked(current) {
+	marked := config.BindPartMarked(current)
+	if marked {
 		if !config.BindPartActive(current) {
 			return config.ErrBindPartOperation
 		}
-		err := s.writeMarkedOwnStatus(writeCtx, deadline, prepare, finish)
-		if errors.Is(err, ErrOwnStatusPending) && s.app.afterOwnStatusPending != nil {
-			s.app.afterOwnStatusPending()
+		// The sidecar holds a binding's notice and its publication result. A
+		// marked identity without a terminal has neither, so its status write
+		// changes State's own fields only and takes the ordinary path below.
+		if current.Terminal != nil {
+			err := s.writeMarkedOwnStatus(writeCtx, deadline, prepare, finish)
+			if errors.Is(err, ErrOwnStatusPending) && s.app.afterOwnStatusPending != nil {
+				s.app.afterOwnStatusPending()
+			}
+			return err
 		}
-		return err
 	}
 	token := matrix.NewTxnID()
 	var record config.AgentStatus
@@ -98,6 +104,11 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 	snapshot, err := config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(st *config.State) error {
 		if err := writeCtx.Err(); err != nil {
 			return err
+		}
+		if marked && st.Terminal != nil {
+			// A binding appeared since the read above. Its notice belongs to
+			// the sidecar path; this attempt changes nothing and is retried.
+			return ErrOwnStatusPending
 		}
 		if st.OwnStatusWrite != nil && time.Now().Before(st.OwnStatusWrite.Until) {
 			return ErrOwnStatusPending

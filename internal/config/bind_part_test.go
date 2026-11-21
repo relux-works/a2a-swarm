@@ -1140,3 +1140,46 @@ func TestBindControlToleratesSyncBetweenReadAndWrite(t *testing.T) {
 		t.Fatalf("stop with the earlier revision: view=%+v err=%v", stopped, err)
 	}
 }
+
+// TestBindOwnStatusOnStoppedBinding proves the sidecar admits an own-status
+// publication for a stopped binding and records its result, while a
+// publication for another generation or session is still refused as stale.
+//
+// Regression witness: the reservation refused every stopped binding, so an
+// identity whose session had ended could not publish its status.
+func TestBindOwnStatusOnStoppedBinding(t *testing.T) {
+	p, state, view := bindFixture(t, "s0", true)
+	stopped, err := SetBindControl(p, bindTestName,
+		BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
+		BindControlTarget{Generation: view.Generation, SessionID: view.SessionID, Stopped: true, Kind: "stop"}, BindControlProof{})
+	if err != nil || !stopped.Stopped {
+		t.Fatalf("premise: stop view=%+v err=%v", stopped, err)
+	}
+	_ = state
+	now := time.Now().UTC()
+	owner := BindOperationOwner{Holder: "status-writer", Host: "host-1", PID: os.Getpid(), Birth: "birth-status"}
+	for name, c := range map[string][2]string{
+		"another generation": {strings.Repeat("b", 32), stopped.SessionID},
+		"another session":    {stopped.Generation, "session-other"},
+	} {
+		if err := BeginBindOwnStatus(p, bindTestName, strings.Repeat("4", 32), stopped.Revision, c[0], c[1], owner, now.Add(time.Minute), now); !errors.Is(err, ErrBindPartStale) {
+			t.Fatalf("%s: reservation=%v, want the stale refusal", name, err)
+		}
+	}
+	token := strings.Repeat("5", 32)
+	if err := BeginBindOwnStatus(p, bindTestName, token, stopped.Revision, stopped.Generation, stopped.SessionID, owner, now.Add(time.Minute), now); err != nil {
+		t.Fatalf("reservation for a stopped binding: %v", err)
+	}
+	status := &AgentStatus{State: "idle", Doorbell: "armed", OwnNotice: OwnNoticeObservation{}}
+	if err := FinishBindOwnStatus(p, bindTestName, BindOwnStatusResult{Token: token, Status: status, Published: true, Publication: "published"}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	final, err := LoadState(p, bindTestName)
+	if err != nil || final.OwnStatusWrite != nil || final.NoticeWriteUncertain || final.Liveness == nil || final.Liveness.State != "idle" {
+		t.Fatalf("finished State token=%v uncertain=%t liveness=%v err=%v", final.OwnStatusWrite, final.NoticeWriteUncertain, final.Liveness, err)
+	}
+	after, err := ReadBindPartView(p, bindTestName, final)
+	if err != nil || !after.Stopped || after.Generation != stopped.Generation || after.NoticePublication != "published" {
+		t.Fatalf("finished view=%+v err=%v", after, err)
+	}
+}
