@@ -231,6 +231,86 @@ func TestNoticePublicationCacheLifecycle(t *testing.T) {
 	}
 }
 
+// A previously acknowledged State notice cannot stand in for the provider's
+// newer sidecar notice. While its PUT is in flight, a competing notice update
+// must also be refused until the matching status operation is finalized.
+func TestMarkedNoticePublicationUsesFreshSidecarAndFencesConcurrentChange(t *testing.T) {
+	isolateBindTest(t)
+	e, _, s := noticeDeadlineFixture(t)
+	if _, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		st.Terminal.SessionID = "notice-fixture"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldNotice := schemaNotice("true")
+	newNotice := schemaNotice("false")
+	if err := s.publishTerminalNotice(context.Background(), "deadline"); err != nil {
+		t.Fatalf("seed prior acknowledged notice: %v", err)
+	}
+	unmarked := e.state(s.name)
+	if unmarked.Lease == nil {
+		t.Fatal("notice fixture has no owner lease to migrate")
+	}
+	state, err := config.EnsureBindPart(s.paths, s.name, config.BindPartOpenOptions{Holder: unmarked.Lease.Holder, Now: time.Now()})
+	if err != nil || !config.BindPartActive(state) {
+		t.Fatalf("mark notice fixture: active=%t err=%v", config.BindPartActive(state), err)
+	}
+	view, err := config.ReadBindPartView(s.paths, s.name, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(view.OwnNotice, oldNotice) || view.NoticePublication != "published" {
+		t.Fatalf("prior ACK was not migrated to provider: notice=%+v publication=%q", view.OwnNotice, view.NoticePublication)
+	}
+	view, err = config.RecordBindNotice(s.paths, s.name, view.Revision, view.Generation, newNotice, "unavailable: own notice changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	puts := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}")
+	attemptedConcurrentChange := false
+	var concurrentChangeErr error
+	s.client.HTTP = &http.Client{Transport: noticeWriterTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/state/"+StatusEventType+"/") && !attemptedConcurrentChange {
+			attemptedConcurrentChange = true
+			current, loadErr := config.LoadState(s.paths, s.name)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			currentView, viewErr := config.ReadBindPartView(s.paths, s.name, current)
+			if viewErr != nil {
+				return nil, viewErr
+			}
+			_, concurrentChangeErr = config.RecordBindNotice(s.paths, s.name, currentView.Revision, currentView.Generation, oldNotice, "published")
+		}
+		return noticeHandlerTransport(e.hs.srv.Config.Handler).RoundTrip(r)
+	})}
+	if err := s.publishTerminalNotice(context.Background(), "deadline"); err != nil {
+		t.Fatal(err)
+	}
+	if !attemptedConcurrentChange || !errors.Is(concurrentChangeErr, config.ErrBindPartOperation) {
+		t.Fatalf("notice changed during status PUT: attempted=%t err=%v", attemptedConcurrentChange, concurrentChangeErr)
+	}
+	if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != puts+1 {
+		t.Fatalf("fresh sidecar notice status PUT count=%d, want %d", got, puts+1)
+	}
+	state, err = config.LoadState(s.paths, s.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(state.Liveness.OwnNotice, newNotice) || !reflect.DeepEqual(state.Terminal.OwnNotice, newNotice) || state.Terminal.NoticePublication != "published" || state.NoticeWriteUncertain {
+		t.Fatalf("fresh notice was not durably acknowledged: liveness=%+v terminal=%+v uncertain=%t", state.Liveness.OwnNotice, state.Terminal, state.NoticeWriteUncertain)
+	}
+	room, _, err := s.resolveRoom(context.Background(), StatusRoom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remote config.AgentStatus
+	if err := s.client.GetState(context.Background(), room, StatusEventType, s.creds.UserID, &remote); err != nil || !reflect.DeepEqual(remote.OwnNotice, newNotice) {
+		t.Fatalf("remote status used stale notice: got=%+v err=%v", remote.OwnNotice, err)
+	}
+}
+
 // State writers finish while status HTTP is in flight. Publication merges
 // only its own result, preserving replacement, notice, heartbeat and mail edits.
 // An overlapping automatic writer skips without HTTP; a superseded completion cannot

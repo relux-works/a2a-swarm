@@ -67,6 +67,21 @@ func (a *App) watchNotices(ctx context.Context, rooms []string, all, asJSON, lis
 	// runtime, freshness, host and exact existing lease again under its locks.
 	record := config.Monitor{Version: 1, Kind: "monitor", Runtime: "muse", Generation: hex.EncodeToString(id[:]), SessionID: sessionID, Host: machineLabel(), OwnerPID: st.Lease.PID, OwnerBirth: ownerBirth, ConsumerPID: os.Getpid(), ConsumerBirth: consumerBirth, Transport: "stdout", Phase: "streaming", HeartbeatEvery: daemon.KeepaliveInterval, HeartbeatAt: time.Now().UTC()}
 	err = config.WithMonitorGeneration(s.paths, s.name, time.Now().Add(time.Second), config.MonitorAutomatic, record, func(g *config.MonitorGeneration) error {
+		if err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(time.Second), func() error {
+			current, err := config.LoadState(s.paths, s.name)
+			if err != nil || !config.BindPartMarked(current) {
+				return err
+			}
+			if !config.BindPartActive(current) {
+				return config.ErrBindPartOperation
+			}
+			if err := config.RecoverBindOwnStatus(s.paths, s.name, a.bindOperationOwnerDead(ctx), a.Now()); err != nil {
+				return err
+			}
+			return config.RecoverBindCursor(s.paths, s.name, a.bindOperationOwnerDead(ctx))
+		}); err != nil {
+			return err
+		}
 		if err := g.RenewOwnerLease(record.Generation); err != nil {
 			return err
 		}
@@ -151,26 +166,45 @@ func (a *App) noticeLoop(ctx context.Context, s *session, g *config.MonitorGener
 		if err := s.pauseAgentReplay(ctx, time.Time{}); err != nil {
 			return err
 		}
+		var cursorToken string
+		st, cursorToken, err = s.beginControlledCursor(ctx, "monitor", time.Now().Add(time.Second), func(current config.State) error {
+			m := current.Monitor
+			if m == nil || m.Generation != record.Generation || m.SessionID != record.SessionID || m.Host != record.Host || m.OwnerPID != record.OwnerPID || m.OwnerBirth != record.OwnerBirth || m.ConsumerPID != record.ConsumerPID || m.ConsumerBirth != record.ConsumerBirth || m.Phase != "streaming" {
+				return config.ErrMonitorGeneration
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
 		pollCtx, cancel := context.WithTimeout(ctx, poll)
 		resp, err := s.waitSync(pollCtx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch))
 		cancel()
 		if ctx.Err() != nil {
+			_ = s.abortBindCursor(cursorToken)
 			return nil
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
+			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+				return errors.Join(err, abortErr)
+			}
 			continue
 		}
 		if err != nil {
+			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+				return errors.Join(err, abortErr)
+			}
 			return err
 		}
 		if st.NextBatch == "" {
-			st, err = s.savePositionAll(ctx, resp, time.Time{}, filter.allRooms())
+			st, err = s.savePositionAllReserved(ctx, resp, time.Time{}, filter.allRooms(), cursorToken)
 		} else {
 			subs, readErr := s.getSubs(ctx)
 			if readErr != nil {
+				_ = s.abortBindCursor(cursorToken)
 				return readErr
 			}
-			st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{})
+			st, err = s.ingestReserved(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}, cursorToken)
 		}
 		if err != nil {
 			return err

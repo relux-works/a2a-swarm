@@ -32,6 +32,32 @@ func alarmFixture(t *testing.T) (*env, *App, *session, string, alarmSample) {
 	})
 	return e, a, s, room, alarmSample{Count: 1, Oldest: now.Add(-time.Hour), At: now, Reason: string(tmuxwake.RuntimeNone)}
 }
+
+func TestDisabledMailAlarmDoesNotRecordObservationOrWake(t *testing.T) {
+	e, a, s, _, sample := alarmFixture(t)
+	notificationState(t, e, func(st *config.State) {
+		st.MailAlarmConfig = &config.MailAlarmConfig{Minutes: 20, Owner: "off"}
+	})
+	path := s.paths.StateFile("alice")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.observeMailAlarm(s, "alarm", sample) {
+		t.Fatal("disabled destination queued alarm work")
+	}
+	if a.mailAlarmHasWork(s, "alarm") {
+		t.Fatal("disabled destination admitted an alarm worker cycle")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("disabled alarm observation changed State: err=%v equal=%t", err, bytes.Equal(before, after))
+	}
+	if got := e.state("alice").MailAlarm.LastObserved; !got.IsZero() {
+		t.Fatalf("disabled alarm recorded LastObserved=%s", got)
+	}
+}
+
 func primeAlarm(t *testing.T, e *env, a *App, s *session, sample alarmSample) {
 	t.Helper()
 	observeAlarmWindow(a, s, sample)

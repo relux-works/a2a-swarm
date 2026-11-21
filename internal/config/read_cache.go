@@ -12,24 +12,30 @@ import (
 )
 
 // ReadCache belongs to one consumer and identity. It retains at most one State
-// and one mailbox, never errors or absent files. Stamps only pre-check reuse:
-// every hit also reads and compares the exact file bytes, without decoding.
-// Callers still run every connection, migration, seal and fence check.
+// and one mailbox, never errors or absent files. Legacy State hits compare exact
+// bytes; marked State hits reuse the validated State by stamp, then reread and
+// validate the current sidecar before using its provider-owned projection.
+// Idle bind reuses its writer-seal result only for that exact cached State
+// stamp; current connection, migration, sidecar and operation-fence checks run
+// on every use.
 // Paths without an explicitly attached cache retain the ordinary read path.
 // Cache admission limits retained data, never accepted input.
 type ReadCache struct {
-	identity     string
-	mu           sync.Mutex
-	statePath    string
-	stateStamp   FileStamp
-	stateDir     directoryStamp
-	state        State
-	durable      bool
-	mailboxPath  string
-	mailboxStamp FileStamp
-	mailboxRaw   []byte
-	mailbox      *Mailbox
-	mailboxInc   *mailboxIncState
+	identity         string
+	mu               sync.Mutex
+	statePath        string
+	stateStamp       FileStamp
+	stateSealStamp   FileStamp
+	stateSealChecked bool
+	stateSealValid   bool
+	stateDir         directoryStamp
+	state            State
+	durable          bool
+	mailboxPath      string
+	mailboxStamp     FileStamp
+	mailboxRaw       []byte
+	mailbox          *Mailbox
+	mailboxInc       *mailboxIncState
 }
 
 // mailboxIncState is one consumer's incremental mailbox snapshot: the parsed
@@ -119,6 +125,9 @@ func (p Paths) ReadCache() *ReadCache { return p.readCache }
 func (c *ReadCache) forgetStateLocked() {
 	c.statePath = ""
 	c.stateStamp = FileStamp{}
+	c.stateSealStamp = FileStamp{}
+	c.stateSealChecked = false
+	c.stateSealValid = false
 	c.stateDir = directoryStamp{}
 	c.state = State{}
 	c.durable = false
@@ -140,11 +149,16 @@ func (c *ReadCache) invalidateState(name, path string) {
 	}
 }
 
-func (c *ReadCache) forgetMailboxLocked() {
+func (c *ReadCache) forgetMailboxBytesLocked() {
 	c.mailboxPath = ""
 	c.mailboxStamp = FileStamp{}
 	c.mailboxRaw = nil
 	c.mailbox = nil
+}
+
+func (c *ReadCache) forgetMailboxLocked() {
+	c.forgetMailboxBytesLocked()
+	c.mailboxInc = nil
 }
 
 // Any mailbox mutation invalidates this consumer's cached payload copies,
@@ -155,12 +169,12 @@ func (c *ReadCache) invalidateMailbox(path string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.mailboxPath == path {
+	if c.mailboxPath == path || c.mailboxInc != nil && c.mailboxInc.path == path {
 		c.forgetMailboxLocked()
 	}
 }
 
-func (c *ReadCache) stateHit(name, path string, stamp FileStamp) (State, bool) {
+func (c *ReadCache) stateHit(name, path string, stamp, partStamp FileStamp) (State, bool) {
 	if c == nil || name != c.identity {
 		return State{}, false
 	}
@@ -181,6 +195,16 @@ func (c *ReadCache) stateHit(name, path string, stamp FileStamp) (State, bool) {
 	if durableBeforeRead && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
 		c.forgetStateDurabilityLocked()
 	}
+	if bindPartMarker(c.state) {
+		// The State stamp protects the cached legacy document. The sidecar is
+		// reopened and authenticated by LoadState on every hit, so its revision
+		// can advance without forcing a large State read or trusting its stamp.
+		return cloneState(&c.state)
+	}
+	if partStamp.Present {
+		c.forgetStateLocked()
+		return State{}, false
+	}
 	raw, err := readStateFile(path)
 	if err != nil {
 		c.forgetStateDurabilityLocked()
@@ -194,6 +218,191 @@ func (c *ReadCache) stateHit(name, path string, stamp FileStamp) (State, bool) {
 		c.forgetStateDurabilityLocked()
 	}
 	return cloneState(&c.state)
+}
+
+// markedStateGuardHit returns the immutable cached State header to a caller
+// that only needs marker, rollback and small authority records. The caller
+// must keep the normal State lock and validate the current sidecar before
+// acting; the large cached slices are shared read-only and must not escape.
+func (c *ReadCache) markedStateGuardHit(name, path string, stamp FileStamp) (State, bool) {
+	if c == nil || name != c.identity {
+		return State{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if path != c.statePath {
+		return State{}, false
+	}
+	if !stamp.Present {
+		c.forgetStateLocked()
+		return State{}, false
+	}
+	if !stamp.Equal(c.stateStamp) {
+		c.forgetStateLocked()
+		return State{}, false
+	}
+	if c.durable && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
+		c.forgetStateDurabilityLocked()
+	}
+	if !bindPartMarker(c.state) {
+		return State{}, false
+	}
+	return c.state, true
+}
+
+// identityMigrationHit answers the one field CheckIdentityMigration needs
+// without copying the cached State's large delivery history. It applies the
+// same path stamp, host-notification and bind-sidecar checks as LoadState;
+// callers still fall back to LoadState whenever this cache cannot prove a hit.
+func (c *ReadCache) identityMigrationHit(p Paths, name string, stamp FileStamp) (*IdentityMigration, bool, error) {
+	if c == nil || name != c.identity {
+		return nil, false, nil
+	}
+	path := p.StateFile(name)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if path != c.statePath || !stamp.Present || !stamp.Equal(c.stateStamp) {
+		return nil, false, nil
+	}
+	if c.durable && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
+		c.forgetStateDurabilityLocked()
+	}
+	state := c.state
+	if !bindPartMarker(state) {
+		// Unmarked State cache hits require exact-byte comparison. Leave that
+		// legacy behavior to LoadState instead of treating a stat stamp as proof.
+		return nil, false, nil
+	}
+	part, sidecarStamp, err := readBindPart(p, name)
+	if err != nil {
+		return nil, true, err
+	}
+	base, err := verifiedBindPartBase(state, part, sidecarStamp)
+	if err != nil {
+		return nil, true, err
+	}
+	if !reflect.DeepEqual(state.bindPartShadow, base.bindPartShadow) || state.bindPartRollback != base.bindPartRollback {
+		// Only provider metadata changes here. Retain the cached State graph
+		// and refresh the small compatibility shadow in place under the cache
+		// lock, matching LoadState's invalidation/readback behavior.
+		c.state.bindPartShadow = base.bindPartShadow
+		c.state.bindPartStamp = base.bindPartStamp
+		c.state.bindPartRollback = base.bindPartRollback
+	}
+	if err := state.validateHostNotifications(); err != nil {
+		return nil, true, err
+	}
+	return copyValuePtr(state.Migration), true, nil
+}
+
+// terminalBindingHit returns an owned terminal-only projection for the bind
+// loop. The legacy cache remains immutable to callers, while large delivery
+// slices are not copied when the loop only needs its small terminal record.
+func (c *ReadCache) terminalBindingHit(p Paths, name string, stamp FileStamp) (*TerminalBinding, bool, error) {
+	if c == nil || name != c.identity {
+		return nil, false, nil
+	}
+	path := p.StateFile(name)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if path != c.statePath || !stamp.Present || !stamp.Equal(c.stateStamp) {
+		return nil, false, nil
+	}
+	if c.durable && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
+		c.forgetStateDurabilityLocked()
+	}
+	state := c.state
+	if !bindPartMarker(state) {
+		return nil, false, nil
+	}
+	part, sidecarStamp, err := readBindPart(p, name)
+	if err != nil {
+		return nil, true, err
+	}
+	base, err := verifiedBindPartBase(state, part, sidecarStamp)
+	if err != nil {
+		return nil, true, err
+	}
+	if !reflect.DeepEqual(state.bindPartShadow, base.bindPartShadow) || state.bindPartRollback != base.bindPartRollback {
+		c.state.bindPartShadow = base.bindPartShadow
+		c.state.bindPartStamp = base.bindPartStamp
+		c.state.bindPartRollback = base.bindPartRollback
+	}
+	if err := state.validateHostNotifications(); err != nil {
+		return nil, true, err
+	}
+	var terminal *TerminalBinding
+	if state.Terminal != nil {
+		var ok bool
+		terminal, ok = cloneTerminal(state.Terminal)
+		if !ok {
+			return nil, false, nil
+		}
+	}
+	if part.Rollback == bindPartRollbackOK {
+		view := State{Terminal: terminal}
+		applyBindProjection(&view, part.projection())
+		terminal = view.Terminal
+	}
+	return terminal, true, nil
+}
+
+func (c *ReadCache) bindIdleDeliveryHit(p Paths, name string, stamp FileStamp) (BindIdleDeliveryState, bool, error) {
+	if c == nil || name != c.identity {
+		return BindIdleDeliveryState{}, false, nil
+	}
+	path := p.StateFile(name)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if path != c.statePath || !stamp.Present || !stamp.Equal(c.stateStamp) {
+		return BindIdleDeliveryState{}, false, nil
+	}
+	if c.durable && !stampStateDirectory(filepath.Dir(path)).Equal(c.stateDir) {
+		c.forgetStateDurabilityLocked()
+	}
+	state := c.state
+	if !bindPartMarker(state) {
+		return BindIdleDeliveryState{}, false, nil
+	}
+	part, sidecarStamp, err := readBindPart(p, name)
+	if err != nil {
+		return BindIdleDeliveryState{}, true, err
+	}
+	base, err := verifiedBindPartBase(state, part, sidecarStamp)
+	if err != nil {
+		return BindIdleDeliveryState{}, true, err
+	}
+	if !reflect.DeepEqual(state.bindPartShadow, base.bindPartShadow) || state.bindPartRollback != base.bindPartRollback {
+		c.state.bindPartShadow = base.bindPartShadow
+		c.state.bindPartStamp = base.bindPartStamp
+		c.state.bindPartRollback = base.bindPartRollback
+	}
+	if err := state.validateHostNotifications(); err != nil {
+		return BindIdleDeliveryState{}, true, err
+	}
+	sealValid := false
+	if c.stateSealChecked && c.stateSealStamp.Equal(stamp) {
+		sealValid = c.stateSealValid
+	} else {
+		sealValid = validWriterSeal(state)
+		c.stateSealStamp = stamp
+		c.stateSealChecked = true
+		c.stateSealValid = sealValid
+	}
+	if !stamp.Equal(StampFile(path)) {
+		return BindIdleDeliveryState{}, false, nil
+	}
+	view := BindIdleDeliveryStateFromState(state)
+	view.Marked = true
+	view.Active = part.Rollback == bindPartRollbackOK
+	view.SealValid = sealValid
+	view.stateStamp = stamp
+	if part.Rollback == bindPartRollbackOK {
+		view.NextBatch = part.NextBatch
+		view.Generation = part.Generation
+		view.Stopped = part.Stopped
+	}
+	return view, true, nil
 }
 
 func (c *ReadCache) rememberState(name, path string, before FileStamp, s State, durable bool) {
@@ -225,6 +434,9 @@ func (c *ReadCache) rememberStateWithDirectory(name, path string, before FileSta
 	ownDurability := durable && writtenDir.Equal(currentDir)
 	c.durable = ownDurability || inheritedDurability
 	c.statePath, c.stateStamp, c.state = path, before, copy
+	c.stateSealStamp = FileStamp{}
+	c.stateSealChecked = false
+	c.stateSealValid = false
 	if c.durable {
 		c.stateDir = currentDir
 	} else {
@@ -237,6 +449,17 @@ func (c *ReadCache) rememberStateWithDirectory(name, path string, before FileSta
 func (c *ReadCache) rememberWrittenState(p Paths, name string, s State, data []byte, evidence stateWriteEvidence) {
 	if c == nil || name != c.identity {
 		return
+	}
+	// Cache marked State as its on-disk legacy base. The unchanged-write
+	// elision path can pass the merged provider view here, so restore the fixed
+	// compatibility shadow before retaining it for the next cache hit.
+	if bindPartMarker(s) && s.bindPartRollback == bindPartRollbackOK && s.bindPartShadow != nil {
+		if s.Terminal != nil {
+			terminal := *s.Terminal
+			terminal.OwnNotice = cloneOwnNotice(terminal.OwnNotice)
+			s.Terminal = &terminal
+		}
+		applyBindProjection(&s, *s.bindPartShadow)
 	}
 	s.rawState = cloneBytes(data)
 	path := p.StateFile(name)
@@ -321,7 +544,13 @@ func (c *ReadCache) mailboxHit(name, path string, stamp FileStamp) (*Mailbox, bo
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.mailbox == nil || path != c.mailboxPath || !stamp.Equal(c.mailboxStamp) {
+	if c.mailbox == nil || path != c.mailboxPath {
+		return nil, false
+	}
+	if !stamp.Equal(c.mailboxStamp) {
+		// A changed file may be an append. Drop the exact-byte result but keep
+		// the incremental snapshot for its own identity and prefix verification.
+		c.forgetMailboxBytesLocked()
 		return nil, false
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
@@ -332,7 +561,13 @@ func (c *ReadCache) mailboxHit(name, path string, stamp FileStamp) (*Mailbox, bo
 	// One extra byte detects growth without retaining an unbounded append.
 	raw := make([]byte, len(c.mailboxRaw)+1)
 	n, err := io.ReadFull(f, raw)
-	if (err != io.EOF && err != io.ErrUnexpectedEOF) || !bytes.Equal(raw[:n], c.mailboxRaw) {
+	if err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, false
+	}
+	if !bytes.Equal(raw[:n], c.mailboxRaw) {
+		// The incremental path verifies the complete parsed prefix before it
+		// can reuse any prior mailbox state.
+		c.forgetMailboxBytesLocked()
 		return nil, false
 	}
 	return cloneMailbox(c.mailbox), true
@@ -348,9 +583,7 @@ func (c *ReadCache) rememberMailbox(name, path string, before FileStamp, raw []b
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !before.Present || !before.Equal(after) || before.Size > mailboxCacheMaxInput || before.Size != int64(len(raw)) {
-		c.mailbox = nil
-		c.mailboxRaw = nil
-		c.mailboxPath = ""
+		c.forgetMailboxLocked()
 		return
 	}
 	c.mailboxPath, c.mailboxStamp, c.mailbox = path, before, cloneMailbox(m)

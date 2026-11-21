@@ -30,6 +30,72 @@ func liveOwnStatusFence() *config.OwnStatusWrite {
 	return &config.OwnStatusWrite{Token: "seeded-live-writer", Until: time.Now().Add(2 * testDeadline)}
 }
 
+func TestMarkedOwnStatusStaleHandover(t *testing.T) {
+	isolateBindTest(t)
+	e, a, s := noticeDeadlineFixture(t)
+	target, _, _ := usabilityTarget(t, "codex")
+	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		st.Terminal.SessionID = "old-thread"
+		st.Terminal.Host = machineLabel()
+		st.Terminal.OwnerPID = target.OwnerPID
+		st.Terminal.OwnerBirth = target.OwnerBirth
+		st.Terminal.Target = target
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := e.state(s.name)
+	marked, err := config.EnsureBindPart(s.paths, s.name, config.BindPartOpenOptions{Holder: prior.Lease.Holder, Now: time.Now()})
+	if err != nil || !config.BindPartActive(marked) {
+		t.Fatalf("activate bind-state fixture: active=%t err=%v", config.BindPartActive(marked), err)
+	}
+
+	newGeneration := strings.Repeat("b", 32)
+	wantNotice := schemaNotice("false")
+	a.afterMarkedOwnStatusNoticeRecord = func() {
+		proof := config.BindControlProof{
+			OwnerPID: target.OwnerPID, OwnerBirth: target.OwnerBirth,
+			Target: target, TargetVerified: true,
+		}
+		testSetBindControl(t, s.paths, s.name, config.BindControlTarget{
+			Generation: newGeneration, SessionID: "next-thread", Kind: "handover",
+		}, proof)
+	}
+	putsBefore := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}")
+	err = s.writeOwnStatus(context.Background(), func(st *config.State) (config.AgentStatus, bool, error) {
+		st.Terminal.OwnNotice = wantNotice
+		st.Terminal.NoticePublication = "unavailable: own notice changed"
+		return config.AgentStatus{Name: "alice", State: "working", OwnNotice: wantNotice}, true, nil
+	}, nil)
+	if !errors.Is(err, config.ErrBindPartStale) {
+		t.Fatalf("stale own-status result error=%v, want %v", err, config.ErrBindPartStale)
+	}
+	current, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := config.ReadBindPartView(s.paths, s.name, current)
+	if err != nil || view.Generation != newGeneration || view.SessionID != "next-thread" || !reflect.DeepEqual(view.OwnNotice, wantNotice) || current.OwnStatusWrite != nil {
+		t.Fatalf("stale own-status result changed replacement or left a fence: view=%+v fence=%+v err=%v", view, current.OwnStatusWrite, err)
+	}
+	if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != putsBefore {
+		t.Fatalf("stale own-status result sent a PUT: before=%d after=%d", putsBefore, got)
+	}
+
+	// A current-generation publisher still reaches the normal acknowledged path.
+	a.afterMarkedOwnStatusNoticeRecord = nil
+	err = s.writeOwnStatus(context.Background(), func(st *config.State) (config.AgentStatus, bool, error) {
+		return config.AgentStatus{Name: "alice", State: "working", OwnNotice: st.Terminal.OwnNotice}, true, nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("current-generation status publication: %v", err)
+	}
+	if got := e.hs.CallCount("PUT /_matrix/client/v3/rooms/{room}/state/{type}/{key...}"); got != putsBefore+1 {
+		t.Fatalf("current-generation status PUT count=%d, want %d", got, putsBefore+1)
+	}
+}
+
 // A seeded live fence refuses before prepare, finish or HTTP, with errors.Is;
 // clearing it permits the same writer without changing its requested record.
 func TestOwnStatusPendingSentinel(t *testing.T) {

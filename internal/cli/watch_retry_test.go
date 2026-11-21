@@ -207,39 +207,52 @@ func TestWatchRetryPermanentRefusal(t *testing.T) {
 // A failed post-Sync subscription GET retries only that read, not the fetched
 // batch or ingest. Cursor remains seed until the exact retained batch commits.
 func TestWatchRetrySubscriptionRead(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		syncs, subs := 0, 0
-		a, p := watchRetryApp(t, func(r *http.Request) (*http.Response, error) {
-			if err := r.Context().Err(); err != nil {
-				return nil, err
-			}
-			syncs++
-			return waitResponse(r, 200, waitValidEvent)
-		})
-		base := a.HTTP.Transport
-		a.HTTP.Transport = waitRoundTrip(func(r *http.Request) (*http.Response, error) {
-			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/account_data/"+SubsType) {
-				subs++
-				if subs == 2 || subs == 3 {
-					watchEmpty(t, p, "seed")
-					return nil, waitRefused()
+	for _, marked := range []bool{false, true} {
+		name := "legacy"
+		if marked {
+			name = "provider"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				syncs, subs := 0, 0
+				a, p := watchRetryApp(t, func(r *http.Request) (*http.Response, error) {
+					if err := r.Context().Err(); err != nil {
+						return nil, err
+					}
+					syncs++
+					return waitResponse(r, 200, waitValidEvent)
+				})
+				if marked {
+					if _, err := config.EnsureBindPart(p, "alice", config.BindPartOpenOptions{Now: time.Now()}); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-			return base.RoundTrip(r)
+				base := a.HTTP.Transport
+				a.HTTP.Transport = waitRoundTrip(func(r *http.Request) (*http.Response, error) {
+					if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/account_data/"+SubsType) {
+						subs++
+						if subs == 2 || subs == 3 {
+							watchEmpty(t, p, "seed")
+							return nil, waitRefused()
+						}
+					}
+					return base.RoundTrip(r)
+				})
+				a.afterPrint = func() error { cancel(); return nil }
+				start := time.Now()
+				if code := a.Run(ctx, []string{"--as", "alice", "watch"}); code != ExitOK || syncs != 1 || subs != 4 || time.Since(start) != 35*time.Second {
+					t.Fatalf("subscription retry: code=%d sync=%d subs=%d elapsed=%s stderr=%v", code, syncs, subs, time.Since(start), a.Stderr)
+				}
+				waitRetryState(t, p, "delivered")
+				mb, err := config.OpenMailbox(p, "alice")
+				if err != nil || len(mb.Pending()) != 1 || !mb.Pending()[0].Shown || mb.Received("$neighbor") {
+					t.Fatal("retained batch not delivered once", err)
+				}
+			})
 		})
-		a.afterPrint = func() error { cancel(); return nil }
-		start := time.Now()
-		if code := a.Run(ctx, []string{"--as", "alice", "watch"}); code != ExitOK || syncs != 1 || subs != 4 || time.Since(start) != 35*time.Second {
-			t.Fatalf("subscription retry: code=%d sync=%d subs=%d elapsed=%s stderr=%v", code, syncs, subs, time.Since(start), a.Stderr)
-		}
-		waitRetryState(t, p, "delivered")
-		mb, err := config.OpenMailbox(p, "alice")
-		if err != nil || len(mb.Pending()) != 1 || !mb.Pending()[0].Shown || mb.Received("$neighbor") {
-			t.Fatal("retained batch not delivered once", err)
-		}
-	})
+	}
 }
 
 // A lease replaced during a failed read is refused before the next HTTP

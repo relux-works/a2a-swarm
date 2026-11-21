@@ -15,6 +15,17 @@ import (
 // waitRetry retries a delivery operation in this waiter, without starting a
 // goroutine or changing its cursor. Each successful operation resets backoff.
 func waitRetry[T any](ctx context.Context, s *session, deadline time.Time, attempt func() (T, error)) (T, error) {
+	return waitRetryCore(ctx, s, deadline, true, attempt)
+}
+
+// waitRetryCursorOwned retries a read while this process owns a durable cursor
+// reservation. Reacquiring the lease would make recovery treat that same live
+// reservation as a competing operation.
+func waitRetryCursorOwned[T any](ctx context.Context, s *session, deadline time.Time, attempt func() (T, error)) (T, error) {
+	return waitRetryCore(ctx, s, deadline, false, attempt)
+}
+
+func waitRetryCore[T any](ctx context.Context, s *session, deadline time.Time, acquireLease bool, attempt func() (T, error)) (T, error) {
 	var zero T
 	delay := 5 * time.Second
 	retrying := false
@@ -25,8 +36,10 @@ func waitRetry[T any](ctx context.Context, s *session, deadline time.Time, attem
 		if retrying && !deadline.IsZero() && !s.app.Now().Before(deadline) {
 			return zero, errWaitTimeout
 		}
-		if err := s.app.acquireLease(s, "", time.Time{}); err != nil {
-			return zero, err
+		if acquireLease {
+			if err := s.app.acquireLease(s, "", time.Time{}); err != nil {
+				return zero, err
+			}
 		}
 		value, err := attempt()
 		if err == nil {

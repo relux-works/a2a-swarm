@@ -131,6 +131,83 @@ func TestReadCacheReplacement(t *testing.T) {
 	}
 }
 
+// TestIdentityMigrationCacheProjection proves repeated migration guards reuse
+// only the cached migration field instead of cloning the large delivery State.
+// Its negative controls retain the full-load refusal for a changed migration
+// and a missing sidecar behind the permanent marker.
+func TestIdentityMigrationCacheProjection(t *testing.T) {
+	t.Run("unmarked State keeps exact-byte load", func(t *testing.T) {
+		p := cachedPaths(t)
+		cachedLoad(t, p)
+		before := ReadStateDecodeStats()
+		if err := CheckIdentityMigration(p, "fixture"); err != nil {
+			t.Fatalf("clean legacy identity refused: %v", err)
+		}
+		after := ReadStateDecodeStats()
+		if after.LoadStateCalls-before.LoadStateCalls != 1 {
+			t.Fatalf("unmarked migration guard bypassed legacy LoadState: before=%d after=%d", before.LoadStateCalls, after.LoadStateCalls)
+		}
+		if after.StateReadAttempts-before.StateReadAttempts != 1 || after.StateReadBytes <= before.StateReadBytes {
+			t.Fatalf("unmarked migration guard skipped exact-byte State validation: before=%+v after=%+v", before, after)
+		}
+	})
+
+	t.Run("unchanged marked cached State", func(t *testing.T) {
+		p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache("fixture"))
+		if err := SaveState(p, "fixture", State{NextBatch: "s0", Threads: []string{"$root"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := EnsureBindPart(p, "fixture", BindPartOpenOptions{Holder: "test-holder", Now: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		cachedLoad(t, p)
+		before := ReadStateDecodeStats()
+		if err := CheckIdentityMigration(p, "fixture"); err != nil {
+			t.Fatalf("clean cached identity refused: %v", err)
+		}
+		after := ReadStateDecodeStats()
+		if after.LoadStateCalls != before.LoadStateCalls || after.StateReadAttempts != before.StateReadAttempts || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
+			t.Fatalf("migration guard loaded or decoded the complete State: before=%+v after=%+v", before, after)
+		}
+	})
+
+	t.Run("changed migration fence", func(t *testing.T) {
+		p := cachedPaths(t)
+		cachedLoad(t, p)
+		changed, err := json.Marshal(State{Migration: &IdentityMigration{Phase: "started", DaemonBase: "/fixture", At: time.Now().UTC()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		replacement := p.StateFile("fixture") + ".replacement"
+		if err := os.WriteFile(replacement, changed, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(replacement, p.StateFile("fixture")); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckIdentityMigration(p, "fixture"); !errors.Is(err, ErrIdentityMigrated) {
+			t.Fatalf("changed migration fence = %v, want refusal", err)
+		}
+	})
+
+	t.Run("missing marked sidecar", func(t *testing.T) {
+		p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache("fixture"))
+		if err := SaveState(p, "fixture", State{NextBatch: "s0", Threads: []string{"$root"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := EnsureBindPart(p, "fixture", BindPartOpenOptions{Holder: "test-holder", Now: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		cachedLoad(t, p)
+		if err := os.Remove(p.BindPartFile("fixture")); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckIdentityMigration(p, "fixture"); !errors.Is(err, ErrMigrationStateUnavailable) || !errors.Is(err, ErrBindPartMissing) {
+			t.Fatalf("missing sidecar guard = %v, want migration-unavailable and missing-sidecar refusal", err)
+		}
+	})
+}
+
 func cacheRestamp(t *testing.T, path string, raw []byte) {
 	t.Helper()
 	before := StampFile(path)
@@ -598,7 +675,7 @@ func TestReadCacheByteReadFailure(t *testing.T) {
 				_, ok := p.readCache.mailboxHit("fixture", path, stamp)
 				return ok
 			}
-			_, ok := p.readCache.stateHit("fixture", path, stamp)
+			_, ok := p.readCache.stateHit("fixture", path, stamp, FileStamp{})
 			return ok
 		}
 		if !hit() {
@@ -689,7 +766,7 @@ func TestReadCacheStampUncertainty(t *testing.T) {
 				_, ok := c.mailboxHit("fixture", path, s)
 				return ok
 			}
-			_, ok := c.stateHit("fixture", path, s)
+			_, ok := c.stateHit("fixture", path, s, FileStamp{})
 			return ok
 		}
 		if !hit(stamp) {
@@ -932,3 +1009,36 @@ func TestReadCacheFenceOnHit(t *testing.T) {
 		t.Fatal("fence did not record this transaction")
 	}
 }
+
+// TestReadCacheOversizeMailboxFallsBack proves the raw-retention bound cannot
+// reject or truncate a valid larger mailbox, while the exact-byte cache does
+// not retain its raw input.
+func TestReadCacheOversizeMailboxFallsBack(t *testing.T) {
+	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache("fixture"))
+	if err := os.MkdirAll(filepath.Dir(p.MailboxFile("fixture")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := MailEntry{ID: "$large", Kind: MailEvent, Room: "!fixture", Event: json.RawMessage(`{"body":"` + strings.Repeat("x", mailboxCacheMaxInput) + `"}`)}
+	var data bytes.Buffer
+	if err := writeLine(&data, mailLine{Op: "add", Entry: &entry}); err != nil {
+		t.Fatal(err)
+	}
+	if int64(data.Len()) <= mailboxCacheMaxInput {
+		t.Fatal("oversize fixture is not above the retention bound")
+	}
+	if err := os.WriteFile(p.MailboxFile("fixture"), data.Bytes(), SecretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	before := ReadStateDecodeStats()
+	for i := 0; i < 2; i++ {
+		m, err := OpenMailbox(p, "fixture")
+		if err != nil || len(m.Pending()) != 1 || len(m.live["$large"].Event) != len(entry.Event) {
+			t.Fatalf("oversize mailbox read %d: err=%v", i, err)
+		}
+	}
+	if after := ReadStateDecodeStats(); after.MailboxDecodes-before.MailboxDecodes < 1 || p.readCache.mailbox != nil || p.readCache.mailboxRaw != nil {
+		t.Fatalf("oversize input was cached or refused: decodes=%d cache=%p", after.MailboxDecodes-before.MailboxDecodes, p.readCache.mailbox)
+	}
+}
+
+// TestReadCacheByteReadFailure proves candidate hits fail closed when the byte read is denied after the stamp pre-check, beside readable controls before and after.

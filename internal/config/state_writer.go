@@ -381,17 +381,27 @@ func elideUnchangedOrdinaryStateWithEvidence(path string, input []byte, sync sta
 	if checkSecretFile(path) != nil {
 		return stateWriteEvidence{}, false, nil
 	}
+	globalStateStats.stateReadAttempts.Add(1)
 	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
+		globalStateStats.stateReadErrors.Add(1)
 		return stateWriteEvidence{}, false, nil
 	}
 	defer f.Close()
 	opened, err := f.Stat()
-	if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != SecretFileMode || opened.Size() != int64(len(input)) {
+	if err != nil {
+		globalStateStats.stateReadErrors.Add(1)
+		return stateWriteEvidence{}, false, nil
+	}
+	if !opened.Mode().IsRegular() || opened.Mode().Perm() != SecretFileMode || opened.Size() != int64(len(input)) {
 		return stateWriteEvidence{}, false, nil
 	}
 	data := make([]byte, len(input)+1)
 	n, err := io.ReadFull(f, data)
+	globalStateStats.stateReadBytes.Add(int64(n))
+	if err != nil && err != io.ErrUnexpectedEOF {
+		globalStateStats.stateReadErrors.Add(1)
+	}
 	if err != io.ErrUnexpectedEOF || n != len(input) || !bytes.Equal(data[:n], input) {
 		return stateWriteEvidence{}, false, nil
 	}

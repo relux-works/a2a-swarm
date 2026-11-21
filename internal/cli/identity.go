@@ -294,11 +294,20 @@ func cmdIdentityRelease(a *App, args []string) error {
 	}
 	cleared := false
 	a.leaseReuse = nil
-	if _, err := a.updateState(p, name, func(cur *config.State) error {
-		var err error
-		cleared, err = cur.Release(name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
+	cur, err := config.LoadState(p, name)
+	if err != nil {
 		return err
-	}); err != nil {
+	}
+	if config.BindPartMarked(cur) {
+		cleared, err = config.ReleaseBindLease(p, name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
+	} else {
+		_, err = a.updateState(p, name, func(cur *config.State) error {
+			var releaseErr error
+			cleared, releaseErr = cur.Release(name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
+			return releaseErr
+		})
+	}
+	if err != nil {
 		return err
 	}
 	if cleared && a.leaseReuse != nil {
@@ -507,22 +516,77 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 		ttl = a.leaseTTL
 	}
 	a.leaseReuse = nil
-	_, err := config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
+	cur, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if config.BindPartMarked(cur) {
+		if !config.BindPartActive(cur) {
+			return config.ErrBindPartOperation
+		}
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		if check != nil {
-			if err := check(cur); err != nil {
+		leaseCtx := a.ctx
+		cancel := func() {}
+		if !deadline.IsZero() {
+			leaseCtx, cancel = context.WithDeadline(leaseCtx, deadline)
+		}
+		defer cancel()
+		if err := config.RecoverBindCursor(s.paths, s.name, a.bindOperationOwnerDead(leaseCtx)); err != nil {
+			return err
+		}
+		if err := config.RecoverBindOwnStatus(s.paths, s.name, a.bindOperationOwnerDead(leaseCtx), a.Now()); err != nil {
+			return err
+		}
+		_, err = config.AcquireOrRenewBindLeaseCheckedContext(leaseCtx, s.paths, s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, ttl/2, a.leaseDeadBy(s.paths, deadline), check)
+	} else {
+		_, err = config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
+			if err := s.checkConnection(); err != nil {
 				return err
 			}
-		}
-		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
-	})
+			if config.BindPartMarked(*cur) {
+				return config.ErrBindPartOperation
+			}
+			if check != nil {
+				if err := check(cur); err != nil {
+					return err
+				}
+			}
+			return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
+		})
+	}
 	if err == nil && a.leaseReuse != nil {
 		// stderr only: hook stdout carries the doorbell and must stay unchanged.
 		fmt.Fprintf(a.Stderr, "a2a: lease of %s taken over: %s\n", s.name, a.leaseReuse.note())
 	}
 	return err
+}
+
+func (a *App) bindOperationOwner(ctx context.Context, s *session, deadline time.Time) (config.BindOperationOwner, error) {
+	pid := os.Getpid()
+	birth, err := a.pidBirth(ctx, pid)
+	if err != nil {
+		return config.BindOperationOwner{}, err
+	}
+	return config.BindOperationOwner{Holder: a.leaseHolderFor(s.paths, "", deadline, s.longConsumer), Host: machineLabel(), PID: pid, Birth: strconv.FormatInt(birth, 10)}, nil
+}
+
+func (a *App) bindOperationOwnerDead(ctx context.Context) func(config.BindOperationOwner) bool {
+	return func(owner config.BindOperationOwner) bool {
+		if owner.Host != machineLabel() || owner.PID <= 1 {
+			return false
+		}
+		if processGone(owner.PID) {
+			return true
+		}
+		want, err := strconv.ParseInt(owner.Birth, 10, 64)
+		if err != nil {
+			return false
+		}
+		got, err := a.pidBirth(ctx, owner.PID)
+		return err == nil && got != want
+	}
 }
 
 var claudeSessionRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)

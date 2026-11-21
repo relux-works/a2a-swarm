@@ -554,9 +554,15 @@ func (m *Mailbox) RawPending() []MailEntry {
 	return out
 }
 
-// SetPendingFilter restricts this in-memory delivery view only. Entries,
-// receipts, deduplication and durable history are preserved.
-func (m *Mailbox) SetPendingFilter(filter func(MailEntry) bool) { m.pendingFilter = filter }
+// EmptyForIdleBindSync reports whether skipping delivery persistence is safe:
+// no mailbox entries, receipts, redactions, seen-by fence, or scrub work remain.
+func (m *Mailbox) EmptyForIdleBindSync() bool {
+	return m != nil && len(m.order) == 0 && len(m.received) == 0 && m.dead == 0 &&
+		len(m.redacted) == 0 && !m.needsRedactionRewrite && !m.seenBy && !m.fenceNext
+}
+
+// SetPendingFilter installs only an in-memory view; exclusion is never a receipt.
+func (m *Mailbox) SetPendingFilter(f func(MailEntry) bool) { m.pendingFilter = f }
 
 // AddPendingFilter intersects another consumer-local view with any installed
 // view. A mailbox may have multiple independent admission filters.
