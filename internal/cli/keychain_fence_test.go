@@ -723,3 +723,132 @@ func TestKeychainUnstartedWriteDeadlineLeavesNoFence(t *testing.T) {
 		t.Fatalf("%d mutations reached the backend, want only the retried one", n)
 	}
 }
+
+// Proves the fail-closed side of the expired-deadline path: the fence is
+// written, the deadline has passed by then, the native call is not made, and
+// the removal of the fence fails. The fence then stays, and every later write
+// and read of the identity refuses as fenced without reaching the backend,
+// whatever the cooldown says.
+//
+// What the caller of the failed write gets depends on the state directory,
+// which holds the fence and the cooldown marker alike:
+//   - writable again: the ordinary timeout with its recorded cooldown. The
+//     removal fails while the directory is read-only, and the test's clock,
+//     which the store reads next and only for the cooldown's deadline, makes
+//     the directory writable again;
+//   - still read-only: the cooldown cannot be recorded either, and the caller
+//     is told to stop and repair the private state. No cooldown marker exists.
+//
+// The removal is made to fail by taking write permission from the state
+// directory after the fence's rename, so the test needs a non-root user. It
+// does not show that a real file system fails there, and it does not cover a
+// fence that can no longer be read: clearFence would fail before its removal.
+// The successful removal is TestKeychainUnstartedWriteDeadlineLeavesNoFence.
+func TestKeychainUnstartedWriteDeadlineKeepsFenceWhenRemovalFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	for _, tc := range []struct {
+		name           string
+		writableAgain  bool
+		wantInError    []string
+		cooldownMarker bool
+	}{
+		{"cooldown recorded", true, []string{"timed out", "cooldown recorded", "cause=security_timeout"}, true},
+		{"cooldown cannot be recorded", false, []string{"cannot persist cooldown", "stop and repair private state"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			uid := e.agent("alice")
+			dir := fakeKeychain(e, map[string]string{}, "")
+			var mu sync.Mutex
+			now := time.Now()
+			locked := ""
+			unlock := func() {
+				if locked != "" {
+					os.Chmod(locked, 0o700)
+				}
+			}
+			t.Cleanup(unlock)
+			// A started add would announce itself and then block, so it is seen
+			// even though nothing waits for its result.
+			b := &blockingBackend{fakeBackend: fakeBackend{dir}, started: make(chan struct{}), release: make(chan struct{})}
+			t.Cleanup(func() { close(b.release) })
+			k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b,
+				timeout: 300 * time.Millisecond,
+				now: func() time.Time {
+					mu.Lock()
+					defer mu.Unlock()
+					if tc.writableAgain {
+						unlock()
+					}
+					return now
+				},
+				birth: func(ctx context.Context, pid int) (string, error) {
+					<-ctx.Done() // the fence is written only after the deadline
+					return processIdentity(context.Background(), pid)
+				},
+				dirSync: func(d string) error {
+					// The fence is in place and its directory is synced. From here
+					// on nothing can be removed from the directory.
+					if err := syncDir(d); err != nil {
+						return err
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					locked = d
+					return os.Chmod(d, 0o500)
+				}})
+			ctx := context.Background()
+			err := k.write(ctx, uid, "token-a")
+			if err == nil {
+				t.Fatal("a write whose deadline had passed before its native call reported success")
+			}
+			for _, want := range tc.wantInError {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("write = %v, want it to contain %q", err, want)
+				}
+			}
+			if locked == "" {
+				t.Fatal("the fence directory was never synced: the fence was not written")
+			}
+			select {
+			case <-b.started:
+				t.Fatal("the native call was made after the deadline had passed")
+			case <-time.After(300 * time.Millisecond):
+			}
+			mu.Lock()
+			unlock()
+			mu.Unlock()
+			if _, err := os.Stat(k.fencePath(uid)); err != nil {
+				t.Fatal("the fence that could not be removed is gone", err)
+			}
+			_, markerErr := os.Stat(k.identityPath(uid) + ".cooldown")
+			if tc.cooldownMarker && markerErr != nil {
+				t.Fatal("the timeout recorded no cooldown marker", markerErr)
+			}
+			if !tc.cooldownMarker && !errors.Is(markerErr, os.ErrNotExist) {
+				t.Fatal("a cooldown marker exists although the caller was told it could not be recorded", markerErr)
+			}
+			// The fence refuses first, with the cooldown still running and after
+			// it has passed.
+			for _, later := range []time.Duration{0, 2 * securityCooldown} {
+				mu.Lock()
+				now = now.Add(later)
+				mu.Unlock()
+				if err := k.write(ctx, uid, "token-b"); !errors.Is(err, errKeychainFenced) {
+					t.Fatalf("after %v a write was admitted over a fence that could not be removed: %v", later, err)
+				}
+				if _, err := k.read(ctx, uid); !errors.Is(err, errKeychainFenced) {
+					t.Fatalf("after %v a read was admitted over a fence that could not be removed: %v", later, err)
+				}
+			}
+			if n := mutationsReached(t, dir); n != 0 {
+				t.Fatalf("%d mutations reached the backend", n)
+			}
+			if got, ok := readModel(t, dir).Items[uid]; ok {
+				t.Fatalf("a value was stored although no write was admitted: %q", got)
+			}
+		})
+	}
+}
