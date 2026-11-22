@@ -180,6 +180,16 @@ func ensureBindPartBy(lock func(string) (func(), error), p Paths, name string, o
 	}
 	if !sidecarExists {
 		if err := writeBindPart(p, name, part); err != nil {
+			if errors.Is(err, ErrBindPartWrite) {
+				// The sidecar may be in place and its marker is not written. A
+				// sidecar without its marker refuses every command of the
+				// identity, so this migration takes its own sidecar away again:
+				// the identity stays unmarked, as it was.
+				if removeErr := os.Remove(sidecar); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+					return State{}, errors.Join(err, removeErr)
+				}
+				_ = bindPartSyncDirectory(dir)
+			}
 			return State{}, err
 		}
 	}
@@ -534,6 +544,34 @@ func bindOperationEndLock(ctx context.Context) func(string) (func(), error) {
 }
 
 func withBindPartOperationLockBy(p Paths, name string, lock func(string) (func(), error), fn func(State, *bindPartDisk) error) (State, error) {
+	return withBindPartOperationLockUndo(p, name, lock, fn, nil)
+}
+
+// takeBackBindPart removes what the beginning of an operation put in place
+// when its write answered ErrBindPartWrite. The caller of a beginning that
+// failed never ends it: a reservation it left in place would refuse every
+// other consumer for as long as the process lives. undo removes it from the
+// document as it now stands and reports whether it was there. It runs under
+// the hold of the State lock that the failed write ran under.
+//
+// When this second write cannot replace the file either, what was begun stays
+// with its owner, who can still end it by its token, and is otherwise cleared
+// as any operation of an owner that is gone, or of a status that has expired.
+func takeBackBindPart(p Paths, name string, undo func(*bindPartDisk) bool) error {
+	stored, _, err := readBindPart(p, name)
+	if err != nil {
+		return err
+	}
+	if !undo(&stored) {
+		return nil
+	}
+	return commitBindPart(p, name, stored)
+}
+
+// withBindPartOperationLockUndo is withBindPartOperationLockBy for an
+// operation that begins something: undo takes it back when the write's outcome
+// is uncertain.
+func withBindPartOperationLockUndo(p Paths, name string, lock func(string) (func(), error), fn func(State, *bindPartDisk) error, undo func(*bindPartDisk) bool) (State, error) {
 	return withStateLock(p, name, lock, func(state State) (State, error) {
 		if !bindPartMarker(state) {
 			return state, ErrBindPartUnmarked
@@ -551,6 +589,9 @@ func withBindPartOperationLockBy(p Paths, name string, lock func(string) (func()
 		}
 		if !reflect.DeepEqual(before, part) {
 			if err := commitBindPart(p, name, part); err != nil {
+				if undo != nil && errors.Is(err, ErrBindPartWrite) {
+					err = errors.Join(err, takeBackBindPart(p, name, undo))
+				}
 				return state, err
 			}
 		}
@@ -581,13 +622,16 @@ func cloneBindPartDisk(part bindPartDisk) bindPartDisk {
 }
 
 func commitBindPart(p Paths, name string, part bindPartDisk) error {
-	if err := writeBindPart(p, name, part); err != nil {
+	err := writeBindPart(p, name, part)
+	if err != nil && !errors.Is(err, ErrBindPartWrite) {
 		return err
 	}
+	// An uncertain write may have replaced the file: readers are treated as
+	// after a write that succeeded.
 	if p.readCache != nil && part.Rollback != bindPartRollbackOK {
 		p.readCache.invalidateState(name, p.StateFile(name))
 	}
-	return nil
+	return err
 }
 
 // AcquireOrRenewBindLease applies the existing State lease predicates to the
@@ -782,7 +826,7 @@ func beginBindCursorBy(lock func(string) (func(), error), p Paths, name string, 
 		return BindCursorReservation{}, ErrBindPartInvalid
 	}
 	var reservation BindCursorReservation
-	_, err := withBindPartOperationLockBy(p, name, lock, func(_ State, part *bindPartDisk) error {
+	_, err := withBindPartOperationLockUndo(p, name, lock, func(_ State, part *bindPartDisk) error {
 		if expectedCursor != part.NextBatch || generation != "" && generation != part.Generation {
 			return ErrBindPartStale
 		}
@@ -799,6 +843,12 @@ func beginBindCursorBy(lock func(string) (func(), error), p Paths, name string, 
 		part.CursorOp = &bindPartCursorOperation{Token: token, Kind: kind, Holder: owner.Holder, Host: owner.Host, PID: owner.PID, Birth: owner.Birth, ExpectedCursorDigest: bindCursorDigest(expectedCursor), ExpectedGeneration: generation}
 		reservation = BindCursorReservation{Token: token, Revision: part.Revision + 1, Cursor: expectedCursor}
 		return nil
+	}, func(stored *bindPartDisk) bool {
+		if stored.CursorOp == nil || stored.CursorOp.Token != token {
+			return false
+		}
+		stored.CursorOp = nil
+		return true
 	})
 	return reservation, err
 }
@@ -1174,6 +1224,16 @@ func beginBindOwnStatusBy(lock func(string) (func(), error), p Paths, name, toke
 		part.NoticePublication = ""
 		part.StatusOp = &bindPartStatusOperation{Token: token, Generation: generation, SessionID: sessionID, ExpectedRevision: part.Revision + 1, Notice: cloneBindPartNotice(part.OwnNotice), Holder: owner.Holder, Host: owner.Host, PID: owner.PID, Birth: owner.Birth}
 		if err := commitBindPart(p, name, part); err != nil {
+			if errors.Is(err, ErrBindPartWrite) {
+				err = errors.Join(err, takeBackBindPart(p, name, func(stored *bindPartDisk) bool {
+					if stored.StatusOp == nil || stored.StatusOp.Token != token {
+						return false
+					}
+					stored.StatusOp = nil
+					stored.NoticePublication = priorPublication
+					return true
+				}))
+			}
 			return state, err
 		}
 		working, err := bindWorkingCopy(p, name, state)

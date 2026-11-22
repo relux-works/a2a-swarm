@@ -1011,7 +1011,14 @@ const syncNowAttempts = 3
 // from, or still held the cursor when this consumer's patience ran out.
 // Neither loses an event: the cursor did not move for this consumer, and the
 // next sync reads from wherever it stands.
+//
+// A write whose outcome is uncertain is neither, whatever follows it: the
+// abort after an uncertain commit finds no reservation and answers "stale",
+// and that must not turn a failed write into a reason to poll on in silence.
 func cursorTakenElsewhere(err error) bool {
+	if errors.Is(err, config.ErrBindPartWrite) {
+		return false
+	}
 	return errors.Is(err, config.ErrBindPartStale) || errors.Is(err, config.ErrBindPartHeld)
 }
 

@@ -3144,6 +3144,16 @@ Refusals, all without changing either file:
 A consumer's cache reuses a decoded State only while the file's stamp and its exact bytes are unchanged; the
 bytes are compared on every use, for a marked State as for an unmarked one.
 
+**A write whose outcome is uncertain.** A sidecar write replaces the file and then syncs its directory. When that
+sync fails, or the file does not read back as written, the command fails with
+`bind state sidecar write outcome is uncertain`. It is never reported as done. After a failed directory sync the
+new document is in place and is what every later command reads; it may not survive a crash, after which the
+previous document is back. Both are complete, valid documents. Three things are taken back at once, because
+nothing would end them later: a reservation of the cursor that was only begun, a status publication that was only
+begun, and the sidecar of a first migration, whose marker is then not written, so the identity stays as it was.
+A consumer that gets this answer for a move of its cursor stops with it and does not poll on. The mail of that
+step is in the mailbox already, and the next run reads from wherever the cursor stands.
+
 **Several commands on one marked identity.** The marker is permanent, so `wait`, `watch`, `inbox`, the hooks and
 `status` of an identity that has bound once use the sidecar whether or not a binding is active. They work side
 by side as they do on an unmarked identity:

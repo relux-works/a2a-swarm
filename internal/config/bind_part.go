@@ -46,7 +46,15 @@ var (
 	// or status operation whose recorded owner is alive, so it is not
 	// recovered. A caller that only wanted to clear a dead owner's leftover
 	// can go on; errors.Is(err, ErrBindPartOperation) still holds.
-	ErrBindPartHeld  = fmt.Errorf("%w", ErrBindPartOperation)
+	ErrBindPartHeld = fmt.Errorf("%w", ErrBindPartOperation)
+	// ErrBindPartWrite is the answer of a write that replaced the sidecar and
+	// could not establish that the replacement is durable: the directory sync
+	// after the rename failed, or the file did not read back as written. The
+	// operation is never reported as done. After a failed directory sync the
+	// new document is in place and is what every later reader gets; it may not
+	// survive a crash, after which the previous document is back. What the
+	// caller must not be left with is taken back under the same hold of the
+	// lock: see takeBackBindPart and the migration.
 	ErrBindPartWrite = errors.New("bind state sidecar write outcome is uncertain")
 	// ErrBindPartTooLarge refuses a write before the file is replaced: a
 	// cursor is over its budget, or the document over its size limit.
@@ -870,9 +878,9 @@ func writeBindPart(p Paths, name string, part bindPartDisk) error {
 		return fmt.Errorf("%w: readback mismatch: %v", ErrBindPartWrite, errors.Join(dirErr, readErr))
 	}
 	if dirErr != nil {
-		// Exact readback is the only basis for continuing after a post-rename
-		// directory-sync uncertainty.
-		return nil
+		// The new document is in place and reads back, but nothing establishes
+		// that its directory entry survives a crash. That is not success.
+		return fmt.Errorf("%w: the directory was not synced after the replace: %v", ErrBindPartWrite, dirErr)
 	}
 	return nil
 }
