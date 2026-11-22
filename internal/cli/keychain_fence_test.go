@@ -11,8 +11,10 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -21,14 +23,17 @@ import (
 
 // blockingBackend models a native mutation that ignores its context: add and
 // update wait until release is closed, then apply to the file-backed fake.
+// Every add and update is counted in entered as it arrives, before it waits.
 type blockingBackend struct {
 	fakeBackend
 	once    sync.Once
 	started chan struct{}
 	release chan struct{}
+	entered atomic.Int32
 }
 
 func (b *blockingBackend) hold() {
+	b.entered.Add(1)
 	b.once.Do(func() { close(b.started) })
 	<-b.release
 }
@@ -721,5 +726,181 @@ func TestKeychainUnstartedWriteDeadlineLeavesNoFence(t *testing.T) {
 	}
 	if n := mutationsReached(t, dir); n != 1 {
 		t.Fatalf("%d mutations reached the backend, want only the retried one", n)
+	}
+}
+
+// Proves the fail-closed side of the expired-deadline path: the fence is
+// written, the deadline has passed by then, the native call is not made, and
+// the removal of the fence fails. The fence then stays, and every later write
+// and read of the identity refuses as fenced without reaching the backend,
+// whatever the cooldown says.
+//
+// "The native call is not made" is observed at the backend, where every add
+// and update arrives whoever started it, and it does not depend on how long
+// the test waits. The store runs in a synctest bubble, so its deadline and
+// every timer and sleep of the goroutines it starts are on the bubble's
+// clock. The backend counts each add and update as it enters. The count must
+// be zero:
+//   - when the write has returned and every goroutine it left behind has run
+//     as far as it can;
+//   - after the clock has moved lateCallHorizon further, which fires every
+//     timer and wakes every sleeper due in that time;
+//   - in the same two ways after the later writes and reads;
+//   - when the bubble has ended. A goroutine of the store that still waits
+//     then, for a sleep that outlasts both moves of the clock or for anything
+//     else, fails the test at that point: the bubble reports it as a deadlock.
+//
+// What the caller of the failed write gets depends on the state directory,
+// which holds the fence and the cooldown marker alike:
+//   - writable again: the ordinary timeout with its recorded cooldown. The
+//     removal fails while the directory is read-only, and the test's clock,
+//     which the store reads next and only for the cooldown's deadline, makes
+//     the directory writable again;
+//   - still read-only: the cooldown cannot be recorded either, and the caller
+//     is told to stop and repair the private state. No cooldown marker exists.
+//
+// The removal is made to fail by taking write permission from the state
+// directory after the fence's rename, so the test needs a non-root user. It
+// does not show that a real file system fails there, and it does not cover a
+// fence that can no longer be read: clearFence would fail before its removal.
+// The clock is moved by lateCallHorizon twice, once after the first write and
+// once after the later writes and reads. The test does not see a call that a
+// timer makes when no goroutine waits for that timer and the timer is due
+// after the second move, about two lateCallHorizons after the first write
+// returned. Nor does it see a call that is started from outside the Go clock,
+// such as another process. The backend is the fake.
+// The successful removal is TestKeychainUnstartedWriteDeadlineLeavesNoFence.
+func TestKeychainUnstartedWriteDeadlineKeepsFenceWhenRemovalFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	const lateCallHorizon = 24 * time.Hour
+	for _, tc := range []struct {
+		name           string
+		writableAgain  bool
+		wantInError    []string
+		cooldownMarker bool
+	}{
+		{"cooldown recorded", true, []string{"timed out", "cooldown recorded", "cause=security_timeout"}, true},
+		{"cooldown cannot be recorded", false, []string{"cannot persist cooldown", "stop and repair private state"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			uid := e.agent("alice")
+			dir := fakeKeychain(e, map[string]string{}, "")
+			var mu sync.Mutex
+			now := time.Now()
+			locked := ""
+			unlock := func() {
+				if locked != "" {
+					os.Chmod(locked, 0o700)
+				}
+			}
+			t.Cleanup(unlock)
+			var b *blockingBackend
+			synctest.Test(t, func(t *testing.T) {
+				// A started add or update is counted as it enters and then blocks,
+				// so it is seen even though nothing waits for its result.
+				b = &blockingBackend{fakeBackend: fakeBackend{dir}, started: make(chan struct{}), release: make(chan struct{})}
+				defer close(b.release)
+				// nativeCalls reports how many adds and updates have entered the
+				// backend once every goroutine of the bubble has run as far as it
+				// can. With ahead it first moves the bubble's clock that far.
+				nativeCalls := func(ahead time.Duration) int32 {
+					synctest.Wait()
+					if ahead > 0 {
+						time.Sleep(ahead)
+						synctest.Wait()
+					}
+					return b.entered.Load()
+				}
+				k := isolatedKeychainStore(keychainStore{paths: e.paths(), probeCommand: unlockedProbe, backend: b,
+					timeout: 300 * time.Millisecond,
+					now: func() time.Time {
+						mu.Lock()
+						defer mu.Unlock()
+						if tc.writableAgain {
+							unlock()
+						}
+						return now
+					},
+					birth: func(ctx context.Context, pid int) (string, error) {
+						<-ctx.Done() // the fence is written only after the deadline
+						return processIdentity(context.Background(), pid)
+					},
+					dirSync: func(d string) error {
+						// The fence is in place and its directory is synced. From here
+						// on nothing can be removed from the directory.
+						if err := syncDir(d); err != nil {
+							return err
+						}
+						mu.Lock()
+						defer mu.Unlock()
+						locked = d
+						return os.Chmod(d, 0o500)
+					}})
+				ctx := context.Background()
+				err := k.write(ctx, uid, "token-a")
+				if n := nativeCalls(0); n != 0 {
+					t.Fatalf("%d native calls had been made when the write returned, its deadline passed before the first", n)
+				}
+				if err == nil {
+					t.Fatal("a write whose deadline had passed before its native call reported success")
+				}
+				for _, want := range tc.wantInError {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("write = %v, want it to contain %q", err, want)
+					}
+				}
+				if locked == "" {
+					t.Fatal("the fence directory was never synced: the fence was not written")
+				}
+				if n := nativeCalls(lateCallHorizon); n != 0 {
+					t.Fatalf("%d native calls were made within %v after the write had returned", n, lateCallHorizon)
+				}
+				mu.Lock()
+				unlock()
+				mu.Unlock()
+				if _, err := os.Stat(k.fencePath(uid)); err != nil {
+					t.Fatal("the fence that could not be removed is gone", err)
+				}
+				_, markerErr := os.Stat(k.identityPath(uid) + ".cooldown")
+				if tc.cooldownMarker && markerErr != nil {
+					t.Fatal("the timeout recorded no cooldown marker", markerErr)
+				}
+				if !tc.cooldownMarker && !errors.Is(markerErr, os.ErrNotExist) {
+					t.Fatal("a cooldown marker exists although the caller was told it could not be recorded", markerErr)
+				}
+				// The fence refuses first, with the cooldown still running and after
+				// it has passed.
+				for _, later := range []time.Duration{0, 2 * securityCooldown} {
+					mu.Lock()
+					now = now.Add(later)
+					mu.Unlock()
+					if err := k.write(ctx, uid, "token-b"); !errors.Is(err, errKeychainFenced) {
+						t.Fatalf("after %v a write was admitted over a fence that could not be removed: %v", later, err)
+					}
+					if _, err := k.read(ctx, uid); !errors.Is(err, errKeychainFenced) {
+						t.Fatalf("after %v a read was admitted over a fence that could not be removed: %v", later, err)
+					}
+				}
+				if n := nativeCalls(0); n != 0 {
+					t.Fatalf("%d native calls had been made when the later writes and reads returned", n)
+				}
+				if n := nativeCalls(lateCallHorizon); n != 0 {
+					t.Fatalf("%d native calls were made within %v after the later writes and reads", n, lateCallHorizon)
+				}
+				if n := mutationsReached(t, dir); n != 0 {
+					t.Fatalf("%d mutations reached the backend", n)
+				}
+				if got, ok := readModel(t, dir).Items[uid]; ok {
+					t.Fatalf("a value was stored although no write was admitted: %q", got)
+				}
+			})
+			// The bubble has ended: no goroutine started in it is left.
+			if n := b.entered.Load(); n != 0 {
+				t.Fatalf("%d native calls were made by a goroutine that the test body did not wait for", n)
+			}
+		})
 	}
 }
