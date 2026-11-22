@@ -61,6 +61,8 @@ func TestParkedConsumerLeavesOthersFree(t *testing.T) {
 				if marked {
 					markFixtureIdentity(t, e, "alice")
 				}
+				// In the all-marked lane the harness has marked the identity already.
+				startedMarked := config.BindPartMarked(e.state("alice"))
 				args := []string{"--as", "alice", "wait", "--timeout", "0"}
 				if consumer == "watch" {
 					args = []string{"--as", "alice", "watch"}
@@ -116,8 +118,8 @@ func TestParkedConsumerLeavesOthersFree(t *testing.T) {
 					cancel()
 					recv(t, done)
 				}
-				if marked != config.BindPartMarked(e.state("alice")) {
-					t.Fatalf("the identity's marker changed: marked=%t", !marked)
+				if startedMarked != config.BindPartMarked(e.state("alice")) {
+					t.Fatalf("the identity's marker changed: marked=%t", !startedMarked)
 				}
 			})
 		}
@@ -166,6 +168,8 @@ func TestStatusPublicationDoesNotHoldDelivery(t *testing.T) {
 				markFixtureIdentity(t, e, "alice")
 			}
 			e.as("alice", statusArgs("working")...).ok(t)
+			// In the all-marked lane the harness has marked the identity already.
+			startedMarked := config.BindPartMarked(e.state("alice"))
 
 			held, release := make(chan struct{}), make(chan struct{})
 			var armed atomic.Bool
@@ -231,8 +235,8 @@ func TestStatusPublicationDoesNotHoldDelivery(t *testing.T) {
 			if tc.terminal && (st.Terminal == nil || st.Terminal.Generation != "g1" || st.Terminal.Stopped != tc.stopped) {
 				t.Fatalf("the binding changed: %+v", st.Terminal)
 			}
-			if config.BindPartMarked(st) != tc.mark {
-				t.Fatalf("marked=%t, want %t", config.BindPartMarked(st), tc.mark)
+			if config.BindPartMarked(st) != startedMarked {
+				t.Fatalf("marked=%t, want %t", config.BindPartMarked(st), startedMarked)
 			}
 			if r := e.as("alice", "inbox").ok(t); r.stdout != "no new peer events\n" {
 				t.Fatalf("the event was printed a second time: %q", r.stdout)

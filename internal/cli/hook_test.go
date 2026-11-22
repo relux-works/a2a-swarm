@@ -610,6 +610,8 @@ func inboxAndWaitNeverDuplicate(t *testing.T, marked bool) {
 	if marked {
 		markFixtureIdentity(t, e, "alice")
 	}
+	// In the all-marked lane the harness has marked the identity already.
+	startedMarked := config.BindPartMarked(e.state("alice"))
 	var fired atomic.Bool
 	var inner result
 	innerDone := make(chan struct{})
@@ -642,13 +644,19 @@ func inboxAndWaitNeverDuplicate(t *testing.T, marked bool) {
 	case <-time.After(testDeadline):
 		t.Fatal("the wait never reached delivery")
 	}
-	e.syncedParked(t, alice, calls+2, done, "after the inbox took the event")
+	// Three syncs: the wait's, the inbox's inside it, and the wait's next
+	// poll. The third shows that the wait went on after it had lost the race,
+	// and did not end with a refusal.
+	e.syncedParked(t, alice, calls+3, done, "after the inbox took the event")
 	cancel()
 	w := recv(t, done)
 	e.configure = nil
 	tuitestkit.ContainsStr(t, inner.stdout, "id="+first)
 	if strings.Contains(w.stdout, first) {
 		t.Fatalf("wait printed what inbox received: %q", w.stdout)
+	}
+	if strings.Contains(w.stderr, "bind-state") {
+		t.Fatalf("the wait that lost the race ended with a sidecar refusal: %q", w.stderr)
 	}
 
 	fired.Store(false)
@@ -667,8 +675,8 @@ func inboxAndWaitNeverDuplicate(t *testing.T, marked bool) {
 	if r := e.hook("alice", "stop", `{}`).ok(t); r.stdout != "" {
 		t.Fatalf("rang for received events: %q", r.stdout)
 	}
-	if marked != config.BindPartMarked(e.state("alice")) {
-		t.Fatalf("the identity's marker changed during the races: marked=%t", !marked)
+	if startedMarked != config.BindPartMarked(e.state("alice")) {
+		t.Fatalf("the identity's marker changed during the races: marked=%t", !startedMarked)
 	}
 }
 
