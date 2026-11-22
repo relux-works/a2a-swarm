@@ -188,7 +188,7 @@ func TestBindPartLeaseRefusesLiveForeignOwner(t *testing.T) {
 	if err != nil || current.Lease == nil || *current.Lease != *owned.Lease {
 		t.Fatalf("foreign refusal changed lease: before=%+v after=%+v err=%v", owned.Lease, current.Lease, err)
 	}
-	if changed, err := ReleaseBindLease(p, bindTestName, "session-1", false, now, nil); err != nil || !changed {
+	if changed, err := ReleaseBindLeaseContext(context.Background(), p, bindTestName, "session-1", false, now, nil); err != nil || !changed {
 		t.Fatalf("release own lease changed=%t err=%v", changed, err)
 	}
 	updated, err := AcquireOrRenewBindLease(p, bindTestName, "session-2", "host-1", os.Getpid()+1, now.Add(time.Second), time.Minute, 0, nil)
@@ -497,7 +497,7 @@ func TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters(t *testing.T) {
 		if _, err := CommitBindCursor(p, "a", cursorToken, "next-cursor"); err != nil {
 			return err
 		}
-		return RenewBindMonitorLease(p, "a", g.record, g.owner, time.Now())
+		return RenewBindMonitorLeaseContext(context.Background(), p, "a", g.record, g.owner, time.Now())
 	})
 	if err != nil {
 		t.Fatalf("cursor ownership contract: %v", err)
@@ -1010,7 +1010,7 @@ func TestTryCommitEmptyBindCursorRequiresEmptyMailbox(t *testing.T) {
 	if _, err := BeginBindCursor(p, bindTestName, firstToken, "bind", "s0", view.Generation, owner, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, committed, err := TryCommitEmptyBindCursor(p, bindTestName, firstToken, "s1", snapshot); err != nil || !committed {
+	if _, committed, err := TryCommitEmptyBindCursorContext(context.Background(), p, bindTestName, firstToken, "s1", snapshot); err != nil || !committed {
 		t.Fatalf("empty mailbox cursor commit=%t err=%v", committed, err)
 	}
 	updated, hit, err := TryLoadCachedBindIdleDeliveryState(p, bindTestName)
@@ -1041,7 +1041,7 @@ func TestTryCommitEmptyBindCursorRequiresEmptyMailbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, committed, err := TryCommitEmptyBindCursor(p, bindTestName, secondToken, "s2", snapshot); err != nil || committed {
+	if _, committed, err := TryCommitEmptyBindCursorContext(context.Background(), p, bindTestName, secondToken, "s2", snapshot); err != nil || committed {
 		t.Fatalf("non-empty mailbox fast commit=%t err=%v, want fallback", committed, err)
 	}
 	mailAfter, mailErr := os.ReadFile(p.MailboxFile(bindTestName))

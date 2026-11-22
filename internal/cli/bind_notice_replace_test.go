@@ -75,7 +75,7 @@ func TestNoticeReplacementCurrentState(t *testing.T) {
 			}
 			next.OwnNotice = config.OwnNoticeObservation{}
 			next.NoticeReport = nil
-			if err := persistTerminalReplacement(s, &next, true); err != nil {
+			if err := persistTerminalReplacement(context.Background(), s, &next, true); err != nil {
 				t.Fatal(err)
 			}
 			got := e.state("alice").Terminal

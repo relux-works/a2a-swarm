@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -75,7 +76,7 @@ func TestBindControlAfterAnInterruptedChange(t *testing.T) {
 			return !after.Stopped && after.Generation != before.Generation && after.SessionID == "session-2"
 		}},
 		{"handover with its lease", func(p Paths, state State, view BindPartView) (BindPartView, error) {
-			return TransferBindSessionAndLease(p, bindTestName, expect(view),
+			return TransferBindSessionAndLeaseContext(context.Background(), p, bindTestName, expect(view),
 				BindControlTarget{Generation: view.Generation, SessionID: "session-2", Stopped: view.Stopped, Kind: "handover"},
 				BindLeaseTransfer{OldHolder: "test-holder", NewHolder: "session-2", Host: "host-1", PID: os.Getpid(), Now: now, TTL: time.Minute, Dead: func(string) bool { return true }},
 				proofOf(state))

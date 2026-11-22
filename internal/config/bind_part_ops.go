@@ -96,6 +96,16 @@ func BindPartMarked(state State) bool { return bindPartMarker(state) }
 // sidecar-before-marker migration is resumed only when both projections still
 // match exactly.
 func EnsureBindPart(p Paths, name string, options BindPartOpenOptions) (State, error) {
+	return ensureBindPartBy(lockFile, p, name, options)
+}
+
+// EnsureBindPartContext is EnsureBindPart with a bounded wait for the State
+// lock: see bindOperationLock.
+func EnsureBindPartContext(ctx context.Context, p Paths, name string, options BindPartOpenOptions) (State, error) {
+	return ensureBindPartBy(bindOperationLock(ctx), p, name, options)
+}
+
+func ensureBindPartBy(lock func(string) (func(), error), p Paths, name string, options BindPartOpenOptions) (State, error) {
 	if err := ValidateName(name); err != nil {
 		return State{}, err
 	}
@@ -106,7 +116,7 @@ func EnsureBindPart(p Paths, name string, options BindPartOpenOptions) (State, e
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return State{}, err
 	}
-	unlock, err := lockFile(filepath.Join(dir, name+".lock"))
+	unlock, err := lock(filepath.Join(dir, name+".lock"))
 	if err != nil {
 		return State{}, err
 	}
@@ -251,14 +261,6 @@ func bindWorkingCopy(p Paths, name string, state State) (State, error) {
 	return working, nil
 }
 
-func OpenBindPart(p Paths, name string, options BindPartOpenOptions) (BindPartView, error) {
-	state, err := EnsureBindPart(p, name, options)
-	if err != nil {
-		return BindPartView{}, err
-	}
-	return ReadBindPartView(p, name, state)
-}
-
 func ReadBindPartView(p Paths, name string, state State) (BindPartView, error) {
 	if !bindPartMarker(state) {
 		return BindPartView{}, ErrBindPartUnmarked
@@ -281,20 +283,6 @@ func bindPartViewFromDisk(part bindPartDisk) BindPartView {
 		Generation: part.Generation, SessionID: part.SessionID, Stopped: part.Stopped,
 		OwnNotice: cloneOwnNotice(notice), NoticePublication: part.NoticePublication,
 	}
-}
-
-// RefreshBindPartLegacy forces a full existing-reader pass while holding the
-// State lock. An unchanged marked State stamp can be reused by ordinary reads.
-func RefreshBindPartLegacy(p Paths, name string) (State, error) {
-	if p.readCache != nil {
-		p.readCache.invalidateState(name, p.StateFile(name))
-	}
-	return withStateLock(p, name, lockFile, func(state State) (State, error) {
-		if !bindPartMarker(state) {
-			return state, ErrBindPartUnmarked
-		}
-		return state, nil
-	})
 }
 
 func loadRawStateForBindRollback(p Paths, name string) (State, error) {
@@ -480,10 +468,6 @@ func (s State) TerminalOwnNotice() OwnNoticeObservation {
 	return cloneOwnNotice(s.Terminal.OwnNotice)
 }
 
-func withBindPartOperationLock(p Paths, name string, fn func(State, *bindPartDisk) error) (State, error) {
-	return withBindPartOperationLockBy(p, name, lockFile, fn)
-}
-
 // readBindPartLocked reads the sidecar for a holder of the State lock, and
 // first removes a control record that an interrupted change left behind.
 //
@@ -513,7 +497,8 @@ func readBindPartLocked(p Paths, name string) (bindPartDisk, error) {
 // A context whose deadline passes while another process holds the lock gives
 // ErrLockTimeout, the answer UpdateStateContext gives an ordinary writer; a
 // cancelled context gives its own error. Either way the operation has changed
-// nothing. A caller without a context waits without limit.
+// nothing. A caller without a context waits without limit; no command does
+// that: TestNoCommandWaitsForTheStateLockWithoutAContext.
 func bindOperationLock(ctx context.Context) func(string) (func(), error) {
 	if ctx == nil {
 		return lockFile
@@ -717,9 +702,11 @@ func cachedBindLeaseNoop(p Paths, name, holder, host string, now time.Time, rene
 	return bindPartViewFromDisk(part), true, nil
 }
 
-func ReleaseBindLease(p Paths, name, holder string, force bool, now time.Time, dead func(string) bool) (bool, error) {
+// ReleaseBindLeaseContext releases the lease of a marked identity. Its wait
+// for the State lock ends with ctx: see bindOperationLock.
+func ReleaseBindLeaseContext(ctx context.Context, p Paths, name, holder string, force bool, now time.Time, dead func(string) bool) (bool, error) {
 	changed := false
-	_, err := withBindPartOperationLock(p, name, func(state State, part *bindPartDisk) error {
+	_, err := withBindPartOperationLockBy(p, name, bindOperationLock(ctx), func(state State, part *bindPartDisk) error {
 		working := state
 		working.Lease = nil
 		if part.Lease != nil {
@@ -736,8 +723,10 @@ func ReleaseBindLease(p Paths, name, holder string, force bool, now time.Time, d
 	return changed, err
 }
 
-func RenewBindMonitorLease(p Paths, name string, record Monitor, owner *MonitorOwner, now time.Time) error {
-	_, err := withBindPartOperationLock(p, name, func(state State, part *bindPartDisk) error {
+// RenewBindMonitorLeaseContext extends the lease a monitor holds on a marked
+// identity. Its wait for the State lock ends with ctx: see bindOperationLock.
+func RenewBindMonitorLeaseContext(ctx context.Context, p Paths, name string, record Monitor, owner *MonitorOwner, now time.Time) error {
+	_, err := withBindPartOperationLockBy(p, name, bindOperationLock(ctx), func(state State, part *bindPartDisk) error {
 		if state.Monitor == nil || !sameMonitor(state.Monitor, &record) || state.MonitorOwner == nil || !sameOwner(state.MonitorOwner, owner) || !state.currentMonitorOwner(now) {
 			return ErrMonitorOwner
 		}
@@ -827,14 +816,15 @@ func commitBindCursorBy(lock func(string) (func(), error), p Paths, name, token,
 // TryCommitEmptyBindCursor advances a reserved bind cursor without entering
 // delivery persistence when the sync response has no events and both the
 // legacy delivery fields and mailbox are empty. The ordinary commit path
-// remains responsible for every non-empty or uncertain case.
-func TryCommitEmptyBindCursor(p Paths, name, token, nextCursor string, snapshot BindIdleDeliveryState) (BindPartView, bool, error) {
+// remains responsible for every non-empty or uncertain case. Its wait for the
+// State lock ends with ctx: see bindOperationLock.
+func TryCommitEmptyBindCursorContext(ctx context.Context, p Paths, name, token, nextCursor string, snapshot BindIdleDeliveryState) (BindPartView, bool, error) {
 	if !snapshot.Marked || !snapshot.Active || !snapshot.SealValid || !snapshot.stateStamp.Known {
 		return BindPartView{}, false, nil
 	}
 	var view BindPartView
 	committed := false
-	_, err := withBindPartOperationLock(p, name, func(state State, part *bindPartDisk) error {
+	_, err := withBindPartOperationLockBy(p, name, bindOperationLock(ctx), func(state State, part *bindPartDisk) error {
 		op := part.CursorOp
 		if op == nil || op.Token != token || bindCursorDigest(part.NextBatch) != op.ExpectedCursorDigest || op.ExpectedGeneration != "" && part.Generation != op.ExpectedGeneration {
 			return ErrBindPartStale
@@ -963,7 +953,7 @@ func SetBindControl(p Paths, name string, expected BindControlExpectation, targe
 // not be held by another writer, such as a consumer recording that its owner
 // is gone.
 func SetBindControlContext(ctx context.Context, p Paths, name string, expected BindControlExpectation, target BindControlTarget, proof BindControlProof) (BindPartView, error) {
-	return setBindControlBy(p, name, expected, target, proof, func(path string) (func(), error) { return lockFileContext(ctx, path) })
+	return setBindControlBy(p, name, expected, target, proof, bindOperationLock(ctx))
 }
 
 func setBindControlBy(p Paths, name string, expected BindControlExpectation, target BindControlTarget, proof BindControlProof, lock func(string) (func(), error)) (BindPartView, error) {
@@ -1044,14 +1034,10 @@ func setBindControlBy(p Paths, name string, expected BindControlExpectation, tar
 	return ReadBindPartView(p, name, state)
 }
 
-func TransferBindSession(p Paths, name string, expected BindControlExpectation, target BindControlTarget, proof BindControlProof) (BindPartView, error) {
-	if target.Kind != "handover" {
-		return BindPartView{}, ErrBindPartInvalid
-	}
-	return SetBindControl(p, name, expected, target, proof)
-}
-
-func TransferBindSessionAndLease(p Paths, name string, expected BindControlExpectation, target BindControlTarget, transfer BindLeaseTransfer, proof BindControlProof) (BindPartView, error) {
+// TransferBindSessionAndLeaseContext hands a binding and its lease to the next
+// session of the same terminal. Its wait for the State lock ends with ctx: see
+// bindOperationLock.
+func TransferBindSessionAndLeaseContext(ctx context.Context, p Paths, name string, expected BindControlExpectation, target BindControlTarget, transfer BindLeaseTransfer, proof BindControlProof) (BindPartView, error) {
 	if target.Kind != "handover" || !hostRef(transfer.OldHolder, 200) || !hostRef(transfer.NewHolder, 200) || !hostRef(transfer.Host, 128) || transfer.PID <= 1 || transfer.TTL <= 0 {
 		return BindPartView{}, ErrBindPartInvalid
 	}
@@ -1065,7 +1051,7 @@ func TransferBindSessionAndLease(p Paths, name string, expected BindControlExpec
 	if err != nil {
 		return BindPartView{}, err
 	}
-	_, err = withBindPartOperationLock(p, name, func(state State, part *bindPartDisk) error {
+	_, err = withBindPartOperationLockBy(p, name, bindOperationLock(ctx), func(state State, part *bindPartDisk) error {
 		if part.CursorOp != nil || part.StatusOp != nil {
 			return ErrBindPartStale
 		}

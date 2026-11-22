@@ -1063,7 +1063,9 @@ func (s *session) finishIdleBindSync(ctx context.Context, state config.BindIdleD
 			}
 			return bindIdleSyncResult{}, err
 		}
-		_, committed, err := config.TryCommitEmptyBindCursor(s.paths, s.name, token, resp.NextBatch, state)
+		lockCtx, cancel := boundedBy(ctx, deadline)
+		_, committed, err := config.TryCommitEmptyBindCursorContext(lockCtx, s.paths, s.name, token, resp.NextBatch, state)
+		cancel()
 		if err != nil {
 			if abortErr := s.abortBindCursor(token); abortErr != nil {
 				return bindIdleSyncResult{}, errors.Join(err, abortErr)

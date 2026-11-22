@@ -300,7 +300,7 @@ func cmdIdentityRelease(a *App, args []string) error {
 		return err
 	}
 	if config.BindPartMarked(cur) {
-		cleared, err = config.ReleaseBindLease(p, name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
+		cleared, err = config.ReleaseBindLeaseContext(a.commandContext(), p, name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
 	} else {
 		_, err = a.updateState(p, name, func(cur *config.State) error {
 			var releaseErr error

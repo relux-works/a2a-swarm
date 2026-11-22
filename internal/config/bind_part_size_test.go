@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -278,7 +279,7 @@ func TestBindPartLargestDocumentFitsInEveryPhase(t *testing.T) {
 	}
 	proof := BindControlProof{OwnerPID: st.Terminal.OwnerPID, OwnerBirth: st.Terminal.OwnerBirth, Target: st.Terminal.Target, TargetVerified: true}
 	expected := BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID}
-	if _, err := TransferBindSessionAndLease(p, bindTestName, expected,
+	if _, err := TransferBindSessionAndLeaseContext(context.Background(), p, bindTestName, expected,
 		BindControlTarget{Generation: view.Generation, SessionID: strings.Repeat(">", 200), Stopped: view.Stopped, Kind: "handover"},
 		BindLeaseTransfer{OldHolder: state.Lease.Holder, NewHolder: strings.Repeat(">", 200), Host: wide(128), PID: os.Getpid(), Now: now, TTL: time.Hour, Dead: func(string) bool { return true }},
 		proof); err != nil {

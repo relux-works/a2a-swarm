@@ -210,7 +210,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 			return ownTerminalTarget(b, target)
 		}
 		if b := st.Terminal; mode == bindingSessionStart && b != nil && b.SessionID != *sessionID && sameTarget(b) {
-			st, err = a.handoverTerminalSession(s, b, target, *sessionID)
+			st, err = a.handoverTerminalSession(ctx, s, b, target, *sessionID)
 			if err != nil {
 				return err
 			}
@@ -292,7 +292,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				b.Typed = old.Typed && ownTerminalTarget(old, target)
 			}
 		}
-		if err = persistTerminalReplacement(s, b, automatic); err != nil {
+		if err = persistTerminalReplacement(ctx, s, b, automatic); err != nil {
 			return err
 		}
 		exe, err := os.Executable()
@@ -482,7 +482,7 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 			if err != nil {
 				return err
 			}
-			_, err = config.SetBindControl(s.paths, s.name,
+			_, err = config.SetBindControlContext(ctx, s.paths, s.name,
 				config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
 				config.BindControlTarget{Generation: view.Generation, SessionID: view.SessionID, Stopped: true, Kind: "stop"}, config.BindControlProof{})
 			if err != nil {
@@ -560,7 +560,8 @@ func (a *App) terminalUpdate(s *session, generation string, fn func(*config.Term
 
 // terminalUpdateBy is terminalUpdate with a bound on every wait for the State
 // lock: with a set deadline a stop and the State write give up when another
-// writer still holds the lock at that time. A zero deadline waits as before.
+// writer still holds the lock at that time. With a zero deadline the sidecar's
+// operations wait as the State write beside them does: see stateLockContext.
 func (a *App) terminalUpdateBy(s *session, generation string, deadline time.Time, fn func(*config.TerminalBinding)) error {
 	update := func(fn func(*config.State) error) (config.State, error) {
 		if deadline.IsZero() {
@@ -568,11 +569,14 @@ func (a *App) terminalUpdateBy(s *session, generation string, deadline time.Time
 		}
 		return a.updateStateBy(s.paths, s.name, deadline, fn)
 	}
-	setControl := func(expected config.BindControlExpectation, target config.BindControlTarget) (config.BindPartView, error) {
+	sidecarContext := func() (context.Context, context.CancelFunc) {
 		if deadline.IsZero() {
-			return config.SetBindControl(s.paths, s.name, expected, target, config.BindControlProof{})
+			return a.stateLockContext(), func() {}
 		}
-		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		return context.WithDeadline(context.Background(), deadline)
+	}
+	setControl := func(expected config.BindControlExpectation, target config.BindControlTarget) (config.BindPartView, error) {
+		ctx, cancel := sidecarContext()
 		defer cancel()
 		return config.SetBindControlContext(ctx, s.paths, s.name, expected, target, config.BindControlProof{})
 	}
@@ -628,7 +632,9 @@ func (a *App) terminalUpdateBy(s *session, generation string, deadline time.Time
 			}
 		}
 		if !reflect.DeepEqual(after.OwnNotice, before.OwnNotice) || after.NoticePublication != before.NoticePublication {
-			view, err = config.RecordBindNotice(s.paths, s.name, view.Revision, view.Generation, after.OwnNotice, after.NoticePublication)
+			ctx, cancel := sidecarContext()
+			view, err = config.RecordBindNoticeContext(ctx, s.paths, s.name, view.Revision, view.Generation, after.OwnNotice, after.NoticePublication)
+			cancel()
 			if err != nil {
 				return err
 			}

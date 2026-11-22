@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"time"
@@ -24,7 +25,7 @@ func carryTerminalNoticeEpisode(old, next *config.TerminalBinding, automatic boo
 // The report writer runs outside the control lock. Carry its latest committed
 // pin and ACK under the same state lock that installs the replacement, never
 // from bind's earlier journal snapshot. Identity/connection scope is s.paths/name.
-func persistTerminalReplacement(s *session, next *config.TerminalBinding, automatic bool) error {
+func persistTerminalReplacement(ctx context.Context, s *session, next *config.TerminalBinding, automatic bool) error {
 	state, err := config.LoadState(s.paths, s.name)
 	if err != nil {
 		return err
@@ -35,7 +36,7 @@ func persistTerminalReplacement(s *session, next *config.TerminalBinding, automa
 	if !config.BindPartMarked(state) {
 		deadline := time.Now().Add(nativeRPCTimeout)
 		holder := s.app.leaseHolderFor(s.paths, next.SessionID, deadline, s.longConsumer)
-		state, err = config.EnsureBindPart(s.paths, s.name, config.BindPartOpenOptions{Holder: holder, Now: s.app.Now(), Dead: s.app.leaseDeadBy(s.paths, deadline)})
+		state, err = config.EnsureBindPartContext(ctx, s.paths, s.name, config.BindPartOpenOptions{Holder: holder, Now: s.app.Now(), Dead: s.app.leaseDeadBy(s.paths, deadline)})
 		if err != nil {
 			return err
 		}
@@ -57,14 +58,14 @@ func persistTerminalReplacement(s *session, next *config.TerminalBinding, automa
 		proof.OwnerBirth = state.Terminal.OwnerBirth
 		proof.Target = state.Terminal.Target
 	}
-	view, err = config.SetBindControl(s.paths, s.name,
+	view, err = config.SetBindControlContext(ctx, s.paths, s.name,
 		config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
 		config.BindControlTarget{Generation: next.Generation, SessionID: next.SessionID, Stopped: next.Stopped, Kind: "create"}, proof)
 	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(prepared.OwnNotice, view.OwnNotice) || prepared.NoticePublication != view.NoticePublication {
-		view, err = config.RecordBindNotice(s.paths, s.name, view.Revision, next.Generation, prepared.OwnNotice, prepared.NoticePublication)
+		view, err = config.RecordBindNoticeContext(ctx, s.paths, s.name, view.Revision, next.Generation, prepared.OwnNotice, prepared.NoticePublication)
 		if err != nil {
 			return err
 		}

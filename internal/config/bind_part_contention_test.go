@@ -22,15 +22,21 @@ func holdBindTestLock(t *testing.T, p Paths) func() {
 	return unlock
 }
 
-// TestBindOperationLockWaitIsBounded proves that each typed operation with a
-// context (cursor, notice and status, nine in all) gives up its wait for the
-// State lock: ErrLockTimeout when the
-// context's deadline passes while the lock is held elsewhere, the context's
-// own error when it is cancelled, and in both cases neither file changes.
-// Control: the same call succeeds once the lock is free.
+// TestBindOperationLockWaitIsBounded proves that each typed operation on the
+// sidecar (cursor, notice, status, lease and control, fourteen in all) gives
+// up its wait for the State lock: ErrLockTimeout when the context's deadline
+// passes while the lock is held elsewhere, the context's own error when it is
+// cancelled, and in both cases neither file changes. Control: the same call
+// succeeds once the lock is free; the monitor's renewal, which has no monitor
+// here, is then refused for that reason and no longer for the lock.
 //
 // Regression witness: the operations had no context and waited for as long as
-// the lock was held, which held a hook past its budget.
+// the lock was held, which held a hook past its budget. The empty commit of
+// the bound consumer, the lease release, the monitor's renewal and the
+// handover were the last to get one; each waited in a blocking flock.
+//
+// An operation that does not give up is stopped by the watchdog after ten
+// seconds, so the test fails instead of hanging.
 //
 // It proves the bound of the lock wait only. It does not time the work an
 // operation does once it has the lock.
@@ -42,13 +48,15 @@ func TestBindOperationLockWaitIsBounded(t *testing.T) {
 		name string
 		// prepare runs with the lock free and returns the operation under test.
 		prepare func(t *testing.T, p Paths, view BindPartView) func(context.Context) error
+		// free is the operation's answer once the lock is free; nil is success.
+		free error
 	}{
 		{"recover cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			return func(ctx context.Context) error { return RecoverBindCursorContext(ctx, p, bindTestName, alive) }
-		}},
+		}, nil},
 		{"recover own status", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			return func(ctx context.Context) error { return RecoverBindOwnStatusContext(ctx, p, bindTestName, alive, now) }
-		}},
+		}, nil},
 		{"begin cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			token := strings.Repeat("1", 32)
 			return func(ctx context.Context) error {
@@ -58,7 +66,7 @@ func TestBindOperationLockWaitIsBounded(t *testing.T) {
 				}
 				return err
 			}
-		}},
+		}, nil},
 		{"commit cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			token := strings.Repeat("2", 32)
 			if _, err := BeginBindCursor(p, bindTestName, token, "delivery", view.NextBatch, "", owner, alive); err != nil {
@@ -68,14 +76,14 @@ func TestBindOperationLockWaitIsBounded(t *testing.T) {
 				_, err := CommitBindCursorContext(ctx, p, bindTestName, token, "s1")
 				return err
 			}
-		}},
+		}, nil},
 		{"abort cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			token := strings.Repeat("3", 32)
 			if _, err := BeginBindCursor(p, bindTestName, token, "delivery", view.NextBatch, "", owner, alive); err != nil {
 				t.Fatal(err)
 			}
 			return func(ctx context.Context) error { return AbortBindCursorContext(ctx, p, bindTestName, token) }
-		}},
+		}, nil},
 		{"begin own status", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			token := strings.Repeat("4", 32)
 			return func(ctx context.Context) error {
@@ -85,13 +93,13 @@ func TestBindOperationLockWaitIsBounded(t *testing.T) {
 				}
 				return err
 			}
-		}},
+		}, nil},
 		{"record notice", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			return func(ctx context.Context) error {
 				_, err := RecordBindNoticeContext(ctx, p, bindTestName, view.Revision, view.Generation, OwnNoticeObservation{}, "")
 				return err
 			}
-		}},
+		}, nil},
 		{"finish own status", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			token := strings.Repeat("5", 32)
 			if err := BeginBindOwnStatus(p, bindTestName, token, view.Revision, view.Generation, view.SessionID, owner, now.Add(time.Minute), now); err != nil {
@@ -101,18 +109,74 @@ func TestBindOperationLockWaitIsBounded(t *testing.T) {
 			return func(ctx context.Context) error {
 				return FinishBindOwnStatusContext(ctx, p, bindTestName, BindOwnStatusResult{Token: token, Status: status, Published: true, Publication: "published"}, now.Add(time.Second))
 			}
-		}},
+		}, nil},
 		{"abort own status", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
 			token := strings.Repeat("6", 32)
 			if err := BeginBindOwnStatus(p, bindTestName, token, view.Revision, view.Generation, view.SessionID, owner, now.Add(time.Minute), now); err != nil {
 				t.Fatal(err)
 			}
 			return func(ctx context.Context) error { return AbortBindOwnStatusContext(ctx, p, bindTestName, token, now) }
-		}},
+		}, nil},
+		{"commit empty cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			token := strings.Repeat("7", 32)
+			cached := p.WithReadCache(NewReadCache(bindTestName))
+			if _, err := LoadState(cached, bindTestName); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, hit, err := TryLoadCachedBindIdleDeliveryState(cached, bindTestName)
+			if err != nil || !hit || !snapshot.SealValid {
+				t.Fatalf("idle snapshot: %+v hit=%t err=%v", snapshot, hit, err)
+			}
+			if _, err := BeginBindCursor(p, bindTestName, token, "bind", view.NextBatch, view.Generation, owner, alive); err != nil {
+				t.Fatal(err)
+			}
+			return func(ctx context.Context) error {
+				_, committed, err := TryCommitEmptyBindCursorContext(ctx, cached, bindTestName, token, "s1", snapshot)
+				if err == nil && !committed {
+					err = errors.New("the empty commit declined")
+				}
+				return err
+			}
+		}, nil},
+		{"release lease", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			if _, err := AcquireOrRenewBindLease(p, bindTestName, "holder-1", "host-1", os.Getpid(), now, time.Minute, 0, nil); err != nil {
+				t.Fatal(err)
+			}
+			return func(ctx context.Context) error {
+				released, err := ReleaseBindLeaseContext(ctx, p, bindTestName, "holder-1", false, now, nil)
+				if err == nil && !released {
+					err = errors.New("the lease was not released")
+				}
+				return err
+			}
+		}, nil},
+		{"renew monitor lease", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			return func(ctx context.Context) error {
+				return RenewBindMonitorLeaseContext(ctx, p, bindTestName, Monitor{}, nil, now)
+			}
+		}, ErrMonitorOwner},
+		{"stop", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := SetBindControlContext(ctx, p, bindTestName,
+					BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
+					BindControlTarget{Generation: view.Generation, SessionID: view.SessionID, Stopped: true, Kind: "stop"}, BindControlProof{})
+				return err
+			}
+		}, nil},
+		{"handover with its lease", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := TransferBindSessionAndLeaseContext(ctx, p, bindTestName,
+					BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
+					BindControlTarget{Generation: view.Generation, SessionID: "session-2", Stopped: view.Stopped, Kind: "handover"},
+					BindLeaseTransfer{OldHolder: "test-holder", NewHolder: "session-2", Host: "host-1", PID: os.Getpid(), Now: now, TTL: time.Minute, Dead: func(string) bool { return true }},
+					BindControlProof{OwnerPID: os.Getpid(), OwnerBirth: "1", TargetVerified: true})
+				return err
+			}
+		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, _, view := bindFixture(t, "s0", true)
-			op := tc.prepare(t, p, view)
+			prepared := tc.prepare(t, p, view)
 			read := func() (state, sidecar []byte) {
 				t.Helper()
 				state, err := os.ReadFile(p.StateFile(bindTestName))
@@ -133,6 +197,22 @@ func TestBindOperationLockWaitIsBounded(t *testing.T) {
 					unlock()
 				}
 			}()
+			op := func(ctx context.Context) error {
+				done := make(chan error, 1)
+				go func() { done <- prepared(ctx) }()
+				select {
+				case err := <-done:
+					return err
+				case <-time.After(10 * time.Second):
+					if !released {
+						released = true
+						unlock()
+					}
+					<-done
+					t.Fatal("the operation was still waiting for the State lock ten seconds after its context ended")
+					return nil
+				}
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 			start := time.Now()
@@ -161,8 +241,8 @@ func TestBindOperationLockWaitIsBounded(t *testing.T) {
 			unlock()
 			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := op(ctx); err != nil {
-				t.Fatalf("control with the lock free: %v", err)
+			if err := op(ctx); !errors.Is(err, tc.free) {
+				t.Fatalf("control with the lock free: %v, want %v", err, tc.free)
 			}
 		})
 	}

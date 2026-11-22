@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -345,7 +346,10 @@ func (g *MonitorGeneration) guardedStatus(generation string, stop, renew, status
 			return err
 		}
 		if renewBindPartLease {
-			return RenewBindMonitorLease(g.paths, g.name, g.record, g.owner, renewAt)
+			// The same second bounds this wait as bounds the two before it.
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			return RenewBindMonitorLeaseContext(ctx, g.paths, g.name, g.record, g.owner, renewAt)
 		}
 		return nil
 	})

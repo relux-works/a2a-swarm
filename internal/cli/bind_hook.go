@@ -106,7 +106,7 @@ func ownTerminalTarget(b *config.TerminalBinding, target tmuxwake.Target) bool {
 	return b.Host == machineLabel() && b.OwnerPID == target.OwnerPID && b.OwnerBirth == target.OwnerBirth && b.Target == target
 }
 
-func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBinding, target tmuxwake.Target, next string) (config.State, error) {
+func (a *App) handoverTerminalSession(ctx context.Context, s *session, expected *config.TerminalBinding, target tmuxwake.Target, next string) (config.State, error) {
 	current, err := config.LoadState(s.paths, s.name)
 	if err != nil {
 		return config.State{}, err
@@ -128,7 +128,7 @@ func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBindi
 			ttl = a.leaseTTL
 		}
 		proof := config.BindControlProof{OwnerPID: expected.OwnerPID, OwnerBirth: expected.OwnerBirth, Target: target, TargetVerified: true}
-		view, err = config.TransferBindSessionAndLease(s.paths, s.name,
+		view, err = config.TransferBindSessionAndLeaseContext(ctx, s.paths, s.name,
 			config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
 			config.BindControlTarget{Generation: view.Generation, SessionID: next, Stopped: view.Stopped, Kind: "handover"},
 			config.BindLeaseTransfer{OldHolder: expected.SessionID, NewHolder: next, Host: machineLabel(), PID: os.Getpid(), Now: a.Now(), TTL: ttl, Dead: a.leaseDead(s.paths)}, proof)
@@ -139,7 +139,7 @@ func (a *App) handoverTerminalSession(s *session, expected *config.TerminalBindi
 		if !reflect.DeepEqual(view.OwnNotice, config.OwnNoticeObservation{}) && publication == "published" {
 			publication = "unavailable: own notice changed"
 		}
-		view, err = config.RecordBindNotice(s.paths, s.name, view.Revision, view.Generation, config.OwnNoticeObservation{}, publication)
+		view, err = config.RecordBindNoticeContext(ctx, s.paths, s.name, view.Revision, view.Generation, config.OwnNoticeObservation{}, publication)
 		if err != nil {
 			return config.State{}, err
 		}

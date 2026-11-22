@@ -309,7 +309,7 @@ func TestNoticeRetainedAttemptUncertainty(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					st, err := a.handoverTerminalSession(s, &b, b.Target, "next")
+					st, err := a.handoverTerminalSession(context.Background(), s, &b, b.Target, "next")
 					if err != nil {
 						t.Fatal(err)
 					}
