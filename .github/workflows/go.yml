@@ -73,13 +73,9 @@ jobs:
           done
 
   test:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (startsWith(github.head_ref, 'train-') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    if: github.event_name == 'push'
     runs-on: macos-latest
-    # A hung step must not hold a PR for the 6 h default. Hosted runners are
-    # smaller than the machines these budgets were measured on.
+    # Hosted runners are smaller than the machines used for local timing.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -95,13 +91,28 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race -timeout 60m ./...
+
+  sender-identity-controls:
+    if: github.event_name == 'push'
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install terminal test dependencies
+        run: brew install tmux
       - name: Sender identity controls
         env:
           A2A_RUN_SENDER_CONTROLS: '1'
         run: go test -p 1 ./internal/cli -run '^TestSenderInstrumentControls$' -v -timeout 40m
 
   test-linux:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
@@ -136,10 +147,7 @@ jobs:
           exit "$test_status"
 
   darwin-smoke:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      !(startsWith(github.head_ref, 'train-') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -154,10 +162,7 @@ jobs:
       - run: go vet ./...
 
   voice-native:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (startsWith(github.head_ref, 'train-') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    if: github.event_name == 'push'
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
     # unrelated launcher/credential fixtures a second time.
