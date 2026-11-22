@@ -557,6 +557,8 @@ func withBindPartOperationLockBy(p Paths, name string, lock func(string) (func()
 // When this second write cannot replace the file either, what was begun stays
 // with its owner, who can still end it by its token, and is otherwise cleared
 // as any operation of an owner that is gone, or of a status that has expired.
+// A cursor reservation's token comes back beside the error for that purpose:
+// see BeginBindCursor.
 func takeBackBindPart(p Paths, name string, undo func(*bindPartDisk) bool) error {
 	stored, _, err := readBindPart(p, name)
 	if err != nil {
@@ -811,6 +813,17 @@ func RenewBindMonitorLeaseContext(ctx context.Context, p Paths, name string, rec
 	return err
 }
 
+// BeginBindCursor reserves the cursor of a marked identity for owner under
+// token.
+//
+// A reservation that comes back together with an error names one that may be
+// in place: its write was tried, and neither that write nor the take-back
+// after it is known to have left the sidecar without the reservation. The
+// caller keeps that token and aborts by it before it reserves again: a
+// reservation of an owner that lives on is cleared by nothing else, and
+// refuses every later token of that same owner as held. An abort of a
+// reservation that is not there answers ErrBindPartStale. An error with an
+// empty reservation left nothing behind.
 func BeginBindCursor(p Paths, name string, token, kind, expectedCursor, generation string, owner BindOperationOwner, dead func(BindOperationOwner) bool) (BindCursorReservation, error) {
 	return beginBindCursorBy(lockFile, p, name, token, kind, expectedCursor, generation, owner, dead)
 }

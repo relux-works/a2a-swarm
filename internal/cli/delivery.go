@@ -516,7 +516,14 @@ func (s *session) beginBindCursorView(ctx context.Context, state config.BindIdle
 	if err := s.abortLeftoverCursor(lockCtx); err != nil {
 		return "", err
 	}
-	if _, err := config.BeginBindCursorContext(lockCtx, s.paths, s.name, token, kind, state.NextBatch, generation, owner, s.app.bindOperationOwnerDead(ctx)); err != nil {
+	reservation, err := config.BeginBindCursorContext(lockCtx, s.paths, s.name, token, kind, state.NextBatch, generation, owner, s.app.bindOperationOwnerDead(ctx))
+	if err != nil {
+		// A reservation named beside the error may be in place: its write and
+		// the take-back both failed. This caller will not end it, and nothing
+		// else clears a reservation of a process that lives on.
+		if reservation.Token != "" {
+			leftoverCursors.keep(s.paths.StateFile(s.name), reservation.Token)
+		}
 		return "", err
 	}
 	s.holdCursor(ctx, token, deadline)
@@ -535,13 +542,52 @@ func boundedBy(ctx context.Context, deadline time.Time) (context.Context, contex
 	return context.WithDeadline(ctx, deadline)
 }
 
-// leftoverCursors remembers, per State file, a reservation of this process
-// whose abort did not get the State lock before its caller's context or
-// deadline ended. A reservation left behind by
-// a process that exits is discarded by the next consumer, which sees its owner
-// gone. One left behind by a process that lives on would refuse that same
-// process for good, so its next reservation aborts the leftover first.
-var leftoverCursors sync.Map // State file path -> token
+// leftoverCursors remembers, per State file, every reservation of this
+// process that may still be in place and that no step will end: one whose
+// release failed for any reason other than the reservation being gone, and
+// one the config layer named beside the error of the call that made it. A
+// reservation left behind by a process that exits is discarded by the next
+// consumer, which sees its owner gone. One left behind by a process that
+// lives on would refuse that same process for good, so its next reservation,
+// from any session of the process, aborts the leftovers first.
+//
+// A token is kept on doubt and dropped on proof: it leaves the set only when
+// an abort by it succeeded or found no such reservation.
+var leftoverCursors leftoverCursorSet
+
+type leftoverCursorSet struct {
+	mu     sync.Mutex
+	tokens map[string][]string // State file path -> tokens, oldest first
+}
+
+func (l *leftoverCursorSet) keep(stateFile, token string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if slices.Contains(l.tokens[stateFile], token) {
+		return
+	}
+	if l.tokens == nil {
+		l.tokens = map[string][]string{}
+	}
+	l.tokens[stateFile] = append(l.tokens[stateFile], token)
+}
+
+func (l *leftoverCursorSet) of(stateFile string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.tokens[stateFile])
+}
+
+func (l *leftoverCursorSet) drop(stateFile, token string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	kept := slices.DeleteFunc(l.tokens[stateFile], func(t string) bool { return t == token })
+	if len(kept) == 0 {
+		delete(l.tokens, stateFile)
+		return
+	}
+	l.tokens[stateFile] = kept
+}
 
 // cursorHold is what a reservation was taken with: the context and the
 // deadline of the step that took it.
@@ -571,17 +617,15 @@ func (s *session) cursorReleaseContext(token string) (context.Context, context.C
 
 func (s *session) abortLeftoverCursor(ctx context.Context) error {
 	key := s.paths.StateFile(s.name)
-	token, ok := leftoverCursors.Load(key)
-	if !ok {
-		return nil
-	}
-	err := config.AbortBindCursorContext(ctx, s.paths, s.name, token.(string))
-	if err == nil || errors.Is(err, config.ErrBindPartStale) {
+	for _, token := range leftoverCursors.of(key) {
+		err := config.AbortBindCursorContext(ctx, s.paths, s.name, token)
 		// Stale: the reservation is gone already, or is another one by now.
-		leftoverCursors.CompareAndDelete(key, token)
-		return nil
+		if err != nil && !errors.Is(err, config.ErrBindPartStale) {
+			return err
+		}
+		leftoverCursors.drop(key, token)
 	}
-	return err
+	return nil
 }
 
 // reserveControlledCursor is the write-time reservation of a consumer whose
@@ -619,11 +663,26 @@ func (s *session) abortBindCursor(token string) error {
 	ctx, cancel := s.cursorReleaseContext(token)
 	defer cancel()
 	err := config.AbortBindCursorContext(ctx, s.paths, s.name, token)
-	if errors.Is(err, config.ErrLockTimeout) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		leftoverCursors.Store(s.paths.StateFile(s.name), token)
+	// Every failure but "stale" leaves the reservation in place or in doubt:
+	// the lock was not had in time, the document could not be read, or its
+	// write failed. "Stale" says that this reservation is not there.
+	if err != nil && !errors.Is(err, config.ErrBindPartStale) {
+		leftoverCursors.keep(s.paths.StateFile(s.name), token)
 	}
 	if err == nil {
 		delete(s.cursorHolds, token)
+	}
+	return err
+}
+
+// abandonBindCursor is for a step that stops with err while it holds a
+// reservation it will not use: it releases the reservation and returns err,
+// joined with the release's own failure. A release that finds the reservation
+// gone has nothing to add; its "stale" would read as a cursor that another
+// consumer moved.
+func (s *session) abandonBindCursor(token string, err error) error {
+	if abortErr := s.abortBindCursor(token); abortErr != nil && !errors.Is(abortErr, config.ErrBindPartStale) {
+		return errors.Join(err, abortErr)
 	}
 	return err
 }
@@ -688,11 +747,11 @@ func (s *session) persistReserved(ctx context.Context, b batch, since, next stri
 	a := s.app
 	state, err := config.LoadState(s.paths, s.name)
 	if err != nil {
-		return config.State{}, err
+		return config.State{}, s.abandonBindCursor(cursorToken, err)
 	}
 	marked := config.BindPartMarked(state)
 	if marked && !config.BindPartActive(state) {
-		return state, config.ErrBindPartOperation
+		return state, s.abandonBindCursor(cursorToken, config.ErrBindPartOperation)
 	}
 	if marked && state.NextBatch != since {
 		if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
@@ -917,7 +976,7 @@ func (s *session) savePositionAllReserved(ctx context.Context, resp matrix.SyncR
 	}
 	marked := config.BindPartMarked(snap)
 	if marked && !config.BindPartActive(snap) {
-		return snap, config.ErrBindPartOperation
+		return snap, s.abandonBindCursor(cursorToken, config.ErrBindPartOperation)
 	}
 	// Preserve initial redaction learning, including for already retained mail,
 	// without treating pre-join messages as delivery candidates.

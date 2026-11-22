@@ -799,6 +799,37 @@ func checkBindPartFileInfo(info os.FileInfo) error {
 var bindPartSyncDirectory = syncStateDirectory
 var bindPartRename = os.Rename
 
+// PlantBindPartWriteFaults is for tests of other packages. It puts a check in
+// front of the two steps of a sidecar write in which a failure can be planted:
+// the rename that puts the document in place, and the directory sync after
+// it. A check that returns an error fails its step with that error; one that
+// returns nil lets the step run as usual. So a planted check can make a write
+// fail and can never make one succeed. A nil argument leaves its step alone.
+// The returned function puts both steps back.
+//
+// The steps are package variables: one test at a time. No file of the product
+// calls this (TestNoProductFilePlantsWriteFaults).
+func PlantBindPartWriteFaults(beforeRename, beforeDirectorySync func() error) (restore func()) {
+	rename, syncDirectory := bindPartRename, bindPartSyncDirectory
+	if beforeRename != nil {
+		bindPartRename = func(from, to string) error {
+			if err := beforeRename(); err != nil {
+				return err
+			}
+			return rename(from, to)
+		}
+	}
+	if beforeDirectorySync != nil {
+		bindPartSyncDirectory = func(dir string) error {
+			if err := beforeDirectorySync(); err != nil {
+				return err
+			}
+			return syncDirectory(dir)
+		}
+	}
+	return func() { bindPartRename, bindPartSyncDirectory = rename, syncDirectory }
+}
+
 func writeBindPart(p Paths, name string, part bindPartDisk) error {
 	if err := ValidateName(name); err != nil {
 		return err

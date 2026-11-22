@@ -311,8 +311,14 @@ func TestBindMigrationWithoutDirectorySyncLeavesTheIdentityUnmarked(t *testing.T
 // the take-back, so that it is written down and not discovered. The directory
 // sync of a reservation fails, and the write that takes the reservation back
 // cannot replace the file at all. The reservation then stays in place, the
-// beginning still answers ErrBindPartWrite, another live owner is refused as
-// by any held reservation, and the owner releases it by its token.
+// beginning still answers ErrBindPartWrite and names the token beside that
+// error, another live owner is refused as by any held reservation, and the
+// owner releases it by its token.
+//
+// The token beside the error is what the caller keeps it by: an error that
+// left nothing behind (here: the refusal of the other owner) comes with an
+// empty reservation. The caller that keeps it is shown in the cli package
+// (TestCursorReservationThatStaysIsReleasedByItsOwner).
 func TestBindReservationThatCannotBeTakenBackStaysWithItsOwner(t *testing.T) {
 	p, _, view := bindFixture(t, "s0", true)
 	owner := BindOperationOwner{Holder: "holder-1", Host: "host-1", PID: os.Getpid(), Birth: "birth-1"}
@@ -321,17 +327,24 @@ func TestBindReservationThatCannotBeTakenBackStaysWithItsOwner(t *testing.T) {
 	token := strings.Repeat("c", 32)
 	failBindPartDirectorySync(t, 1, 1)
 	restore := failSecondBindPartRename(t)
-	_, err := BeginBindCursor(p, bindTestName, token, "delivery", view.NextBatch, "", owner, alive)
+	left, err := BeginBindCursor(p, bindTestName, token, "delivery", view.NextBatch, "", owner, alive)
 	restore()
 	if !errors.Is(err, ErrBindPartWrite) {
 		t.Fatalf("the reservation answered %v, want ErrBindPartWrite", err)
+	}
+	if left.Token != token {
+		t.Fatalf("the failed reservation names the token %q beside its error, want %q", left.Token, token)
 	}
 	part, _, err := readBindPart(p, bindTestName)
 	if err != nil || part.CursorOp == nil || part.CursorOp.Token != token {
 		t.Fatalf("premise: the reservation is not in place: %+v err=%v", part.CursorOp, err)
 	}
-	if _, err := BeginBindCursor(p, bindTestName, strings.Repeat("d", 32), "delivery", view.NextBatch, "", other, alive); !errors.Is(err, ErrBindPartHeld) {
+	refused, err := BeginBindCursor(p, bindTestName, strings.Repeat("d", 32), "delivery", view.NextBatch, "", other, alive)
+	if !errors.Is(err, ErrBindPartHeld) {
 		t.Fatalf("another live owner beside the reservation: %v, want ErrBindPartHeld", err)
+	}
+	if refused != (BindCursorReservation{}) {
+		t.Fatalf("a refusal that wrote nothing names a reservation: %+v", refused)
 	}
 	if err := AbortBindCursor(p, bindTestName, token); err != nil {
 		t.Fatalf("the owner's release by its token: %v", err)

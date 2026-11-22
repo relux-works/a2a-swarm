@@ -3151,6 +3151,10 @@ new document is in place and is what every later command reads; it may not survi
 previous document is back. Both are complete, valid documents. Three things are taken back at once, because
 nothing would end them later: a reservation of the cursor that was only begun, a status publication that was only
 begun, and the sidecar of a first migration, whose marker is then not written, so the identity stays as it was.
+When the write that takes a cursor reservation back cannot replace the file either, the reservation stays with
+the process that made it. That process releases it before it reserves the cursor again, as it does for a
+reservation whose release failed; when the process has exited, the next consumer discards it. Until then
+another command is refused as by any held reservation.
 A consumer that gets this answer for a move of its cursor stops with it and does not poll on. The mail of that
 step is in the mailbox already, and the next run reads from wherever the cursor stands.
 
