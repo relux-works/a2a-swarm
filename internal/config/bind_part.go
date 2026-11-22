@@ -225,57 +225,93 @@ func bindPartMarkerInInput(data []byte) (bool, error) {
 	return marked, nil
 }
 
+// bindPartReadAttempts bounds how often one read of the sidecar starts again
+// because the file was replaced while it was being read.
+const bindPartReadAttempts = 8
+
+// afterBindPartOpen, when set (tests only), runs after a read has opened the
+// sidecar and before it reads and re-checks it.
+var afterBindPartOpen func()
+
+// readBindPart reads and validates the sidecar. Readers do not take the State
+// lock, and a writer replaces the file by rename, so a read can find that the
+// file it opened is no longer the one at the path. That is not an invalid
+// sidecar: the read starts again on the file that is there now. Only a file
+// that keeps changing through every attempt is reported, as invalid.
 func readBindPart(p Paths, name string) (bindPartDisk, FileStamp, error) {
+	for attempt := 1; ; attempt++ {
+		part, stamp, replaced, err := readBindPartOnce(p, name)
+		if !replaced || attempt == bindPartReadAttempts {
+			return part, stamp, err
+		}
+	}
+}
+
+// readBindPartOnce is one attempt of readBindPart. replaced reports that the
+// attempt failed only because the file at the path changed under it.
+func readBindPartOnce(p Paths, name string) (part bindPartDisk, stamp FileStamp, replaced bool, err error) {
 	if err := ValidateName(name); err != nil {
-		return bindPartDisk{}, FileStamp{}, err
+		return bindPartDisk{}, FileStamp{}, false, err
 	}
 	path := p.BindPartFile(name)
 	if err := checkBindPartDirectory(filepath.Dir(path)); err != nil {
-		return bindPartDisk{}, FileStamp{}, err
+		return bindPartDisk{}, FileStamp{}, false, err
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return bindPartDisk{}, FileStamp{Known: true}, ErrBindPartMissing
+			return bindPartDisk{}, FileStamp{Known: true}, false, ErrBindPartMissing
 		}
-		return bindPartDisk{}, FileStamp{}, err
+		return bindPartDisk{}, FileStamp{}, false, err
 	}
 	if err := checkBindPartFileInfo(info); err != nil {
-		return bindPartDisk{}, FileStamp{}, err
+		return bindPartDisk{}, FileStamp{}, false, err
 	}
 	if info.Size() > bindPartMaxBytes {
-		return bindPartDisk{}, FileStamp{}, ErrBindPartInvalid
+		return bindPartDisk{}, FileStamp{}, false, ErrBindPartInvalid
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
-		return bindPartDisk{}, FileStamp{}, err
+		return bindPartDisk{}, FileStamp{}, false, err
 	}
 	opened, statErr := f.Stat()
-	if statErr != nil || !os.SameFile(info, opened) || checkBindPartFileInfo(opened) != nil {
+	if statErr != nil || checkBindPartFileInfo(opened) != nil {
 		_ = f.Close()
-		return bindPartDisk{}, FileStamp{}, ErrBindPartInvalid
+		return bindPartDisk{}, FileStamp{}, false, ErrBindPartInvalid
+	}
+	if !os.SameFile(info, opened) {
+		_ = f.Close()
+		return bindPartDisk{}, FileStamp{}, true, ErrBindPartInvalid
+	}
+	if afterBindPartOpen != nil {
+		afterBindPartOpen()
 	}
 	data, readErr := io.ReadAll(io.LimitReader(f, bindPartMaxBytes+1))
 	closeErr := f.Close()
 	if readErr != nil || closeErr != nil {
-		return bindPartDisk{}, FileStamp{}, errors.Join(readErr, closeErr)
+		return bindPartDisk{}, FileStamp{}, false, errors.Join(readErr, closeErr)
 	}
 	if len(data) > bindPartMaxBytes {
-		return bindPartDisk{}, FileStamp{}, ErrBindPartInvalid
+		return bindPartDisk{}, FileStamp{}, false, ErrBindPartInvalid
 	}
 	current, err := os.Lstat(path)
-	if err != nil || !os.SameFile(opened, current) || checkBindPartFileInfo(current) != nil {
-		return bindPartDisk{}, FileStamp{}, ErrBindPartInvalid
+	if err != nil || checkBindPartFileInfo(current) != nil {
+		return bindPartDisk{}, FileStamp{}, false, ErrBindPartInvalid
 	}
-	stamp := StampFile(path)
+	if !os.SameFile(opened, current) {
+		return bindPartDisk{}, FileStamp{}, true, ErrBindPartInvalid
+	}
+	stamp = StampFile(path)
 	if !stamp.Known || !stamp.Equal(stampInfo(opened)) {
-		return bindPartDisk{}, FileStamp{}, ErrBindPartInvalid
+		// The stamp is read by path a moment after the identity check above:
+		// a replacement in between shows here.
+		return bindPartDisk{}, FileStamp{}, true, ErrBindPartInvalid
 	}
-	part, err := decodeBindPart(name, data)
+	part, err = decodeBindPart(name, data)
 	if err != nil {
-		return bindPartDisk{}, FileStamp{}, err
+		return bindPartDisk{}, FileStamp{}, false, err
 	}
-	return part, stamp, nil
+	return part, stamp, false, nil
 }
 
 func decodeBindPart(name string, data []byte) (bindPartDisk, error) {
