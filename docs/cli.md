@@ -3164,10 +3164,12 @@ by side as they do on an unmarked identity:
 - A consumer that finds the cursor moved since its sync leaves that range to the consumer that moved it, reloads
   the State and goes on from the new cursor. No event is lost and none is received twice: the mailbox is written
   before the cursor moves, and it holds each event once.
-- Every wait for the State lock ends at the caller's deadline, and when the caller is interrupted. A hook that
-  cannot get the lock within its budget exits 0 with `the state file is locked by another a2a process`, as on an
-  unmarked identity. A command without a deadline waits, and waits at most ten seconds for a cursor that another
-  live owner holds.
+- Every wait of a sidecar operation for the State lock ends at the caller's deadline, and when the command is
+  interrupted. A hook that cannot get the lock within its budget exits 0 with
+  `the state file is locked by another a2a process`, as on an unmarked identity. A command without a deadline
+  waits, and waits at most ten seconds for a cursor that another live owner holds. The State write of a command
+  keeps the rule it has on an unmarked identity: a hook's is bounded by its budget, and a command's waits for the
+  lock.
 - The step that ends an operation (the cursor's move or its release, and the record of a status publication) is
   tried once at a free lock even when the deadline has passed or the command was interrupted. It never waits past
   either. A reservation that could not be released then is released by the same process before its next one, or

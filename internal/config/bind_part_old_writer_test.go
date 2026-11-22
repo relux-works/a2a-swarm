@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -288,4 +289,79 @@ func TestBindPartMarkerKeepingLegacyWriter(t *testing.T) {
 			t.Fatalf("repaired sidecar cursor=%q err=%v, want the legacy writer's cursor", view.NextBatch, err)
 		}
 	})
+}
+
+// TestBindPartMarkerKeepingLegacyWriterMovesABindingField is the cursor case
+// of TestBindPartMarkerKeepingLegacyWriter for the other fields of a binding
+// that the sidecar owns: its generation, its session and its stopped flag. An
+// older image that keeps the marker writes one of them into State, one field
+// per row and nothing else. This version then refuses the identity with
+// ErrBindPartInvalid, the refusal changes neither file, and the sidecar still
+// says what it said: the same generation, the same session, not stopped.
+//
+// Control: the same rewrite with the binding left as it is loads.
+//
+// The legacy writer is modelled by legacyRewrite; no released image is run.
+// TestBindOlderImageStopsABinding runs a real one for the stopped flag.
+func TestBindPartMarkerKeepingLegacyWriterMovesABindingField(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, value string
+	}{
+		{"control: nothing moved", "", ""},
+		{"generation", "generation", `"` + strings.Repeat("b", 32) + `"`},
+		{"session", "session_id", `"session-of-the-older-image"`},
+		{"stopped", "stopped", `true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, before := bindFixture(t, "s0", true)
+			legacyRewrite(t, p, bindTestName, false, func(doc map[string]json.RawMessage) {
+				if tc.key == "" {
+					return
+				}
+				var terminal map[string]json.RawMessage
+				if err := json.Unmarshal(doc["terminal"], &terminal); err != nil {
+					t.Fatal(err)
+				}
+				if tc.key != "stopped" {
+					if _, ok := terminal[tc.key]; !ok {
+						t.Fatalf("premise: State's binding has no %q", tc.key)
+					}
+				}
+				terminal[tc.key] = json.RawMessage(tc.value)
+				edited, err := json.Marshal(terminal)
+				if err != nil {
+					t.Fatal(err)
+				}
+				doc["terminal"] = edited
+			})
+			stateBefore, err := os.ReadFile(p.StateFile(bindTestName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sidecarBefore, err := os.ReadFile(p.BindPartFile(bindTestName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = LoadState(p, bindTestName)
+			if tc.key == "" {
+				if err != nil {
+					t.Fatalf("control: a legacy rewrite that moves nothing: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrBindPartInvalid) {
+				t.Fatalf("read after the older image moved the %s = %v, want ErrBindPartInvalid", tc.name, err)
+			}
+			if stateAfter, err := os.ReadFile(p.StateFile(bindTestName)); err != nil || !bytes.Equal(stateAfter, stateBefore) {
+				t.Fatalf("the refused read changed State (err=%v)", err)
+			}
+			if sidecarAfter, err := os.ReadFile(p.BindPartFile(bindTestName)); err != nil || !bytes.Equal(sidecarAfter, sidecarBefore) {
+				t.Fatalf("the refused read changed the sidecar (err=%v)", err)
+			}
+			part, _, err := readBindPart(p, bindTestName)
+			if err != nil || part.Generation != before.Generation || part.SessionID != before.SessionID || part.Stopped {
+				t.Fatalf("the sidecar's binding moved: generation=%q session=%q stopped=%t err=%v", part.Generation, part.SessionID, part.Stopped, err)
+			}
+		})
+	}
 }
