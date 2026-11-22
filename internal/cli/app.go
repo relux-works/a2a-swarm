@@ -638,11 +638,12 @@ type session struct {
 	// cursorKind names this consumer in the cursor reservation it takes at the
 	// mailbox write of a marked identity; empty is "delivery". reserveCursor,
 	// when set, replaces that reservation for a consumer that must check its
-	// own standing under its own lock first. cursorDeadlines keeps the
-	// deadline each reservation was taken with, for its commit or abort.
-	cursorKind      string
-	reserveCursor   func(ctx context.Context, state config.State, deadline time.Time) (string, error)
-	cursorDeadlines map[string]time.Time
+	// own standing under its own lock first. cursorHolds keeps the
+	// context and deadline each reservation was taken with, which bound its
+	// commit or abort.
+	cursorKind    string
+	reserveCursor func(ctx context.Context, state config.State, deadline time.Time) (string, error)
+	cursorHolds   map[string]cursorHold
 }
 
 func (a *App) paths() (config.Paths, error) {

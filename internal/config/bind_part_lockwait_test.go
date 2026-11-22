@@ -253,3 +253,156 @@ func sortedNames(set map[string]bool) []string {
 	sort.Strings(names)
 	return names
 }
+
+// TestBindOperationEndIsTriedOnceAfterItsContextEnded proves the rule of the
+// five steps that end an operation (the commit, the empty commit and the abort
+// of a cursor reservation, the finish and the abort of a status operation)
+// when their context has already ended, by cancellation or by its deadline:
+//   - with the State lock free, the step is performed: it gets one attempt;
+//   - with the lock held elsewhere, it returns at once with the context's
+//     answer (context.Canceled, or ErrLockTimeout for a passed deadline) and
+//     neither file changes. It does not wait: the lock is never released
+//     during the call, and the watchdog would end a wait after ten seconds.
+//
+// Control: a step that begins an operation gets no such attempt. With an
+// ended context and a free lock it is refused and changes nothing.
+//
+// Regression witness: the caller used to pass these steps a context of its
+// own making, at least 250 ms long, so that they would get an attempt at all;
+// that made a deadline later than the caller's.
+//
+// It does not time the attempt. "At once" is shown by the lock staying held.
+func TestBindOperationEndIsTriedOnceAfterItsContextEnded(t *testing.T) {
+	owner := BindOperationOwner{Holder: "holder-1", Host: "host-1", PID: os.Getpid(), Birth: "birth-1"}
+	alive := func(BindOperationOwner) bool { return false }
+	now := time.Now().UTC()
+	ended := map[string]func() (context.Context, error){
+		"cancelled": func() (context.Context, error) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, context.Canceled
+		},
+		"deadline passed": func() (context.Context, error) {
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			t.Cleanup(cancel)
+			return ctx, ErrLockTimeout
+		},
+	}
+	beginStatus := func(t *testing.T, p Paths, view BindPartView, token string) {
+		t.Helper()
+		if err := BeginBindOwnStatus(p, bindTestName, token, view.Revision, view.Generation, view.SessionID, owner, now.Add(time.Minute), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := strings.Repeat("8", 32)
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, p Paths, view BindPartView) func(context.Context) error
+	}{
+		{"commit cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			if _, err := BeginBindCursor(p, bindTestName, token, "delivery", view.NextBatch, "", owner, alive); err != nil {
+				t.Fatal(err)
+			}
+			return func(ctx context.Context) error {
+				_, err := CommitBindCursorContext(ctx, p, bindTestName, token, "s1")
+				return err
+			}
+		}},
+		{"commit empty cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			cached := p.WithReadCache(NewReadCache(bindTestName))
+			if _, err := LoadState(cached, bindTestName); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, hit, err := TryLoadCachedBindIdleDeliveryState(cached, bindTestName)
+			if err != nil || !hit || !snapshot.SealValid {
+				t.Fatalf("idle snapshot: %+v hit=%t err=%v", snapshot, hit, err)
+			}
+			if _, err := BeginBindCursor(p, bindTestName, token, "bind", view.NextBatch, view.Generation, owner, alive); err != nil {
+				t.Fatal(err)
+			}
+			return func(ctx context.Context) error {
+				_, committed, err := TryCommitEmptyBindCursorContext(ctx, cached, bindTestName, token, "s1", snapshot)
+				if err == nil && !committed {
+					err = errors.New("the empty commit declined")
+				}
+				return err
+			}
+		}},
+		{"abort cursor", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			if _, err := BeginBindCursor(p, bindTestName, token, "delivery", view.NextBatch, "", owner, alive); err != nil {
+				t.Fatal(err)
+			}
+			return func(ctx context.Context) error { return AbortBindCursorContext(ctx, p, bindTestName, token) }
+		}},
+		{"finish own status", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			beginStatus(t, p, view, token)
+			status := &AgentStatus{State: "idle", Doorbell: "armed", OwnNotice: OwnNoticeObservation{}}
+			return func(ctx context.Context) error {
+				return FinishBindOwnStatusContext(ctx, p, bindTestName, BindOwnStatusResult{Token: token, Status: status, Published: true, Publication: "published"}, now.Add(time.Second))
+			}
+		}},
+		{"abort own status", func(t *testing.T, p Paths, view BindPartView) func(context.Context) error {
+			beginStatus(t, p, view, token)
+			return func(ctx context.Context) error { return AbortBindOwnStatusContext(ctx, p, bindTestName, token, now) }
+		}},
+	} {
+		for how, end := range ended {
+			t.Run(tc.name+"/"+how, func(t *testing.T) {
+				p, _, view := bindFixture(t, "s0", true)
+				step := tc.prepare(t, p, view)
+				read := func() []byte {
+					t.Helper()
+					state, err := os.ReadFile(p.StateFile(bindTestName))
+					if err != nil {
+						t.Fatal(err)
+					}
+					sidecar, err := os.ReadFile(p.BindPartFile(bindTestName))
+					if err != nil {
+						t.Fatal(err)
+					}
+					return append(state, sidecar...)
+				}
+				before := read()
+				ctx, want := end()
+
+				unlock := holdBindTestLock(t, p)
+				done := make(chan error, 1)
+				go func() { done <- step(ctx) }()
+				select {
+				case err := <-done:
+					if !errors.Is(err, want) {
+						unlock()
+						t.Fatalf("under a held lock: %v, want %v", err, want)
+					}
+				case <-time.After(10 * time.Second):
+					unlock()
+					<-done
+					t.Fatal("the step waited for the State lock although its context had ended")
+				}
+				if !bytes.Equal(before, read()) {
+					unlock()
+					t.Fatal("a refused step changed State or the sidecar")
+				}
+				unlock()
+
+				if err := step(ctx); err != nil {
+					t.Fatalf("with the lock free, the step's one attempt: %v", err)
+				}
+				stored, _, err := readBindPart(p, bindTestName)
+				if err != nil || stored.CursorOp != nil || stored.StatusOp != nil {
+					t.Fatalf("the operation was not ended: cursor=%v status=%v err=%v", stored.CursorOp, stored.StatusOp, err)
+				}
+
+				// Control: a beginning gets no attempt on an ended context.
+				before = read()
+				_, err = BeginBindCursorContext(ctx, p, bindTestName, strings.Repeat("9", 32), "delivery", stored.NextBatch, "", owner, alive)
+				if !errors.Is(err, want) {
+					t.Fatalf("control: a reservation begun on an ended context: %v, want %v", err, want)
+				}
+				if !bytes.Equal(before, read()) {
+					t.Fatal("control: a refused beginning changed State or the sidecar")
+				}
+			})
+		}
+	}
+}

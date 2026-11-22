@@ -512,6 +512,27 @@ func bindOperationLock(ctx context.Context) func(string) (func(), error) {
 	}
 }
 
+// bindOperationEndLock is bindOperationLock for the step that ends an
+// operation: the commit or abort of a cursor reservation, and the finish or
+// abort of a status operation. It makes one attempt at the lock before it
+// looks at ctx, so that an operation begun at the very end of its caller's
+// budget is still ended when the lock is free. An attempt does not wait. After
+// it the wait is bindOperationLock's and ends with ctx, never later.
+func bindOperationEndLock(ctx context.Context) func(string) (func(), error) {
+	if ctx == nil {
+		return lockFile
+	}
+	wait := bindOperationLock(ctx)
+	return func(path string) (func(), error) {
+		// A deadline that has passed makes lockFileBy try exactly once.
+		unlock, err := lockFileBy(path, time.Time{})
+		if !errors.Is(err, ErrLockTimeout) {
+			return unlock, err
+		}
+		return wait(path)
+	}
+}
+
 func withBindPartOperationLockBy(p Paths, name string, lock func(string) (func(), error), fn func(State, *bindPartDisk) error) (State, error) {
 	return withStateLock(p, name, lock, func(state State) (State, error) {
 		if !bindPartMarker(state) {
@@ -790,7 +811,7 @@ func CommitBindCursor(p Paths, name, token, nextCursor string) (BindPartView, er
 // State lock. After ErrLockTimeout the reservation is still held and the
 // cursor has not moved.
 func CommitBindCursorContext(ctx context.Context, p Paths, name, token, nextCursor string) (BindPartView, error) {
-	return commitBindCursorBy(bindOperationLock(ctx), p, name, token, nextCursor)
+	return commitBindCursorBy(bindOperationEndLock(ctx), p, name, token, nextCursor)
 }
 
 func commitBindCursorBy(lock func(string) (func(), error), p Paths, name, token, nextCursor string) (BindPartView, error) {
@@ -817,14 +838,14 @@ func commitBindCursorBy(lock func(string) (func(), error), p Paths, name, token,
 // delivery persistence when the sync response has no events and both the
 // legacy delivery fields and mailbox are empty. The ordinary commit path
 // remains responsible for every non-empty or uncertain case. Its wait for the
-// State lock ends with ctx: see bindOperationLock.
+// State lock ends with ctx: see bindOperationEndLock.
 func TryCommitEmptyBindCursorContext(ctx context.Context, p Paths, name, token, nextCursor string, snapshot BindIdleDeliveryState) (BindPartView, bool, error) {
 	if !snapshot.Marked || !snapshot.Active || !snapshot.SealValid || !snapshot.stateStamp.Known {
 		return BindPartView{}, false, nil
 	}
 	var view BindPartView
 	committed := false
-	_, err := withBindPartOperationLockBy(p, name, bindOperationLock(ctx), func(state State, part *bindPartDisk) error {
+	_, err := withBindPartOperationLockBy(p, name, bindOperationEndLock(ctx), func(state State, part *bindPartDisk) error {
 		op := part.CursorOp
 		if op == nil || op.Token != token || bindCursorDigest(part.NextBatch) != op.ExpectedCursorDigest || op.ExpectedGeneration != "" && part.Generation != op.ExpectedGeneration {
 			return ErrBindPartStale
@@ -862,7 +883,7 @@ func AbortBindCursor(p Paths, name, token string) error {
 // lock. After ErrLockTimeout the reservation is still held: its owner aborts
 // it again later, or another consumer discards it once the owner is gone.
 func AbortBindCursorContext(ctx context.Context, p Paths, name, token string) error {
-	return abortBindCursorBy(bindOperationLock(ctx), p, name, token)
+	return abortBindCursorBy(bindOperationEndLock(ctx), p, name, token)
 }
 
 func abortBindCursorBy(lock func(string) (func(), error), p Paths, name, token string) error {
@@ -1259,7 +1280,7 @@ func AbortBindOwnStatus(p Paths, name, token string, now time.Time) error {
 // State lock. After ErrLockTimeout the status operation is still pending; it
 // is cleared as uncertain once its owner is gone.
 func AbortBindOwnStatusContext(ctx context.Context, p Paths, name, token string, now time.Time) error {
-	return abortBindOwnStatusBy(bindOperationLock(ctx), p, name, token, now)
+	return abortBindOwnStatusBy(bindOperationEndLock(ctx), p, name, token, now)
 }
 
 func abortBindOwnStatusBy(lock func(string) (func(), error), p Paths, name, token string, now time.Time) error {
@@ -1306,7 +1327,7 @@ func FinishBindOwnStatus(p Paths, name string, result BindOwnStatusResult, now t
 // the State lock. After ErrLockTimeout the status operation is still pending
 // and its result is not recorded: the publication stays uncertain.
 func FinishBindOwnStatusContext(ctx context.Context, p Paths, name string, result BindOwnStatusResult, now time.Time) error {
-	return finishBindOwnStatusBy(bindOperationLock(ctx), p, name, result, now)
+	return finishBindOwnStatusBy(bindOperationEndLock(ctx), p, name, result, now)
 }
 
 func finishBindOwnStatusBy(lock func(string) (func(), error), p Paths, name string, result BindOwnStatusResult, now time.Time) error {

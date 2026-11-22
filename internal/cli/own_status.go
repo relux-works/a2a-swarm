@@ -354,7 +354,9 @@ func (s *session) writeMarkedOwnStatusOnce(ctx context.Context, deadline time.Ti
 		Uncertain: snapshot.NoticeWriteUncertain, Publication: publication,
 		Retry: finished.NoticeRetry,
 	}
-	finishCtx, cancelFinish := releaseContext(deadline)
+	// The finish is bounded by what the publication was: the caller's context
+	// and deadline. It still gets its one attempt at the lock after they end.
+	finishCtx, cancelFinish := boundedBy(ctx, deadline)
 	defer cancelFinish()
 	if err := config.FinishBindOwnStatusContext(finishCtx, s.paths, s.name, result, s.app.Now()); err != nil {
 		if abortErr := config.AbortBindOwnStatusContext(finishCtx, s.paths, s.name, token, s.app.Now()); abortErr != nil {

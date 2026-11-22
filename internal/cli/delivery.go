@@ -519,7 +519,7 @@ func (s *session) beginBindCursorView(ctx context.Context, state config.BindIdle
 	if _, err := config.BeginBindCursorContext(lockCtx, s.paths, s.name, token, kind, state.NextBatch, generation, owner, s.app.bindOperationOwnerDead(ctx)); err != nil {
 		return "", err
 	}
-	s.holdCursor(token, deadline)
+	s.holdCursor(ctx, token, deadline)
 	return token, nil
 }
 
@@ -535,45 +535,38 @@ func boundedBy(ctx context.Context, deadline time.Time) (context.Context, contex
 	return context.WithDeadline(ctx, deadline)
 }
 
-// cursorReleaseGrace is the least time the commit or abort of a reservation
-// waits for the State lock. A reservation is taken at the very end of its
-// caller's budget often enough; without the grace its release would not get
-// one attempt at a free lock.
-const cursorReleaseGrace = 250 * time.Millisecond
-
 // leftoverCursors remembers, per State file, a reservation of this process
-// whose abort did not get the State lock in time. A reservation left behind by
+// whose abort did not get the State lock before its caller's context or
+// deadline ended. A reservation left behind by
 // a process that exits is discarded by the next consumer, which sees its owner
 // gone. One left behind by a process that lives on would refuse that same
 // process for good, so its next reservation aborts the leftover first.
 var leftoverCursors sync.Map // State file path -> token
 
-func (s *session) holdCursor(token string, deadline time.Time) {
-	if s.cursorDeadlines == nil {
-		s.cursorDeadlines = map[string]time.Time{}
-	}
-	s.cursorDeadlines[token] = deadline
+// cursorHold is what a reservation was taken with: the context and the
+// deadline of the step that took it.
+type cursorHold struct {
+	ctx      context.Context
+	deadline time.Time
 }
 
-// cursorReleaseContext bounds the lock wait of a commit or abort by the
-// deadline its reservation was taken with, and never by a cancelled caller: a
-// reservation is released even when the command that took it is being
-// stopped. A reservation taken without a deadline waits without limit.
+func (s *session) holdCursor(ctx context.Context, token string, deadline time.Time) {
+	if s.cursorHolds == nil {
+		s.cursorHolds = map[string]cursorHold{}
+	}
+	s.cursorHolds[token] = cursorHold{ctx: ctx, deadline: deadline}
+}
+
+// cursorReleaseContext bounds the lock wait of a commit or abort by exactly
+// what its reservation was taken with: it ends when the caller's context ends
+// and at the caller's deadline, never later. The release still gets one
+// attempt at the lock after that (config: bindOperationEndLock), so a
+// reservation taken at the very end of a budget is released when the lock is
+// free. One that is not released is remembered in leftoverCursors, or is
+// discarded by the next consumer once this process is gone.
 func (s *session) cursorReleaseContext(token string) (context.Context, context.CancelFunc) {
-	return releaseContext(s.cursorDeadlines[token])
-}
-
-// releaseContext bounds the lock wait of the step that ends a sidecar
-// operation: by the deadline the operation was begun with, by at least
-// cursorReleaseGrace from now, and without limit for the zero deadline.
-func releaseContext(deadline time.Time) (context.Context, context.CancelFunc) {
-	if deadline.IsZero() {
-		return context.Background(), func() {}
-	}
-	if least := time.Now().Add(cursorReleaseGrace); deadline.Before(least) {
-		deadline = least
-	}
-	return context.WithDeadline(context.Background(), deadline)
+	hold := s.cursorHolds[token]
+	return boundedBy(hold.ctx, hold.deadline)
 }
 
 func (s *session) abortLeftoverCursor(ctx context.Context) error {
@@ -626,11 +619,11 @@ func (s *session) abortBindCursor(token string) error {
 	ctx, cancel := s.cursorReleaseContext(token)
 	defer cancel()
 	err := config.AbortBindCursorContext(ctx, s.paths, s.name, token)
-	if errors.Is(err, config.ErrLockTimeout) {
+	if errors.Is(err, config.ErrLockTimeout) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		leftoverCursors.Store(s.paths.StateFile(s.name), token)
 	}
 	if err == nil {
-		delete(s.cursorDeadlines, token)
+		delete(s.cursorHolds, token)
 	}
 	return err
 }
@@ -647,7 +640,7 @@ func (s *session) commitBindCursor(token, next string) (config.State, error) {
 	if _, err := config.CommitBindCursorContext(ctx, s.paths, s.name, token, next); err != nil {
 		return config.State{}, err
 	}
-	delete(s.cursorDeadlines, token)
+	delete(s.cursorHolds, token)
 	return config.LoadState(s.paths, s.name)
 }
 
