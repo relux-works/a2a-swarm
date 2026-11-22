@@ -3137,7 +3137,7 @@ Refusals, all without changing either file:
 | Sidecar present, State not marked | `bind state sidecar exists without its permanent State marker` |
 | Sidecar malformed: duplicate or unknown key, key in another case, mode other than 0600, symlink, bad seal, values that disagree with State's copy | `bind state sidecar is invalid` |
 | A generic State write that changes a field the sidecar owns, or that would replace a marked State by one without the marker | `provider-owned State fields require a typed bind-state operation` |
-| A binding is being started, stopped or handed over, or another live owner still holds the cursor, when the caller's deadline passes | `bind-state operation is held by another owner` |
+| Another live owner still holds the cursor, or a status publication, when the caller's deadline passes | `bind-state operation is held by another owner` |
 | A sync cursor over 8 KiB, or a document over the size limit | `bind state sidecar would exceed its size limit; nothing was written` |
 | An operation presented with an outdated revision or token | `stale bind-state revision or operation token` |
 
@@ -3163,8 +3163,13 @@ by side as they do on an unmarked identity:
   deadline; one whose binding was replaced or stopped meanwhile is refused as stale.
 - A read of the sidecar takes no lock. When a writer replaces the file during the read, the read starts again
   on the new file; it does not report the sidecar as invalid.
-- The start, stop or handover of a binding is alone in the sidecar for the moment it takes; the other commands
-  wait for it within their deadline.
+- The start, stop or handover of a binding is recorded and applied under one hold of the State lock. If its
+  second write fails, or its process dies between the two, the binding stays as it was and the command reports
+  the failure. The record it left is discarded by the next operation on the identity, whatever that is: the same
+  change is then performed afresh from what a new invocation reads, and any other command is admitted.
+- A status publication whose writer lives on but could neither finish nor abort is held until the deadline it
+  was begun with, as the reservation of an unmarked State is. After that the next operation clears it and
+  records the publication as failed and uncertain, never as published.
 
 `BIND_FIXTURES_MARKED=1 go test -v ./internal/cli` runs the command tests with every fixture identity marked from
 the start. That lane is not expected to pass: fixtures that write a binding's fields straight into State are

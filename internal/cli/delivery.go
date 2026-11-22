@@ -657,8 +657,8 @@ func (s *session) commitBindCursor(token, next string) (config.State, error) {
 // write, so the reservation is never held across a request and another
 // consumer of the identity waits for it no longer than for one write.
 //
-// A reservation of another live owner, or a binding's control transaction, is
-// waited for within the caller's deadline. ErrBindPartStale means the cursor
+// A reservation of another live owner is waited for within the caller's
+// deadline. ErrBindPartStale means the cursor
 // is no longer the one this batch was read from: another consumer delivered
 // that range, and the caller reloads the State and goes on from its cursor.
 func (s *session) reserveCursorAtWrite(ctx context.Context, state config.State, deadline time.Time) (string, error) {

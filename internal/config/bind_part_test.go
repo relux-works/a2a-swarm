@@ -548,40 +548,6 @@ func TestBindPartOwnStatusRequiresTwoReservationsAndFencesTransfer(t *testing.T)
 	}
 }
 
-// TestBindPartControlTransactionResumesExactPendingTarget proves a control
-// change whose final write failed stays recorded as a pending transaction and
-// completes only when the same target is presented again.
-func TestBindPartControlTransactionResumesExactPendingTarget(t *testing.T) {
-	p, state, view := bindFixture(t, "s0", true)
-	target := BindControlTarget{Generation: strings.Repeat("b", 32), SessionID: "session-2", Kind: "create"}
-	proof := BindControlProof{OwnerPID: state.Terminal.OwnerPID, OwnerBirth: state.Terminal.OwnerBirth, Target: state.Terminal.Target, TargetVerified: true}
-	expected := BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID}
-	prior := bindPartRename
-	calls := 0
-	bindPartRename = func(old, next string) error {
-		calls++
-		if calls == 2 {
-			return os.ErrPermission
-		}
-		return os.Rename(old, next)
-	}
-	if _, err := SetBindControl(p, bindTestName, expected, target, proof); err == nil {
-		t.Fatal("injected final control write failure was ignored")
-	}
-	bindPartRename = prior
-	pending, _, err := readBindPart(p, bindTestName)
-	if err != nil || pending.ControlTxn == nil || pending.Generation != view.Generation {
-		t.Fatalf("pending transaction=%+v generation=%q err=%v", pending.ControlTxn, pending.Generation, err)
-	}
-	if _, err := SetBindControl(p, bindTestName, expected, target, proof); err != nil {
-		t.Fatalf("exact pending transaction did not resume: %v", err)
-	}
-	current, err := LoadState(p, bindTestName)
-	if err != nil || current.Terminal.Generation != target.Generation || current.Terminal.SessionID != target.SessionID {
-		t.Fatalf("resumed control generation=%q session=%q err=%v", current.Terminal.Generation, current.Terminal.SessionID, err)
-	}
-}
-
 // TestBindPartFailedOwnStatusFinalizationStaysUncertain proves a status
 // finalization that fails before its rename leaves the publication marked
 // uncertain in State and in the sidecar view, never published.

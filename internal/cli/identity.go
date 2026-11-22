@@ -570,8 +570,9 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 		defer cancel()
 		// Every lock wait below is bounded by the caller's deadline, as the
 		// unmarked branch's is. An operation of another live owner is not this
-		// caller's to recover and does not stand in the way of the lease; only
-		// a binding's control transaction does, for the moment it takes.
+		// caller's to recover and does not stand in the way of the lease. What
+		// is waited for here is a status reservation that names another token
+		// than the sidecar's, until its deadline.
 		err = heldRetry(leaseCtx, func() error {
 			if err := config.RecoverBindCursorContext(leaseCtx, s.paths, s.name, a.bindOperationOwnerDead(leaseCtx)); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
 				return err
@@ -610,9 +611,9 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 
 // heldPoll is the pause between two attempts of an operation that another
 // live owner holds, and heldLimit the longest a caller without a deadline
-// waits for one. A holder releases within one mailbox write, or within one
-// control transaction of a binding; heldLimit is the budget of the one
-// request a bound consumer can make while it holds a reservation.
+// waits for one. A holder releases within one mailbox write; heldLimit is
+// the budget of the one request a bound consumer can make while it holds a
+// reservation.
 const (
 	heldPoll  = 10 * time.Millisecond
 	heldLimit = nativeRPCTimeout
