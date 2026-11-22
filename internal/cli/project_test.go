@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/skill-go-testing-tools/tuitestkit"
 
@@ -32,52 +34,99 @@ func (e *env) project(extra ...string) result {
 	return e.as("proj", append([]string{"project", "--system", "system", "--source", "proj", "--once", "--poll", "50ms"}, extra...)...)
 }
 
-// TestProjectNoopInitialReservationReleasesCursor proves a projector
-// that reserves the cursor and finds it already positioned releases the
-// reservation, so a later control reservation is not blocked by it.
-func TestProjectNoopInitialReservationReleasesCursor(t *testing.T) {
+// TestProjectCursorOnMarkedIdentity proves how the projector moves the cursor
+// of a marked identity when a step is done: from the position the step
+// started at, in one reserve-and-commit that leaves no reservation behind; not
+// at all when another consumer moved the cursor during the step, whose
+// position then stands; and, while another live owner holds the cursor, not
+// before that owner has released it.
+//
+// Regression witness: the projector reserved the cursor before its sync and
+// kept the reservation through its posts, so every other consumer of the
+// identity was refused for as long as a projector step took.
+//
+// The competing owner is a reservation this test makes and releases; no
+// second process runs.
+func TestProjectCursorOnMarkedIdentity(t *testing.T) {
 	isolateBindTest(t)
 	e, _ := world(t)
 	e.as("alice", "wait", "--timeout", "1ms").ok(t)
+	markFixtureIdentity(t, e, "alice")
 	p := e.paths()
-	legacy := e.state("alice")
-	if legacy.Lease == nil {
-		t.Fatal("fixture has no lease to migrate")
-	}
-	marked, err := config.EnsureBindPart(p, "alice", config.BindPartOpenOptions{Holder: legacy.Lease.Holder})
-	if err != nil || !config.BindPartActive(marked) {
-		t.Fatalf("migrate fixture: active=%t err=%v", config.BindPartActive(marked), err)
-	}
-	cursor := marked.NextBatch
-	if cursor == "" {
+	start := e.state("alice").NextBatch
+	if start == "" {
 		t.Fatal("fixture has no initial cursor")
 	}
-	owner := config.BindOperationOwner{Holder: "projector", Host: "host-1", PID: 2345, Birth: "birth-1"}
-	token, err := config.NewBindToken()
+	a, s := addressSession(t, e, "alice")
+	// The competing owner is this process under another holder name: alive,
+	// with its real start token, so its reservation is not taken for a
+	// leftover of a process that is gone.
+	birth, err := a.operationOwnerStart(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	dead := func(config.BindOperationOwner) bool { return false }
-	if _, err := config.BeginBindCursor(p, "alice", token, "projector", cursor, "", owner, dead); err != nil {
-		t.Fatalf("reserve initial cursor: %v", err)
+	reservation := func() string {
+		t.Helper()
+		st, err := config.LoadState(p, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := config.NewBindToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner := config.BindOperationOwner{Holder: "other-consumer", Host: machineLabel(), PID: os.Getpid(), Birth: birth}
+		if _, err := config.BeginBindCursor(p, "alice", token, "delivery", st.NextBatch, "", owner, func(config.BindOperationOwner) bool { return false }); err != nil {
+			t.Fatalf("a reservation was left behind: %v", err)
+		}
+		return token
 	}
 
-	a := &App{}
-	s := &session{app: a, paths: p, name: "alice"}
-	finished, err := s.finishProjectNoopCursor(a, marked, token)
-	if err != nil || finished.NextBatch != cursor {
-		t.Fatalf("finish already-positioned cursor=%q err=%v", finished.NextBatch, err)
+	moved, err := s.commitProjectCursor(context.Background(), a, start, "p1")
+	if err != nil || moved.NextBatch != "p1" {
+		t.Fatalf("commit from the step's own position: cursor=%q err=%v", moved.NextBatch, err)
 	}
-
-	retryToken, err := config.NewBindToken()
-	if err != nil {
+	if err := config.AbortBindCursor(p, "alice", reservation()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.BeginBindCursor(p, "alice", retryToken, "projector", cursor, "", owner, dead); err != nil {
-		t.Fatalf("no-op initial path left a cursor reservation behind: %v", err)
+
+	// Another consumer moved the cursor during the step: its position stands.
+	kept, err := s.commitProjectCursor(context.Background(), a, start, "p2")
+	if err != nil || kept.NextBatch != "p1" || e.state("alice").NextBatch != "p1" {
+		t.Fatalf("commit from a position that is no longer current: cursor=%q err=%v", kept.NextBatch, err)
 	}
-	if err := config.AbortBindCursor(p, "alice", retryToken); err != nil {
-		t.Fatalf("release retry control reservation: %v", err)
+
+	// Another live owner holds the cursor: the commit waits for its release.
+	token := reservation()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.commitProjectCursor(context.Background(), a, "p1", "p3")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("commit did not wait for the other owner: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if got := e.state("alice").NextBatch; got != "p1" {
+		t.Fatalf("the cursor moved under another owner's reservation: %q", got)
+	}
+	if err := config.AbortBindCursor(p, "alice", token); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("commit after the release: %v", err)
+		}
+	case <-time.After(testDeadline):
+		t.Fatal("commit never returned after the release")
+	}
+	if got := e.state("alice").NextBatch; got != "p3" {
+		t.Fatalf("cursor after the release: %q, want p3", got)
+	}
+	if err := config.AbortBindCursor(p, "alice", reservation()); err != nil {
+		t.Fatal(err)
 	}
 }
 

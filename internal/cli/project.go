@@ -277,11 +277,11 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 	}
 	if st.NextBatch == "" {
 		// First run: take a position; history before the projector started is not replayed.
-		st, err = s.withProjectCursor(ctx, a, func(cur config.State, token string) (config.State, error) {
-			// Another projector may have completed its initial reservation after
-			// the outer read. Use the state observed under the control lock.
+		st, err = s.withProjectCursor(a, func(cur config.State) (config.State, error) {
+			// Another projector may have taken its position after the outer
+			// read. Use the state observed under the control lock.
 			if cur.NextBatch != "" {
-				return s.finishProjectNoopCursor(a, cur, token)
+				return cur, nil
 			}
 			resp, err := s.client.Sync(ctx, "", 0, initialFilter)
 			if err != nil {
@@ -290,7 +290,7 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 			if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
 				return config.State{}, err
 			}
-			next, err := s.commitProjectCursor(a, token, resp.NextBatch)
+			next, err := s.commitProjectCursor(ctx, a, "", resp.NextBatch)
 			if err == nil {
 				a.printf("projector %s -> %s: position taken\n", s.name, systemLabel)
 			}
@@ -301,8 +301,8 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 		}
 	}
 	for {
-		st, err = s.withProjectCursor(ctx, a, func(cur config.State, token string) (config.State, error) {
-			return s.projectBatch(ctx, a, cur, token, *poll, systemRoom, allowed, me, labels, productCache, kinds)
+		st, err = s.withProjectCursor(a, func(cur config.State) (config.State, error) {
+			return s.projectBatch(ctx, a, cur, *poll, systemRoom, allowed, me, labels, productCache, kinds)
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -316,71 +316,70 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 	}
 }
 
-// withProjectCursor reads mode and, for a migrated identity, reserves its
-// provider cursor while holding control -> state. Network work runs after both
-// locks are released; the durable operation token keeps competing projectors
-// out until commit or owner-proven recovery.
-func (s *session) withProjectCursor(ctx context.Context, a *App, run func(config.State, string) (config.State, error)) (next config.State, err error) {
+// withProjectCursor reads the State under the control lock and runs one
+// projector step from it. The step holds no lock and no reservation while it
+// syncs and posts: a competing projector is kept out by the consumer lease, as
+// it is for an unmarked identity.
+func (s *session) withProjectCursor(a *App, run func(config.State) (config.State, error)) (config.State, error) {
 	var state config.State
-	var token string
-	err = a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
-		current, loadErr := config.LoadState(s.paths, s.name)
-		if loadErr != nil {
-			return loadErr
+	err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		current, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
 		}
-		state = current
-		if !config.BindPartMarked(current) {
-			return nil
-		}
-		if !config.BindPartActive(current) {
+		if config.BindPartMarked(current) && !config.BindPartActive(current) {
 			return config.ErrBindPartOperation
 		}
-		owner, ownerErr := a.bindOperationOwner(ctx, s, time.Now().Add(nativeRPCTimeout))
-		if ownerErr != nil {
-			return ownerErr
-		}
-		token, ownerErr = config.NewBindToken()
-		if ownerErr != nil {
-			return ownerErr
-		}
-		_, ownerErr = config.BeginBindCursor(s.paths, s.name, token, "projector", current.NextBatch, "", owner, a.bindOperationOwnerDead(ctx))
-		return ownerErr
+		state = current
+		return nil
 	})
 	if err != nil {
 		return config.State{}, err
 	}
-	next, err = run(state, token)
-	if err != nil && token != "" {
-		if abortErr := config.AbortBindCursor(s.paths, s.name, token); abortErr != nil {
-			err = errors.Join(err, abortErr)
-		}
-	}
-	return next, err
+	return run(state)
 }
 
-func (s *session) commitProjectCursor(a *App, token, cursor string) (config.State, error) {
-	if token != "" {
-		if _, err := config.CommitBindCursor(s.paths, s.name, token, cursor); err != nil {
-			return config.State{}, err
-		}
-		return config.LoadState(s.paths, s.name)
+// commitProjectCursor moves the projector's cursor from since to cursor once
+// a step is done. The cursor of a marked identity is in its sidecar: it is
+// reserved and committed here in one go, with no request in between, so that
+// no other consumer of the identity waits for a projector's sync or posts. A
+// cursor that another consumer moved meanwhile stands as that consumer left it.
+func (s *session) commitProjectCursor(ctx context.Context, a *App, since, cursor string) (config.State, error) {
+	state, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return config.State{}, err
 	}
-	return a.updateState(s.paths, s.name, func(state *config.State) error {
-		state.NextBatch = cursor
-		return nil
-	})
-}
-
-// finishProjectNoopCursor releases an initial reservation when another
-// projector already established the position before this callback ran.
-func (s *session) finishProjectNoopCursor(a *App, state config.State, token string) (config.State, error) {
-	if token == "" {
+	if !config.BindPartMarked(state) {
+		return a.updateState(s.paths, s.name, func(state *config.State) error {
+			state.NextBatch = cursor
+			return nil
+		})
+	}
+	if !config.BindPartActive(state) {
+		return config.State{}, config.ErrBindPartOperation
+	}
+	if state.NextBatch != since {
 		return state, nil
 	}
-	return s.commitProjectCursor(a, token, state.NextBatch)
+	s.cursorKind = "projector"
+	token, err := s.reserveCursorAtWrite(ctx, state, time.Now().Add(nativeRPCTimeout))
+	if errors.Is(err, config.ErrBindPartStale) {
+		return config.LoadState(s.paths, s.name)
+	}
+	if err != nil {
+		return config.State{}, err
+	}
+	next, err := s.commitBindCursor(token, cursor)
+	if err != nil {
+		if abortErr := s.abortBindCursor(token); abortErr != nil {
+			err = errors.Join(err, abortErr)
+		}
+		return config.State{}, err
+	}
+	return next, nil
 }
 
-func (s *session) projectBatch(ctx context.Context, a *App, state config.State, token string, poll time.Duration, systemRoom string, allowed map[string]bool, me string, labels map[string]string, productCache map[string]productMembership, kinds map[string]bool) (config.State, error) {
+func (s *session) projectBatch(ctx context.Context, a *App, state config.State, poll time.Duration, systemRoom string, allowed map[string]bool, me string, labels map[string]string, productCache map[string]productMembership, kinds map[string]bool) (config.State, error) {
 	resp, err := s.client.Sync(ctx, state.NextBatch, poll, projectFilter)
 	if err != nil {
 		return config.State{}, err
@@ -423,7 +422,7 @@ func (s *session) projectBatch(ctx context.Context, a *App, state config.State, 
 	}
 	// Keep receipt-before-cursor ordering. Deterministic transaction IDs make a
 	// retry safe if the cursor commit encounters a storage failure.
-	return s.commitProjectCursor(a, token, resp.NextBatch)
+	return s.commitProjectCursor(ctx, a, state.NextBatch, resp.NextBatch)
 }
 
 // acceptInvites admits only the actual room IDs pinned by project config.

@@ -635,6 +635,14 @@ type session struct {
 	principalWarning    bool         // Emit malformed/unreadable metadata warning once per session.
 	addressWarnings     uint32       // Bounded fixed audience diagnostics, once per session.
 	longConsumer        bool         // Process-owned watch/unbounded wait; ignore ambient runtime session IDs.
+	// cursorKind names this consumer in the cursor reservation it takes at the
+	// mailbox write of a marked identity; empty is "delivery". reserveCursor,
+	// when set, replaces that reservation for a consumer that must check its
+	// own standing under its own lock first. cursorDeadlines keeps the
+	// deadline each reservation was taken with, for its commit or abort.
+	cursorKind      string
+	reserveCursor   func(ctx context.Context, state config.State, deadline time.Time) (string, error)
+	cursorDeadlines map[string]time.Time
 }
 
 func (a *App) paths() (config.Paths, error) {

@@ -182,9 +182,79 @@ func (s *session) writeOwnStatus(ctx context.Context, prepare func(*config.State
 // sidecar and durably pins both the sidecar operation and State token before
 // the status PUT. State uncertainty is overlaid while a sidecar operation is
 // pending, so a failed final sidecar write can never report published.
+//
+// The notice record and the status reservation name the sidecar revision the
+// writer read. Another command of the identity moves that revision with every
+// cursor it commits and every lease it renews, which changes nothing a status
+// publication rests on. A writer overtaken that way, with the binding's
+// generation, session and stopped flag as it read them, starts again from the
+// State as it is now, before any request is sent. A binding that was replaced
+// or stopped meanwhile is still answered as stale.
 func (s *session) writeMarkedOwnStatus(ctx context.Context, deadline time.Time, prepare func(*config.State) (config.AgentStatus, bool, error), finish func(*config.State, error)) error {
+	// It starts again for as long as the caller's deadline allows, and for at
+	// most heldLimit without one, with a pause that grows to markedStatusPause:
+	// a writer beside a busy consumer is overtaken several times in a row.
+	limit := time.Now().Add(heldLimit)
+	if !deadline.IsZero() && deadline.Before(limit) {
+		limit = deadline
+	}
+	for attempt := 1; ; attempt++ {
+		err := s.writeMarkedOwnStatusOnce(ctx, deadline, prepare, finish)
+		if !errors.Is(err, errMarkedStatusOvertaken) {
+			return err
+		}
+		pause := time.Duration(attempt) * time.Millisecond
+		if pause > markedStatusPause {
+			pause = markedStatusPause
+		}
+		if ctx.Err() != nil || !time.Now().Add(pause).Before(limit) {
+			return config.ErrBindPartStale
+		}
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return config.ErrBindPartStale
+		case <-timer.C:
+		}
+	}
+}
+
+// markedStatusPause is the longest pause between two attempts of a status
+// write that another command's sidecar write overtook.
+const markedStatusPause = 20 * time.Millisecond
+
+// errMarkedStatusOvertaken is writeMarkedOwnStatusOnce's answer when the
+// sidecar's revision moved under it and the binding did not change.
+var errMarkedStatusOvertaken = errors.New("own status writer overtaken by another sidecar write")
+
+// overtaken turns a stale answer of a revision-bound sidecar write into
+// errMarkedStatusOvertaken when the binding the writer read is still the one
+// in the sidecar. Every other error, and a stale answer for a binding that
+// changed, is returned as it is.
+func (s *session) overtaken(err error, read config.BindPartView) error {
+	if !errors.Is(err, config.ErrBindPartStale) {
+		return err
+	}
+	current, loadErr := config.LoadState(s.paths, s.name)
+	if loadErr != nil {
+		return err
+	}
+	now, viewErr := config.ReadBindPartView(s.paths, s.name, current)
+	if viewErr != nil || now.Generation != read.Generation || now.SessionID != read.SessionID || now.Stopped != read.Stopped {
+		return err
+	}
+	return errMarkedStatusOvertaken
+}
+
+func (s *session) writeMarkedOwnStatusOnce(ctx context.Context, deadline time.Time, prepare func(*config.State) (config.AgentStatus, bool, error), finish func(*config.State, error)) error {
 	dead := s.app.bindOperationOwnerDead(ctx)
-	if err := config.RecoverBindOwnStatus(s.paths, s.name, dead, s.app.Now()); err != nil {
+	// The lock waits before the request end at the caller's deadline; those
+	// after it end at that deadline too, but are not cut short by a caller
+	// that is being stopped, so that a finished request is still recorded.
+	lockCtx, cancelLock := boundedBy(ctx, deadline)
+	defer cancelLock()
+	if err := config.RecoverBindOwnStatusContext(lockCtx, s.paths, s.name, dead, s.app.Now()); err != nil {
 		if errors.Is(err, config.ErrBindPartOperation) {
 			return ErrOwnStatusPending
 		}
@@ -210,10 +280,11 @@ func (s *session) writeMarkedOwnStatus(ctx context.Context, deadline time.Time, 
 		return config.ErrBindPartStale
 	}
 	if candidate.Terminal != nil && (!reflect.DeepEqual(candidate.Terminal.OwnNotice, view.OwnNotice) || candidate.Terminal.NoticePublication != view.NoticePublication) {
-		view, err = config.RecordBindNotice(s.paths, s.name, view.Revision, view.Generation, candidate.Terminal.OwnNotice, candidate.Terminal.NoticePublication)
+		recorded, err := config.RecordBindNoticeContext(lockCtx, s.paths, s.name, view.Revision, view.Generation, candidate.Terminal.OwnNotice, candidate.Terminal.NoticePublication)
 		if err != nil {
-			return err
+			return s.overtaken(err, view)
 		}
+		view = recorded
 		if s.app.afterMarkedOwnStatusNoticeRecord != nil {
 			s.app.afterMarkedOwnStatusNoticeRecord()
 		}
@@ -252,11 +323,11 @@ func (s *session) writeMarkedOwnStatus(ctx context.Context, deadline time.Time, 
 	if err != nil {
 		return err
 	}
-	if err := config.BeginBindOwnStatus(s.paths, s.name, token, view.Revision, view.Generation, view.SessionID, owner, deadline, s.app.Now()); err != nil {
+	if err := config.BeginBindOwnStatusContext(lockCtx, s.paths, s.name, token, view.Revision, view.Generation, view.SessionID, owner, deadline, s.app.Now()); err != nil {
 		if errors.Is(err, config.ErrBindPartOperation) {
 			return ErrOwnStatusPending
 		}
-		return err
+		return s.overtaken(err, view)
 	}
 
 	snapshot := ownStatusCandidate(current)
@@ -283,8 +354,10 @@ func (s *session) writeMarkedOwnStatus(ctx context.Context, deadline time.Time, 
 		Uncertain: snapshot.NoticeWriteUncertain, Publication: publication,
 		Retry: finished.NoticeRetry,
 	}
-	if err := config.FinishBindOwnStatus(s.paths, s.name, result, s.app.Now()); err != nil {
-		if abortErr := config.AbortBindOwnStatus(s.paths, s.name, token, s.app.Now()); abortErr != nil {
+	finishCtx, cancelFinish := releaseContext(deadline)
+	defer cancelFinish()
+	if err := config.FinishBindOwnStatusContext(finishCtx, s.paths, s.name, result, s.app.Now()); err != nil {
+		if abortErr := config.AbortBindOwnStatusContext(finishCtx, s.paths, s.name, token, s.app.Now()); abortErr != nil {
 			return errors.Join(err, abortErr)
 		}
 		return err

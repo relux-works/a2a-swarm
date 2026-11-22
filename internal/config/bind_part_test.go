@@ -428,10 +428,12 @@ func TestBindPartCursorReservationAndDeadOwnerReplay(t *testing.T) {
 }
 
 // TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters proves that
-// while a cursor operation is reserved every other writer of provider fields is
-// refused - a second cursor owner, a lease release, a monitor renewal, a control
-// change and a generic State cursor write - and that none of the refusals
-// changes State or the sidecar.
+// while a cursor operation is reserved every other writer of the cursor and of
+// the binding is refused - a second cursor owner, a control change and a
+// generic State cursor write - and that none of the refusals changes State or
+// the sidecar. The lease is not what a cursor reservation protects: the
+// monitor's renewal of it is admitted beside the reservation, so that a
+// consumer writing its mailbox never costs another one its lease.
 func TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters(t *testing.T) {
 	p := monitorSeed(t)
 	state, err := LoadState(p, "a")
@@ -472,12 +474,6 @@ func TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters(t *testing.T) {
 		if _, err := BeginBindCursor(p, "a", strings.Repeat("d", 32), "delivery", view.NextBatch, "", secondOwner, nil); !errors.Is(err, ErrBindPartOperation) {
 			return fmt.Errorf("second cursor owner=%v, want operation refusal", err)
 		}
-		if _, err := ReleaseBindLease(p, "a", view.Lease.Holder, false, time.Now(), nil); !errors.Is(err, ErrBindPartOperation) {
-			return fmt.Errorf("marked bind release=%v, want operation refusal", err)
-		}
-		if err := g.RenewOwnerLease(record.Generation); !errors.Is(err, ErrMonitorUnavailable) {
-			return fmt.Errorf("marked monitor renewal=%v, want closed unavailable refusal", err)
-		}
 		if _, err := SetBindControl(p, "a", BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID}, BindControlTarget{Stopped: true, Kind: "stop"}, BindControlProof{}); !errors.Is(err, ErrBindPartOperation) {
 			return fmt.Errorf("marked bind control=%v, want operation refusal", err)
 		}
@@ -491,6 +487,12 @@ func TestBindCursorExcludesMarkedControlMonitorAndLegacyWriters(t *testing.T) {
 		partAfter, err := os.ReadFile(p.BindPartFile("a"))
 		if err != nil || !bytes.Equal(partBefore, partAfter) {
 			return fmt.Errorf("refused writers changed sidecar: err=%v equal=%t", err, bytes.Equal(partBefore, partAfter))
+		}
+		if err := g.RenewOwnerLease(record.Generation); err != nil {
+			return fmt.Errorf("monitor renewal beside a cursor reservation=%v, want it admitted", err)
+		}
+		if stored, _, err := readBindPart(p, "a"); err != nil || stored.CursorOp == nil || stored.CursorOp.Token != cursorToken {
+			return fmt.Errorf("the reservation did not survive the lease renewal: err=%v", err)
 		}
 		if _, err := CommitBindCursor(p, "a", cursorToken, "next-cursor"); err != nil {
 			return err
@@ -827,9 +829,10 @@ func TestMarkedNoopWriteCachesLegacyShadowForNextRead(t *testing.T) {
 
 // TestBindPartIdleLeaseRenewalDoesNotDecodeOrRewriteLargeState proves a lease
 // that is inside its renewal margin costs no State load, decode, encode or
-// write on repeated ticks, and that a live cursor operation of another owner
-// is still refused on that short path. Byte confirmation of the cached State
-// is allowed and is not counted against the claim.
+// write on repeated ticks, and that the short path stays that cheap, and is
+// still answered, while another owner's cursor operation is pending: the
+// lease is not what a cursor reservation protects. Byte confirmation of the
+// cached State is allowed and is not counted against the claim.
 func TestBindPartIdleLeaseRenewalDoesNotDecodeOrRewriteLargeState(t *testing.T) {
 	name := bindTestName
 	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache(name))
@@ -884,12 +887,12 @@ func TestBindPartIdleLeaseRenewalDoesNotDecodeOrRewriteLargeState(t *testing.T) 
 		t.Fatal(err)
 	}
 	before = ReadStateDecodeStats()
-	if _, err := AcquireOrRenewBindLease(p, name, "holder", "host-1", os.Getpid(), now.Add(time.Second), LeaseTTL, LeaseTTL/2, nil); !errors.Is(err, ErrBindPartOperation) {
-		t.Fatalf("same-owner lease borrowed across a live cursor operation: %v", err)
+	if _, err := AcquireOrRenewBindLease(p, name, "holder", "host-1", os.Getpid(), now.Add(time.Second), LeaseTTL, LeaseTTL/2, nil); err != nil {
+		t.Fatalf("the lease's short path beside a pending cursor operation: %v", err)
 	}
 	after = ReadStateDecodeStats()
 	if after.LoadStateCalls != before.LoadStateCalls || after.UnmarshalStatePasses != before.UnmarshalStatePasses {
-		t.Fatalf("pending-operation refusal fell back to a full State load: before=%+v after=%+v", before, after)
+		t.Fatalf("the short path beside a pending operation fell back to a full State load: before=%+v after=%+v", before, after)
 	}
 }
 

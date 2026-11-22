@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,8 +140,10 @@ func bindPartDiagnosis(p config.Paths, name, root string) string {
 	revision := fmt.Sprint(doc["revision"])
 	if op := obj(doc["status_op"]); op != nil {
 		failing = append(failing, "pending: a status operation")
-		if fmt.Sprint(op["expected_revision"]) != revision {
-			fail("status_op", "expected_revision differs from the document's revision")
+		expected, _ := strconv.ParseUint(fmt.Sprint(op["expected_revision"]), 10, 64)
+		current, _ := strconv.ParseUint(revision, 10, 64)
+		if expected == 0 || expected > current {
+			fail("status_op", "expected_revision is zero or above the document's revision")
 		}
 		a, _ := json.Marshal(op["notice"])
 		b, _ := json.Marshal(doc["own_notice"])

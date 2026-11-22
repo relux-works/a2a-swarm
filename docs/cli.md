@@ -3131,11 +3131,33 @@ Refusals, all without changing either file:
 | Sidecar present, State not marked | `bind state sidecar exists without its permanent State marker` |
 | Sidecar malformed: duplicate or unknown key, key in another case, mode other than 0600, symlink, bad seal, values that disagree with State's copy | `bind state sidecar is invalid` |
 | A generic State write that changes a field the sidecar owns, or that would replace a marked State by one without the marker | `provider-owned State fields require a typed bind-state operation` |
-| A cursor, status or control operation of another live owner is in progress | `bind-state operation is held by another owner` |
+| A binding is being started, stopped or handed over, or another live owner still holds the cursor, when the caller's deadline passes | `bind-state operation is held by another owner` |
 | An operation presented with an outdated revision or token | `stale bind-state revision or operation token` |
 
 A consumer's cache reuses a decoded State only while the file's stamp and its exact bytes are unchanged; the
 bytes are compared on every use, for a marked State as for an unmarked one.
+
+**Several commands on one marked identity.** The marker is permanent, so `wait`, `watch`, `inbox`, the hooks and
+`status` of an identity that has bound once use the sidecar whether or not a binding is active. They work side
+by side as they do on an unmarked identity:
+
+- No consumer holds the cursor while it waits for the homeserver. The cursor is reserved immediately before the
+  mailbox write and released with the cursor's move, so another command waits for it no longer than for one
+  write. `a2a project` reserves and moves its cursor in one step after its posts.
+- A consumer that finds the cursor moved since its sync leaves that range to the consumer that moved it, reloads
+  the State and goes on from the new cursor. No event is lost and none is received twice: the mailbox is written
+  before the cursor moves, and it holds each event once.
+- Every wait for the State lock ends at the caller's deadline. A hook that cannot get the lock within its budget
+  exits 0 with `the state file is locked by another a2a process`, as on an unmarked identity. A command without a
+  deadline waits, and waits at most ten seconds for a cursor that another live owner holds.
+- An own-status publication in flight holds neither the lease nor the cursor. Mail is delivered while it runs.
+  Only a second status publication, and the start, stop or handover of a binding, wait for it. A status write
+  that another command's cursor move or lease renewal overtakes before its request starts again within its
+  deadline; one whose binding was replaced or stopped meanwhile is refused as stale.
+- A read of the sidecar takes no lock. When a writer replaces the file during the read, the read starts again
+  on the new file; it does not report the sidecar as invalid.
+- The start, stop or handover of a binding is alone in the sidecar for the moment it takes; the other commands
+  wait for it within their deadline.
 
 **Older images.** An image that does not know the sidecar must not write the lease or the sync cursor of a
 marked identity. Two kinds exist:

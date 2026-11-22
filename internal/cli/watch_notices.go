@@ -75,10 +75,17 @@ func (a *App) watchNotices(ctx context.Context, rooms []string, all, asJSON, lis
 			if !config.BindPartActive(current) {
 				return config.ErrBindPartOperation
 			}
-			if err := config.RecoverBindOwnStatus(s.paths, s.name, a.bindOperationOwnerDead(ctx), a.Now()); err != nil {
+			// Leftovers of an owner that is gone are cleared. An operation of a
+			// live owner is its own and does not keep this consumer from starting.
+			lockCtx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second))
+			defer cancel()
+			if err := config.RecoverBindOwnStatusContext(lockCtx, s.paths, s.name, a.bindOperationOwnerDead(ctx), a.Now()); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
 				return err
 			}
-			return config.RecoverBindCursor(s.paths, s.name, a.bindOperationOwnerDead(ctx))
+			if err := config.RecoverBindCursorContext(lockCtx, s.paths, s.name, a.bindOperationOwnerDead(ctx)); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
+				return err
+			}
+			return nil
 		}); err != nil {
 			return err
 		}
@@ -166,49 +173,53 @@ func (a *App) noticeLoop(ctx context.Context, s *session, g *config.MonitorGener
 		if err := s.pauseAgentReplay(ctx, time.Time{}); err != nil {
 			return err
 		}
-		var cursorToken string
-		st, cursorToken, err = s.beginControlledCursor(ctx, "monitor", time.Now().Add(time.Second), func(current config.State) error {
-			m := current.Monitor
-			if m == nil || m.Generation != record.Generation || m.SessionID != record.SessionID || m.Host != record.Host || m.OwnerPID != record.OwnerPID || m.OwnerBirth != record.OwnerBirth || m.ConsumerPID != record.ConsumerPID || m.ConsumerBirth != record.ConsumerBirth || m.Phase != "streaming" {
-				return config.ErrMonitorGeneration
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
 		pollCtx, cancel := context.WithTimeout(ctx, poll)
 		resp, err := s.waitSync(pollCtx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch))
 		cancel()
 		if ctx.Err() != nil {
-			_ = s.abortBindCursor(cursorToken)
 			return nil
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
-				return errors.Join(err, abortErr)
-			}
 			continue
 		}
 		if err != nil {
-			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
-				return errors.Join(err, abortErr)
-			}
 			return err
 		}
+		// The cursor of a marked identity is reserved at the mailbox write and
+		// not while this loop is parked in its poll. The reservation is taken
+		// under the control lock, after this monitor has been found to be the
+		// recorded one still.
+		s.cursorKind = "monitor"
+		s.reserveCursor = func(ctx context.Context, _ config.State, deadline time.Time) (string, error) {
+			if deadline.IsZero() {
+				deadline = time.Now().Add(time.Second)
+			}
+			return s.reserveControlledCursor(ctx, "monitor", deadline, func(current config.State) error {
+				m := current.Monitor
+				if m == nil || m.Generation != record.Generation || m.SessionID != record.SessionID || m.Host != record.Host || m.OwnerPID != record.OwnerPID || m.OwnerBirth != record.OwnerBirth || m.ConsumerPID != record.ConsumerPID || m.ConsumerBirth != record.ConsumerBirth || m.Phase != "streaming" {
+					return config.ErrMonitorGeneration
+				}
+				return nil
+			})
+		}
+		var saved config.State
 		if st.NextBatch == "" {
-			st, err = s.savePositionAllReserved(ctx, resp, time.Time{}, filter.allRooms(), cursorToken)
+			saved, err = s.savePositionAll(ctx, resp, time.Time{}, filter.allRooms())
 		} else {
 			subs, readErr := s.getSubs(ctx)
 			if readErr != nil {
-				_ = s.abortBindCursor(cursorToken)
 				return readErr
 			}
-			st, err = s.ingestReserved(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}, cursorToken)
+			saved, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{})
 		}
-		if err != nil {
+		if cursorTakenElsewhere(err) {
+			if saved, err = config.LoadState(s.paths, s.name); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
 		}
+		st = saved
 	}
 	return nil
 }

@@ -33,7 +33,12 @@ var (
 	ErrBindPartOwned     = errors.New("provider-owned State fields require a typed bind-state operation")
 	ErrBindPartStale     = errors.New("stale bind-state revision or operation token")
 	ErrBindPartOperation = errors.New("bind-state operation is held by another owner")
-	ErrBindPartWrite     = errors.New("bind state sidecar write outcome is uncertain")
+	// ErrBindPartHeld is ErrBindPartOperation for exactly one case: a cursor
+	// or status operation whose recorded owner is alive, so it is not
+	// recovered. A caller that only wanted to clear a dead owner's leftover
+	// can go on; errors.Is(err, ErrBindPartOperation) still holds.
+	ErrBindPartHeld  = fmt.Errorf("%w", ErrBindPartOperation)
+	ErrBindPartWrite = errors.New("bind state sidecar write outcome is uncertain")
 )
 
 // bindPartDisk is the complete format-1 sidecar. The fixed structs deliberately
@@ -484,7 +489,7 @@ func validateBindPart(name string, part bindPartDisk) error {
 	}
 	if part.StatusOp != nil {
 		op := part.StatusOp
-		if !lowerHex(op.Token, 32) || !hostRef(op.Generation, 128) || !hostRef(op.SessionID, 200) || op.ExpectedRevision != part.Revision || !hostRef(op.Holder, 200) || !hostRef(op.Host, 128) || op.PID <= 1 || !hostRef(op.Birth, 128) || validateBindOwnNotice(op.Notice) != nil || !reflect.DeepEqual(op.Notice, part.OwnNotice) {
+		if !lowerHex(op.Token, 32) || !hostRef(op.Generation, 128) || !hostRef(op.SessionID, 200) || op.ExpectedRevision == 0 || op.ExpectedRevision > part.Revision || !hostRef(op.Holder, 200) || !hostRef(op.Host, 128) || op.PID <= 1 || !hostRef(op.Birth, 128) || validateBindOwnNotice(op.Notice) != nil || !reflect.DeepEqual(op.Notice, part.OwnNotice) {
 			return ErrBindPartInvalid
 		}
 	}
@@ -510,7 +515,11 @@ func validateBindPart(name string, part bindPartDisk) error {
 	if part.ControlTxn != nil {
 		pending++
 	}
-	if pending > 1 {
+	// A control transaction replaces the binding and is alone. A cursor
+	// reservation and a status publication concern different fields and may be
+	// pending together: a publication takes as long as its request, and no
+	// delivery waits for it.
+	if part.ControlTxn != nil && pending > 1 {
 		return ErrBindPartInvalid
 	}
 	if part.Writer.Seal != bindPartSeal(part) {

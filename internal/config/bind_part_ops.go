@@ -488,6 +488,24 @@ func withBindPartOperationLock(p Paths, name string, rejectPending bool, fn func
 	return withBindPartOperationLockBy(p, name, rejectPending, lockFile, fn)
 }
 
+// bindOperationLock returns the State-lock function of one typed operation.
+// A context whose deadline passes while another process holds the lock gives
+// ErrLockTimeout, the answer UpdateStateContext gives an ordinary writer; a
+// cancelled context gives its own error. Either way the operation has changed
+// nothing. A caller without a context waits without limit.
+func bindOperationLock(ctx context.Context) func(string) (func(), error) {
+	if ctx == nil {
+		return lockFile
+	}
+	return func(path string) (func(), error) {
+		unlock, err := lockFileContext(ctx, path)
+		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+			return nil, ErrLockTimeout
+		}
+		return unlock, err
+	}
+}
+
 func withBindPartOperationLockBy(p Paths, name string, rejectPending bool, lock func(string) (func(), error), fn func(State, *bindPartDisk) error) (State, error) {
 	return withStateLock(p, name, lock, func(state State) (State, error) {
 		if !bindPartMarker(state) {
@@ -500,7 +518,11 @@ func withBindPartOperationLockBy(p Paths, name string, rejectPending bool, lock 
 		if err != nil {
 			return state, err
 		}
-		if rejectPending && (part.CursorOp != nil || part.StatusOp != nil || part.ControlTxn != nil) {
+		// Only a control transaction excludes the lease and the plain sidecar
+		// writers: it carries its own copy of the lease and installs it when
+		// it completes. A cursor reservation or a status publication leaves
+		// the lease alone and is left alone by it.
+		if rejectPending && part.ControlTxn != nil {
 			return state, ErrBindPartOperation
 		}
 		before := cloneBindPartDisk(part)
@@ -670,7 +692,7 @@ func cachedBindLeaseNoop(p Paths, name, holder, host string, now time.Time, rene
 	if base.bindPartRollback != bindPartRollbackOK {
 		return BindPartView{}, true, ErrBindPartOperation
 	}
-	if part.CursorOp != nil || part.StatusOp != nil || part.ControlTxn != nil {
+	if part.ControlTxn != nil {
 		return BindPartView{}, true, ErrBindPartOperation
 	}
 	lease := part.Lease
@@ -721,15 +743,25 @@ func RenewBindMonitorLease(p Paths, name string, record Monitor, owner *MonitorO
 }
 
 func BeginBindCursor(p Paths, name string, token, kind, expectedCursor, generation string, owner BindOperationOwner, dead func(BindOperationOwner) bool) (BindCursorReservation, error) {
+	return beginBindCursorBy(lockFile, p, name, token, kind, expectedCursor, generation, owner, dead)
+}
+
+// BeginBindCursorContext is BeginBindCursor with a bounded wait for the State
+// lock: see bindOperationLock.
+func BeginBindCursorContext(ctx context.Context, p Paths, name string, token, kind, expectedCursor, generation string, owner BindOperationOwner, dead func(BindOperationOwner) bool) (BindCursorReservation, error) {
+	return beginBindCursorBy(bindOperationLock(ctx), p, name, token, kind, expectedCursor, generation, owner, dead)
+}
+
+func beginBindCursorBy(lock func(string) (func(), error), p Paths, name string, token, kind, expectedCursor, generation string, owner BindOperationOwner, dead func(BindOperationOwner) bool) (BindCursorReservation, error) {
 	if !lowerHex(token, 32) || !hostRef(owner.Holder, 200) || !hostRef(owner.Host, 128) || owner.PID <= 1 || !hostRef(owner.Birth, 128) || (kind != "bind" && kind != "delivery" && kind != "monitor" && kind != "projector" && kind != "runtime") {
 		return BindCursorReservation{}, ErrBindPartInvalid
 	}
 	var reservation BindCursorReservation
-	_, err := withBindPartOperationLock(p, name, false, func(_ State, part *bindPartDisk) error {
+	_, err := withBindPartOperationLockBy(p, name, false, lock, func(_ State, part *bindPartDisk) error {
 		if expectedCursor != part.NextBatch || generation != "" && generation != part.Generation {
 			return ErrBindPartStale
 		}
-		if part.StatusOp != nil || part.ControlTxn != nil {
+		if part.ControlTxn != nil {
 			return ErrBindPartOperation
 		}
 		if op := part.CursorOp; op != nil {
@@ -739,7 +771,7 @@ func BeginBindCursor(p Paths, name string, token, kind, expectedCursor, generati
 			}
 			prior := BindOperationOwner{Holder: op.Holder, Host: op.Host, PID: op.PID, Birth: op.Birth}
 			if dead == nil || !dead(prior) {
-				return ErrBindPartOperation
+				return ErrBindPartHeld
 			}
 		}
 		part.CursorOp = &bindPartCursorOperation{Token: token, Kind: kind, Holder: owner.Holder, Host: owner.Host, PID: owner.PID, Birth: owner.Birth, ExpectedCursor: expectedCursor, ExpectedGeneration: generation}
@@ -750,7 +782,18 @@ func BeginBindCursor(p Paths, name string, token, kind, expectedCursor, generati
 }
 
 func CommitBindCursor(p Paths, name, token, nextCursor string) (BindPartView, error) {
-	_, err := withBindPartOperationLock(p, name, false, func(_ State, part *bindPartDisk) error {
+	return commitBindCursorBy(lockFile, p, name, token, nextCursor)
+}
+
+// CommitBindCursorContext is CommitBindCursor with a bounded wait for the
+// State lock. After ErrLockTimeout the reservation is still held and the
+// cursor has not moved.
+func CommitBindCursorContext(ctx context.Context, p Paths, name, token, nextCursor string) (BindPartView, error) {
+	return commitBindCursorBy(bindOperationLock(ctx), p, name, token, nextCursor)
+}
+
+func commitBindCursorBy(lock func(string) (func(), error), p Paths, name, token, nextCursor string) (BindPartView, error) {
+	_, err := withBindPartOperationLockBy(p, name, false, lock, func(_ State, part *bindPartDisk) error {
 		op := part.CursorOp
 		if op == nil || op.Token != token || part.NextBatch != op.ExpectedCursor || op.ExpectedGeneration != "" && part.Generation != op.ExpectedGeneration {
 			return ErrBindPartStale
@@ -810,7 +853,18 @@ func TryCommitEmptyBindCursor(p Paths, name, token, nextCursor string, snapshot 
 }
 
 func AbortBindCursor(p Paths, name, token string) error {
-	_, err := withBindPartOperationLock(p, name, false, func(_ State, part *bindPartDisk) error {
+	return abortBindCursorBy(lockFile, p, name, token)
+}
+
+// AbortBindCursorContext is AbortBindCursor with a bounded wait for the State
+// lock. After ErrLockTimeout the reservation is still held: its owner aborts
+// it again later, or another consumer discards it once the owner is gone.
+func AbortBindCursorContext(ctx context.Context, p Paths, name, token string) error {
+	return abortBindCursorBy(bindOperationLock(ctx), p, name, token)
+}
+
+func abortBindCursorBy(lock func(string) (func(), error), p Paths, name, token string) error {
+	_, err := withBindPartOperationLockBy(p, name, false, lock, func(_ State, part *bindPartDisk) error {
 		if part.CursorOp == nil || part.CursorOp.Token != token {
 			return ErrBindPartStale
 		}
@@ -824,14 +878,24 @@ func AbortBindCursor(p Paths, name, token string) error {
 // recorded process owner is proven gone. The cursor itself remains unchanged,
 // so the next sync replays the original range through existing event dedup.
 func RecoverBindCursor(p Paths, name string, dead func(BindOperationOwner) bool) error {
-	_, err := withBindPartOperationLock(p, name, false, func(_ State, part *bindPartDisk) error {
+	return recoverBindCursorBy(lockFile, p, name, dead)
+}
+
+// RecoverBindCursorContext is RecoverBindCursor with a bounded wait for the
+// State lock: see bindOperationLock.
+func RecoverBindCursorContext(ctx context.Context, p Paths, name string, dead func(BindOperationOwner) bool) error {
+	return recoverBindCursorBy(bindOperationLock(ctx), p, name, dead)
+}
+
+func recoverBindCursorBy(lock func(string) (func(), error), p Paths, name string, dead func(BindOperationOwner) bool) error {
+	_, err := withBindPartOperationLockBy(p, name, false, lock, func(_ State, part *bindPartDisk) error {
 		op := part.CursorOp
 		if op == nil {
 			return nil
 		}
 		owner := BindOperationOwner{Holder: op.Holder, Host: op.Host, PID: op.PID, Birth: op.Birth}
 		if dead == nil || !dead(owner) {
-			return ErrBindPartOperation
+			return ErrBindPartHeld
 		}
 		part.CursorOp = nil
 		return nil
@@ -840,10 +904,20 @@ func RecoverBindCursor(p Paths, name string, dead func(BindOperationOwner) bool)
 }
 
 func RecordBindNotice(p Paths, name string, expectedRevision uint64, generation string, notice OwnNoticeObservation, publication string) (BindPartView, error) {
+	return recordBindNoticeBy(lockFile, p, name, expectedRevision, generation, notice, publication)
+}
+
+// RecordBindNoticeContext is RecordBindNotice with a bounded wait for the
+// State lock: see bindOperationLock.
+func RecordBindNoticeContext(ctx context.Context, p Paths, name string, expectedRevision uint64, generation string, notice OwnNoticeObservation, publication string) (BindPartView, error) {
+	return recordBindNoticeBy(bindOperationLock(ctx), p, name, expectedRevision, generation, notice, publication)
+}
+
+func recordBindNoticeBy(lock func(string) (func(), error), p Paths, name string, expectedRevision uint64, generation string, notice OwnNoticeObservation, publication string) (BindPartView, error) {
 	if err := validateBindOwnNotice(bindNoticeFromObservation(notice)); err != nil || !validBindNoticePublication(publication) {
 		return BindPartView{}, ErrBindPartInvalid
 	}
-	_, err := withBindPartOperationLock(p, name, false, func(_ State, part *bindPartDisk) error {
+	_, err := withBindPartOperationLockBy(p, name, false, lock, func(_ State, part *bindPartDisk) error {
 		if part.Revision != expectedRevision || part.Generation != generation {
 			return ErrBindPartStale
 		}
@@ -1057,10 +1131,20 @@ func TransferBindSessionAndLease(p Paths, name string, expected BindControlExpec
 }
 
 func BeginBindOwnStatus(p Paths, name, token string, expectedRevision uint64, generation, sessionID string, owner BindOperationOwner, until, now time.Time) error {
+	return beginBindOwnStatusBy(lockFile, p, name, token, expectedRevision, generation, sessionID, owner, until, now)
+}
+
+// BeginBindOwnStatusContext is BeginBindOwnStatus with a bounded wait for the
+// State lock: see bindOperationLock.
+func BeginBindOwnStatusContext(ctx context.Context, p Paths, name, token string, expectedRevision uint64, generation, sessionID string, owner BindOperationOwner, until, now time.Time) error {
+	return beginBindOwnStatusBy(bindOperationLock(ctx), p, name, token, expectedRevision, generation, sessionID, owner, until, now)
+}
+
+func beginBindOwnStatusBy(lock func(string) (func(), error), p Paths, name, token string, expectedRevision uint64, generation, sessionID string, owner BindOperationOwner, until, now time.Time) error {
 	if !lowerHex(token, 32) || !hostRef(generation, 128) || !hostRef(sessionID, 200) || !hostRef(owner.Holder, 200) || !hostRef(owner.Host, 128) || owner.PID <= 1 || !hostRef(owner.Birth, 128) || !until.After(now) {
 		return ErrBindPartInvalid
 	}
-	_, err := withStateLock(p, name, lockFile, func(state State) (State, error) {
+	_, err := withStateLock(p, name, lock, func(state State) (State, error) {
 		if !bindPartMarker(state) || state.bindPartRollback != bindPartRollbackOK {
 			return state, ErrBindPartUnmarked
 		}
@@ -1076,7 +1160,7 @@ func BeginBindOwnStatus(p Paths, name, token string, expectedRevision uint64, ge
 		if part.Revision != expectedRevision || part.Generation != generation || part.SessionID != sessionID {
 			return state, ErrBindPartStale
 		}
-		if part.CursorOp != nil || part.StatusOp != nil || part.ControlTxn != nil {
+		if part.StatusOp != nil || part.ControlTxn != nil {
 			return state, ErrBindPartOperation
 		}
 		if state.OwnStatusWrite != nil {
@@ -1123,7 +1207,17 @@ func BeginBindOwnStatus(p Paths, name, token string, expectedRevision uint64, ge
 // owner is proven gone. It preserves uncertainty and never infers that an
 // interrupted PUT was published.
 func RecoverBindOwnStatus(p Paths, name string, dead func(BindOperationOwner) bool, now time.Time) error {
-	_, err := withStateLock(p, name, lockFile, func(state State) (State, error) {
+	return recoverBindOwnStatusBy(lockFile, p, name, dead, now)
+}
+
+// RecoverBindOwnStatusContext is RecoverBindOwnStatus with a bounded wait for
+// the State lock: see bindOperationLock.
+func RecoverBindOwnStatusContext(ctx context.Context, p Paths, name string, dead func(BindOperationOwner) bool, now time.Time) error {
+	return recoverBindOwnStatusBy(bindOperationLock(ctx), p, name, dead, now)
+}
+
+func recoverBindOwnStatusBy(lock func(string) (func(), error), p Paths, name string, dead func(BindOperationOwner) bool, now time.Time) error {
+	_, err := withStateLock(p, name, lock, func(state State) (State, error) {
 		if !bindPartMarker(state) || state.bindPartRollback != bindPartRollbackOK {
 			return state, ErrBindPartOperation
 		}
@@ -1143,7 +1237,7 @@ func RecoverBindOwnStatus(p Paths, name string, dead func(BindOperationOwner) bo
 		// finalization boundary; it is safe to clear only as unavailable. A
 		// present token can be released only after its process is proven gone.
 		if state.OwnStatusWrite != nil && (dead == nil || !dead(owner)) {
-			return state, ErrBindPartOperation
+			return state, ErrBindPartHeld
 		}
 		working, err := bindWorkingCopy(p, name, state)
 		if err != nil {
@@ -1169,10 +1263,21 @@ func RecoverBindOwnStatus(p Paths, name string, dead func(BindOperationOwner) bo
 // AbortBindOwnStatus is the exact token owner's conservative cleanup after a
 // failed post-PUT finalizer. It never records success and keeps uncertainty.
 func AbortBindOwnStatus(p Paths, name, token string, now time.Time) error {
+	return abortBindOwnStatusBy(lockFile, p, name, token, now)
+}
+
+// AbortBindOwnStatusContext is AbortBindOwnStatus with a bounded wait for the
+// State lock. After ErrLockTimeout the status operation is still pending; it
+// is cleared as uncertain once its owner is gone.
+func AbortBindOwnStatusContext(ctx context.Context, p Paths, name, token string, now time.Time) error {
+	return abortBindOwnStatusBy(bindOperationLock(ctx), p, name, token, now)
+}
+
+func abortBindOwnStatusBy(lock func(string) (func(), error), p Paths, name, token string, now time.Time) error {
 	if !lowerHex(token, 32) {
 		return ErrBindPartInvalid
 	}
-	_, err := withStateLock(p, name, lockFile, func(state State) (State, error) {
+	_, err := withStateLock(p, name, lock, func(state State) (State, error) {
 		if !bindPartMarker(state) || state.bindPartRollback != bindPartRollbackOK {
 			return state, ErrBindPartOperation
 		}
@@ -1205,10 +1310,21 @@ func AbortBindOwnStatus(p Paths, name, token string, now time.Time) error {
 }
 
 func FinishBindOwnStatus(p Paths, name string, result BindOwnStatusResult, now time.Time) error {
+	return finishBindOwnStatusBy(lockFile, p, name, result, now)
+}
+
+// FinishBindOwnStatusContext is FinishBindOwnStatus with a bounded wait for
+// the State lock. After ErrLockTimeout the status operation is still pending
+// and its result is not recorded: the publication stays uncertain.
+func FinishBindOwnStatusContext(ctx context.Context, p Paths, name string, result BindOwnStatusResult, now time.Time) error {
+	return finishBindOwnStatusBy(bindOperationLock(ctx), p, name, result, now)
+}
+
+func finishBindOwnStatusBy(lock func(string) (func(), error), p Paths, name string, result BindOwnStatusResult, now time.Time) error {
 	if !lowerHex(result.Token, 32) || !validBindNoticePublication(result.Publication) || result.Published && (result.Publication != "published" || result.Status == nil) || !result.Published && result.Publication == "published" {
 		return ErrBindPartInvalid
 	}
-	_, err := withStateLock(p, name, lockFile, func(state State) (State, error) {
+	_, err := withStateLock(p, name, lock, func(state State) (State, error) {
 		if !bindPartMarker(state) || state.bindPartRollback != bindPartRollbackOK {
 			return state, ErrBindPartUnmarked
 		}
@@ -1217,7 +1333,7 @@ func FinishBindOwnStatus(p Paths, name string, result BindOwnStatusResult, now t
 			return state, err
 		}
 		op := part.StatusOp
-		if op == nil || op.Token != result.Token || op.Generation != part.Generation || op.SessionID != part.SessionID || op.ExpectedRevision != part.Revision || state.OwnStatusWrite == nil || state.OwnStatusWrite.Token != result.Token {
+		if op == nil || op.Token != result.Token || op.Generation != part.Generation || op.SessionID != part.SessionID || state.OwnStatusWrite == nil || state.OwnStatusWrite.Token != result.Token {
 			return state, ErrBindPartStale
 		}
 		if result.Published && (validateBindOwnNotice(bindNoticeFromObservation(result.Status.OwnNotice)) != nil || !reflect.DeepEqual(op.Notice, bindNoticeFromObservation(result.Status.OwnNotice))) {

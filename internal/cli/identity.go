@@ -568,13 +568,23 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 			leaseCtx, cancel = context.WithDeadline(leaseCtx, deadline)
 		}
 		defer cancel()
-		if err := config.RecoverBindCursor(s.paths, s.name, a.bindOperationOwnerDead(leaseCtx)); err != nil {
+		// Every lock wait below is bounded by the caller's deadline, as the
+		// unmarked branch's is. An operation of another live owner is not this
+		// caller's to recover and does not stand in the way of the lease; only
+		// a binding's control transaction does, for the moment it takes.
+		err = heldRetry(leaseCtx, func() error {
+			if err := config.RecoverBindCursorContext(leaseCtx, s.paths, s.name, a.bindOperationOwnerDead(leaseCtx)); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
+				return err
+			}
+			if err := config.RecoverBindOwnStatusContext(leaseCtx, s.paths, s.name, a.bindOperationOwnerDead(leaseCtx), a.Now()); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
+				return err
+			}
+			_, err := config.AcquireOrRenewBindLeaseCheckedContext(leaseCtx, s.paths, s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, ttl/2, a.leaseDeadBy(s.paths, deadline), check)
 			return err
+		})
+		if errors.Is(err, context.DeadlineExceeded) && !deadline.IsZero() && !time.Now().Before(deadline) {
+			err = config.ErrLockTimeout
 		}
-		if err := config.RecoverBindOwnStatus(s.paths, s.name, a.bindOperationOwnerDead(leaseCtx), a.Now()); err != nil {
-			return err
-		}
-		_, err = config.AcquireOrRenewBindLeaseCheckedContext(leaseCtx, s.paths, s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, ttl/2, a.leaseDeadBy(s.paths, deadline), check)
 	} else {
 		_, err = config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 			if err := s.checkConnection(); err != nil {
@@ -596,6 +606,41 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 		fmt.Fprintf(a.Stderr, "a2a: lease of %s taken over: %s\n", s.name, a.leaseReuse.note())
 	}
 	return err
+}
+
+// heldPoll is the pause between two attempts of an operation that another
+// live owner holds, and heldLimit the longest a caller without a deadline
+// waits for one. A holder releases within one mailbox write, or within one
+// control transaction of a binding; heldLimit is the budget of the one
+// request a bound consumer can make while it holds a reservation.
+const (
+	heldPoll  = 10 * time.Millisecond
+	heldLimit = nativeRPCTimeout
+)
+
+// heldRetry runs attempt until it no longer answers that another owner holds
+// a bind-state operation, until ctx ends, or until heldLimit has passed. The
+// attempts hold no lock between them. What it returns at the end is the last
+// answer, so a holder that never releases is still reported as one.
+func heldRetry(ctx context.Context, attempt func() error) error {
+	limit := time.NewTimer(heldLimit)
+	defer limit.Stop()
+	for {
+		err := attempt()
+		if !errors.Is(err, config.ErrBindPartOperation) {
+			return err
+		}
+		pause := time.NewTimer(heldPoll)
+		select {
+		case <-ctx.Done():
+			pause.Stop()
+			return err
+		case <-limit.C:
+			pause.Stop()
+			return err
+		case <-pause.C:
+		}
+	}
 }
 
 // operationOwnerStart returns the start token that tells one process from a

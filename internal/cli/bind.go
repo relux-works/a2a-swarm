@@ -836,6 +836,14 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 						_, err = s.syncNow(syncCtx, start.state, subs.Subs, time.Now().Add(nativeRPCTimeout))
 					}
 				}
+				if cursorTakenElsewhere(err) {
+					// A hook or command of this session delivered the range, or
+					// was writing it at that moment. The mail is in the mailbox
+					// or will be read by the next cycle from the cursor as it
+					// stands. That is no failed cycle: it must not back the
+					// consumer off or mark its notice unknown.
+					err, mailboxProvenEmpty = nil, false
+				}
 			}
 			cancel()
 		}

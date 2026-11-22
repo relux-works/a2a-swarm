@@ -838,13 +838,8 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 		if err := s.pauseAgentReplay(ctx, time.Time{}); err != nil {
 			return err
 		}
-		cursorToken, err := s.beginBindCursor(ctx, st, "runtime", time.Now().Add(nativeRPCTimeout))
-		if err != nil {
-			return err
-		}
 		resp, err := s.client.Sync(ctx, st.NextBatch, poll, deliverySyncFilter(st.NextBatch))
 		if err != nil {
-			_ = s.abortBindCursor(cursorToken)
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -852,11 +847,14 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 		}
 		subs, err := s.getSubs(ctx)
 		if err != nil {
-			_ = s.abortBindCursor(cursorToken)
 			return err
 		}
-		_, err = s.ingestReserved(ctx, resp, st.NextBatch, subs.Subs, nil, time.Now().Add(nativeRPCTimeout), cursorToken)
-		if err != nil {
+		// The cursor of a marked identity is reserved inside ingest, around
+		// the mailbox write, and not while this loop is parked in its poll. A
+		// cursor another consumer moved meanwhile is read again at the top of
+		// the loop.
+		s.cursorKind = "runtime"
+		if _, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, nil, time.Now().Add(nativeRPCTimeout)); err != nil && !cursorTakenElsewhere(err) {
 			return err
 		}
 	}
