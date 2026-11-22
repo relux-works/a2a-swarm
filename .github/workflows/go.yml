@@ -162,7 +162,11 @@ jobs:
       - run: go vet ./...
 
   voice-native:
-    if: github.event_name == 'push'
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       (startsWith(github.head_ref, 'train-') || contains(github.event.pull_request.labels.*.name, 'full-ci')))
     # Keep the existing full-suite "test" check stable. Qualify the optional
     # native linkage and affected voice contracts separately, without rerunning
     # unrelated launcher/credential fixtures a second time.
