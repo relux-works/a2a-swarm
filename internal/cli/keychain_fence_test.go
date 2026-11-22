@@ -747,8 +747,8 @@ func TestKeychainUnstartedWriteDeadlineLeavesNoFence(t *testing.T) {
 //     timer and wakes every sleeper due in that time;
 //   - in the same two ways after the later writes and reads;
 //   - when the bubble has ended. A goroutine of the store that still waits
-//     then, for a sleep longer than lateCallHorizon or for anything else,
-//     fails the test at that point: the bubble reports it as a deadlock.
+//     then, for a sleep that outlasts both moves of the clock or for anything
+//     else, fails the test at that point: the bubble reports it as a deadlock.
 //
 // What the caller of the failed write gets depends on the state directory,
 // which holds the fence and the cooldown marker alike:
@@ -763,9 +763,12 @@ func TestKeychainUnstartedWriteDeadlineLeavesNoFence(t *testing.T) {
 // directory after the fence's rename, so the test needs a non-root user. It
 // does not show that a real file system fails there, and it does not cover a
 // fence that can no longer be read: clearFence would fail before its removal.
-// It does not see a call that a timer makes later than lateCallHorizon when
-// no goroutine waits for that timer, nor one that is started from outside
-// the Go clock, such as another process. The backend is the fake.
+// The clock is moved by lateCallHorizon twice, once after the first write and
+// once after the later writes and reads. The test does not see a call that a
+// timer makes when no goroutine waits for that timer and the timer is due
+// after the second move, about two lateCallHorizons after the first write
+// returned. Nor does it see a call that is started from outside the Go clock,
+// such as another process. The backend is the fake.
 // The successful removal is TestKeychainUnstartedWriteDeadlineLeavesNoFence.
 func TestKeychainUnstartedWriteDeadlineKeepsFenceWhenRemovalFails(t *testing.T) {
 	if os.Geteuid() == 0 {
