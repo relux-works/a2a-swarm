@@ -3159,6 +3159,11 @@ by side as they do on an unmarked identity:
 - The start, stop or handover of a binding is alone in the sidecar for the moment it takes; the other commands
   wait for it within their deadline.
 
+`BIND_FIXTURES_MARKED=1 go test -v ./internal/cli` runs the command tests with every fixture identity marked from
+the start. That lane is not expected to pass: fixtures that write a binding's fields straight into State are
+refused by a marked State, by design. `go run ./tools/markedlane FILE...` reads the lane's output, counts those
+fixture refusals and names every other failure and every test that was running at a timeout.
+
 **Older images.** An image that does not know the sidecar must not write the lease or the sync cursor of a
 marked identity. Two kinds exist:
 

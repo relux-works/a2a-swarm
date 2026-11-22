@@ -86,8 +86,25 @@ func (e *env) agent(name string) string {
 	uid, tok := e.hs.addUser(name)
 	e.writeCred(name, uid, tok, 0o600)
 	e.tokens[name] = tok
+	if os.Getenv(markedFixturesEnv) == "1" {
+		if _, err := config.EnsureBindPart(config.Paths{Base: e.dir}, name, config.BindPartOpenOptions{Now: time.Now()}); err != nil {
+			e.t.Fatalf("marking fixture identity %s: %v", name, err)
+		}
+	}
 	return uid
 }
+
+// markedFixturesEnv, set to 1, is the opt-in all-marked lane: every fixture
+// identity starts with a marked State and a bind-state sidecar, as an
+// identity that has bound before. The ordinary suite marks an identity only
+// where a test binds it, so on its own it never runs wait, inbox, the hooks or
+// status on a marked identity without a binding.
+//
+// The lane is not expected to pass. Fixtures that write a binding's fields
+// straight into State are refused by a marked State, by design, and fail with
+// that refusal. tools/markedlane sorts the lane's output and names the
+// failures that are not explained by it.
+const markedFixturesEnv = "BIND_FIXTURES_MARKED"
 
 func (e *env) writeCred(name, uid, tok string, mode os.FileMode) {
 	e.t.Helper()

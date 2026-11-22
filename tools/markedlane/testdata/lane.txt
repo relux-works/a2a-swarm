@@ -1,0 +1,41 @@
+=== RUN   TestPasses
+--- PASS: TestPasses (0.01s)
+=== RUN   TestFixtureWrite
+=== RUN   TestFixtureWrite/one
+    fixture_test.go:10: provider-owned State fields require a typed bind-state operation
+=== RUN   TestFixtureWrite/two
+    fixture_test.go:10: provider-owned State fields require a typed bind-state operation
+--- FAIL: TestFixtureWrite (0.02s)
+    --- FAIL: TestFixtureWrite/one (0.01s)
+    --- FAIL: TestFixtureWrite/two (0.01s)
+=== RUN   TestHeld
+    held_test.go:20: a2a: bind-state operation is held by another owner
+--- FAIL: TestHeld (0.03s)
+=== RUN   TestMixed
+    mixed_test.go:5: provider-owned State fields require a typed bind-state operation
+    mixed_test.go:9: stale bind-state revision or operation token
+--- FAIL: TestMixed (0.03s)
+=== RUN   TestUnexplained
+    plain_test.go:7: wait returned instead of staying parked
+--- FAIL: TestUnexplained (0.40s)
+=== RUN   TestParallelA
+=== PAUSE TestParallelA
+=== RUN   TestParallelB
+=== PAUSE TestParallelB
+=== CONT  TestParallelA
+=== CONT  TestParallelB
+    b_test.go:3: bind state sidecar is invalid
+=== NAME  TestParallelA
+    a_test.go:3: provider-owned State fields require a typed bind-state operation
+--- FAIL: TestParallelB (0.00s)
+--- FAIL: TestParallelA (0.00s)
+=== RUN   TestHangs
+panic: test timed out after 16m0s
+	running tests:
+		TestHangs (13m5s)
+
+goroutine 7275 [running]:
+testing.(*M).startAlarm.func1()
+		/go/src/testing/testing.go:2802 +0x498
+FAIL	example/internal/cli	960.788s
+FAIL
