@@ -8,22 +8,31 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
 
 const (
-	bindPartMaxBytes    = 16 << 10
-	bindPartFormat      = 1
-	bindPartProtocol    = 1
-	bindPartMarkerKey   = "bind_part"
-	bindPartRollbackOK  = "normal"
-	bindPartRollbackPre = "preparing"
-	bindPartRollbackOut = "exported"
+	// bindCursorBudget is the largest sync cursor the sidecar holds, in bytes
+	// as State stores it. The document holds a cursor twice: as the cursor,
+	// and as State's copy of it at migration. A reservation records the
+	// digest of the cursor it expects, not the cursor.
+	bindCursorBudget = 8 << 10
+	// bindNoticeTimestampMax bounds an own-notice timestamp. The program
+	// writes RFC 3339 with nanoseconds, 35 bytes at most.
+	bindNoticeTimestampMax = 64
+	bindPartFormat         = 1
+	bindPartProtocol       = 1
+	bindPartMarkerKey      = "bind_part"
+	bindPartRollbackOK     = "normal"
+	bindPartRollbackPre    = "preparing"
+	bindPartRollbackOut    = "exported"
 )
 
 var (
@@ -39,7 +48,85 @@ var (
 	// can go on; errors.Is(err, ErrBindPartOperation) still holds.
 	ErrBindPartHeld  = fmt.Errorf("%w", ErrBindPartOperation)
 	ErrBindPartWrite = errors.New("bind state sidecar write outcome is uncertain")
+	// ErrBindPartTooLarge refuses a write before the file is replaced: a
+	// cursor is over its budget, or the document over its size limit.
+	ErrBindPartTooLarge = errors.New("bind state sidecar would exceed its size limit; nothing was written")
 )
+
+// bindPartMaxBytes is the largest document a writer writes and a reader
+// accepts. It is derived, not chosen: the largest document that holds no
+// cursor, plus two cursors of the budget in their longest JSON form.
+var bindPartMaxBytes = bindPartLargestWithoutCursor() + 2*jsonStringGrowth(bindCursorBudget)
+
+// jsonStringGrowth is the most bytes that n bytes of a string add to its JSON
+// form: a byte the encoder escapes becomes six.
+func jsonStringGrowth(n int) int { return 6 * n }
+
+// bindNoticePublications are the publication results the sidecar admits.
+var bindNoticePublications = []string{"", "published", "unavailable: own notice changed", "unavailable: no liveness record (a2a status set)", "unavailable: invalid notice retry policy", "unavailable: own liveness publication retry pending", "unavailable: own liveness publication failed"}
+
+// bindCursorKinds and bindControlKinds are the kinds an operation record admits.
+var (
+	bindCursorKinds  = []string{"bind", "delivery", "monitor", "projector", "runtime"}
+	bindControlKinds = []string{"create", "stop", "handover", "recover"}
+)
+
+// bindCursorDigest is the digest a reservation records for the cursor it
+// expects: SHA-256 of the cursor's exact bytes, in lower-case hex.
+func bindCursorDigest(cursor string) string {
+	sum := sha256.Sum256([]byte(cursor))
+	return hex.EncodeToString(sum[:])
+}
+
+// bindPartLargestWithoutCursor encodes a document whose every field other
+// than the two cursors is as long as the validator admits, and returns its
+// size. Every operation record is present at once, which no valid document
+// has, so the result is an upper bound. Text fields are filled with a
+// character the encoder escapes to six bytes.
+func bindPartLargestWithoutCursor() int {
+	text := func(n int) string { return strings.Repeat("<", n) }
+	digits := func(n int) string { return strings.Repeat("f", n) }
+	longest := func(values []string) string {
+		out := ""
+		for _, v := range values {
+			if len(v) > len(out) {
+				out = v
+			}
+		}
+		return out
+	}
+	yes := true
+	lease := func() *bindPartLease {
+		return &bindPartLease{Holder: text(200), Host: text(128), PID: math.MaxInt,
+			Expires: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.FixedZone("", -(23*3600+59*60)))}
+	}
+	notice := bindPartOwnNotice{PossiblyOrphaned: &yes, Reason: "owned-notice-orphan-suspected",
+		Since: text(bindNoticeTimestampMax), ObservedAt: text(bindNoticeTimestampMax)}
+	publication := longest(bindNoticePublications)
+	part := bindPartDisk{
+		Format: bindPartFormat, Identity: text(64), Revision: math.MaxUint64,
+		Generation: text(128), SessionID: text(200), Stopped: true, Lease: lease(),
+		OwnNotice: notice, NoticePublication: publication,
+		CursorOp: &bindPartCursorOperation{Token: digits(32), Kind: longest(bindCursorKinds),
+			Holder: text(200), Host: text(128), PID: math.MaxInt, Birth: text(128),
+			ExpectedCursorDigest: digits(64), ExpectedGeneration: text(128)},
+		StatusOp: &bindPartStatusOperation{Token: digits(32), Generation: text(128), SessionID: text(200),
+			ExpectedRevision: math.MaxUint64, Notice: notice, Holder: text(200), Host: text(128), PID: math.MaxInt, Birth: text(128)},
+		ControlTxn: &bindPartControlTxn{Token: digits(32), Kind: longest(bindControlKinds),
+			ExpectedRevision: math.MaxUint64, OldGeneration: text(128), OldSessionID: text(200),
+			Generation: text(128), SessionID: text(200), Stopped: true, Lease: lease(),
+			OwnNotice: notice, NoticePublication: publication},
+		LegacyShadow: bindPartProjection{Lease: lease(), Generation: text(128), SessionID: text(200), Stopped: true,
+			OwnNotice: notice, NoticePublication: publication},
+		Rollback: longest([]string{bindPartRollbackOK, bindPartRollbackPre, bindPartRollbackOut}),
+		Writer:   bindPartWriter{Protocol: bindPartProtocol, Seal: digits(64)},
+	}
+	data, err := json.MarshalIndent(part, "", "  ")
+	if err != nil {
+		panic("bind state sidecar: the largest document does not encode: " + err.Error())
+	}
+	return len(data)
+}
 
 // bindPartDisk is the complete format-1 sidecar. The fixed structs deliberately
 // avoid maps and omitempty so that every valid file has one explicit shape.
@@ -87,14 +174,16 @@ type bindPartProjection struct {
 }
 
 type bindPartCursorOperation struct {
-	Token              string `json:"token"`
-	Kind               string `json:"kind"`
-	Holder             string `json:"holder"`
-	Host               string `json:"host"`
-	PID                int    `json:"pid"`
-	Birth              string `json:"birth"`
-	ExpectedCursor     string `json:"expected_cursor"`
-	ExpectedGeneration string `json:"expected_generation"`
+	Token  string `json:"token"`
+	Kind   string `json:"kind"`
+	Holder string `json:"holder"`
+	Host   string `json:"host"`
+	PID    int    `json:"pid"`
+	Birth  string `json:"birth"`
+	// ExpectedCursorDigest is bindCursorDigest of the cursor the reservation
+	// was taken for.
+	ExpectedCursorDigest string `json:"expected_cursor_sha256"`
+	ExpectedGeneration   string `json:"expected_generation"`
 }
 
 type bindPartStatusOperation struct {
@@ -272,7 +361,7 @@ func readBindPartOnce(p Paths, name string) (part bindPartDisk, stamp FileStamp,
 	if err := checkBindPartFileInfo(info); err != nil {
 		return bindPartDisk{}, FileStamp{}, false, err
 	}
-	if info.Size() > bindPartMaxBytes {
+	if info.Size() > int64(bindPartMaxBytes) {
 		return bindPartDisk{}, FileStamp{}, false, ErrBindPartInvalid
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
@@ -291,7 +380,7 @@ func readBindPartOnce(p Paths, name string) (part bindPartDisk, stamp FileStamp,
 	if afterBindPartOpen != nil {
 		afterBindPartOpen()
 	}
-	data, readErr := io.ReadAll(io.LimitReader(f, bindPartMaxBytes+1))
+	data, readErr := io.ReadAll(io.LimitReader(f, int64(bindPartMaxBytes)+1))
 	closeErr := f.Close()
 	if readErr != nil || closeErr != nil {
 		return bindPartDisk{}, FileStamp{}, false, errors.Join(readErr, closeErr)
@@ -481,9 +570,12 @@ func validateBindPart(name string, part bindPartDisk) error {
 	if err := validateBindProjection(part.LegacyShadow); err != nil {
 		return err
 	}
+	if len(part.NextBatch) > bindCursorBudget || len(part.LegacyShadow.NextBatch) > bindCursorBudget {
+		return ErrBindPartInvalid
+	}
 	if part.CursorOp != nil {
 		op := part.CursorOp
-		if !lowerHex(op.Token, 32) || (op.Kind != "bind" && op.Kind != "delivery" && op.Kind != "monitor" && op.Kind != "projector" && op.Kind != "runtime") || !hostRef(op.Holder, 200) || !hostRef(op.Host, 128) || op.PID <= 1 || !hostRef(op.Birth, 128) || op.ExpectedGeneration != "" && !hostRef(op.ExpectedGeneration, 128) {
+		if !lowerHex(op.Token, 32) || !slices.Contains(bindCursorKinds, op.Kind) || !hostRef(op.Holder, 200) || !hostRef(op.Host, 128) || op.PID <= 1 || !hostRef(op.Birth, 128) || !lowerHex(op.ExpectedCursorDigest, 64) || op.ExpectedGeneration != "" && !hostRef(op.ExpectedGeneration, 128) {
 			return ErrBindPartInvalid
 		}
 	}
@@ -495,7 +587,7 @@ func validateBindPart(name string, part bindPartDisk) error {
 	}
 	if part.ControlTxn != nil {
 		txn := part.ControlTxn
-		if !lowerHex(txn.Token, 32) || (txn.Kind != "create" && txn.Kind != "stop" && txn.Kind != "handover" && txn.Kind != "recover") || txn.ExpectedRevision == 0 || txn.ExpectedRevision > part.Revision {
+		if !lowerHex(txn.Token, 32) || !slices.Contains(bindControlKinds, txn.Kind) || txn.ExpectedRevision == 0 || txn.ExpectedRevision > part.Revision {
 			return ErrBindPartInvalid
 		}
 		if (txn.OldGeneration == "") != (txn.OldSessionID == "") || txn.OldGeneration != "" && (!hostRef(txn.OldGeneration, 128) || !hostRef(txn.OldSessionID, 200)) || (txn.Generation == "") != (txn.SessionID == "") || txn.Generation != "" && (!hostRef(txn.Generation, 128) || !hostRef(txn.SessionID, 200) || txn.Generation != txn.OldGeneration && !lowerHex(txn.Generation, 32)) {
@@ -515,7 +607,7 @@ func validateBindPart(name string, part bindPartDisk) error {
 	if part.ControlTxn != nil {
 		pending++
 	}
-	// A control transaction replaces the binding and is alone. A cursor
+	// A control record replaces the binding and is alone. A cursor
 	// reservation and a status publication concern different fields and may be
 	// pending together: a publication takes as long as its request, and no
 	// delivery waits for it.
@@ -551,12 +643,7 @@ func validateBindProjection(projection bindPartProjection) error {
 }
 
 func validBindNoticePublication(value string) bool {
-	switch value {
-	case "", "published", "unavailable: own notice changed", "unavailable: no liveness record (a2a status set)", "unavailable: invalid notice retry policy", "unavailable: own liveness publication retry pending", "unavailable: own liveness publication failed":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(bindNoticePublications, value)
 }
 
 func validateBindOwnNotice(n bindPartOwnNotice) error {
@@ -566,6 +653,9 @@ func validateBindOwnNotice(n bindPartOwnNotice) error {
 		observed, observedOK = parseBindNoticeTimestamp(n.ObservedAt)
 	}
 	if n.ObservedAt != "" && !observedOK {
+		return ErrBindPartInvalid
+	}
+	if len(n.ObservedAt) > bindNoticeTimestampMax || len(n.Since) > bindNoticeTimestampMax {
 		return ErrBindPartInvalid
 	}
 	suspected := n.PossiblyOrphaned != nil && *n.PossiblyOrphaned
@@ -722,9 +812,22 @@ func writeBindPart(p Paths, name string, part bindPartDisk) error {
 	part.Identity = name
 	part.Format = bindPartFormat
 	part.Revision++
+	// Everything that can refuse this document is decided before the file is
+	// touched: the cursor budget, the document's size, and that the reader's
+	// own decoder and validator take these exact bytes for this document. A
+	// write that fails here leaves the sidecar as it was.
+	if len(part.NextBatch) > bindCursorBudget || len(part.LegacyShadow.NextBatch) > bindCursorBudget {
+		return fmt.Errorf("%w: a sync cursor is over the budget of %d bytes", ErrBindPartTooLarge, bindCursorBudget)
+	}
 	sealed, data, err := encodeBindPart(part)
 	if err != nil {
 		return err
+	}
+	if len(data) > bindPartMaxBytes {
+		return fmt.Errorf("%w: a document of %d bytes, the limit is %d", ErrBindPartTooLarge, len(data), bindPartMaxBytes)
+	}
+	if decoded, err := decodeBindPart(name, data); err != nil || !reflect.DeepEqual(decoded, sealed) {
+		return fmt.Errorf("%w: the document does not read back as written: %v", ErrBindPartInvalid, err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+name+".bind.*.tmp")
 	if err != nil {
@@ -750,6 +853,12 @@ func writeBindPart(p Paths, name string, part bindPartDisk) error {
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
+	}
+	// The bytes that are about to replace the sidecar are read back from the
+	// temporary file first.
+	if written, err := os.ReadFile(tmpPath); err != nil || !bytes.Equal(written, data) {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("%w: the temporary file does not hold the document: %v", ErrBindPartInvalid, err)
 	}
 	if err := bindPartRename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)

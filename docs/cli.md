@@ -3118,8 +3118,14 @@ idle bind. An identity that never binds keeps its State as it is.
 | --- | --- |
 | lease; sync cursor (`next_batch`); terminal generation, session and stopped flag; own-notice observation and its publication result | everything else, including the rest of the terminal binding (target, owner, interval, outcome, rung and attempt ids, notice text) |
 
-The sidecar is a strict format-1 JSON document of mode 0600 and at most 16 KiB, with a revision, a seal and
-records of a cursor, status or control operation in progress. Readers merge it into the State they return, so
+The sidecar is a strict format-1 JSON document of mode 0600, with a revision, a seal and records of a cursor,
+status or control operation in progress. Its size limit is derived in the code, not chosen: the largest document
+that holds no cursor, every field as long as the validator admits, plus two sync cursors of the budget in their
+longest JSON form. The cursor budget is 8 KiB, as State stores it; the document holds a cursor twice, as the
+cursor and as State's copy of it at migration, and a reservation records the SHA-256 of the cursor it expects,
+not the cursor. On a 64-bit platform the limit is 126,229 bytes. An ordinary document is about one kilobyte.
+A writer checks the cursor budget and the document's size, and decodes the exact bytes with the reader's own
+decoder, before it replaces the file. Readers merge it into the State they return, so
 `a2a bind status` and every command see one consistent view. State keeps a copy of the moved fields as they
 were at migration; that copy is not current and is never read as authority while the marker is present.
 
@@ -3132,6 +3138,7 @@ Refusals, all without changing either file:
 | Sidecar malformed: duplicate or unknown key, key in another case, mode other than 0600, symlink, bad seal, values that disagree with State's copy | `bind state sidecar is invalid` |
 | A generic State write that changes a field the sidecar owns, or that would replace a marked State by one without the marker | `provider-owned State fields require a typed bind-state operation` |
 | A binding is being started, stopped or handed over, or another live owner still holds the cursor, when the caller's deadline passes | `bind-state operation is held by another owner` |
+| A sync cursor over 8 KiB, or a document over the size limit | `bind state sidecar would exceed its size limit; nothing was written` |
 | An operation presented with an outdated revision or token | `stale bind-state revision or operation token` |
 
 A consumer's cache reuses a decoded State only while the file's stamp and its exact bytes are unchanged; the

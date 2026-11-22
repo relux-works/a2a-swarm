@@ -765,7 +765,7 @@ func beginBindCursorBy(lock func(string) (func(), error), p Paths, name string, 
 			return ErrBindPartOperation
 		}
 		if op := part.CursorOp; op != nil {
-			if op.Token == token && op.Kind == kind && op.Holder == owner.Holder && op.Host == owner.Host && op.PID == owner.PID && op.Birth == owner.Birth && op.ExpectedCursor == expectedCursor && op.ExpectedGeneration == generation {
+			if op.Token == token && op.Kind == kind && op.Holder == owner.Holder && op.Host == owner.Host && op.PID == owner.PID && op.Birth == owner.Birth && op.ExpectedCursorDigest == bindCursorDigest(expectedCursor) && op.ExpectedGeneration == generation {
 				reservation = BindCursorReservation{Token: token, Revision: part.Revision, Cursor: expectedCursor}
 				return nil
 			}
@@ -774,7 +774,7 @@ func beginBindCursorBy(lock func(string) (func(), error), p Paths, name string, 
 				return ErrBindPartHeld
 			}
 		}
-		part.CursorOp = &bindPartCursorOperation{Token: token, Kind: kind, Holder: owner.Holder, Host: owner.Host, PID: owner.PID, Birth: owner.Birth, ExpectedCursor: expectedCursor, ExpectedGeneration: generation}
+		part.CursorOp = &bindPartCursorOperation{Token: token, Kind: kind, Holder: owner.Holder, Host: owner.Host, PID: owner.PID, Birth: owner.Birth, ExpectedCursorDigest: bindCursorDigest(expectedCursor), ExpectedGeneration: generation}
 		reservation = BindCursorReservation{Token: token, Revision: part.Revision + 1, Cursor: expectedCursor}
 		return nil
 	})
@@ -795,7 +795,7 @@ func CommitBindCursorContext(ctx context.Context, p Paths, name, token, nextCurs
 func commitBindCursorBy(lock func(string) (func(), error), p Paths, name, token, nextCursor string) (BindPartView, error) {
 	_, err := withBindPartOperationLockBy(p, name, false, lock, func(_ State, part *bindPartDisk) error {
 		op := part.CursorOp
-		if op == nil || op.Token != token || part.NextBatch != op.ExpectedCursor || op.ExpectedGeneration != "" && part.Generation != op.ExpectedGeneration {
+		if op == nil || op.Token != token || bindCursorDigest(part.NextBatch) != op.ExpectedCursorDigest || op.ExpectedGeneration != "" && part.Generation != op.ExpectedGeneration {
 			return ErrBindPartStale
 		}
 		part.NextBatch = nextCursor
@@ -824,7 +824,7 @@ func TryCommitEmptyBindCursor(p Paths, name, token, nextCursor string, snapshot 
 	committed := false
 	_, err := withBindPartOperationLock(p, name, false, func(state State, part *bindPartDisk) error {
 		op := part.CursorOp
-		if op == nil || op.Token != token || part.NextBatch != op.ExpectedCursor || op.ExpectedGeneration != "" && part.Generation != op.ExpectedGeneration {
+		if op == nil || op.Token != token || bindCursorDigest(part.NextBatch) != op.ExpectedCursorDigest || op.ExpectedGeneration != "" && part.Generation != op.ExpectedGeneration {
 			return ErrBindPartStale
 		}
 		if state.Migration != nil {

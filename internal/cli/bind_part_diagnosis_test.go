@@ -132,9 +132,6 @@ func bindPartDiagnosis(p config.Paths, name, root string) string {
 	if str(doc["identity"]) != name {
 		fail("document", "identity is not the fixture's")
 	}
-	if len(data) > 16<<10 {
-		fail("document", "larger than 16 KiB")
-	}
 	projection("document", doc)
 	projection("legacy_shadow", obj(doc["legacy_shadow"]))
 	revision := fmt.Sprint(doc["revision"])
