@@ -36,14 +36,19 @@ func startupWithLock(t *testing.T, a *App, s *session, run func(*session, config
 func startupFixture(t *testing.T) (*App, *session, *env, string, *time.Time, *keychainStore) {
 	t.Helper()
 	a, s, e := refreshApp(t)
+	ownerBirth, err := bindingProcessBirth(context.Background(), os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	a.Now = func() time.Time { return now }
 	dir := fakeKeychain(e, map[string]string{s.creds.UserID: e.tokens["alice"]}, "")
 	k := isolatedKeychainStore(keychainStore{paths: s.paths, probeCommand: unlockedProbe, backend: fakeBackend{dir}, now: a.Now, cooldown: 11 * time.Second})
 	a.keychain = func(config.Paths) *keychainStore { return k }
-	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+	_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
 		st.Terminal.RetryMax = 4 * time.Second
 		st.Terminal.OwnerPID = os.Getpid() // Prevent status from inspecting a target.
+		st.Terminal.OwnerBirth = ownerBirth
 		return nil
 	})
 	if err != nil {
@@ -143,108 +148,109 @@ func TestBoundReexecCredentialRecovery(t *testing.T) {
 	}
 }
 
-// Fake time keeps retrying just before the deadline, caps the final sleep, and
-// refuses recovery at the deadline. Earlier recovery still arms the same binding.
-// Timeout uses the real child route to verify its exit log and flock release.
-// The unavailable episode is diagnostic only; the rest of the state is retained.
-func TestBoundStartupCredentialRetryLimit(t *testing.T) {
+// This regression witness fails on main: a resumed binding stays under the
+// same lock/generation through a refusal well past 30 minutes, exposes degraded
+// status, and arms exactly once when credentials return. Fake time and the
+// retry-count bound prove exponential backoff without wall-clock sleeps.
+func TestBoundStartupCredentialRetryDegradedThreshold(t *testing.T) {
 	if startupCredentialRetryLimit != 30*time.Minute {
-		t.Fatal("startup retry limit must be 30 minutes")
+		t.Fatal("degraded status threshold must remain 30 minutes")
 	}
-	for _, mode := range []string{"timeout", "recover-before", "recover-at"} {
-		t.Run(mode, func(t *testing.T) {
-			a, s, e, dir, now, k := startupFixture(t)
-			k.probeCommand = probeFixture(t, "missing", dir)
-			before := e.state("alice")
-			firstRefusal := *now
-			var log bytes.Buffer
-			a.Stderr = &log
-			var delays []time.Duration
-			a.bindStartupWait = func(_ context.Context, delay time.Duration) error {
-				delays = append(delays, delay)
-				if len(delays) > 3 {
-					t.Fatal("startup retried past deadline")
-				}
-				if !now.Before(firstRefusal.Add(startupCredentialRetryLimit)) || e.state("alice").Terminal.RefreshStatus != "startup_companion_unavailable" {
-					t.Fatal("retry did not retain the transient refusal before deadline")
-				}
-				if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { t.Fatal("second consumer admitted during retry"); return nil }); !errors.Is(err, config.ErrLockTimeout) {
-					t.Fatalf("retry lost lock: %v", err)
-				}
-				switch len(delays) {
-				case 1:
-					*now = firstRefusal.Add(startupCredentialRetryLimit - 3*time.Second)
-				case 2:
-					*now = now.Add(delay)
-					if mode == "recover-before" {
-						k.probeCommand = unlockedProbe
+	a, s, e, dir, now, k := startupFixture(t)
+	k.probeCommand = probeFixture(t, "missing", dir)
+	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		st.Terminal.RetryMax = 5 * time.Minute
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := e.state("alice")
+	firstRefusal := *now
+	var log bytes.Buffer
+	a.Stderr = &log
+	var delays []time.Duration
+	waitsPerHour := map[int]int{}
+	degradedObserved := false
+	a.bindStartupWait = func(_ context.Context, delay time.Duration) error {
+		elapsed := now.Sub(firstRefusal)
+		if elapsed >= startupCredentialRetryLimit {
+			if status := e.state("alice").Terminal.RefreshStatus; status != "startup_credentials_unavailable" {
+				t.Fatalf("degraded status not retained after threshold: %s", status)
+			}
+			if !degradedObserved {
+				degradedObserved = true
+				for _, json := range []bool{false, true} {
+					var out bytes.Buffer
+					a.Stdout = &out
+					args := []string{}
+					if json {
+						args = append(args, "--json")
 					}
-				case 3:
-					*now = now.Add(delay)
-					if mode == "recover-at" {
-						k.probeCommand = unlockedProbe
+					if err := a.terminalStatus(context.Background(), args); err != nil || !strings.Contains(out.String(), "startup_credentials_unavailable") {
+						t.Fatalf("bind status omitted degraded startup: %q %v", out.String(), err)
 					}
 				}
-				return nil
+				a.Stdout = io.Discard
 			}
-			armed := 0
-			err := config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
-				fd, err := unix.Dup(int(lock.Fd()))
-				if err != nil {
-					return err
-				}
-				if mode == "timeout" {
-					return runBoundChild(context.Background(), a, "refresh-gen", fd)
-				}
-				return a.withBoundChildSession(context.Background(), "refresh-gen", fd, func(fresh *session, initial config.TerminalBinding, _ *os.File) error {
-					armed++
-					if fresh.creds.AccessToken != e.tokens["alice"] || initial.Generation != "refresh-gen" || !now.Before(firstRefusal.Add(startupCredentialRetryLimit)) {
-						t.Fatal("recovery armed an invalid or expired startup")
-					}
-					return nil
-				})
-			})
-			wantDelays := []time.Duration{time.Second, 2 * time.Second, time.Second}
-			wantStatus := "startup_credentials_unavailable"
-			if mode == "recover-before" {
-				wantDelays = wantDelays[:2]
-				wantStatus = "startup_ready"
-				if err != nil || armed != 1 || len(records(t, dir)) != 1 {
-					t.Fatalf("recovery: err=%v arms=%d", err, armed)
-				}
-			} else if !errors.Is(err, errStartupCredentialsUnavailable) || err.Error() != "startup credentials unavailable" || armed != 0 || len(records(t, dir)) != 0 || !now.Equal(firstRefusal.Add(startupCredentialRetryLimit)) {
-				t.Fatalf("deadline: err=%v arms=%d elapsed=%v", err, armed, now.Sub(firstRefusal))
-			}
-			if !reflect.DeepEqual(delays, wantDelays) || e.state("alice").Terminal.RefreshStatus != wantStatus {
-				t.Fatalf("delays=%v status=%s", delays, e.state("alice").Terminal.RefreshStatus)
-			}
-			if mode == "timeout" && !strings.HasSuffix(log.String(), "binding exit: startup credentials unavailable\n") {
-				t.Fatalf("timeout exit log=%q", log.String())
-			}
-			after := e.state("alice")
-			r := after.Terminal.ConsumerReport
-			if r == nil || r.Since != firstRefusal.UTC().Format(time.RFC3339Nano) || r.Outcome != "unavailable: alarm destination missing" || r.Alarm || strings.Count(log.String(), "binding incident report: unavailable: alarm destination missing\n") != 1 || strings.Contains(log.String(), "binding consumer ready\n") {
-				t.Fatalf("startup lost its diagnostic episode or claimed full consumer recovery: %+v log=%q", r, log.String())
-			}
-			after.Terminal.ConsumerReport = nil
-			if !reflect.DeepEqual(withoutRefreshDiagnostic(before), withoutRefreshDiagnostic(after)) {
-				t.Fatal("startup changed binding, lease or delivery state beyond diagnostic")
-			}
-			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
-				t.Fatalf("startup exit retained lock: %v", err)
-			}
-			for _, json := range []bool{false, true} {
-				var out bytes.Buffer
-				a.Stdout = &out
-				args := []string{}
-				if json {
-					args = append(args, "--json")
-				}
-				if err := a.terminalStatus(context.Background(), args); err != nil || !strings.Contains(out.String(), wantStatus) {
-					t.Fatalf("status lost startup result: %q %v", out.String(), err)
-				}
-			}
-		})
+		} else if status := e.state("alice").Terminal.RefreshStatus; status != "startup_companion_unavailable" {
+			t.Fatalf("transient refusal status changed before threshold: %s", status)
+		}
+		if delay <= 0 || delay > 5*time.Minute {
+			t.Fatalf("retry delay outside binding policy: %s", delay)
+		}
+		hour := int(elapsed / time.Hour)
+		waitsPerHour[hour]++
+		if waitsPerHour[hour] > 24 {
+			t.Fatalf("possible busy loop: %d waits in fake hour %d", waitsPerHour[hour], hour)
+		}
+		delays = append(delays, delay)
+		if len(delays) > 24 {
+			t.Fatal("retry count exceeded the fake-hour bound")
+		}
+		if st := e.state("alice").Terminal; st.Stopped || st.Generation != "refresh-gen" {
+			t.Fatalf("retry lost binding ownership: %+v", st)
+		}
+		if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { t.Fatal("second consumer admitted during retry"); return nil }); !errors.Is(err, config.ErrLockTimeout) {
+			t.Fatalf("retry lost consumer lock: %v", err)
+		}
+		*now = now.Add(delay)
+		if degradedObserved && now.Sub(firstRefusal) >= startupCredentialRetryLimit+5*time.Minute {
+			k.probeCommand = unlockedProbe
+		}
+		return nil
+	}
+	armed := 0
+	err = startupWithLock(t, a, s, func(fresh *session, initial config.TerminalBinding, lock *os.File) error {
+		armed++
+		if fresh.creds.AccessToken != e.tokens["alice"] || initial.Generation != "refresh-gen" || now.Sub(firstRefusal) <= startupCredentialRetryLimit {
+			t.Fatal("recovery did not arm the same binding after the degraded threshold")
+		}
+		if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { t.Fatal("consumer lock was not held while arming"); return nil }); !errors.Is(err, config.ErrLockTimeout) {
+			t.Fatalf("arming lost consumer lock: %v", err)
+		}
+		return nil
+	})
+	if err != nil || armed != 1 || !degradedObserved || len(records(t, dir)) != 1 {
+		t.Fatalf("recovery: err=%v arms=%d degraded=%v records=%d", err, armed, degradedObserved, len(records(t, dir)))
+	}
+	if strings.Count(log.String(), "binding consumer unavailable; bounded retry cause=companion_unavailable\n") != len(delays) || strings.Contains(log.String(), "binding exit: startup credentials unavailable\n") {
+		t.Fatalf("startup retry diagnostics changed: waits=%d log=%q", len(delays), log.String())
+	}
+	after := e.state("alice")
+	if after.Terminal.RefreshStatus != "startup_ready" {
+		t.Fatalf("recovery status=%s", after.Terminal.RefreshStatus)
+	}
+	r := after.Terminal.ConsumerReport
+	if r == nil || r.Since != firstRefusal.UTC().Format(time.RFC3339Nano) || r.Outcome != "unavailable: alarm destination missing" || r.Alarm || strings.Count(log.String(), "binding incident report: unavailable: alarm destination missing\n") != 1 || strings.Contains(log.String(), "binding consumer ready\n") {
+		t.Fatalf("startup lost its diagnostic episode or claimed full consumer recovery: %+v log=%q", r, log.String())
+	}
+	after.Terminal.ConsumerReport = nil
+	if !reflect.DeepEqual(withoutRefreshDiagnostic(before), withoutRefreshDiagnostic(after)) {
+		t.Fatal("startup changed binding, lease or delivery state beyond diagnostics")
+	}
+	if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+		t.Fatalf("startup retained consumer lock: %v", err)
 	}
 }
 
@@ -333,6 +339,44 @@ func TestBoundStartupStaleConsumerLog(t *testing.T) {
 	}
 }
 
+// A resumed bind must stop when its owner PID dies or the same PID is reused;
+// each refusal leaves the observed binding record untouched and releases lock.
+func TestBoundStartupStopsWhenOwnerGoneOrReplaced(t *testing.T) {
+	for _, mode := range []string{"dead-pid", "changed-birth"} {
+		t.Run(mode, func(t *testing.T) {
+			a, s, e, dir, _, k := startupFixture(t)
+			k.probeCommand = probeFixture(t, "missing", dir)
+			var expected config.State
+			a.bindStartupWait = func(context.Context, time.Duration) error {
+				_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+					if mode == "dead-pid" {
+						pid := os.Getpid() + 1_000_000
+						for !processGone(pid) {
+							pid++
+						}
+						st.Terminal.OwnerPID = pid
+					} else {
+						st.Terminal.OwnerBirth += "-replaced"
+					}
+					return nil
+				})
+				if err == nil {
+					expected = e.state("alice")
+				}
+				return err
+			}
+			err := startupWithLock(t, a, s, func(*session, config.TerminalBinding, *os.File) error { t.Fatal("ownerless binding armed"); return nil })
+			after := e.state("alice")
+			if !errors.Is(err, errBindingStaleConsumer) || !reflect.DeepEqual(expected, after) {
+				t.Fatalf("owner %s refusal=%v state changed=%v", mode, err, !reflect.DeepEqual(expected, after))
+			}
+			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+				t.Fatalf("owner %s refusal retained lock: %v", mode, err)
+			}
+		})
+	}
+}
+
 // Missing items/metadata and identity mismatch remain permanent beside a valid
 // control. Ordinary starts refuse a transient cooldown without retry or arming.
 func TestBoundStartupPermanentAndOrdinaryRefusals(t *testing.T) {
@@ -383,25 +427,73 @@ func TestBoundStartupPermanentAndOrdinaryRefusals(t *testing.T) {
 					t.Fatal("failed startup mutated binding or lease")
 				}
 			}
+			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+				t.Fatalf("%s startup retained consumer lock: %v", mode, err)
+			}
 		})
 	}
 }
 
-// Retirement during backoff cancels arming even if credentials recover next;
-// the adjacent recovery test supplies the unchanged-generation positive control.
+// Stop and supersession during backoff cancel arming; the adjacent recovery
+// witness proves an unchanged generation can retry through fresh credentials.
 func TestBoundStartupRetiredWhileWaiting(t *testing.T) {
-	a, s, e, _, now, k := startupFixture(t)
-	if err := k.locked(s.creds.UserID, func() error { return k.recordCooldown(s.creds.UserID) }); err != nil {
+	for _, mode := range []string{"stopped", "superseded"} {
+		t.Run(mode, func(t *testing.T) {
+			a, s, e, _, now, k := startupFixture(t)
+			if err := k.locked(s.creds.UserID, func() error { return k.recordCooldown(s.creds.UserID) }); err != nil {
+				t.Fatal(err)
+			}
+			var expected config.State
+			a.bindStartupWait = func(context.Context, time.Duration) error {
+				*now = now.Add(securityCooldown)
+				_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+					if mode == "stopped" {
+						st.Terminal.Stopped = true
+					} else {
+						st.Terminal.Generation = "replacement-generation"
+					}
+					return nil
+				})
+				if err == nil {
+					expected = e.state("alice")
+				}
+				return err
+			}
+			err := startupWithLock(t, a, s, func(*session, config.TerminalBinding, *os.File) error { t.Fatal("retired binding armed"); return nil })
+			after := e.state("alice")
+			b := after.Terminal
+			if err == nil || err.Error() != "binding stale consumer" || !reflect.DeepEqual(expected, after) || mode == "stopped" && !b.Stopped || mode == "superseded" && b.Generation != "replacement-generation" {
+				t.Fatalf("%s result=%v binding=%+v", mode, err, b)
+			}
+			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+				t.Fatalf("%s binding retained lock: %v", mode, err)
+			}
+		})
+	}
+}
+
+// An invalid stored retry policy terminates a transient refusal without waiting,
+// arming or changing the binding and lease state.
+func TestBoundStartupRejectsInvalidRetryPolicy(t *testing.T) {
+	a, s, e, dir, _, k := startupFixture(t)
+	k.probeCommand = probeFixture(t, "missing", dir)
+	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		st.Terminal.Interval = 2 * time.Second
+		st.Terminal.RetryMax = time.Second
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	a.bindStartupWait = func(context.Context, time.Duration) error {
-		*now = now.Add(securityCooldown)
-		_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error { st.Terminal.Stopped = true; return nil })
-		return err
+	before := e.state("alice")
+	waits, armed := 0, 0
+	a.bindStartupWait = func(context.Context, time.Duration) error { waits++; return nil }
+	err = startupWithLock(t, a, s, func(*session, config.TerminalBinding, *os.File) error { armed++; return nil })
+	if err == nil || err.Error() != "binding retry policy invalid" || waits != 0 || armed != 0 || !reflect.DeepEqual(before, e.state("alice")) {
+		t.Fatalf("invalid policy refusal=%v waits=%d arms=%d state changed=%v", err, waits, armed, !reflect.DeepEqual(before, e.state("alice")))
 	}
-	err := startupWithLock(t, a, s, func(*session, config.TerminalBinding, *os.File) error { t.Fatal("retired binding armed"); return nil })
-	if err == nil || err.Error() != "binding stale consumer" || !e.state("alice").Terminal.Stopped {
-		t.Fatalf("retired result=%v", err)
+	if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+		t.Fatalf("invalid policy refusal retained lock: %v", err)
 	}
 }
 
@@ -470,8 +562,12 @@ func TestBoundStartupCredentialRevocation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			ownerBirth, err := bindingProcessBirth(context.Background(), os.Getpid())
+			if err != nil {
+				t.Fatal(err)
+			}
 			_, err = config.UpdateState(s.paths, s.name, func(st *config.State) error {
-				st.Terminal = &config.TerminalBinding{Generation: "refresh-gen", Host: machineLabel(), DaemonPID: os.Getpid(), DaemonBirth: birth, Interval: time.Second, RetryMax: time.Second}
+				st.Terminal = &config.TerminalBinding{Generation: "refresh-gen", Host: machineLabel(), OwnerPID: os.Getpid(), OwnerBirth: ownerBirth, DaemonPID: os.Getpid(), DaemonBirth: birth, Interval: time.Second, RetryMax: time.Second}
 				return nil
 			})
 			if err != nil {
@@ -533,5 +629,8 @@ func TestBindReexecRoutesBeforeCredentials(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) || waits != 1 || e.state("alice").Terminal.RefreshStatus != "startup_keychain_cooldown" {
 		t.Fatalf("bind route refused instead of retrying: waits=%d err=%v", waits, err)
+	}
+	if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+		t.Fatalf("canceled startup retained consumer lock: %v", err)
 	}
 }
