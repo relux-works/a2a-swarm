@@ -152,3 +152,67 @@ func TestTerminalSendRefusalLogFailureDoesNotFailCompletion(t *testing.T) {
 		}
 	}
 }
+
+// Non-submitted terminal outcomes remain visible and pending: the binding
+// keeps its attempt, notice and reservation and does not receipt mail.
+func TestTerminalNonSubmittedSendRemainsPendingAndVisible(t *testing.T) {
+	for _, c := range []struct {
+		name              string
+		result            tmuxwake.SendResult
+		wantTyped         bool
+		wantTypingStarted bool
+	}{
+		{name: "unwitnessed Enter", result: tmuxwake.SendResult{Disposition: tmuxwake.SendUncertain, Outcome: tmuxwake.SendEnterUnwitnessed}, wantTypingStarted: true},
+		{name: "busy before Enter", result: tmuxwake.SendResult{Disposition: tmuxwake.SendDraft, Outcome: tmuxwake.SendDraftBusy}, wantTyped: true, wantTypingStarted: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			isolateBindTest(t)
+			e, room := world(t)
+			clock := e.clock()
+			id := runtimeMail(e, room, "retained mail")
+			a, s := notificationApp(t, e)
+			a.Now = clock.now
+			var expected config.TerminalBinding
+			notificationState(t, e, func(st *config.State) {
+				token, err := st.Notification.Reserve("terminal", "s", "g", clock.now(), false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expected = config.TerminalBinding{
+					Generation:        "g",
+					SessionID:         "s",
+					NotificationToken: token,
+					AttemptAt:         clock.now(),
+					AttemptIDs:        []string{id},
+					Notice:            tmuxwake.Notice(1),
+					NoticeCount:       1,
+					TypingStarted:     true,
+				}
+				copy := expected
+				st.Terminal = &copy
+			})
+			if !c.result.Valid() {
+				t.Fatal("non-submitted result is not a valid pending outcome")
+			}
+			if err := a.finishTerminal(s, "g", c.result, nil, false, expected); err != nil {
+				t.Fatal(err)
+			}
+			st := e.state("alice")
+			b := st.Terminal
+			if b.TypingStarted != c.wantTypingStarted {
+				t.Fatalf("pending send TypingStarted = %t, want %t", b.TypingStarted, c.wantTypingStarted)
+			}
+			if b.Outcome != c.result.Text() || b.Notice != expected.Notice || len(b.AttemptIDs) != 1 || b.AttemptIDs[0] != id || b.NotificationToken != expected.NotificationToken || len(b.Rung) != 0 || b.Typed != c.wantTyped || st.Notification.Reservation == nil || st.Notification.Reservation.Token != expected.NotificationToken || e.received("alice", id) {
+				t.Fatal("non-submitted send completed or lost its retry state")
+			}
+			var out bytes.Buffer
+			a.Stdout = &out
+			if err := a.terminalStatus(context.Background(), nil); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), string(c.result.Outcome)) {
+				t.Fatal("bind status omitted the non-submitted outcome")
+			}
+		})
+	}
+}

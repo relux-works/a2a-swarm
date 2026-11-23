@@ -635,6 +635,11 @@ var terminalStateMemo = true
 // terminalReadCache is a package-private comparison seam, never a runtime option.
 var terminalReadCache = true
 
+func inspectTerminalBindingTarget(ctx context.Context, b config.TerminalBinding) (string, error, error) {
+	owner, ownerErr := tmuxwake.Birth(ctx, b.OwnerPID)
+	_, _, _, targetErr := b.Target.Inspect(ctx)
+	return owner, ownerErr, targetErr
+}
 func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation string, initial config.TerminalBinding, refresh func()) (string, error) {
 	return a.runTerminalLoop(ctx, s, generation, initial, refresh, nil)
 }
@@ -705,8 +710,11 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			}
 			policy = *b
 			probe, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
-			owner, ownerErr := tmuxwake.Birth(probe, b.OwnerPID)
-			_, _, _, targetErr := b.Target.Inspect(probe)
+			inspect := a.inspectTerminalTarget
+			if inspect == nil {
+				inspect = inspectTerminalBindingTarget
+			}
+			owner, ownerErr, targetErr := inspect(probe, *b)
 			cancel()
 			if ownerErr == nil && owner != b.OwnerBirth || ownerErr != nil && processGone(b.OwnerPID) || errors.Is(targetErr, tmuxwake.ErrTargetGone) {
 				a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Stopped = true; b.Outcome = "target exited or replaced" })
@@ -1191,6 +1199,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				return err
 			}
 			outcome, sendErr := a.sendTerminalAttempt(ctx, s, reservedAttempt, readiness.Key)
+			if errors.Is(sendErr, errAddressChanged) {
+				return sendErr
+			}
 			return a.finishTerminal(s, generation, outcome, sendErr, false, reservedAttempt)
 		})
 		if errors.Is(admissionErr, wakemute.ErrMuted) && alarmWake != nil {

@@ -36,9 +36,10 @@ It returns only principals/membership after a complete validated response and
 refuses archived caller state; it does not export history or change the room.
 See [the command contract](docs/cli.md#commands) for completeness and error limits.
 
-`a2a room name get|set` and `a2a space child get|add|remove` inspect or replace
-one exact name/child property. Writes require expected IDs and concrete-event
-authority; uncertain acknowledgements never trigger automatic retries. See
+`a2a room name get|set` and `a2a space child get|list|add|remove` inspect,
+list, or replace exact name/child properties. Writes require expected IDs and
+concrete-event authority; uncertain acknowledgements never trigger automatic
+retries. See
 [room administration](docs/room-administration.md) for bounds and result rules.
 
 `a2a room power ROOM --json` reads current room power and creation facts on the
@@ -118,6 +119,34 @@ It uses an explicit protected local host roster and refuses nothing.
 
 ## Tools
 
+Notification audiences are checked before subscriptions, followed threads,
+mandatory-principal routing and notification reservations. A well-formed a2a
+recipient list is authoritative over Matrix mentions. Without that list,
+intentional Matrix user mentions restrict the audience; a room mention is
+general. Addressed nonrecipients remain excluded after mailbox reopen. Explicit
+room and thread reads retain their existing authorization and redaction rules.
+Replies use their own recipients. Edits and redactions inherit an immutable
+audience ceiling without creating new notification eligibility; reactions do
+not notify. Malformed metadata from a pinned mandatory principal uses the
+existing general owner route and emits `ADDRESS_METADATA_INVALID`. The same
+malformed metadata from a peer is suppressed, and a well-formed owner message
+addressed to someone else remains excluded.
+
+Minimal versioned audience evidence is stored with the private mailbox without
+message bodies, replacement text or recipient lists. Unavailable relation
+targets are deferred without notifying, with at most four distinct target
+fetches per cycle, one fetch per target and eight relation hops. Unknown evidence
+versions fail closed for the affected event and appear as
+`ADDRESS_STATE_UNAVAILABLE` in `a2a bind status`. Redacted originals whose audience
+cannot be recovered are not automatically announced. Evidence survives while
+mail is retained and for at least fourteen days after an original is redacted or
+compacted; later compaction can remove expired evidence.
+
+Run the audience and affected delivery checks with
+`go test -race -count=1 ./internal/audience ./internal/config ./internal/cli ./internal/matrix ./internal/tmuxwake`.
+Results go to standard test output; private command captures belong under
+`.temp/`.
+
 | Tool | Purpose | How to run | Output |
 | Signed-envelope observation (Go >=1.26.8) | Verify received envelopes locally using pinned host evidence, with delivery unchanged | `a2a inbox [--json]`; `a2a read ROOM [--json]`; [configuration and tests](docs/envelope-observe.md) | `verification` label on stdout and saved inbox frames; no network lookup or trust-store writes |
 | --- | --- | --- | --- |
@@ -141,7 +170,7 @@ It uses an explicit protected local host roster and refuses nothing.
 | Source origin fixtures and gate plants (Go, bwrap) | Exercise closed P17 prepare/consume-once validate, peer/generation and path checks | `go test ./internal/daemon -run '^Test(SourceOrigin|Rev365)' -race -count=1 -v`; opt-in `A2A_RUN_ORIGIN_PLANTS=1 go test ./internal/daemon -run '^TestSourceOriginNarrowingPlants$' -count=1 -v`; [contract and confined runner](docs/source-origin.md) | Test-temp Unix sockets, overlay plants and `.temp/P17-A/` logs; no CLI or live service wiring |
 | `go test` | Unit tests against an in-memory fake homeserver; integration test against the local server | `go test ./...`; `A2A_MATRIX_IT=1 go test ./internal/cli -run Integration -v` | test output; the integration test writes only to `#a2a-swarm` and deactivates its throwaway account at the end |
 | Offline Go checks | Format, statically analyze (including test sources), and build without running tests or fetching dependencies; requires a populated local module cache | `gofmt -w <changed.go>`; `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go vet -mod=readonly ./...`; `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go build -mod=readonly ./...` | Diagnostics on stdout/stderr; task logs and writable Go caches under `.temp/` |
-| GitHub Actions `go` | Same-repository PRs run the full Linux suite (`test-linux`) and an early race check for credential, wake and Send behavior (`pr-fast`). Ordinary PRs also run `darwin-smoke` (build/vet), while `train-*` and `full-ci` PRs run the full macOS suite (`test`) and `voice-native`. These jobs also run for docs-only PRs, and adding `full-ci` triggers a run. Main pushes run `test-linux` only. | `.github/workflows/go.yml` (runs automatically) | Actions tab of relux-works/a2a-swarm |
+| GitHub Actions `go` | Same-repository PRs run the selected Linux race checks and repository vet (`pr-fast`) and a macOS build and vet (`darwin-smoke`). Pushes to main run the full Linux and macOS race suites (`test-linux`, `test`) and the sender mutation controls (`sender-identity-controls`). The tagged native voice suite (`voice-native`) runs on main pushes and on same-repository PRs with a `train-` branch or the `full-ci` label. Each job reports its own result. | `.github/workflows/go.yml` (runs automatically) | Actions tab of relux-works/a2a-swarm |
 | `a2a skill` | The a2a agent skill (use, join, invite, notifications) for Claude and Codex agents, embedded in the binary | `bin/a2a skill install` | `~/.agents/skills/a2a` + links in `~/.claude/skills`, `~/.codex/skills` |
 | Claude Code `SendMessage` | Doorbell between Claude sessions (plus `notify_when_idle`) | from a Claude session | wakes the peer |
 | Claude Code and Codex hooks | Doorbell: `SessionStart`/`UserPromptSubmit` add a fixed a2a-authored notice (counts only, no peer text) as context, `Stop` keeps the session going with it; the agent reads the events with `a2a inbox` | `a2a hook install --agent <name> --runtime claude --installed-command "$HOME/.local/bin/a2a"` (writes `.claude/settings.local.json`) or `--runtime codex` (writes `.codex/hooks.json`; a human then trusts the hooks in Codex); see `docs/cli.md`, `research/codex-hooks.md` | the hook's stdout JSON, read by Claude Code or Codex |
@@ -157,7 +186,7 @@ It uses an explicit protected local host roster and refuses nothing.
 Principal coverage accepts a permanent all-events manual row for the principal's
 exact ID in that room, without extra selector filters or future creation/since
 gates. Sync then adds no `host-principal` row. Such a manual row is removable
-without a typed refusal; mandatory delivery still carries principal mail. Kind trim preserves coverage:
+without a typed refusal; mandatory delivery still carries audience-eligible principal mail. Kind trim preserves coverage:
 only a real loss warrants refusal, while invalid policy or unreadable membership
 fails closed.
 
@@ -494,7 +523,10 @@ before the modify path. Writers serialize per identity, with one
 duplicate-create recovery and matching readback
 after every write. Every add and update first records a durable write fence. A
 mutation that the deadline abandons stays fenced until its native call returns, so it
-cannot overwrite a newer write. A dead writer's fence never expires: `a2a creds
+cannot overwrite a newer write. A mutation whose native call is never made leaves
+no fence: when the fence's directory sync fails the write refuses, and when
+writing the fence uses up the deadline the attempt is an ordinary timeout; if
+the fence cannot be removed it stays and later operations refuse. A dead writer's fence never expires: `a2a creds
 reconcile` clears it only when the writer is confirmed gone and its intended value is
 observed in the item, or the kernel boot-session UUID shows the host restarted since. The
 calendar boot time is never used, and an out-of-band writer of the same value is not
@@ -507,9 +539,10 @@ Because the item ACL binds the creating binary, Keychain mode needs a binary
 signed with a stable identity. An ad-hoc build is trusted only by its own code
 hash, so a rebuilt binary cannot read items its predecessor created: it fails
 closed without a prompt. Signing and the per-identity migration (P3) are held for
-the owner's rollout. Non-macOS selection refuses Keychain mode. A Darwin build without cgo
-currently refuses late through the unsupported backend; early selection refusal
-remains a required pre-adoption follow-up.
+the owner's rollout. A build without the native backend, which is every build
+other than Darwin with cgo, refuses Keychain mode at store selection with
+`keychain requires a macOS cgo build`, before any item operation or homeserver
+request. File mode stays available in every build.
 
 Before **every** item operation, a separate repo-built Swift companion checks
 `SecKeychainGetStatus` without accessing items. Both the probe and the item
@@ -584,13 +617,14 @@ throwaway keychain file only, with the user search list and default keychain
 compared before and after. The phase-1 sentinels' records stay in git history.
 
 Source integration does not qualify native behavior or authorize adoption.
-The recorded pre-adoption follow-ups remain open: Darwin cgo-off late refusal;
-rare directory-sync/deadline paths that can strand an unstarted mutation's fence;
-and test gaps in ACL change-authorization analysis and update-not-found/add.
-The native success-find buffer is not zeroed, reconciliation addresses only the
-access-token service. Timeout fixtures distinguish held-write fences from cooldown
-after backend return and observed fence removal.
-None is declared repaired by this integration. The native sentinel has not run
+Two recorded pre-adoption follow-ups are closed in source with fixture tests:
+the Darwin cgo-off refusal now happens at selection, and the directory-sync and
+deadline paths no longer leave a fence for a mutation that never started.
+These remain open: test gaps in ACL change-authorization analysis and
+update-not-found/add; the native success-find buffer is not zeroed;
+reconciliation addresses only the access-token service. Timeout fixtures
+distinguish held-write fences from cooldown after backend return and observed
+fence removal. The native sentinel has not run
 for this candidate. Actual ACL/partition/no-dialog/refusal behavior, stable
 signing requirement and N-to-N+1 item survival, existing-item rotation/rollback,
 and signing-key custody require separate approval and evidence. Existing item
@@ -605,7 +639,9 @@ metadata, Linux evidence, and the closed `/2` production platform aggregate.
 aggregate before deriving the cask. Their exact commands, immutable pins and
 output locations are in the [tool table](docs/shared-distribution.md#tools-and-reproducible-entry-points).
 The `distribution-controls` workflow exercises real packaging and isolated
-container installation on hosted runners, with qualification trust only.
+container installation on hosted runners, with qualification trust only. Pushes
+to main also report the cask-target and RPM-header mutation controls as separate
+jobs. The RPM control uses the package fixture built by the same workflow run.
 
 This is a partial production slice: combined Darwin/Linux assembly, macOS
 cross-build equality, publication and manual tap custody remain. The legacy
@@ -664,3 +700,5 @@ authority is integrated.
 | Ordered controller | a2a-distribution controller with source/binding/inputs/brew/output arguments | Held; fixture-qualified ordered adapter |
 | Workflow validation | Hosted python3 .github/release/controller-tools.py, then pinned actionlint | Verified tool under RUNNER_TEMP/controller-tools; no host installation |
 | Controller fixtures | go test -p 1 -parallel 2 ./internal/releasecontroller | Stage/consumer negatives; hosted dry-run JSON, fixture trust only |
+
+For Gemini review stations using Antigravity CLI, see [a2a lifecycle hooks and the launcher-owned idle stream](docs/antigravity-station.md).

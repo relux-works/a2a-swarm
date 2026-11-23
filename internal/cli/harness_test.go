@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,10 +41,38 @@ type result struct {
 	stdout, stderr string
 }
 
+func testDeadlineContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("test deadline unavailable")
+	}
+	return context.WithDeadline(context.Background(), deadline)
+}
+
+func installSuccessfulTerminalInspector(a *App, expected config.TerminalBinding) func() int32 {
+	calls := new(atomic.Int32)
+	a.inspectTerminalTarget = func(_ context.Context, got config.TerminalBinding) (string, error, error) {
+		calls.Add(1)
+		if got.Generation != expected.Generation || got.OwnerBirth != expected.OwnerBirth || got.Target != expected.Target {
+			return "", errors.New("unexpected terminal binding inspection"), nil
+		}
+		return got.OwnerBirth, nil, nil
+	}
+	return calls.Load
+}
+
+func requireTerminalInspectorCalled(t *testing.T, calls func() int32) {
+	t.Helper()
+	if calls == nil || calls() == 0 {
+		t.Fatal("terminal inspector was not called")
+	}
+}
+
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	hs := newFakeHS(t)
-	dir := t.TempDir()
+	dir := canonicalTempDir(t)
 	envFile := "A2A_MATRIX_URL=" + hs.srv.URL + "\nA2A_MATRIX_SERVER_NAME=" + testServer + "\nA2A_MATRIX_REGISTRATION_TOKEN=" + hs.regToken + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "matrix.env"), []byte(envFile), 0o600); err != nil {
 		t.Fatal(err)

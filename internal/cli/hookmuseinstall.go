@@ -12,9 +12,9 @@ import (
 // Phase0 R2 discovered this native config plane. It supports hooks, not an
 // env export contract: identity is pinned in each command, never invented env.
 const DefaultMuseHooks = ".muse/hooks.json"
-const museCommandTimeout = 6 // native seconds; exceeds a2a's five-second budget
+const nativeHookTimeout = 6 // native seconds; exceeds a2a's five-second budget
 
-type museHookCommand struct {
+type nativeHookCommand struct {
 	Type    string `json:"type"`
 	Command string `json:"command"`
 	Timeout int    `json:"timeout"`
@@ -22,11 +22,11 @@ type museHookCommand struct {
 
 func ourMuseHookGroup(raw json.RawMessage, ev hookEvent) (string, bool) {
 	var g struct {
-		Hooks []museHookCommand `json:"hooks"`
+		Hooks []nativeHookCommand `json:"hooks"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if dec.Decode(&g) != nil || len(g.Hooks) != 1 || g.Hooks[0].Type != "command" || g.Hooks[0].Timeout != museCommandTimeout {
+	if dec.Decode(&g) != nil || len(g.Hooks) != 1 || g.Hooks[0].Type != "command" || g.Hooks[0].Timeout != nativeHookTimeout {
 		return "", false
 	}
 	m := ourHookRE.FindStringSubmatch(g.Hooks[0].Command)
@@ -87,11 +87,11 @@ func mergeMuseHooks(root *jsonObject, name, prefix string, install bool) (int, e
 
 func museHookGroup(prefix, name string, ev hookEvent) json.RawMessage {
 	return marshalNoEscape(struct {
-		Hooks []museHookCommand `json:"hooks"`
-	}{[]museHookCommand{{"command", prefix + " --as " + name + " hook " + ev.arg + " --runtime muse", museCommandTimeout}}})
+		Hooks []nativeHookCommand `json:"hooks"`
+	}{[]nativeHookCommand{{"command", prefix + " --as " + name + " hook " + ev.arg + " --runtime muse", nativeHookTimeout}}})
 }
 
-func (a *App) museHookSettings(path, name string, install bool, selected hookExecutableSelection) error {
+func (a *App) namedHookSettings(rt hookRuntime, path, name string, install bool, selected hookExecutableSelection) error {
 	if a.as != "" || a.Getenv(config.EnvAgent) != "" {
 		selected, err := a.identity()
 		if err != nil {
@@ -103,6 +103,20 @@ func (a *App) museHookSettings(path, name string, install bool, selected hookExe
 		if !install {
 			name = selected
 		}
+	}
+	if rt.name == "agy" && !install && name == "" {
+		return usagef("agy hook removal requires the selected identity")
+	}
+	if rt.name == "agy" {
+		unlock, err := lockAgySettingsDir(path, install)
+		if err != nil {
+			return err
+		}
+		if unlock == nil {
+			a.printf("unchanged %s (no such directory)\n", sanitizeLine(path))
+			return nil
+		}
+		defer unlock()
 	}
 	orig, mode, err := readSettings(path)
 	if err != nil {
@@ -116,11 +130,11 @@ func (a *App) museHookSettings(path, name string, install bool, selected hookExe
 	if orig != nil {
 		// Also reject duplicate keys and trailing data rather than accepting
 		// ambiguous configuration with the generic legacy merger.
-		if err := uniqueMuseJSON(orig); err != nil {
-			return fmt.Errorf("%s: invalid Muse config; refusing to change it", sanitizeLine(path))
+		if err := uniqueHookObject(orig); err != nil {
+			return fmt.Errorf("%s: invalid %s config; refusing to change it", sanitizeLine(path), rt.title)
 		}
 		if root, err = parseJSONObject(orig); err != nil {
-			return fmt.Errorf("%s: invalid Muse config; refusing to change it", sanitizeLine(path))
+			return fmt.Errorf("%s: invalid %s config; refusing to change it", sanitizeLine(path), rt.title)
 		}
 	}
 	var state config.State
@@ -141,13 +155,15 @@ func (a *App) museHookSettings(path, name string, install bool, selected hookExe
 		if err != nil {
 			return err
 		}
-		if len(pin) > 0 {
+		if len(pin) > 0 || rt.name == "agy" {
 			p, err := a.pathsFor(name)
 			if err != nil {
 				return err
 			}
-			if _, err = a.namedMetadata(p, name); err != nil {
-				return err
+			if len(pin) > 0 {
+				if _, err = a.namedMetadata(p, name); err != nil {
+					return err
+				}
 			}
 			prefix = "env " + shellQuote("A2A_CONFIG_DIR="+p.ConfigRoot()) + " " + prefix
 			for _, v := range pin {
@@ -155,7 +171,11 @@ func (a *App) museHookSettings(path, name string, install bool, selected hookExe
 			}
 		}
 	}
-	removed, err := mergeMuseHooks(root, name, prefix, install)
+	merge := mergeMuseHooks
+	if rt.name == "agy" {
+		merge = mergeAgyHooks
+	}
+	removed, err := merge(root, name, prefix, install)
 	if err != nil {
 		return err
 	}
@@ -179,7 +199,9 @@ func (a *App) museHookSettings(path, name string, install bool, selected hookExe
 		if err := writeSettings(path, pretty.Bytes(), mode); err != nil {
 			return err
 		}
-		if install {
+		if rt.name == "agy" {
+			a.printf("updated %s (%s)\n", sanitizeLine(path), rt.title)
+		} else if install {
 			a.printf("installed %s (Muse): hooks SessionStart, UserPromptSubmit, Stop for --as %s\n", sanitizeLine(path), name)
 		} else {
 			a.printf("removed %d a2a Muse hook entries from %s\n", removed, sanitizeLine(path))
@@ -192,15 +214,19 @@ func (a *App) museHookSettings(path, name string, install bool, selected hookExe
 		if state.HooksPaused {
 			a.printf("hooks remain paused; only an explicit a2a hook resume --agent %s resumes them.\n", name)
 		}
+		if rt.name == "agy" {
+			a.printWakeGuidance("agy")
+			return nil
+		}
 		a.printf("human step: Muse project hooks run only after native human trust; a2a never writes trust approval.\n")
 		a.printf("No project env export is installed. Commands pin --as; genuine shell/hook/inbox session propagation is unqualified. Stop is terminal systemMessage only; idle wake requires separate native acceptance.\n")
 	}
 	return nil
 }
 
-// uniqueMuseJSON rejects duplicate keys recursively, non-object roots and any
+// uniqueHookObject rejects duplicate keys recursively, non-object roots and any
 // trailing bytes. Unknown keys are preserved, not treated as our configuration.
-func uniqueMuseJSON(data []byte) error {
+func uniqueHookObject(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var value func() error

@@ -23,7 +23,7 @@ import (
 func TestReviewStateCapacityBoundary(t *testing.T) {
 	for _, targetSize := range []int{wakemute.MaxBytes - 1, wakemute.MaxBytes} {
 		t.Run(fmt.Sprintf("encoded-size-%d", targetSize), func(t *testing.T) {
-			root := t.TempDir()
+			root := canonicalTempDir(t)
 			scope := fixture.Scope(root)
 			fixture.Enroll(t, scope)
 			approved := fixture.Confirm(t, scope, "capacity-current", "mute")

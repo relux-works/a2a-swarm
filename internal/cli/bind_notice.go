@@ -241,6 +241,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 		principalError = principalConfigProblem
 	}
 	stateWriters := s.stateWriterWarnings(ctx, st)
+	audienceError := s.audienceStatus()
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
@@ -257,14 +258,18 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			MailAlarm           mailAlarmStatus             `json:"mail_alarm"`
 			Refresh             string                      `json:"refresh"`
 			PrincipalError      string                      `json:"principal_error,omitempty"`
+			AudienceError       string                      `json:"audience_error,omitempty"`
 			StateWriterWarnings []stateWriterWarning        `json:"state_writer_warnings,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, wakeDiagnostic, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, stateWriters})
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, wakeDiagnostic, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, audienceError, stateWriters})
 	}
 	for _, warning := range stateWriters {
 		a.printf("warning: %s: %s\n", warning.Source, warning.Detail)
 	}
 	if principalError != "" {
 		a.printf("%s\n", principalError)
+	}
+	if audienceError != "" {
+		a.printf("%s\n", audienceError)
 	}
 	if recovery != nil {
 		a.printf("recovery=%s at=%s\n", recovery.Reason, recovery.At.Format(time.RFC3339Nano))

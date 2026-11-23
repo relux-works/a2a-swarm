@@ -37,7 +37,7 @@ jobs:
           cache: false
       # Compile requirements and reject self-created ad-hoc fixtures only.
       # No real Developer ID/import/notary/user-Keychain operation.
-      - run: go test -p 1 -parallel 2 -race -count=1 -timeout=3m ./internal/darwinrelease
+      - run: go test -p 1 -parallel 2 -race -count=1 -timeout=3m ./internal/darwinrelease ./internal/fixturecompare ./cmd/a2a-release
   signing-keychain-control:
     runs-on: macos-15
     timeout-minutes: 15

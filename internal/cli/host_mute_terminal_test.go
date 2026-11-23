@@ -42,7 +42,7 @@ func (f *muteTerminal) ObserveReadiness(context.Context, string) tmuxwake.Readin
 func (f *muteTerminal) AssessOwnedNotice(context.Context, string) tmuxwake.ReadinessAssessment {
 	return f.assessment()
 }
-func (f *muteTerminal) Send(ctx context.Context, _ int, _ tmuxwake.ReadinessKey, before, after func()) (tmuxwake.SendResult, error) {
+func (f *muteTerminal) Send(ctx context.Context, _ int, _ tmuxwake.ReadinessKey, before, after func(), _ ...func() error) (tmuxwake.SendResult, error) {
 	if before != nil {
 		before()
 	}

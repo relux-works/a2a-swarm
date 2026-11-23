@@ -19,7 +19,8 @@ import (
 // this test intended a ready renderer. Delayed rendering is tested separately.
 const inputFixture = `import os,sys,tty,json,time
 tty.setraw(0)
-text=''; submitted=[]; path=sys.argv[1]; runtime=sys.argv[2]
+text=''; submitted=[]; enters=0; pastes=0; paste_ends=0; paste_markers=[]; path=sys.argv[1]; runtime=sys.argv[2]; pending=bytearray()
+os.write(1,b'\x1b[?2004h')
 def draw():
     global text
     options={}
@@ -32,6 +33,7 @@ def draw():
     cursor=options.get('cursor',0)
     cursor_row=options.get('cursor-row',row)
     extra=options.get('extra','')
+    busy=options.get('busy',False)
     if runtime=='claude' or runtime.startswith('claude-named'):
         content=shown+'\x1b[7m \x1b[0m' if shown else '\x1b[7mC\x1b[0;2montinue\x1b[0m'
         top='─'*110 if runtime=='claude' else '─'*90+' synthetic-session'
@@ -39,31 +41,50 @@ def draw():
         if runtime=='claude-named-busy': footer+=' (esc to interrupt)'
         if runtime=='claude-named-dialog': footer+=' Permission required'
         if runtime=='claude-named-unknown': top='Unrecognized layout'
+        if busy: footer+=' (esc to interrupt)'
         screen='\x1b[2J\x1b['+str(row-1)+';1H'+top+'\r\n'+' '*col+'❯\u00a0'+content+'\r\n'+'─'*110+'\r\n'+footer+extra+'\x1b['+str(cursor_row)+';'+str(3+col+len(shown)+cursor)+'H'
     else:
         footer='Codex · Ready · Context 50% left' if shown else '? for shortcuts'
+        if busy: footer+=' · Esc to interrupt'
         screen='\x1b[2J\x1b['+str(row)+';1H'+' '*col+'\x1b[1m›\x1b[0m '+shown+'\x1b['+str(row+2)+';1H  '+footer+extra+'\x1b['+str(cursor_row)+';'+str(3+col+len(shown)+cursor)+'H'
     os.write(1,screen.encode())
-    with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'pid':os.getpid(),'row':row,'render':options.get('render',0)},f)
+    with open(path+'.next','w') as f: json.dump({'text':text,'submitted':submitted,'enters':enters,'pastes':pastes,'pasteEnds':paste_ends,'pasteMarkers':paste_markers,'busy':busy or 'esc to interrupt' in extra.lower(),'pid':os.getpid(),'row':row,'render':options.get('render',0)},f)
     os.replace(path+'.next',path)
 draw()
 while True:
-    pending=os.read(0,4096)
+    pending.extend(os.read(0,4096))
     while os.path.exists(path+'.hold'): time.sleep(0.005)
-    for c in pending:
+    while pending:
+        if pending.startswith(b'\x1b[200~'):
+            del pending[:6]; pastes+=1; paste_markers.append('start'); continue
+        if pending.startswith(b'\x1b[201~'):
+            del pending[:6]; paste_ends+=1; paste_markers.append('end'); continue
+        if any(marker.startswith(bytes(pending)) for marker in (b'\x1b[200~',b'\x1b[201~')): break
+        c=pending[0]; del pending[0]
         if c==12: continue # fixture-only redraw without input changes
-        if c in (13,10): submitted.append(text);text=''
+        if c in (13,10):
+            enters+=1
+            try:
+                with open(path+'.control') as f: mode=f.read().strip()
+            except FileNotFoundError: mode=''
+            if mode=='never' or mode=='drop-first' and enters==1: continue
+            submitted.append(text);text=''
         elif c in (127,8): text=text[:-1]
         else: text+=chr(c)
     draw()
 `
 
 type fixtureState struct {
-	Text      string
-	Submitted []string
-	PID       int
-	Row       int
-	Render    int
+	Text         string
+	Submitted    []string
+	Enters       int
+	Pastes       int
+	PasteEnds    int
+	PasteMarkers []string
+	Busy         bool
+	PID          int
+	Row          int
+	Render       int
 }
 type terminalFixture struct {
 	target Target
@@ -338,6 +359,33 @@ func TestTerminalLateRendererInsideWindowSubmitsOnce(t *testing.T) {
 	}
 }
 
+// A missing composer observation stays unavailable; confirmed changed or
+// foreign input retains the changed-input refusal.
+func TestAwaitOwnedNoticeDistinguishesUnavailableAndChangedInput(t *testing.T) {
+	oldWait, oldPoll := redrawWait, redrawPoll
+	redrawWait, redrawPoll = 12*time.Millisecond, time.Millisecond
+	defer func() { redrawWait, redrawPoll = oldWait, oldPoll }()
+
+	for _, tc := range []struct {
+		name        string
+		observation sendInspection
+		want        SendOutcome
+	}{
+		{name: "unavailable capture", observation: sendInspection{}, want: SendDraftUnavailable},
+		{name: "recognized changed draft", observation: sendInspection{inputAvailable: true, box: Box{Text: "noti"}}, want: SendDraftChanged},
+		{name: "foreign draft", observation: sendInspection{foreign: true}, want: SendDraftChanged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ready, got, err := (Target{}).awaitOwnedNotice(context.Background(), "notice", func(context.Context, string) sendInspection {
+				return tc.observation
+			})
+			if err != nil || ready || got != tc.want {
+				t.Fatalf("ready=%v outcome=%q err=%v, want %q", ready, got, err, tc.want)
+			}
+		})
+	}
+}
+
 // Negative control for the polling window: once the box is empty because the
 // notice was already submitted by someone else, polling never adds a second
 // Enter; the attempt ends as a draft outcome with exactly one submission.
@@ -374,18 +422,15 @@ func TestTerminalAlreadySubmittedNoticeGetsNoSecondEnter(t *testing.T) {
 	}
 }
 
-// Foreign text appended to the notice never gets an Enter while the window is
-// open. The outcome depends on what the layout can recognize: Claude's composer
-// stays readable, so the text is classified as changed and polling stops at once.
-// A filled Codex composer hides its shortcut hint, so only the exact notice is
-// recognizable; appended text reads as unavailable and polling runs to the deadline.
+// Foreign text appended to the notice never gets Enter; the refusal-only
+// composer observation stops both runtimes without making foreign input eligible.
 func TestTerminalForeignTextDuringWindowGetsNoEnter(t *testing.T) {
 	for _, c := range []struct {
 		runtime    string
 		outcome    string
 		stopsEarly bool
 	}{
-		{"codex", "notice left in draft: input unavailable", false},
+		{"codex", "notice left in draft: changed input", true},
 		{"claude", "notice left in draft: changed input", true},
 	} {
 		t.Run(c.runtime, func(t *testing.T) {
@@ -408,5 +453,116 @@ func TestTerminalForeignTextDuringWindowGetsNoEnter(t *testing.T) {
 				t.Fatalf("foreign draft submitted: %+v", s)
 			}
 		})
+	}
+}
+
+// Both runtimes retry a swallowed Enter, and credit the wake only after the
+// synthetic composer clears; one bracketed paste proves the notice was never retyped.
+func TestTerminalDroppedFirstEnterRequiresSubmitWitness(t *testing.T) {
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			if err := os.WriteFile(f.path+".control", []byte("drop-first"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := f.target.Send(context.Background(), 2, nil, nil)
+			if err != nil || outcome != "wake submitted" {
+				t.Fatalf("dropped Enter was credited without recovery: %q %v", outcome, err)
+			}
+			s := f.wait(func(s fixtureState) bool { return len(s.Submitted) != 0 })
+			if s.Enters != 2 || s.Pastes != 1 || s.PasteEnds != 1 || strings.Join(s.PasteMarkers, ",") != "start,end" || len(s.Submitted) != 1 || s.Submitted[0] != Notice(2) || s.Text != "" {
+				t.Fatalf("unexpected submit witness: %+v", s)
+			}
+		})
+	}
+}
+
+// A composer that never clears exhausts Enter-only retries and remains an
+// unsubmitted notice; the ready neighbor above proves the successful witness.
+func TestTerminalNeverClearedNoticeIsNotSubmitted(t *testing.T) {
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			if err := os.WriteFile(f.path+".control", []byte("never"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := f.target.Send(context.Background(), 1, nil, nil)
+			if err != nil || outcome != "uncertain: Enter not witnessed" {
+				t.Fatalf("unwitnessed notice credited: %q %v", outcome, err)
+			}
+			s := f.wait(func(s fixtureState) bool { return s.Enters >= 3 })
+			if s.Enters != 3 || s.Pastes != 1 || s.PasteEnds != 1 || strings.Join(s.PasteMarkers, ",") != "start,end" || len(s.Submitted) != 0 || s.Text != Notice(1) {
+				t.Fatalf("retry bound or pending notice lost: %+v", s)
+			}
+		})
+	}
+}
+
+func TestTerminalRetryBackoffSchedule(t *testing.T) {
+	oldWait, oldWitnessWait, oldPoll := enterRetryWait, enterWitnessWait, redrawPoll
+	var got []time.Duration
+	enterRetryWait = func(ctx context.Context, duration time.Duration) error {
+		got = append(got, duration)
+		return waitContext(ctx, duration)
+	}
+	enterWitnessWait = 10 * time.Millisecond
+	redrawPoll = time.Millisecond
+	t.Cleanup(func() {
+		enterRetryWait, enterWitnessWait, redrawPoll = oldWait, oldWitnessWait, oldPoll
+	})
+
+	f := newTerminalFixture(t, "codex")
+	if err := os.WriteFile(f.path+".control", []byte("never"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := f.target.Send(context.Background(), 1, nil, nil)
+	if err != nil || outcome != "uncertain: Enter not witnessed" {
+		t.Fatalf("unwitnessed notice credited: %q %v", outcome, err)
+	}
+	s := f.wait(func(s fixtureState) bool { return s.Enters >= 3 })
+	if s.Enters != 3 || len(s.Submitted) != 0 || s.Text != Notice(1) {
+		t.Fatalf("retry schedule did not preserve the pending notice: %+v", s)
+	}
+	want := []time.Duration{100 * time.Millisecond, 250 * time.Millisecond}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("retry waits = %v, want %v", got, want)
+	}
+}
+
+// Recognized foreign input after typing stops the attempt before any Enter.
+// Codex's no-hint filled composer is covered by the conservative raw refusal path.
+func TestTerminalForeignTextBeforeEnterStopsImmediately(t *testing.T) {
+	for _, runtime := range []string{"codex", "claude"} {
+		t.Run(runtime, func(t *testing.T) {
+			f := newTerminalFixture(t, runtime)
+			outcome, err := f.target.Send(context.Background(), 1, nil, func() {
+				f.typeText("KEEP")
+				f.wait(func(s fixtureState) bool { return s.Text == Notice(1)+"KEEP" })
+			})
+			if err != nil || outcome != "notice left in draft: changed input" {
+				t.Fatalf("foreign composer did not stop immediately: %q %v", outcome, err)
+			}
+			s := f.wait(func(s fixtureState) bool { return s.Text == Notice(1)+"KEEP" })
+			if s.Enters != 0 || s.Pastes != 1 || len(s.Submitted) != 0 {
+				t.Fatalf("foreign input received Enter or notice was retyped: %+v", s)
+			}
+		})
+	}
+}
+
+// Claude becoming busy after the paste is not proof of a submitted wake because
+// no Enter was sent; the notice stays pending and is not typed a second time.
+func TestTerminalClaudeBusyAfterTypingIsNotSubmitted(t *testing.T) {
+	f := newTerminalFixture(t, "claude")
+	outcome, err := f.target.Send(context.Background(), 1, nil, func() {
+		f.render(map[string]any{"row": 20, "extra": " (esc to interrupt)"})
+		f.wait(func(s fixtureState) bool { return s.Busy })
+	})
+	if err != nil || outcome != "notice left in draft: runtime became busy before Enter" {
+		t.Fatalf("pre-Enter busy transition misreported: %q %v", outcome, err)
+	}
+	s := f.wait(func(s fixtureState) bool { return s.Busy })
+	if s.Enters != 0 || s.Pastes != 1 || len(s.Submitted) != 0 || s.Text != Notice(1) {
+		t.Fatalf("busy transition repeated input or submitted a notice: %+v", s)
 	}
 }

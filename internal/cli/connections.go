@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -176,8 +175,8 @@ func (a *App) connectionPreflight(command string, args []string) error {
 	if command == "connection" || command == "host" || command == "help" {
 		return nil
 	}
-	if c.Store.Backend == "keychain" && runtime.GOOS != "darwin" && a.keychain == nil && a.connectionSecretStore == nil {
-		return errors.New("keychain secret store requires macOS")
+	if c.Store.Backend == "keychain" && !keychainBuildSupported && a.keychain == nil && a.connectionSecretStore == nil {
+		return errKeychainUnsupported
 	}
 	if command == "register" || command == "identity" && len(args) > 0 && args[0] == "ensure" {
 		return nil

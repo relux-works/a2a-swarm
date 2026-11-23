@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -85,8 +84,9 @@ func TestNamedBackendEnvironment(t *testing.T) {
 	}
 }
 
-// With no injected store, file is selected on every host; Keychain keeps the
-// exact non-macOS error. Selection itself never accesses a real Keychain.
+// With no injected store, file is selected in every build; a Keychain profile
+// is selected only in a build with the native backend and otherwise keeps the
+// exact refusal. Selection itself never accesses a real Keychain.
 func TestNamedBackendPlatform(t *testing.T) {
 	for _, backend := range []string{"file", "keychain"} {
 		t.Run(backend, func(t *testing.T) {
@@ -100,9 +100,9 @@ func TestNamedBackendPlatform(t *testing.T) {
 			a.connectionSecretStore = nil
 			a.keychain = nil
 			got, err := a.selectedStore()
-			if backend == "keychain" && runtime.GOOS != "darwin" {
-				if err == nil || err.Error() != "keychain secret store requires macOS" {
-					t.Fatal("non-macOS Keychain selection changed")
+			if backend == "keychain" && !keychainBuildSupported {
+				if !errors.Is(err, errKeychainUnsupported) || err.Error() != keychainUnsupportedText {
+					t.Fatal("Keychain selection in a build without the native backend changed", err)
 				}
 			} else if err != nil || got != backend {
 				t.Fatalf("backend selection %q: %v", got, err)

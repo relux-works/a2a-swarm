@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/relux-works/a2a-swarm/internal/audience"
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
 )
@@ -242,11 +243,8 @@ func removeAllSubscriptions(list *SubList, configured []string) (removed []strin
 // Host coverage has no subscription ID: it is a local delivery policy, not an
 // account-data row. Manual selectors keep their existing projection semantics.
 func classifyWithPrincipals(ev matrix.Event, room, me, name string, st config.State, subs []Sub, configured []string) (relevance, string, []string) {
-	rel, root, matched := classify(ev, room, me, name, st, subs)
-	if rel == "" && ev.Sender != me && mandatoryPrincipal(ev, configured) {
-		return relSub, "", nil
-	}
-	return rel, root, matched
+	c := audience.NewCycle(me, name, time.Time{}, nil, nil)
+	return audienceClassify(ev, room, me, name, st, subs, configured, c.Resolve(room, ev))
 }
 
 func mandatoryPrincipal(ev matrix.Event, configured []string) bool {

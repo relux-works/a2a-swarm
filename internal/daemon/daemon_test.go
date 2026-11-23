@@ -770,6 +770,7 @@ func TestPublicSocketAccessAndForeignUIDAuth(t *testing.T) {
 	}
 }
 
+// TestV1PathBytesAndExplicitRotation proves the 103-byte socket path boundary is admitted, longer and malformed paths are refused, and implicit key rotation stays closed.
 func TestV1PathBytesAndExplicitRotation(t *testing.T) {
 	if StationKeyLen != 32 || ProtocolVersion != 1 {
 		t.Fatal("v1 constants differ")

@@ -20,6 +20,14 @@ func cachedPaths(t *testing.T) Paths {
 	}
 	return p
 }
+
+func useRepeatedUnqualifiedDirectoryTime(t *testing.T) {
+	t.Helper()
+	saved := fileChangeTimeNS
+	fileChangeTimeNS = func(os.FileInfo) (int64, bool) { return 17, false }
+	t.Cleanup(func() { fileChangeTimeNS = saved })
+}
+
 func cachedLoad(t *testing.T, p Paths) State {
 	t.Helper()
 	s, err := LoadState(p, "fixture")
@@ -206,8 +214,134 @@ func TestReadCacheByteConfirmation(t *testing.T) {
 	}
 }
 
-// TestReadCacheByteConfirmationOnUpdate proves a locked update sees a same-stamp foreign sealed change without inheriting own-write durability, beside an own durable no-op.
+// TestReadCacheMalformedInputDoesNotUseStaleState proves a cached valid value
+// cannot mask a same-stamp malformed known field, and that a locked update
+// leaves the malformed source untouched without running its callback.
+func TestReadCacheMalformedInputDoesNotUseStaleState(t *testing.T) {
+	p := cachedPaths(t)
+	if got := cachedLoad(t, p); got.NextBatch != "s0" {
+		t.Fatal("valid cached neighbor did not load")
+	}
+	path := p.StateFile("fixture")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := bytes.Replace(raw, []byte(`"s0"`), []byte(`{  }`), 1)
+	if bytes.Equal(raw, bad) || len(raw) != len(bad) {
+		t.Fatal("malformed same-size fixture was not prepared")
+	}
+	cacheRestamp(t, path, bad)
+	if _, err := LoadState(p, "fixture"); err == nil || !strings.Contains(err.Error(), "not valid state JSON") {
+		t.Fatalf("stale cache hid malformed source: %v", err)
+	}
+	called := false
+	if _, err := UpdateState(p, "fixture", func(*State) error { called = true; return nil }); err == nil || called {
+		t.Fatalf("malformed source reached update callback: called=%v err=%v", called, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(after, bad) {
+		t.Fatalf("malformed input was changed: err=%v", err)
+	}
+}
+
+// TestReadCacheMalformedMailboxDoesNotUseStaleData proves exact-byte
+// confirmation does not mask a malformed complete mailbox line under a
+// colliding stamp, and a restored valid neighbor remains readable.
+func TestReadCacheMalformedMailboxDoesNotUseStaleData(t *testing.T) {
+	p := cachedPaths(t)
+	cacheMailSeed(t, p)
+	if got := cachedMail(t, p).Pending(); len(got) != 1 {
+		t.Fatal("valid mailbox neighbor did not load")
+	}
+	path := p.MailboxFile("fixture")
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("read mailbox fixture: %v", err)
+	}
+	bad := bytes.Clone(raw)
+	bad[0] = '!'
+	cacheRestamp(t, path, bad)
+	if _, err := OpenMailbox(p, "fixture"); err == nil || !strings.Contains(err.Error(), "is not valid JSON") {
+		t.Fatalf("stale mailbox hid malformed source: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(after, bad) {
+		t.Fatalf("malformed mailbox was changed: %v", err)
+	}
+	cacheRestamp(t, path, raw)
+	if got, err := OpenMailbox(p, "fixture"); err != nil || len(got.Pending()) != 1 {
+		t.Fatalf("valid restored neighbor: entries=%d err=%v", len(got.Pending()), err)
+	}
+}
+
+// TestReadCacheOversizeMailboxKeepsIncrementalSnapshot proves the raw-byte
+// retention bound does not discard a large mailbox's incremental state: an
+// unchanged read parses nothing, and a same-inode append parses only its new
+// line while the exact-byte cache remains empty.
+func TestReadCacheOversizeMailboxKeepsIncrementalSnapshot(t *testing.T) {
+	p := Paths{Base: t.TempDir()}.WithReadCache(NewReadCache("fixture"))
+	if err := os.MkdirAll(filepath.Dir(p.MailboxFile("fixture")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := MailEntry{ID: "$large", Kind: MailEvent, Room: "!fixture", Event: json.RawMessage(`{"body":"` + strings.Repeat("x", mailboxCacheMaxInput) + `"}`)}
+	var data bytes.Buffer
+	if err := writeLine(&data, mailLine{Op: "add", Entry: &entry}); err != nil {
+		t.Fatal(err)
+	}
+	if int64(data.Len()) <= mailboxCacheMaxInput {
+		t.Fatal("oversize fixture is not above the retention bound")
+	}
+	if err := os.WriteFile(p.MailboxFile("fixture"), data.Bytes(), SecretFileMode); err != nil {
+		t.Fatal(err)
+	}
+	before := ReadStateDecodeStats()
+	m, err := OpenMailbox(p, "fixture")
+	if err != nil || len(m.Pending()) != 1 || len(m.live["$large"].Event) != len(entry.Event) {
+		t.Fatalf("oversize mailbox initial read: err=%v", err)
+	}
+	after := ReadStateDecodeStats()
+	if after.MailboxDecodes-before.MailboxDecodes != 1 || p.readCache.mailbox != nil || len(p.readCache.mailboxRaw) != 0 {
+		t.Fatalf("oversize raw input was retained or refused: decodes=%d raw=%d", after.MailboxDecodes-before.MailboxDecodes, len(p.readCache.mailboxRaw))
+	}
+	if p.readCache.mailboxInc == nil || p.readCache.mailboxInc.fileSize <= mailboxCacheMaxInput {
+		t.Fatal("oversize incremental snapshot was not retained")
+	}
+	before = ReadStateDecodeStats()
+	m, err = OpenMailbox(p, "fixture")
+	after = ReadStateDecodeStats()
+	if err != nil || len(m.Pending()) != 1 || after.MailboxDecodes != before.MailboxDecodes || after.MailboxParseBytes != before.MailboxParseBytes {
+		t.Fatalf("unchanged oversize read was not incremental: err=%v decodes=%d parsed=%d", err, after.MailboxDecodes-before.MailboxDecodes, after.MailboxParseBytes-before.MailboxParseBytes)
+	}
+
+	appended := incAppendLine(t, p, incEventEntry("$after-large", "new"))
+	before = ReadStateDecodeStats()
+	m, err = OpenMailbox(p, "fixture")
+	after = ReadStateDecodeStats()
+	if err != nil {
+		t.Fatalf("open mailbox after large-file append: %v", err)
+	}
+	pending := m.Pending()
+	if len(pending) != 2 || pending[0].ID != "$large" || pending[1].ID != "$after-large" {
+		t.Fatalf("pending after large-file append = %v, err=%v", pending, err)
+	}
+	if after.MailboxDecodes != before.MailboxDecodes {
+		t.Fatal("large-file append took a full mailbox parse")
+	}
+	if parsed := after.MailboxParseBytes - before.MailboxParseBytes; parsed != appended {
+		t.Fatalf("large-file append parsed %d bytes, want appended line of %d bytes", parsed, appended)
+	}
+	if after.MailboxIncrementalReads <= before.MailboxIncrementalReads {
+		t.Fatal("large-file append was not an incremental read")
+	}
+	if p.readCache.mailbox != nil || len(p.readCache.mailboxRaw) != 0 || p.readCache.mailboxInc == nil || p.readCache.mailboxInc.fileSize <= mailboxCacheMaxInput {
+		t.Fatalf("large-file incremental state or raw-byte bound is wrong: mailbox=%p raw=%d inc=%p", p.readCache.mailbox, len(p.readCache.mailboxRaw), p.readCache.mailboxInc)
+	}
+}
+
+// TestReadCacheByteConfirmationOnUpdate proves a locked update sees a same-stamp foreign sealed change and both stable and foreign no-ops use the ordinary durability path when namespace proof is unavailable.
 func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
 	p := cachedPaths(t)
 	var rec syncRecord
 	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
@@ -216,24 +350,214 @@ func TestReadCacheByteConfirmationOnUpdate(t *testing.T) {
 			t.Fatal("own durable control loaded different content")
 		}
 		return nil
-	}); err != nil || len(rec.files) != 0 || len(rec.dirs) != 0 {
-		t.Fatalf("own durable control: %v, syncs=%+v", err, rec)
+	}); err != nil || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable own-write positive control: %v, syncs=%+v durable=%v", err, rec, p.readCache.durable)
 	}
+	rec = syncRecord{}
 	foreign := cachedLoad(t, p)
 	foreign.NextBatch = "s1"
 	raw, err := sealedState(foreign)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cacheRestamp(t, p.StateFile("fixture"), append(raw, '\n'))
+	foreignBytes := append(raw, '\n')
+	cacheRestamp(t, p.StateFile("fixture"), foreignBytes)
 	got, err := UpdateState(p, "fixture", func(s *State) error {
 		if s.NextBatch != "s1" {
 			t.Fatal("locked update loaded stale cached State")
 		}
 		return nil
 	})
-	if err != nil || got.NextBatch != "s1" || !got.Writer.ForeignSeen.IsZero() || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
-		t.Fatalf("same-stamp compatible foreign change: err=%v State=%q syncs=%+v durable=%v", err, got.NextBatch, rec, p.readCache.durable)
+	finalBytes, readErr := os.ReadFile(p.StateFile("fixture"))
+	if err != nil || readErr != nil || got.NextBatch != "s1" || !got.Writer.ForeignSeen.IsZero() || !validWriterSeal(got) || !bytes.Equal(finalBytes, foreignBytes) || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("same-stamp compatible foreign change: err=%v readErr=%v State=%q bytesPreserved=%v syncs=%+v durable=%v", err, readErr, got.NextBatch, bytes.Equal(finalBytes, foreignBytes), rec, p.readCache.durable)
+	}
+}
+
+// TestReadCacheByteConfirmationOnUpdateWithQualifiedDirectoryTime proves a stable qualified own write may skip syncs, while same-stamp foreign bytes still fail byte confirmation and use ordinary durability.
+func TestReadCacheByteConfirmationOnUpdateWithQualifiedDirectoryTime(t *testing.T) {
+	p := cachedPaths(t)
+	path := p.StateFile("fixture")
+	dir := filepath.Dir(path)
+	beforeDir := stampStateDirectory(dir)
+	if !beforeDir.known {
+		t.Skip("platform does not qualify directory ctime")
+	}
+	if !p.readCache.durable {
+		t.Fatal("qualified directory ctime did not preserve the own-write durability proof")
+	}
+
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(s *State) error {
+		if s.NextBatch != "s0" {
+			t.Fatal("qualified own-write control loaded different content")
+		}
+		return nil
+	}); err != nil || len(rec.files) != 0 || len(rec.dirs) != 0 || !p.readCache.durable {
+		t.Fatalf("qualified stable own-write control: %v, syncs=%+v durable=%v", err, rec, p.readCache.durable)
+	}
+	rec = syncRecord{}
+	old := cachedLoad(t, p)
+	foreign := old
+	foreign.NextBatch = "s1"
+	raw, err := sealedState(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignBytes := append(raw, '\n')
+	cacheRestamp(t, path, foreignBytes)
+	if !beforeDir.Equal(stampStateDirectory(dir)) {
+		t.Fatal("in-place foreign write changed qualified directory ctime")
+	}
+	if p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("qualified own-durable shortcut trusted changed foreign bytes")
+	}
+	got, err := UpdateState(p, "fixture", func(s *State) error {
+		if s.NextBatch != "s1" {
+			t.Fatal("qualified locked update loaded stale cached State")
+		}
+		return nil
+	})
+	finalBytes, readErr := os.ReadFile(path)
+	if err != nil || readErr != nil || got.NextBatch != "s1" || !got.Writer.ForeignSeen.IsZero() || !validWriterSeal(got) || !bytes.Equal(finalBytes, foreignBytes) || len(rec.files) != 1 || len(rec.dirs) != 2 || !p.readCache.durable {
+		t.Fatalf("qualified same-stamp foreign change: err=%v readErr=%v State=%q bytesPreserved=%v syncs=%+v durable=%v", err, readErr, got.NextBatch, bytes.Equal(finalBytes, foreignBytes), rec, p.readCache.durable)
+	}
+}
+
+// TestReadCacheUnqualifiedDirectoryTimeNeverAuthorizesDurability proves a repeated but unqualified timestamp cannot enable the zero-sync path.
+func TestReadCacheUnqualifiedDirectoryTimeNeverAuthorizesDurability(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
+	p := cachedPaths(t)
+	old := cachedLoad(t, p)
+	path := p.StateFile("fixture")
+	if p.readCache.durable || p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("unqualified repeated directory time authorized zero-sync durability")
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("repeated unqualified time did not use ordinary syncs: %+v durable=%v", rec, p.readCache.durable)
+	}
+	cacheRestamp(t, path, bytes.ReplaceAll(old.rawState, []byte("s0"), []byte("s1")))
+	if p.readCache.unchangedDurable("fixture", path, old, old) {
+		t.Fatal("unqualified directory time authorized durability after a same-stamp byte change")
+	}
+}
+
+// TestReadCacheRepeatedDirectoryTimestampsDoNotProveNamespace proves that equal directory timestamps are not treated as a namespace version and cannot skip syncs.
+func TestReadCacheRepeatedDirectoryTimestampsDoNotProveNamespace(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
+	p := cachedPaths(t)
+	dir := filepath.Dir(p.StateFile("fixture"))
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, firstKnown := fileChangeTimeNS(info)
+	second, secondKnown := fileChangeTimeNS(info)
+	if first != second || firstKnown || secondKnown || stampStateDirectory(dir).known {
+		t.Fatalf("repeated timestamp was treated as qualified: first=(%d,%v) second=(%d,%v) stamp=%+v", first, firstKnown, second, secondKnown, stampStateDirectory(dir))
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("repeated directory timestamp skipped ordinary durability: %+v durable=%v", rec, p.readCache.durable)
+	}
+}
+
+// TestReadCacheStableOwnWriteUsesOrdinarySync proves an unchanged own-written State succeeds while retaining inode and bytes through the verified-file and directory sync path.
+func TestReadCacheStableOwnWriteUsesOrdinarySync(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
+	p := cachedPaths(t)
+	if p.readCache.durable {
+		t.Fatal("unqualified platform timestamp minted own-durable evidence")
+	}
+	var rec syncRecord
+	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable own-write positive did not use ordinary durability: %+v durable=%v", rec, p.readCache.durable)
+	}
+}
+
+// TestReadCacheNamespaceABADurability proves same-inode, same-byte rename-away
+// and rename-back cannot reuse durability for the restored directory entry,
+// with and without observing the missing filename; the ordinary path syncs
+// the verified file and both directories before refreshing its proof.
+func TestReadCacheNamespaceABADurability(t *testing.T) {
+	for _, observeMissing := range []bool{false, true} {
+		name := "without missing-file read"
+		if observeMissing {
+			name = "with missing-file read"
+		}
+		t.Run(name, func(t *testing.T) {
+			useRepeatedUnqualifiedDirectoryTime(t)
+			p := cachedPaths(t)
+			if p.readCache.durable {
+				t.Fatal("unqualified repeated directory time minted own-durable evidence")
+			}
+			var rec syncRecord
+			swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
+
+			path := p.StateFile("fixture")
+			before := StampFile(path)
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			moved := path + ".moved"
+			if err := os.Rename(path, moved); err != nil {
+				t.Fatal(err)
+			}
+			if err := syncStateDirectory(filepath.Dir(path)); err != nil {
+				t.Fatal(err)
+			}
+			if observeMissing {
+				missing, err := LoadState(p, "fixture")
+				if err != nil || missing.NextBatch != "" {
+					t.Fatalf("missing-file read = State(%q), %v", missing.NextBatch, err)
+				}
+				if p.readCache.durable {
+					t.Fatal("observed missing path retained own-write durability")
+				}
+			}
+			if err := os.Rename(moved, path); err != nil {
+				t.Fatal(err)
+			}
+			after := StampFile(path)
+			restored, err := os.ReadFile(path)
+			if err != nil || !before.Equal(after) || !bytes.Equal(original, restored) {
+				t.Fatalf("ABA control did not restore identical file identity and bytes: err=%v sameStamp=%v sameBytes=%v", err, before.Equal(after), bytes.Equal(original, restored))
+			}
+
+			rec = syncRecord{}
+			if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.files) != 1 || len(rec.dirs) != 2 {
+				t.Fatalf("restored namespace no-op must sync the verified file and both directories: %+v", rec)
+			}
+			if p.readCache.durable {
+				t.Fatal("ordinary sync minted unqualified directory evidence")
+			}
+
+			rec = syncRecord{}
+			if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.files) != 1 || len(rec.dirs) != 2 {
+				t.Fatalf("later no-op skipped ordinary durability after an ABA: %+v", rec)
+			}
+		})
 	}
 }
 
@@ -242,6 +566,12 @@ func TestReadCacheDurableByteConfirmation(t *testing.T) {
 	p := cachedPaths(t)
 	old := cachedLoad(t, p)
 	path := p.StateFile("fixture")
+	if !stampStateDirectory(filepath.Dir(path)).known {
+		if p.readCache.unchangedDurable("fixture", path, old, old) {
+			t.Fatal("unqualified directory version enabled the own-durable shortcut")
+		}
+		t.Skip("filesystem does not expose a qualified directory version; exact-byte cache checks remain covered separately")
+	}
 	if !p.readCache.unchangedDurable("fixture", path, old, old) {
 		t.Fatal("own durable unchanged-byte control missed")
 	}
@@ -307,17 +637,25 @@ func TestReadCacheClone(t *testing.T) {
 	if got := cachedLoad(t, p); !reflect.DeepEqual(got, want) || ReadStateDecodeStats().UnmarshalStatePasses != before.UnmarshalStatePasses {
 		t.Fatal("State cache shares mutable data or decoded after caller mutation")
 	}
-	cachedMail(t, p) // Populate the snapshot before mutating a hit result.
+	seed := cachedMail(t, p)
+	if _, err := seed.Append([]MailEntry{{ID: "$two", Kind: MailEvent, Room: "!fixture", Event: json.RawMessage(`{"type":"m.room.message","content":{"body":"two"}}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Receive([]string{"$one"}); err != nil {
+		t.Fatal(err)
+	}
+	wantMail := cachedMail(t, p) // Includes receipt order plus one pending entry.
 	mail := cachedMail(t, p)
-	mail.live["$one"].Event[0] = '!'
-	mail.live["$one"].Shown = true
+	mail.live["$two"].Event[0] = '!'
+	mail.live["$two"].Shown = true
 	mail.recv["$other"] = true
 	mail.redacted[Redaction{"!fixture", "$one"}] = true
-	mail.order[0] = "$other"
-	mail.SetPendingFilter(func(MailEntry) bool { return false })
+	mail.order[1] = "$other"
+	mail.received[0] = "$other"
+	mail.dead++
 	got := cachedMail(t, p)
-	if len(got.Pending()) != 1 || got.live["$one"].Shown || !json.Valid(got.live["$one"].Event) || got.recv["$other"] || len(got.redacted) != 0 {
-		t.Fatal("mailbox cache shares mutable data or a pending filter")
+	if !reflect.DeepEqual(got, wantMail) || len(got.Pending()) != 1 || got.live["$two"].Shown || !json.Valid(got.live["$two"].Event) || got.recv["$other"] || len(got.redacted) != 0 || got.received[0] != "$one" {
+		t.Fatal("mailbox cache shares mutable data")
 	}
 	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Threads[0] = "$written"; return nil }); err != nil {
 		t.Fatal(err)
@@ -325,7 +663,7 @@ func TestReadCacheClone(t *testing.T) {
 	if cachedLoad(t, p).Threads[0] != "$written" {
 		t.Fatal("real State write hidden")
 	}
-	if _, err := got.Receive([]string{"$one"}); err != nil {
+	if _, err := got.Receive([]string{"$two"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(cachedMail(t, p).Pending()) != 0 {
@@ -413,7 +751,9 @@ func TestReadCacheWriteRefresh(t *testing.T) {
 	}
 }
 
-// TestReadCacheDurableNoop proves an own durable no-op preserves inode, mtime and bytes without encoding or syncing, beside one changed atomic replacement.
+// TestReadCacheDurableNoop proves a stable own-write no-op preserves inode,
+// mtime and bytes without re-encoding or syncing after qualified directory
+// change-time evidence, beside one changed atomic replacement.
 func TestReadCacheDurableNoop(t *testing.T) {
 	p := cachedPaths(t)
 	path := p.StateFile("fixture")
@@ -445,8 +785,17 @@ func TestReadCacheDurableNoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !os.SameFile(first, same) || !first.ModTime().Equal(same.ModTime()) || !bytes.Equal(raw, data) || after.StateEncodes != before.StateEncodes || after.StateWriteBytes != before.StateWriteBytes || len(rec.files) != 0 || len(rec.dirs) != 0 {
-		t.Fatal("durable no-op performed write work")
+	sameFile := os.SameFile(first, same)
+	sameMtime := first.ModTime().Equal(same.ModTime())
+	sameBytes := bytes.Equal(raw, data)
+	encodeDelta := after.StateEncodes - before.StateEncodes
+	writeByteDelta := after.StateWriteBytes - before.StateWriteBytes
+	if stampStateDirectory(filepath.Dir(path)).known {
+		if !sameFile || !sameMtime || !sameBytes || encodeDelta != 0 || writeByteDelta != 0 || len(rec.files) != 0 || len(rec.dirs) != 0 || !p.readCache.durable {
+			t.Fatalf("stable no-op missed durable fast path: sameFile=%v sameMtime=%v sameBytes=%v encodeDelta=%d writeByteDelta=%d syncs=%+v durable=%v", sameFile, sameMtime, sameBytes, encodeDelta, writeByteDelta, rec, p.readCache.durable)
+		}
+	} else if !sameFile || !sameMtime || !sameBytes || encodeDelta != 1 || writeByteDelta != 0 || len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("stable no-op missed ordinary sync path: sameFile=%v sameMtime=%v sameBytes=%v encodeDelta=%d writeByteDelta=%d syncs=%+v durable=%v", sameFile, sameMtime, sameBytes, encodeDelta, writeByteDelta, rec, p.readCache.durable)
 	}
 	if _, err := UpdateState(p, "fixture", func(s *State) error { s.Terminal.Generation = "changed"; return nil }); err != nil {
 		t.Fatal(err)
@@ -464,8 +813,9 @@ func TestReadCacheDurableNoop(t *testing.T) {
 	}
 }
 
-// TestReadCacheForeignDurability proves a cold compatible State still takes the existing sync path before any own-write durability shortcut.
+// TestReadCacheForeignDurability proves both cold compatible and own-written State no-ops use the ordinary path while directory provenance is unqualified.
 func TestReadCacheForeignDurability(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
 	p := cachedPaths(t).WithReadCache(NewReadCache("fixture"))
 	var rec syncRecord
 	swapOrdinaryStateSync(t, recordingSyncer(&rec, nil, -1, nil))
@@ -483,23 +833,24 @@ func TestReadCacheForeignDurability(t *testing.T) {
 	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.files) != 0 || len(rec.dirs) != 0 {
-		t.Fatal("own durable control did not skip sync")
+	if len(rec.files) != 1 || len(rec.dirs) != 2 || p.readCache.durable {
+		t.Fatalf("own-write control did not use ordinary syncs: %+v durable=%v", rec, p.readCache.durable)
 	}
 }
 
-// TestReadCacheWrittenInode proves a same-byte replacement cannot inherit another inode's durable-write evidence, beside a matching written-inode control.
+// TestReadCacheWrittenInode proves an unknown directory timestamp cannot mint own-write durability even beside the matching file inode, and replacement still uses ordinary syncs.
 func TestReadCacheWrittenInode(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
 	p := cachedPaths(t)
 	path := p.StateFile("fixture")
 	s := cachedLoad(t, p)
-	stamp := StampFile(path)
-	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, stamp)
-	if !p.readCache.durable {
-		t.Fatal("matching written-inode control lost durability evidence")
+	evidence := stateWriteEvidence{file: StampFile(path), directory: stampStateDirectory(filepath.Dir(path))}
+	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, evidence)
+	if p.readCache.durable {
+		t.Fatal("unqualified directory evidence minted own-write durability")
 	}
 	cacheReplace(t, path, s.rawState)
-	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, stamp)
+	p.readCache.rememberWrittenState(p, "fixture", s, s.rawState, evidence)
 	if p.readCache.durable {
 		t.Fatal("replacement inherited a different inode's durability evidence")
 	}
@@ -508,13 +859,15 @@ func TestReadCacheWrittenInode(t *testing.T) {
 	if _, err := UpdateState(p, "fixture", func(*State) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.files) != 1 {
+	if len(rec.files) != 1 || len(rec.dirs) != 2 {
 		t.Fatal("replacement skipped the ordinary durability check")
 	}
 }
 
-// TestReadCacheStrictRefresh proves a strict Host write refreshes decoded data without granting the ordinary durable-noop shortcut, beside an ordinary write that does.
+// TestReadCacheStrictRefresh proves ordinary and strict Host writes refresh
+// decoded data without minting durability when directory time is unqualified.
 func TestReadCacheStrictRefresh(t *testing.T) {
+	useRepeatedUnqualifiedDirectoryTime(t)
 	for _, version := range []int{1, 2} {
 		p, name := hostElisionNeighbour(t, version)
 		p = p.WithReadCache(NewReadCache(name))
@@ -526,7 +879,7 @@ func TestReadCacheStrictRefresh(t *testing.T) {
 		if err != nil || s.LastInbox != "written" || ReadStateDecodeStats().UnmarshalStatePasses != before.UnmarshalStatePasses {
 			t.Fatalf("version %d post-write cache: %v", version, err)
 		}
-		if p.readCache.durable != (version == 1) {
+		if p.readCache.durable {
 			t.Fatalf("version %d used the wrong durability provenance", version)
 		}
 	}

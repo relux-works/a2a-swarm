@@ -36,7 +36,7 @@ type daemonFixture struct {
 	log          *flushBuffer
 }
 
-func canonicalRoot(t *testing.T) string {
+func canonicalRoot(t testing.TB) string {
 	t.Helper()
 	p, e := filepath.EvalSymlinks(t.TempDir())
 	if e != nil {
@@ -44,7 +44,7 @@ func canonicalRoot(t *testing.T) string {
 	}
 	return p
 }
-func shortDaemonBase(t *testing.T) string {
+func shortDaemonBase(t testing.TB) string {
 	t.Helper()
 	// macOS's per-user temp directory is short and accepted by landed C1. Keep
 	// TMPDIR unchanged. Linux's canonical /tmp provides a short base regardless

@@ -51,3 +51,37 @@ func stampInfo(info os.FileInfo) FileStamp {
 	}
 	return FileStamp{Known: true, Present: true, Dev: dev, Ino: ino, Size: info.Size(), ModNS: info.ModTime().UnixNano(), Mode: info.Mode()}
 }
+
+// fileChangeTimeNS returns a timestamp value and whether its source is
+// qualified as a namespace version for durability elision. Linux and Darwin
+// qualify the stat change-time field; unsupported platforms report unknown.
+var fileChangeTimeNS = platformFileChangeTimeNS
+
+// directoryStamp records the identity and change time of the directory that
+// owns a State filename. File bytes and inode identity cannot prove that the
+// directory entry has remained durable across an unobserved rename-away and
+// rename-back. A timestamp value alone is not a qualified namespace version,
+// so unqualified observations leave this unknown and disable the zero-sync
+// own-write shortcut.
+type directoryStamp struct {
+	known    bool
+	file     FileStamp
+	changeNS int64
+}
+
+func (s directoryStamp) Equal(other directoryStamp) bool {
+	return s.known && other.known && s.file.Equal(other.file) && s.changeNS == other.changeNS
+}
+
+func stampStateDirectory(path string) directoryStamp {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() {
+		return directoryStamp{}
+	}
+	file := stampInfo(info)
+	changeNS, ok := fileChangeTimeNS(info)
+	if !file.Known || !ok {
+		return directoryStamp{}
+	}
+	return directoryStamp{known: true, file: file, changeNS: changeNS}
+}

@@ -420,7 +420,7 @@ func TestAgentDMRecipientMailboxWake(t *testing.T) {
 }
 
 func TestAgentDMFreshRuntimeDispatch(t *testing.T) {
-	for _, mode := range []string{"valid", "principal", "wrong-recipient", "inactive", "invalid-policy"} {
+	for _, mode := range []string{"valid", "principal", "principal-wrong-recipient", "wrong-recipient", "inactive", "invalid-policy"} {
 		t.Run(mode, func(t *testing.T) {
 			e, tr, a, b, room := activeAgentFixture(t)
 			dir, err := os.MkdirTemp("", "a2a-pair-native-")
@@ -459,9 +459,13 @@ func TestAgentDMFreshRuntimeDispatch(t *testing.T) {
 			if mode == "wrong-recipient" {
 				ev = agentDirectedEvent(t, ev.EventID, a, "@other:"+testServer)
 			}
-			if mode == "principal" {
+			if mode == "principal" || mode == "principal-wrong-recipient" {
 				ownerPut(t, ownerFiles(e.paths(), "bob").path("principals.json"), principalConfig{V: 1, Principals: []string{"@parent:" + testServer}})
-				ev = agentDirectedEvent(t, ev.EventID, "@parent:"+testServer, "@other:"+testServer)
+				recipient := b
+				if mode == "principal-wrong-recipient" {
+					recipient = "@other:" + testServer
+				}
+				ev = agentDirectedEvent(t, ev.EventID, "@parent:"+testServer, recipient)
 			}
 			raw, _ := json.Marshal(ev)
 			mb, err := config.OpenMailbox(e.paths(), "bob")
@@ -471,7 +475,7 @@ func TestAgentDMFreshRuntimeDispatch(t *testing.T) {
 			if _, err = mb.Append([]config.MailEntry{{ID: ev.EventID, Kind: config.MailEvent, Room: room, Event: raw, Rel: string(relSub)}}); err != nil {
 				t.Fatal(err)
 			}
-			if mode == "inactive" || mode == "principal" {
+			if mode == "inactive" || mode == "principal" || mode == "principal-wrong-recipient" {
 				e.as("bob", "agent-dm", "unset", a).ok(t)
 			}
 			if mode == "invalid-policy" {
@@ -501,7 +505,7 @@ func TestAgentDMPendingRetainsMailAndPrincipal(t *testing.T) {
 	ownerPut(t, ownerFiles(e.paths(), "bob").path("principals.json"), principalConfig{V: 1, Principals: []string{"@parent:" + testServer}})
 	valid := agentDirectedEvent(t, "$valid", a, b)
 	validID := appendAgentEvent(e, room, valid)
-	principal := agentDirectedEvent(t, "$principal", "@parent:"+testServer, "@wrong:"+testServer)
+	principal := agentDirectedEvent(t, "$principal", "@parent:"+testServer, b)
 	principalID := appendAgentEvent(e, room, principal)
 	// Local pair is pending despite both users now joined. Its joined-room
 	// subscription cannot leak peer mail; true principal coverage still works.
@@ -556,7 +560,7 @@ func TestAgentDMHeldCapacityPreservesPrincipalWake(t *testing.T) {
 				t.Fatal(err)
 			}
 			peerID := appendAgentEvent(e, room, makeEvent("$overflow"))
-			principalID := appendAgentEvent(e, room, agentDirectedEvent(t, "$principal", "@parent:"+testServer, "@wrong:"+testServer))
+			principalID := appendAgentEvent(e, room, agentDirectedEvent(t, "$principal", "@parent:"+testServer, b))
 			r := e.hook("bob", "stop", `{"session_id":"capacity-principal"}`)
 			if r.code != 0 || r.stdout == "" {
 				t.Fatalf("principal capacity wake assertion: code=%d output=%s error=%s", r.code, r.stdout, r.stderr)

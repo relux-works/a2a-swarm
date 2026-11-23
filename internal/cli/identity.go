@@ -498,6 +498,10 @@ func processGone(pid int) bool {
 // acquireLease takes or refreshes the lease of the session's identity for
 // this session (sessionID: the hook's session id, "" elsewhere).
 func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) error {
+	return a.acquireLeaseChecked(s, sessionID, deadline, nil)
+}
+
+func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Time, check func(*config.State) error) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -510,6 +514,11 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 	_, err := config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
+		}
+		if check != nil {
+			if err := check(cur); err != nil {
+				return err
+			}
 		}
 		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
 	})

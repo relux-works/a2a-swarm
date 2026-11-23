@@ -45,17 +45,20 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 - Human identities never use a2a's Keychain items: an item bound to the a2a binary is readable by every agent that runs a2a. `--human` in Keychain mode, `creds migrate` for a human, and named-profile secret reads or creates for a human all refuse before any Keychain operation. The file-mode human account is legacy and is being retired; an owner-only tool holds a future owner token.
 - Phase 2 (#138): the a2a binary performs every item operation in process through the Security framework (cgo), with user interaction disallowed. No helper process such as `/usr/bin/security` is ever run for item access. Backend errors never reach output; the store reports a fixed message per class (missing, duplicate, interaction/timeout, other). Tokens are passed as bytes; empty tokens and control characters are refused before any write. Every native length is checked against its destination type before conversion: UInt32 for service, account and secret, and C int for a returned secret. An out-of-range length refuses instead of truncating.
 - New items get the Keychain default ACL, which trusts only the creating binary's designated requirement; existing items are updated in place and keep their ACL. An update first reads the item's data, so an item the binary may not read is refused before the modify path. A duplicate create permits one relookup/update. Per-identity writers serialize; every write is read back exactly. An update of an item deleted after the lookup recreates it with the default ACL. Never unlocking, ACL or partition-list changes.
-- An untrusted item (another binary's, or this identity's item created by a differently signed a2a build) and a locked keychain return an interaction error instead of a prompt; it records the cooldown below. Keychain mode therefore needs a binary signed with a stable identity: an ad-hoc build is trusted only by its own code hash. Non-macOS selection refuses Keychain mode; Darwin without cgo currently refuses late through the unsupported backend. Early cgo-off selection refusal remains a pre-adoption follow-up. File mode remains available.
+- An untrusted item (another binary's, or this identity's item created by a differently signed a2a build) and a locked keychain return an interaction error instead of a prompt; it records the cooldown below. Keychain mode therefore needs a binary signed with a stable identity: an ad-hoc build is trusted only by its own code hash. A build without the native backend (every build other than Darwin with cgo) refuses Keychain mode at store selection with `keychain requires a macOS cgo build`, before any item operation or homeserver request, so `register` cannot create an account it could not store. File mode remains available in every build.
 - A repo-built Swift status companion runs before EVERY item operation, including migration lookup/new/update/relookup/readback. It calls `SecKeychainOpen` and `SecKeychainGetStatus` without accessing items, stdin, ACLs or unlock. The probe and the item operation both address the OS user's `~/Library/Keychains/login.keychain-db` explicitly; search-list/default targets and HOME overrides are unsupported. A test-only fixture seam selects the same explicit throwaway path for both.
 - The fixed companion path is `a2a-keychain-status` beside `os.Executable()` after symlink resolution. Never PATH or an environment override. Only stdout `unlocked\n` with exit 0 and empty stderr admits the item operation. `locked`/3 and `error`/2 refuse; missing/nonexecutable/helper failure, timeout, extra text, unknown output or mismatched status refuse too. Failure to resolve or launch the companion is local to that executable installation and records no cooldown; a correctly installed image can proceed. See README for the local `swiftc`/ad-hoc signing build; installation is held. Portable Go tests use a fake backend and fake probes, including on Linux; the hosted Go workflow runs on self-hosted macOS and does not require Swift. The Security APIs used are available in the current SDK but deprecated since macOS 10.10.
-- The probe has a 5-second hard process-group deadline. Remaining group members are also killed synchronously when the leader exits early, whether they retain or close its pipes. Successful leader exit stays successful after cleanup; pipe-completion failures refuse and set cooldown independently of the leader exit status. Owned stdin/stdout/stderr copies must finish within a 100ms post-exit drain bound; unfinished pipes are closed and all copy loops are joined before return. Each item operation has a 5-second hard deadline. An in-process call cannot be killed, so a late result is discarded and counted as a timeout. A late mutation can still land, even after this process exits, because its request may already sit in securityd. Every add and update therefore first records a durable per-identity write fence (`<config>/keychain-state/<id>.pending`, 0600). It holds the writer's pid and start time, the kernel boot-session UUID (`kern.bootsessionuuid`, empty when unavailable), and a SHA-256 digest of the value being written. Only the goroutine that ran the native call removes it, after that call returns. While the fence exists, every operation for that identity refuses, whatever the cooldown says. A value already present is never written again, so the intended value can only appear through that write. A fence never expires. `a2a --as <identity> creds reconcile` clears it only when its writer is confirmed gone AND the abandoned write can no longer land. Gone means no such pid, or a pid now held by a process with another start time, checked with a pinned `/bin/ps`, a fixed environment and `TZ=UTC`. Can no longer land means its intended value is observed in the item, or the boot-session UUID differs from the recorded one (the host restarted). The calendar boot time is never used, because a clock correction can move it. It keeps the fence when the writer lives, when its state is unknown (any inspection failure), when boot evidence is unavailable or was not recorded and the value is not observed, when the value differs or is missing, or when the keychain does not answer. Limits: observing the value assumes this config root's writers are the only ones writing it, since an out-of-band writer is not excluded; and a restart is assumed to drop securityd's queued requests. Timeout/interaction failures persist a secret-free 0600 per-identity marker under 0700 `<config>/keychain-state/`. Probe locked/error/timeout also sets a host-wide marker, bound to kernel host UUID and target path. The 5-minute cooldown suppresses ALL probes/item operations for that identity, or all identities on that host for a host marker, across CLI processes sharing this config directory. A host lock serializes preflight/access and marker publication. Other hosts are unaffected by a host marker; identity markers remain identity-wide. Separate config directories do not share markers. Expiry permits a bounded fresh attempt; corrupt/unreadable/symlink/public markers refuse. Current cooldown refusals retain closed cause tokens and UTC retry deadlines; timestamp-only legacy markers stay readable and unknown reason sidecars project unknown. Never delete markers to force a retry.
+- The probe has a 5-second hard process-group deadline. Remaining group members are also killed synchronously when the leader exits early, whether they retain or close its pipes. Successful leader exit stays successful after cleanup; pipe-completion failures refuse and set cooldown independently of the leader exit status. Owned stdin/stdout/stderr copies must finish within a 100ms post-exit drain bound; unfinished pipes are closed and all copy loops are joined before return. Each item operation has a 5-second hard deadline. An in-process call cannot be killed, so a late result is discarded and counted as a timeout. A late mutation can still land, even after this process exits, because its request may already sit in securityd. Every add and update therefore first records a durable per-identity write fence (`<config>/keychain-state/<id>.pending`, 0600). It holds the writer's pid and start time, the kernel boot-session UUID (`kern.bootsessionuuid`, empty when unavailable), and a SHA-256 digest of the value being written. After a native call returns, its goroutine makes one best-effort clear attempt. If a fence remains, `a2a --as <identity> creds reconcile` can clear it only after confirming that the writer is gone and the write can no longer land. When no native call starts, the fence writer attempts one unlink if the directory sync after rename fails, and the store attempts one clear when its post-write context check finds cancellation or deadline expiry. These automatic cleanup paths make one attempt; reconciliation is a separate recovery step. An unlink without a successful directory sync may leave the fence absent now but allow a crash to restore it. While the fence exists, every operation for that identity refuses, whatever the cooldown says. A value already present is never written again, so the intended value can only appear through that write. A fence never expires. `a2a --as <identity> creds reconcile` clears it only when its writer is confirmed gone AND the abandoned write can no longer land. Gone means no such pid, or a pid now held by a process with another start time, checked with a pinned `/bin/ps`, a fixed environment and `TZ=UTC`. Can no longer land means its intended value is observed in the item, or the boot-session UUID differs from the recorded one (the host restarted). The calendar boot time is never used, because a clock correction can move it. It keeps the fence when the writer lives, when its state is unknown (any inspection failure), when boot evidence is unavailable or was not recorded and the value is not observed, when the value differs or is missing, or when the keychain does not answer. Limits: observing the value assumes this config root's writers are the only ones writing it, since an out-of-band writer is not excluded; and a restart is assumed to drop securityd's queued requests. Timeout/interaction failures persist a secret-free 0600 per-identity marker under 0700 `<config>/keychain-state/`. Probe locked/error/timeout also sets a host-wide marker, bound to kernel host UUID and target path. The 5-minute cooldown suppresses ALL probes/item operations for that identity, or all identities on that host for a host marker, across CLI processes sharing this config directory. A host lock serializes preflight/access and marker publication. Other hosts are unaffected by a host marker; identity markers remain identity-wide. Separate config directories do not share markers. Expiry permits a bounded fresh attempt; corrupt/unreadable/symlink/public markers refuse. Current cooldown refusals retain closed cause tokens and UTC retry deadlines; timestamp-only legacy markers stay readable and unknown reason sidecars project unknown. Never delete markers to force a retry.
 - Phase 2 binds item access to the signed binary. That binding is only as strong as the signing key: a same-user process that can sign its own code with that identity without the owner present satisfies the requirement and reads the token, so how the key is protected is an owner decision for the signing sitting. Any same-user process can still run the genuine binary to act as the identity. Locking between probe and access remains an accepted race (it returns an interaction error, not a prompt). Fakes are not macOS UI proof; the gated `TestKeychainPhase2PlatformSentinel` exercises the real backend on one throwaway keychain under a separate allowance. Backups remain. Broker, launcher-bound identity, isolated workers and revocation are deferred.
 
 ## Commands
 
-Recorded pre-adoption limitations remain open: Darwin cgo-off late refusal;
-rare sync/deadline paths that strand an unstarted mutation fence; ACL
-change-authorization and update-not-found/add test gaps. The native sentinel
+Recorded pre-adoption limitations remain open: ACL change-authorization and
+update-not-found/add test gaps. A mutation whose native call is never made
+leaves no fence: when the fence's directory sync fails the write refuses, and
+when writing the fence uses up the deadline the attempt is an ordinary
+timeout; if the fence cannot be removed it stays and later operations refuse.
+A started or uncertain mutation keeps its fence. The native sentinel
 has not run for this candidate. Native ACL/partition/no-dialog/refusal
 measurements, stable designated requirement and N-to-N+1 survival, item
 rotation/rollback and signing-key custody remain separate adoption gates.
@@ -347,9 +350,11 @@ a2a --profile work room members '!room:example.org' --membership invite --json
 
 ### Room names and Space children
 
-`room name get|set` and `space child get|add|remove` provide typed, bounded
-operations on one exact property. Mutations require expected resolved IDs and
-concrete-event authority; child operations verify an actual Space. See the
+`room name get|set` and `space child get|list|add|remove` provide typed,
+bounded operations on Space-side declarations. `list` reads a complete bounded
+Space snapshot and reports direct child declarations without requesting child
+rooms; mutations require expected resolved IDs and concrete-event authority.
+See the
 [complete command, outcome and diagnostic contract](room-administration.md).
 
 ### Typed room properties
@@ -1847,8 +1852,8 @@ A successful response just before expiry is ingested and delivered normally. Can
 `--timeout 0` keeps retrying temporary failures until canceled or an event arrives. Authentication,
 configuration, permanent transport/API errors and malformed successful sync responses still fail promptly. Backfill and local delivery failures
 retain their existing refusal behavior. Retries emit no new result type or outage notification.
-The very first run retains pending invites and performs the bounded post-join recovery in the delivery contract above, including principal mail under the same rules. Earlier history is not replayed. `--room` limits ordinary rooms that can ring; principal messages bypass it. Relevant events
-in other rooms are still persisted (the next wait without that filter, or `inbox`, shows them). `--all` adds every message of the `--room` rooms that
+The very first run retains pending invites and performs the bounded post-join recovery in the delivery contract above, including principal mail under the same rules. Earlier history is not replayed. `--room` limits ordinary rooms that can ring; audience-eligible principal messages bypass it. Relevant events
+in other rooms are still persisted (the next wait without that filter, or `inbox`, shows them). `--all` adds every audience-eligible message of the `--room` rooms that
 this wait syncs; for durable room-wide delivery that every consumer sees, use `a2a subscribe --room R --all-events`.
 Excerpts are one line, stripped of control characters, and never longer than 200 characters.
 
@@ -1900,19 +1905,25 @@ before leases, liveness writes or HTTP. Whitespace around comma-list entries
 is ignored. These settings are read at command start and apply to `wait`/`watch`
 only; hooks, bound consumers and `inbox` retain their existing behavior.
 
-Host-configured principals bypass these predicates and `--room` selection in
+Audience-eligible host-configured principals bypass these predicates and `--room` selection in
 wait/watch. Their real Matrix sender is checked against the current local list
 before each display pass; keywords, kind, text, sender and addressing filters
-cannot suppress their wake. Ordinary senders still obey every predicate.
+cannot suppress their wake. The hard notification audience gate runs first:
+a well-formed message addressed only to others never rings, even from a
+principal. These optional filters cannot disable that gate. Ordinary senders
+still obey every predicate.
 
-Filtering does not change ingestion or receipts. Rejected message entries
-remain pending and unshown after the cursor advances; a later less restrictive
+These optional predicates do not change ingestion or receipts. Entries rejected
+only by these predicates remain pending and unshown after the cursor advances; a later less restrictive
 wait/watch can show them and `inbox` can still print and receipt them. Matching
 delivery marks only its printed entries shown and introduces no ACK. Invites
 and history-gap control entries retain their existing delivery behavior,
 including the invite exception to `--room`; message predicates do not suppress
 those control entries. No wake-policy, retry/backoff or subscription-expiry
-policy is changed.
+policy is changed by these optional predicates. Audience-excluded entries stay
+durable but are absent from notification, pending and inbox views; suppression
+does not mark them shown, rung or received. Explicit room/thread read remains
+available under its existing authorization and redaction rules.
 
 For a bound session, do not start a parallel `wait` or `watch`: it uses its supervised consumer already. A live terminal binding refuses both
 with `ErrWaitWhileBound`, identifying the live binding and directing you to your own `a2a bind status` and `a2a inbox`. The refusal does not
@@ -5154,3 +5165,7 @@ independent pauses remain separate. Every result says `quiesced=false`;
 already admitted async work may complete. Read-only status does not repair or
 expire state. An installed image and exact scope still require independent
 admission; this capability does not stop processes or authorize a live run.
+
+### Antigravity CLI station hooks and idle bridge
+
+`hook install --runtime agy` and `identity ensure --runtime agy` support the native SessionStart and PreInvocation hook group. A station-owned native stream uses `agy bridge --session UUID --model gemini-4-neon-xhigh` with two exclusive provider pipes. See the [installation, custody, recovery and qualification contract](antigravity-station.md).

@@ -82,6 +82,9 @@ func TestRedactionEditsReadArchive(t *testing.T) {
 	}
 }
 
+// Known audience evidence preserves permitted tombstones; when the server
+// already scrubbed an unobserved original, its original/edit remain suppressed
+// and unreceived. Every order still scrubs payload and keeps valid neighbors.
 func TestRedactionEditsSync(t *testing.T) {
 	for _, order := range []string{"stored-before-redaction", "redaction-before-edit", "same-batch", "backfill", "cross-page", "crash-before-cursor"} {
 		t.Run(order, func(t *testing.T) {
@@ -116,7 +119,8 @@ func TestRedactionEditsSync(t *testing.T) {
 				}}
 				e.hs.mu.Unlock()
 			}
-			good := e.hs.inject(room, "@bob:test.local", editContent("$unredacted", "valid-edit-control"))
+			goodTarget := e.hs.inject(room, "@bob:test.local", msg("valid target without a notification selector", nil))
+			good := e.hs.inject(room, "@bob:test.local", editContent(goodTarget, "valid-edit-control"))
 			neighbour := e.hs.inject(room, "@bob:test.local", msg("@alice:test.local ordinary-control", nil))
 			if order == "backfill" || order == "cross-page" {
 				e.hs.mu.Lock()
@@ -186,7 +190,11 @@ func TestRedactionEditsSync(t *testing.T) {
 				if strings.Contains(r.stdout+r.stderr, editRemoved) {
 					t.Fatal("inbox leaked edit sentinel")
 				}
-				for _, control := range []string{"[redacted]", "valid-edit-control", "ordinary-control"} {
+				controls := []string{"valid-edit-control", "ordinary-control"}
+				if order == "stored-before-redaction" {
+					controls = append(controls, "[redacted]")
+				}
+				for _, control := range controls {
 					if !strings.Contains(r.stdout, control) {
 						t.Fatalf("inbox lost %s", control)
 					}
@@ -203,8 +211,19 @@ func TestRedactionEditsSync(t *testing.T) {
 				t.Fatal("replay leaked edit sentinel")
 			}
 			mb = e.mailbox("alice")
-			if len(mb.Pending()) != 0 || !mb.Received(edit) {
-				t.Fatal("explicit receipt failed")
+			if order == "stored-before-redaction" {
+				if len(mb.RawPending()) != 0 || !mb.Received(edit) || !mb.Received(target) {
+					t.Fatal("known audience explicit receipt failed")
+				}
+			} else {
+				if len(mb.RawPending()) != 2 || mb.Received(edit) || mb.Received(target) || !mb.Received(good) || !mb.Received(neighbour) {
+					t.Fatal("unknown audience was delivered/receipted or lost a valid neighbor")
+				}
+				_, s := addressSession(t, e, "alice")
+				view, err := s.openAudienceMailbox()
+				if err != nil || len(view.Pending()) != 0 {
+					t.Fatal("unknown original/edit appeared in pending view", err)
+				}
 			}
 		})
 	}

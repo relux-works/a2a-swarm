@@ -25,7 +25,7 @@ func TestScopeMuteActualTTYAndConfirmation(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			t.Setenv("TMUX", "")
 			t.Setenv("STY", "")
-			root := filepath.Join(t.TempDir(), "root")
+			root := filepath.Join(canonicalTempDir(t), "root")
 			if err := os.Mkdir(root, 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -104,7 +104,7 @@ func TestScopeMuteActualTTYAndConfirmation(t *testing.T) {
 							other.Host = "foreign"
 							response = wakemute.Challenge(other, "mute")
 						case "wrong-root":
-							other.Scope = fixture.Scope(t.TempDir())
+							other.Scope = fixture.Scope(canonicalTempDir(t))
 							response = wakemute.Challenge(other, "mute")
 						case "wrong-connection":
 							other.Scope = wakemute.Scope{{Root: root, Connections: []wakemute.Connection{{Name: "other", Path: "connections/other"}}}}
@@ -177,7 +177,7 @@ func TestScopeMuteActualTTYAndConfirmation(t *testing.T) {
 // Constructing an operation or copying its public JSON never grants mutation
 // authority. Replacing any one root after confirmation refuses the whole set.
 func TestScopeMuteNoBareAuthorityAndRootReplacement(t *testing.T) {
-	a, b := t.TempDir(), filepath.Join(t.TempDir(), "selected")
+	a, b := canonicalTempDir(t), filepath.Join(canonicalTempDir(t), "selected")
 	os.Mkdir(b, 0700)
 	scope := append(fixture.Scope(a), fixture.Scope(b)...)
 	fixture.Enroll(t, scope)

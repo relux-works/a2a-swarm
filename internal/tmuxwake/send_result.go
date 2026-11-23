@@ -18,8 +18,10 @@ const (
 	SendSuppressedWidth   SendOutcome     = "suppressed: target or width"
 	SendDraftUnavailable  SendOutcome     = "notice left in draft: input unavailable"
 	SendDraftChanged      SendOutcome     = "notice left in draft: changed input"
+	SendDraftBusy         SendOutcome     = "notice left in draft: runtime became busy before Enter"
 	SendTypeUncertain     SendOutcome     = "uncertain: type"
 	SendEnterUncertain    SendOutcome     = "uncertain: Enter"
+	SendEnterUnwitnessed  SendOutcome     = "uncertain: Enter not witnessed"
 	SendInterrupted       SendOutcome     = "uncertain: interrupted"
 	SendWakeSubmitted     SendOutcome     = "wake submitted"
 	SendMuseRefused       SendOutcome     = "suppressed: muse delivery refused"
@@ -41,9 +43,9 @@ func (r SendResult) Valid() bool {
 	case SendRefused:
 		return r.Outcome == SendSuppressedInput || r.Outcome == SendSuppressedWidth || r.Outcome == SendMuseRefused
 	case SendDraft:
-		return r.Outcome == SendDraftUnavailable || r.Outcome == SendDraftChanged
+		return r.Outcome == SendDraftUnavailable || r.Outcome == SendDraftChanged || r.Outcome == SendDraftBusy
 	case SendUncertain:
-		return r.Outcome == SendTypeUncertain || r.Outcome == SendEnterUncertain || r.Outcome == SendInterrupted || r.Outcome == SendDeliveryUncertain
+		return r.Outcome == SendTypeUncertain || r.Outcome == SendEnterUncertain || r.Outcome == SendEnterUnwitnessed || r.Outcome == SendInterrupted || r.Outcome == SendDeliveryUncertain
 	case SendSubmitted:
 		return r.Outcome == SendWakeSubmitted
 	default:
@@ -57,7 +59,7 @@ func (r SendResult) Text() string {
 	return string(r.Outcome)
 }
 
-func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKey, beforeType, afterType func()) (SendResult, error) {
+func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKey, beforeType, afterType func(), beforeEnter ...func() error) (SendResult, error) {
 	if t.Target.Runtime == "muse" {
 		return t.sendMuse(ctx, count, expected, beforeType)
 	}
@@ -67,7 +69,7 @@ func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKe
 	}
 	lastReason, lastAt := ReasonUnavailable, time.Now().UTC()
 	var lastPosition *ComposerPosition
-	inspect := func(ctx context.Context, owned string) (Box, bool) {
+	inspect := func(ctx context.Context, owned string) sendInspection {
 		r, b := t.assess(ctx, owned)
 		if owned != "" && b.Text == owned && r.Input.State == InputNonempty {
 			position := b.position()
@@ -81,12 +83,24 @@ func (t BoundTerminal) Send(ctx context.Context, count int, expected ReadinessKe
 		if !ok || owned != "" && b.Text != owned {
 			lastReason, lastAt = sendRefusalReason(r, expected, b, owned), time.Now().UTC()
 		}
-		return b, ok
+		return sendInspection{
+			box:            b,
+			inputAvailable: r.Input.State == InputEmpty || r.Input.State == InputNonempty,
+			eligible:       ok,
+			// Once Enter has been sent, the same qualified runtime identity with
+			// an empty composer is a submit witness; coordinates may have moved.
+			empty:   r.submitWitnessFor(expected),
+			busy:    r.submitBusy,
+			foreign: r.foreign,
+		}
 	}
 	// The last check follows beforeType, so a test/caller callback cannot turn
 	// a qualified key into unconditional permission. The final I/O gap remains.
-	preType := func() bool { _, ok := inspect(ctx, ""); return ok && ctx.Err() == nil }
-	result, err := t.Target.sendWith(ctx, count, "", beforeType, afterType, inspect, preType)
+	preType := func() bool {
+		observed := inspect(ctx, "")
+		return observed.eligible && !observed.busy && !observed.foreign && ctx.Err() == nil
+	}
+	result, err := t.Target.sendWith(ctx, count, "", beforeType, afterType, inspect, preType, beforeEnter...)
 	if result.Disposition == SendDraft || result.Disposition == SendUncertain {
 		result.NoticePosition = t.captureNoticePosition(ctx, Notice(count), expected.Route == RegistryNamed)
 		if result.NoticePosition == nil {
@@ -195,7 +209,7 @@ func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice strin
 		return refused, nil
 	}
 	lastReason, lastAt := ReasonUnavailable, time.Now().UTC()
-	inspect := func(ctx context.Context, owned string) (Box, bool) {
+	inspect := func(ctx context.Context, owned string) sendInspection {
 		r, b := t.assessRecovery(ctx, owned)
 		// Unlike fresh typing, continuation cannot normalize a changed composer.
 		ok := owned == notice && b.Text == notice && r.OwnedNoticeEligible() && r.Key == expected
@@ -208,7 +222,14 @@ func (t BoundTerminal) ResumeNotice(ctx context.Context, count int, notice strin
 				}
 			}
 		}
-		return b, ok
+		return sendInspection{
+			box:            b,
+			inputAvailable: r.Input.State == InputEmpty || r.Input.State == InputNonempty,
+			eligible:       ok,
+			empty:          r.submitWitnessFor(expected),
+			busy:           r.submitBusy,
+			foreign:        r.foreign,
+		}
 	}
 	result, err := t.Target.sendWith(ctx, count, notice, nil, nil, inspect, nil, beforeEnter...)
 	if result.Disposition == SendRefused || result.Disposition == SendDraft {

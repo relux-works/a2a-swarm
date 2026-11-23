@@ -1,9 +1,10 @@
 # Typed room properties
 
-Room name and Space child operations have distinct version1 result types and
-fixed safe diagnostics. Their mutations require exact expected IDs and a strict
-concrete-event power preflight; child operations prove the target is a Space.
-See `docs/room-administration.md` for bounds, closed output and uncertainty rules.
+Room name, Space child, room avatar, and room parent operations have distinct
+version1 result types and fixed safe diagnostics. Mutations require exact
+expected IDs and a strict concrete-event power preflight; child operations
+prove the target is a Space. See `docs/room-administration.md` for bounds,
+closed output and uncertainty rules.
 
 ```text
 a2a room name get ROOM [--json]
@@ -15,7 +16,8 @@ a2a space child remove SPACE --child CHILD --expect-space-id !SPACE --expect-chi
 
 Child changes affect only the Space-side declaration. They do not clear reverse
 parents or change membership. UNKNOWN is not permission to repeat a mutation.
-The existing avatar/parent operations below retain their previous contract.
+Room name changes are limited to the room name key. They do not change room
+membership, aliases, or other room state.
 
 Use the owner-approved selected own identity and connection. These source
 commands do not authorize a live mutation or installation by themselves.

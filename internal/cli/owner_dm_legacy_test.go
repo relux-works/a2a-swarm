@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -43,7 +42,7 @@ func TestOwnerDMLegacyCompatibility(t *testing.T) {
 				case "wait":
 					r = e.as("bob", "wait", "--timeout", "2s", "--json")
 				case "watch":
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					ctx, cancel := testDeadlineContext(t)
 					e.configure = func(a *App) { a.afterPrint = func() error { cancel(); return nil } }
 					r = e.runCtx(ctx, "--as", "bob", "watch", "--json")
 					cancel()

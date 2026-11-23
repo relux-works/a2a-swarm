@@ -6,6 +6,11 @@ import (
 	"math"
 )
 
+// errKeychainUnsupported refuses Keychain mode in a build without the native
+// backend: every build that is not darwin with cgo. Store selection returns it
+// before any item operation or remote call.
+var errKeychainUnsupported = errors.New("keychain requires a macOS cgo build")
+
 // errKeychainInteraction means the Keychain refused an operation because it
 // would need user interaction: an item ACL that does not trust this signed
 // binary, a locked keychain or a canceled prompt. Reads and writes never show

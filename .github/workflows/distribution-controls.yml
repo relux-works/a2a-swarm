@@ -45,27 +45,6 @@ jobs:
           name: controller-dry-run
           path: ${{ runner.temp }}/controller-dry-run.json
           if-no-files-found: error
-      - name: Cask resolved-target gate detects its narrowing mutant
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PYMUTANT'
-          import json,os,pathlib
-          source=pathlib.Path('internal/caskbrew/verify.go').resolve()
-          before=source.read_text();needle='target != filepath.Join(prefix, "bin", n)'
-          assert before.count(needle)==1, 'resolved-target mutant must apply exactly once'
-          mutant=pathlib.Path(os.environ['RUNNER_TEMP'])/'cask-target-mutant.go'
-          mutant.write_text(before.replace(needle,'false'))
-          (mutant.parent/'cask-target-overlay.json').write_text(json.dumps({'Replace':{str(source):str(mutant)}}))
-          PYMUTANT
-          set +e
-          go test -p 1 -parallel 2 -overlay "$RUNNER_TEMP/cask-target-overlay.json" -count=1 -run '^TestBrewInstallerFields/binary-target$' ./internal/caskbrew > "$RUNNER_TEMP/cask-target-mutant.log" 2>&1
-          mutant_exit=$?
-          set -e
-          cat "$RUNNER_TEMP/cask-target-mutant.log"
-          test "$mutant_exit" -eq 1
-          grep -F -- '--- FAIL: TestBrewInstallerFields/binary-target' "$RUNNER_TEMP/cask-target-mutant.log"
-          grep -F -- 'want brew-effective-binary-target, got <nil>' "$RUNNER_TEMP/cask-target-mutant.log"
       - name: Immutable public keyless fixture, expected source and wrong-identity controls
         shell: bash
         run: |
@@ -163,28 +142,6 @@ jobs:
           A2A_PACKAGE_CONTROL_BUNDLE="$RUNNER_TEMP/linux-second" A2A_PACKAGE_CONTROL_SOURCE="$RUNNER_TEMP/source.tar" \
             go test -p 1 -parallel 2 -v -count=1 -timeout=8m \
             -run '^(TestReviewerRealPackageControls|TestReviewerRPMHeaderModes|TestReviewerManifestIndependentNegatives|TestRPMHeaderOnlySetuidRealPackage|TestRPMHeaderOnlyNonExecutableRealPackage|TestDebSetuidTarModeRealPackage)$' ./internal/sharedrelease
-          # A narrowing mutant replaces only authoritative FILEMODES with 0755;
-          # filename/owner/CPIO checks remain. Both real header-only tests must
-          # fail because the unsafe package was accepted, not because setup broke.
-          python3 - <<'PY'
-          import json,os,pathlib
-          source=pathlib.Path('internal/sharedrelease/packages.go').resolve()
-          text=source.read_text()
-          needle='installMode, e := rpmInstallFile(tags)'
-          assert text.count(needle)==1
-          mutant=pathlib.Path(os.environ['RUNNER_TEMP'])/'rpm-header-mode-mutant.go'
-          mutant.write_text(text.replace(needle,'tags[1030] = rpmValue{kind: 3, count: 1, data: []byte{0x81, 0xed}}\n\t'+needle))
-          overlay=pathlib.Path(os.environ['RUNNER_TEMP'])/'rpm-header-mode-overlay.json'
-          overlay.write_text(json.dumps({'Replace':{str(source):str(mutant)}}))
-          PY
-          if A2A_PACKAGE_CONTROL_BUNDLE="$RUNNER_TEMP/linux-second" A2A_PACKAGE_CONTROL_SOURCE="$RUNNER_TEMP/source.tar" \
-            go test -p 1 -parallel 2 -v -count=1 -timeout=8m -overlay "$RUNNER_TEMP/rpm-header-mode-overlay.json" \
-            -run '^TestRPMHeaderOnly(Setuid|NonExecutable)RealPackage$' ./internal/sharedrelease > "$RUNNER_TEMP/rpm-header-mode-mutant.log" 2>&1; then
-            echo 'Authoritative-header-mode mutant survived'; exit 1
-          fi
-          grep -F -- '--- FAIL: TestRPMHeaderOnlySetuidRealPackage ' "$RUNNER_TEMP/rpm-header-mode-mutant.log"
-          grep -F -- '--- FAIL: TestRPMHeaderOnlyNonExecutableRealPackage ' "$RUNNER_TEMP/rpm-header-mode-mutant.log"
-          test "$(grep -cF 'expected mode/owner refusal before output, got <nil>' "$RUNNER_TEMP/rpm-header-mode-mutant.log")" = 2
       - name: deb/rpm install and removal in disposable offline containers
         shell: bash
         run: |
@@ -237,7 +194,6 @@ jobs:
             ${{ runner.temp }}/linux-build-02.log
             ${{ runner.temp }}/package-plant.log
             ${{ runner.temp }}/tool-plant.log
-            ${{ runner.temp }}/rpm-header-mode-mutant.log
             ${{ runner.temp }}/sbom-diagnostics
           if-no-files-found: error
           retention-days: 7
@@ -335,3 +291,105 @@ jobs:
             ${{ runner.temp }}/brew-controls/info-*.json
             ${{ runner.temp }}/brew-controls/result-*.log
           if-no-files-found: error
+
+  cask-target-mutation:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.8'
+          cache: false
+      - name: Cask resolved-target gate detects its narrowing mutant
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYMUTANT'
+          import json,os,pathlib
+          source=pathlib.Path('internal/caskbrew/verify.go').resolve()
+          before=source.read_text();needle='target != filepath.Join(prefix, "bin", n)'
+          assert before.count(needle)==1, 'resolved-target mutant must apply exactly once'
+          mutant=pathlib.Path(os.environ['RUNNER_TEMP'])/'cask-target-mutant.go'
+          mutant.write_text(before.replace(needle,'false'))
+          (mutant.parent/'cask-target-overlay.json').write_text(json.dumps({'Replace':{str(source):str(mutant)}}))
+          PYMUTANT
+          set +e
+          go test -p 1 -parallel 2 -overlay "$RUNNER_TEMP/cask-target-overlay.json" -count=1 -run '^TestBrewInstallerFields/binary-target$' ./internal/caskbrew > "$RUNNER_TEMP/cask-target-mutant.log" 2>&1
+          mutant_exit=$?
+          set -e
+          cat "$RUNNER_TEMP/cask-target-mutant.log"
+          test "$mutant_exit" -eq 1
+          grep -F -- '--- FAIL: TestBrewInstallerFields/binary-target' "$RUNNER_TEMP/cask-target-mutant.log"
+          grep -F -- 'want brew-effective-binary-target, got <nil>' "$RUNNER_TEMP/cask-target-mutant.log"
+
+  rpm-header-mode-mutation:
+    # Run with the fixture even if the producer's ordinary tests failed.
+    if: ${{ !cancelled() && github.event_name == 'push' }}
+    needs: linux-production-packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.8'
+          cache: false
+      - name: Require the package fixture
+        env:
+          ARTIFACT_ID: ${{ needs.linux-production-packages.outputs.artifact-id }}
+        run: test -n "$ARTIFACT_ID"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.linux-production-packages.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/package-input
+      - name: Prepare exact source archive and offline modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
+          go mod download
+      - name: Header-only package regressions detect their narrowing mutant
+        shell: bash
+        env:
+          GOMAXPROCS: '2'
+          GOPROXY: 'off'
+          GOSUMDB: 'off'
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/package-input/linux-second/linux-release-evidence.json"
+          # A narrowing mutant replaces only authoritative FILEMODES with 0755;
+          # filename/owner/CPIO checks remain. Both real header-only tests must
+          # fail because the unsafe package was accepted, not because setup broke.
+          python3 - <<'PY'
+          import json,os,pathlib
+          source=pathlib.Path('internal/sharedrelease/packages.go').resolve()
+          text=source.read_text()
+          needle='installMode, e := rpmInstallFile(tags)'
+          assert text.count(needle)==1
+          mutant=pathlib.Path(os.environ['RUNNER_TEMP'])/'rpm-header-mode-mutant.go'
+          mutant.write_text(text.replace(needle,'tags[1030] = rpmValue{kind: 3, count: 1, data: []byte{0x81, 0xed}}\n\t'+needle))
+          overlay=pathlib.Path(os.environ['RUNNER_TEMP'])/'rpm-header-mode-overlay.json'
+          overlay.write_text(json.dumps({'Replace':{str(source):str(mutant)}}))
+          PY
+          if A2A_PACKAGE_CONTROL_BUNDLE="$RUNNER_TEMP/package-input/linux-second" A2A_PACKAGE_CONTROL_SOURCE="$RUNNER_TEMP/source.tar" \
+            go test -p 1 -parallel 2 -v -count=1 -timeout=8m -overlay "$RUNNER_TEMP/rpm-header-mode-overlay.json" \
+            -run '^TestRPMHeaderOnly(Setuid|NonExecutable)RealPackage$' ./internal/sharedrelease > "$RUNNER_TEMP/rpm-header-mode-mutant.log" 2>&1; then
+            echo 'Authoritative-header-mode mutant survived'; exit 1
+          fi
+          grep -F -- '--- FAIL: TestRPMHeaderOnlySetuidRealPackage ' "$RUNNER_TEMP/rpm-header-mode-mutant.log"
+          grep -F -- '--- FAIL: TestRPMHeaderOnlyNonExecutableRealPackage ' "$RUNNER_TEMP/rpm-header-mode-mutant.log"
+          test "$(grep -cF 'expected mode/owner refusal before output, got <nil>' "$RUNNER_TEMP/rpm-header-mode-mutant.log")" = 2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rpm-header-mode-mutation
+          path: ${{ runner.temp }}/rpm-header-mode-mutant.log
+          if-no-files-found: error
+          retention-days: 7

@@ -29,7 +29,25 @@ import (
 type c5Station struct {
 	home, socket string
 	done         chan error
+	doneResult   *error // non-nil after the server result has been consumed
 	cancel       context.CancelFunc
+}
+
+func (s *c5Station) cleanup(t *testing.T) {
+	t.Helper()
+	s.cancel()
+	if s.doneResult != nil {
+		return
+	}
+	select {
+	case err := <-s.done:
+		s.doneResult = &err
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(daemon.LockReleaseBound):
+		t.Error("shutdown timeout")
+	}
 }
 
 func newC5Station(t *testing.T, handler daemon.Handler) *c5Station {
@@ -53,17 +71,7 @@ func newC5Station(t *testing.T, handler daemon.Handler) *c5Station {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &c5Station{home: home, socket: socket, done: make(chan error, 1), cancel: cancel}
 	go func() { s.done <- daemon.ServeWithHandler(ctx, serverHome, socket, io.Discard, handler) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-s.done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(daemon.LockReleaseBound):
-			t.Error("shutdown timeout")
-		}
-	})
+	t.Cleanup(func() { s.cleanup(t) })
 	timer := time.NewTimer(daemon.LockReleaseBound)
 	defer timer.Stop()
 	tick := time.NewTicker(time.Millisecond)
@@ -75,6 +83,7 @@ func newC5Station(t *testing.T, handler daemon.Handler) *c5Station {
 		}
 		select {
 		case err := <-s.done:
+			s.doneResult = &err
 			t.Fatal("serve refused", err)
 		case <-timer.C:
 			t.Fatal("startup timeout")
@@ -83,6 +92,32 @@ func newC5Station(t *testing.T, handler daemon.Handler) *c5Station {
 	}
 	return s
 }
+
+// TestC5StationCleanupLeavesConsumedResultAlone proves cleanup does not receive
+// from done again after startup consumed its result.
+func TestC5StationCleanupLeavesConsumedResultAlone(t *testing.T) {
+	consumed := errors.New("startup result")
+	unread := errors.New("next result")
+	s := &c5Station{
+		done:       make(chan error, 1),
+		doneResult: &consumed,
+		cancel:     func() {},
+	}
+	s.done <- unread
+	s.cleanup(t)
+	if got := *s.doneResult; got != consumed {
+		t.Fatalf("consumed result changed: got %v, want %v", got, consumed)
+	}
+	select {
+	case got := <-s.done:
+		if got != unread {
+			t.Fatalf("cleanup left %v, want %v", got, unread)
+		}
+	default:
+		t.Fatal("cleanup received from done a second time")
+	}
+}
+
 func (s *c5Station) run(ctx context.Context, input string, args ...string) result {
 	var out, diag bytes.Buffer
 	a := &App{Stdout: &out, Stderr: &diag, Stdin: strings.NewReader(input), Getenv: func(k string) string {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,8 +103,8 @@ func TestTerminalRecoveryPreKeyFlicker(t *testing.T) {
 	}
 }
 
-// Aged empty input revokes even an uncertain partial origin. A lagging empty
-// frame inside the window preserves it and permits the later exact notice once.
+// Aged empty input revokes an uncertain typing origin. With a complete eligible
+// ID/count set, a lagging empty frame preserves the later exact notice once.
 func TestTerminalRecoveryEmptyContinuity(t *testing.T) {
 	for _, aged := range []bool{false, true} {
 		t.Run(fmt.Sprint(aged), func(t *testing.T) {
@@ -114,7 +115,7 @@ func TestTerminalRecoveryEmptyContinuity(t *testing.T) {
 			f.dispatch()
 			f.step()
 			notice := f.binding().Notice
-			f.update(func(st *config.State) { st.Terminal.Typed = false; st.Terminal.AttemptIDs = st.Terminal.AttemptIDs[:1] })
+			f.update(func(st *config.State) { st.Terminal.Typed = false })
 			delay := time.Second
 			if aged {
 				delay = config.NotificationEvery
@@ -179,20 +180,22 @@ func TestTerminalRecoveryAgedBudget(t *testing.T) {
 
 // A real failed post-fence key with cursor off the composer remains visible in
 // status and reaches the existing incident route, without retrying the key,
-// including uncertain attempts with legitimately receipted partial IDs.
+// A partial stale count is instead held without a new Enter or retry charge;
+// after external clearing, the existing fresh-notice path recovers remaining mail.
 func TestTerminalRecoveryExhaustionReports(t *testing.T) {
 	for _, variant := range []string{"typed", "uncertain", "partial"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newOrphanDispatchFixture(t)
 			room := f.e.ownReportRoom("alice")
 			first := f.mail()
+			remaining := ""
 			if variant == "partial" {
-				f.mail()
+				remaining = f.mail()
 			}
 			f.control(map[string]any{"defer": true})
 			f.dispatch()
 			f.step()
-			if variant != "typed" {
+			if variant == "uncertain" {
 				f.update(func(st *config.State) { st.Terminal.Typed = false })
 			}
 			if variant == "partial" {
@@ -203,11 +206,32 @@ func TestTerminalRecoveryExhaustionReports(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				before := *f.binding()
+				f.now = f.now.Add(config.NotificationEvery)
+				f.control(map[string]any{"cursor": -5})
+				err = f.a.dispatchTerminal(context.Background(), f.s, before.Generation)
+				after := f.binding()
+				if err != nil || after.SendRefusal == nil || after.SendRefusal.Reason != tmuxwake.ReasonRecoveryHeld || after.Retried != before.Retried || !slices.Equal(after.Reservations, before.Reservations) || !after.AttemptAt.Equal(before.AttemptAt) || len(after.AttemptIDs) != 1 || after.NoticeCount != 2 || f.e.received("alice", remaining) {
+					t.Fatal("stale partial count spent retry, changed history or lost remaining mail", err)
+				}
+				if screen := f.wait(func(orphanScreen) bool { return true }); len(screen.Submitted) != 0 || screen.Erased != 0 {
+					t.Fatal("stale partial count changed input")
+				}
+				// External fixture action represents the user clearing input;
+				// product code uses its existing aged-empty requalification.
+				f.control(map[string]any{"text": ""})
+				for i := 0; i < 4; i++ {
+					f.step()
+				}
+				if screen := f.wait(func(s orphanScreen) bool { return len(s.Submitted) == 1 }); screen.Submitted[0] != tmuxwake.Notice(1) {
+					t.Fatal("remaining eligible mail did not get a fresh exact count")
+				}
+				if f.e.received("alice", remaining) || !f.e.received("alice", first) || len(f.binding().Reservations) != len(before.Reservations)+1 {
+					t.Fatal("fresh recovery lost receipts or old rate spend")
+				}
+				return
 			}
 			exhaustRecovery(t, f)
-			if variant == "partial" && (len(f.binding().AttemptIDs) != 1 || f.binding().NoticeCount != 2 || !f.e.received("alice", first)) {
-				t.Fatal("partial-ID exhaustion control was not applied")
-			}
 			requireNotice(t, f.binding().OwnNotice, "suspected")
 			if !strings.Contains(f.e.as("alice", "bind", "status").ok(t).stdout, "SUSPECTED-DEAF") {
 				t.Fatal("spent fence invisible")

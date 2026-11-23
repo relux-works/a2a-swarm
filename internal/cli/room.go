@@ -23,7 +23,7 @@ const (
 // Bound filtered history reads; reaching the cap leaves the room untouched.
 const roomRetireMaxPages = 100
 
-const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] [--private] | a2a room retire <alias> | a2a room members <room> [--membership join|invite|join,invite] [--json] | a2a room power <room> [--json] | room avatar get|set ... | room parent get|set ... (typed result v1; see docs/cli.md)"
+const roomUsage = "usage: a2a room new <alias> [--name N] [--topic T] [--invite a,b] [--product X] [--private] | a2a room retire <alias> | a2a room members <room> [--membership join|invite|join,invite] [--json] | a2a room power <room> [--json] | room name get|set ... | room avatar get|set ... | room parent get|set ... (typed result v1; see docs/cli.md)"
 
 // roomSpec is one room to create with the standard policy.
 type roomSpec struct {

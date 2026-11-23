@@ -17,7 +17,7 @@ import (
 // The real websocket writer rechecks admission after assembling a split daemon
 // frame. A muted buffered notice is not forwarded; a fresh post-thaw frame is.
 func TestScopeMuteListenerBufferedForwarding(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := fixture.Scope(root)
 	fixture.Enroll(t, scope)
 	sockets := make(chan *websocket.Conn, 1)

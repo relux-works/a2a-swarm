@@ -21,9 +21,11 @@ func run() error {
 	defer cancel()
 	args := os.Args[1:]
 	if len(args) == 0 {
-		return fmt.Errorf("usage: a2a-release admit|prepare|release|verify|compare")
+		return fmt.Errorf("usage: a2a-release admit|prepare|release|verify|compare|fixture-compare")
 	}
 	switch args[0] {
+	case "fixture-compare":
+		return fixtureCompare(args)
 	case "admit":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: a2a-release admit vX.Y.Z")
@@ -100,6 +102,6 @@ func verify(dir, out string) error {
 func main() {
 	if e := run(); e != nil {
 		fmt.Fprintln(os.Stderr, "a2a-release:", e)
-		os.Exit(1)
+		os.Exit(exitCode(e))
 	}
 }

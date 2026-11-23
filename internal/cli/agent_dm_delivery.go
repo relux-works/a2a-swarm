@@ -360,7 +360,7 @@ func (s *session) agentMailboxView(mb *config.Mailbox) {
 	if principals == nil && s.app != nil && (len(g.Rooms) > 0 || g.Unknown) {
 		principals = s.readDeliveryPrincipals()
 	}
-	mb.SetPendingFilter(func(e config.MailEntry) bool {
+	mb.AddPendingFilter(func(e config.MailEntry) bool {
 		if principalMail(e, principals) {
 			return true
 		}

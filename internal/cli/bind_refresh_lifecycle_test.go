@@ -381,7 +381,7 @@ func TestTerminalRefreshWaitsForSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	entered, release := filepath.Join(dir, "entered"), filepath.Join(dir, "release")
-	script := "#!/usr/bin/env python3\nimport os,sys,time\nif '-l' in sys.argv:\n open(" + strconv.Quote(entered) + ",'w').close()\n while not os.path.exists(" + strconv.Quote(release) + "): time.sleep(0.01)\nos.execv(" + strconv.Quote(real) + ",[" + strconv.Quote(real) + "]+sys.argv[1:])\n"
+	script := "#!/usr/bin/env python3\nimport os,sys,time\nif 'paste-buffer' in sys.argv:\n open(" + strconv.Quote(entered) + ",'w').close()\n while not os.path.exists(" + strconv.Quote(release) + "): time.sleep(0.01)\nos.execv(" + strconv.Quote(real) + ",[" + strconv.Quote(real) + "]+sys.argv[1:])\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
 	f.update(func(st *config.State) { st.Terminal.DaemonPID = os.Getpid(); st.Terminal.DaemonBirth = birth })
 	f.e.hs.fail("GET /_matrix/client/v3/sync", 503, "M_UNKNOWN", "synthetic persistent sync failure")
 	path, _ := refreshExecutable(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
 	calls := 0
 	r := &terminalRefresh{path: path, exec: func(string, []string, []string) error {
@@ -471,8 +471,10 @@ func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
 		return syscall.ENOEXEC
 	}}
 	matureRefresh(t, r)
+	initial := *f.binding()
+	inspectionCalls := installSuccessfulTerminalInspector(f.a, initial)
 	err = config.WithConsumerLock(f.s.paths, f.s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
-		_, err := f.a.runTerminalWithRefresh(ctx, f.s, "orphan-gen", *f.binding(), func() { r.poll(ctx, f.a, f.s, "orphan-gen", lock) })
+		_, err := f.a.runTerminalWithRefresh(ctx, f.s, "orphan-gen", initial, func() { r.poll(ctx, f.a, f.s, "orphan-gen", lock) })
 		return err
 	})
 	if err != nil {
@@ -481,6 +483,7 @@ func TestTerminalRefreshDuringSyncFailure(t *testing.T) {
 	if calls != 1 || f.binding().Outcome != "consumer unavailable; retrying" {
 		t.Fatal("safe sync-error cycle stranded old executable")
 	}
+	requireTerminalInspectorCalled(t, inspectionCalls)
 }
 
 // A failed exec returns to the same consumer loop: retained mail is delivered

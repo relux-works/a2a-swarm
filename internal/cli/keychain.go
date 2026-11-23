@@ -42,6 +42,7 @@ type keychainStore struct {
 	birth             func(context.Context, int) (string, error)
 	liveness          func(context.Context, int, string) ownerState
 	boot              func() (string, error)
+	dirSync           func(string) error
 	reconciling       bool // set only by reconcile, for its own lookup
 }
 
@@ -287,25 +288,33 @@ func (k *keychainStore) run(ctx context.Context, uid, mutation string, intended 
 			return nil, fmt.Errorf("keychain write fence unavailable for %s", uid)
 		}
 	}
-	done := make(chan result, 1)
-	backend := k.keychainBackend()
-	go func() {
-		data, err := op(ctx, backend, target)
-		if fence != nil {
-			// Cleared only here, after the native call returned. If clearing
-			// fails the fence stays and later operations refuse.
-			_ = k.clearFence(uid, fence)
-		}
-		done <- result{data, err}
-	}()
 	var r result
-	select {
-	case r = <-done:
-	case <-ctx.Done():
-		// An in-process Security.framework call cannot be killed. Its late
-		// result is discarded and the attempt counts as a timeout; a late
-		// mutation stays fenced until the call returns.
-		r.err = ctx.Err()
+	if fence != nil && ctx.Err() != nil {
+		// Writing the fence used up the deadline, or the caller gave up. The
+		// native call is not made, so nothing can land late: the fence is
+		// removed and the attempt counts as a timeout below. If the removal
+		// fails the fence stays and later operations refuse.
+		_ = k.clearFence(uid, fence)
+	} else {
+		done := make(chan result, 1)
+		backend := k.keychainBackend()
+		go func() {
+			data, err := op(ctx, backend, target)
+			if fence != nil {
+				// Cleared only here, after the native call returned. If clearing
+				// fails the fence stays and later operations refuse.
+				_ = k.clearFence(uid, fence)
+			}
+			done <- result{data, err}
+		}()
+		select {
+		case r = <-done:
+		case <-ctx.Done():
+			// An in-process Security.framework call cannot be killed. Its late
+			// result is discarded and the attempt counts as a timeout; a late
+			// mutation stays fenced until the call returns.
+			r.err = ctx.Err()
+		}
 	}
 	if ctx.Err() != nil || errors.Is(r.err, errKeychainInteraction) {
 		cause := "security_interaction"
@@ -325,6 +334,8 @@ func (k *keychainStore) run(ctx context.Context, uid, mutation string, intended 
 		return nil, errKeychainMissing
 	case errors.Is(r.err, errKeychainDuplicate):
 		return nil, errKeychainDuplicate
+	case errors.Is(r.err, errKeychainUnsupported):
+		return nil, errKeychainUnsupported
 	}
 	return nil, fmt.Errorf("keychain operation failed for %s", uid)
 }

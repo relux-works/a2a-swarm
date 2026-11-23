@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/matrix"
@@ -106,7 +108,7 @@ func TestMutedRoomSubscriptionClassify(t *testing.T) {
 // route and an allowed match later in the same sync.
 func TestMutedRoomSubscriptionUntilKind(t *testing.T) {
 	const room = "!room:test.local"
-	s := &session{name: "alice", creds: config.Credentials{UserID: "@alice:test.local"}, client: &matrix.Client{}}
+	s := &session{app: &App{Now: func() time.Time { return time.Unix(2, 0) }, Stderr: io.Discard}, paths: config.Paths{Base: t.TempDir()}, name: "alice", creds: config.Credentials{UserID: "@alice:test.local"}, client: &matrix.Client{}}
 	for _, route := range []string{"suppressed", "direct", "mention", "roomless", "room-sender", "all-events", "all"} {
 		t.Run(route, func(t *testing.T) {
 			subs := []Sub{{ID: "room", SubSelector: SubSelector{Room: room, Kinds: []string{"decision"}, UntilKind: "decision"}}}

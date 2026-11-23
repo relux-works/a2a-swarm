@@ -28,17 +28,25 @@ func predicateKeywords(t *testing.T, e *env, words config.WaitKeywords) {
 	}
 }
 
-// Proves both commands reject each predicate's near misses before output/shown state and retain every event for inbox without receipts.
+// Both commands reject near misses before output/Shown. Optional predicate
+// rejections remain for inbox; independently marked hard-audience rejections
+// remain durable but never appear in inbox or receive a synthetic receipt.
 func TestDeliveryPredicates(t *testing.T) {
 	type input struct {
-		sender  string
-		content map[string]any
+		sender           string
+		content          map[string]any
+		audienceExcluded bool
 	}
-	note := func(text, kind, to string) input { return input{"@bob:test.local", predicateContent(text, kind, to)} }
-	sent := func(sender string) input { return input{sender, predicateContent("ready", "decision", "alice")} }
+	note := func(text, kind, to string) input {
+		return input{sender: "@bob:test.local", content: predicateContent(text, kind, to)}
+	}
+	sent := func(sender string) input {
+		return input{sender: sender, content: predicateContent("ready", "decision", "alice")}
+	}
 	subject := func(text, value string) input {
-		return input{"@bob:test.local", msg(text, map[string]any{ContentKey: Header{Type: "message", Kind: "decision", Subject: value}})}
+		return input{sender: "@bob:test.local", content: msg(text, map[string]any{ContentKey: Header{Type: "message", Kind: "decision", Subject: value}})}
 	}
+	excluded := func(in input) input { in.audienceExcluded = true; return in }
 	cases := []struct {
 		name     string
 		flags    []string
@@ -63,24 +71,24 @@ func TestDeliveryPredicates(t *testing.T) {
 		{"sender remote exact", []string{"--from", "@bob:foreign.test"}, nil,
 			[]input{sent("@bob:test.local"), sent("@bob:foreign.test.evil")}, sent("@bob:foreign.test")},
 		{"kind list first", []string{"--kind", "decision,request"}, nil,
-			[]input{note("ready", "notice", "alice"), note("ready", "decision-extra", "alice"), note("ready", "Decision", "alice"), {"@bob:test.local", msg("kind=decision", nil)}, {"@bob:test.local", msg("ready", map[string]any{ContentKey: map[string]any{"kind": "decision", "to": 1}})}}, note("ready", "decision", "alice")},
+			[]input{note("ready", "notice", "alice"), note("ready", "decision-extra", "alice"), note("ready", "Decision", "alice"), {sender: "@bob:test.local", content: msg("kind=decision", nil)}, {sender: "@bob:test.local", content: msg("ready", map[string]any{ContentKey: map[string]any{"kind": "decision", "to": 1}}), audienceExcluded: true}}, note("ready", "decision", "alice")},
 		{"kind list second", []string{"--kind", "decision,request"}, nil,
 			[]input{note("ready", "notice", "alice")}, note("ready", "request", "alice")},
 		{"recipient name", []string{"--to-me-only"}, nil,
-			[]input{note("ready", "decision", "all"), note("ready", "decision", "alicex"), note("ready", "decision", "@alice:foreign.test"), note("@alice:test.localhost", "decision", "carol")}, note("ready", "decision", "alice")},
+			[]input{note("ready", "decision", "all"), excluded(note("ready", "decision", "alicex")), excluded(note("ready", "decision", "@alice:foreign.test")), excluded(note("@alice:test.localhost", "decision", "carol"))}, note("ready", "decision", "alice")},
 		{"recipient full id", []string{"--to-me-only"}, nil,
-			[]input{note("ready", "decision", "@alice:test.local.evil")}, note("ready", "decision", "@alice:test.local")},
+			[]input{excluded(note("ready", "decision", "@alice:test.local.evil"))}, note("ready", "decision", "@alice:test.local")},
 		{"recipient metadata mention", []string{"--to-me-only"}, nil,
-			[]input{{"@bob:test.local", msg("ready", map[string]any{"m.mentions": map[string]any{"user_ids": []string{"@alice:foreign.test"}}})}},
-			input{"@bob:test.local", msg("ready", map[string]any{"m.mentions": map[string]any{"user_ids": []string{"@alice:test.local"}}})}},
+			[]input{{sender: "@bob:test.local", content: msg("ready", map[string]any{"m.mentions": map[string]any{"user_ids": []string{"@alice:foreign.test"}}}), audienceExcluded: true}},
+			input{sender: "@bob:test.local", content: msg("ready", map[string]any{"m.mentions": map[string]any{"user_ids": []string{"@alice:test.local"}}})}},
 		{"recipient body mention", []string{"--to-me-only"}, nil,
-			[]input{note("@alice:test.localhost", "decision", "carol")}, note("hello @alice:test.local.", "decision", "carol")},
+			[]input{note("@alice:test.localhost", "decision", "all"), excluded(note("hello @alice:test.local.", "decision", "carol"))}, note("hello @alice:test.local.", "decision", "all")},
 		{"keywords first token", nil, config.WaitKeywords{"LANE-7", "TASK-56"},
-			[]input{note("LANE-70", "decision", "alice"), note("xLANE-7", "decision", "alice"), note("lane-7", "decision", "alice"), note("- from: LANE-7\n\nother text", "decision", "alice"), subject("other text", "TASK-560"), {"@bob:test.local", msg("other text", map[string]any{ContentKey: map[string]any{"subject": "TASK-56", "to": 1}})}}, note("(LANE-7).", "decision", "alice")},
+			[]input{note("LANE-70", "decision", "alice"), note("xLANE-7", "decision", "alice"), note("lane-7", "decision", "alice"), note("- from: LANE-7\n\nother text", "decision", "alice"), subject("other text", "TASK-560"), {sender: "@bob:test.local", content: msg("other text", map[string]any{ContentKey: map[string]any{"subject": "TASK-56", "to": 1}}), audienceExcluded: true}}, note("(LANE-7).", "decision", "alice")},
 		{"keywords second subject", nil, config.WaitKeywords{"LANE-7", "TASK-56"},
 			[]input{subject("other text", "TASK-560")}, subject("other text", "TASK-56")},
 		{"combined AND", []string{"--match-text", "ready$", "--from", "bob,carol", "--kind", "decision,request", "--to-me-only"}, config.WaitKeywords{"LANE-7", "TASK-56"},
-			[]input{note("LANE-7 waiting", "decision", "alice"), {"@mallory:test.local", predicateContent("LANE-7 ready", "decision", "alice")}, note("LANE-7 ready", "notice", "alice"), note("LANE-7 ready", "decision", "carol"), note("LANE-70 ready", "decision", "alice")}, note("TASK-56 ready", "request", "alice")},
+			[]input{note("LANE-7 waiting", "decision", "alice"), {sender: "@mallory:test.local", content: predicateContent("LANE-7 ready", "decision", "alice")}, note("LANE-7 ready", "notice", "alice"), excluded(note("LANE-7 ready", "decision", "carol")), note("LANE-70 ready", "decision", "alice")}, note("TASK-56 ready", "request", "alice")},
 	}
 	for _, command := range []string{"wait", "watch"} {
 		for _, tc := range cases {
@@ -92,9 +100,11 @@ func TestDeliveryPredicates(t *testing.T) {
 				}
 				cursor := e.state("alice").NextBatch
 				var rejected []string
+				excludedIDs := map[string]bool{}
 				for _, in := range tc.bad {
 					id := e.hs.inject(room, in.sender, in.content)
 					rejected = append(rejected, id)
+					excludedIDs[id] = in.audienceExcluded
 					if e.received("alice", id) {
 						t.Fatal("fixture already received")
 					}
@@ -174,12 +184,13 @@ func TestDeliveryPredicates(t *testing.T) {
 				}
 				inbox := e.as("alice", "inbox", "--limit", "50").ok(t).stdout
 				for _, id := range append(rejected, accepted) {
-					if !strings.Contains(inbox, "id="+id) || !e.received("alice", id) {
-						t.Fatalf("inbox did not deliver and receipt retained entry %s", id)
+					visible := !excludedIDs[id]
+					if strings.Contains(inbox, "id="+id) != visible || e.received("alice", id) != visible {
+						t.Fatalf("inbox violated expected audience for retained entry %s (eligible=%t)", id, visible)
 					}
 					t.Logf("after inbox id=%s received=%v", id, e.received("alice", id))
 				}
-				t.Logf("retained %d rejected entries unshown/unreceived and 1 matched entry shown/unreceived; inbox alone receipted all", len(rejected))
+				t.Logf("retained %d rejected entries unshown/unreceived and 1 matched entry shown/unreceived; inbox alone receipted audience-eligible entries", len(rejected))
 			})
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/relux-works/a2a-swarm/internal/audience"
 	"github.com/relux-works/a2a-swarm/internal/config"
 	"github.com/relux-works/a2a-swarm/internal/daemon"
 	"github.com/relux-works/a2a-swarm/internal/deliverypolicy"
@@ -120,6 +121,8 @@ func (a *App) emit(items []waitItem, asJSON bool) error {
 type batch struct {
 	agentHeld    []agentDMHeld
 	agentStamp   string
+	audiences    []audience.Evidence
+	selections   []config.MailSelection
 	entries      []config.MailEntry
 	redactions   []config.Redaction
 	learned      []string             // thread roots learned from my own events
@@ -204,6 +207,32 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 	b := batch{muted: slices.Clone(st.Muted), agentStamp: gate.Stamp}
 	st.ThreadEvents = slices.Clone(st.ThreadEvents)
 	me := s.creds.UserID
+	mailbox, err := config.OpenMailbox(s.paths, s.name)
+	if err != nil {
+		s.addressDiagnostic(audience.AddressStateUnavailable)
+		return b, err
+	}
+	audiences := s.audienceCycle(ctx, mailbox, true)
+	for room, joined := range resp.Rooms.Join {
+		if !s.adminRoomExcluded(room) {
+			audiences.Add(room, joined.Timeline.Events)
+		}
+	}
+	// Deferred retained references get a bounded retry even on an empty sync.
+	deferred := map[string][]matrix.Event{}
+	rooms := map[string]bool{}
+	for room := range resp.Rooms.Join {
+		rooms[room] = true
+	}
+	for _, entry := range mailbox.RawPending() {
+		if prior, ok := mailbox.Audience(audience.Key{Room: entry.Room, EventID: entry.ID}); ok && prior.Decision == audience.Unresolved {
+			var ev matrix.Event
+			if json.Unmarshal(entry.Event, &ev) == nil {
+				deferred[entry.Room] = append(deferred[entry.Room], ev)
+				rooms[entry.Room] = true
+			}
+		}
+	}
 	for _, roomID := range sortedKeys(resp.Rooms.Invite) {
 		if s.adminRoomExcluded(roomID) {
 			continue
@@ -218,14 +247,10 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 	seen := map[string]bool{}
 	firstPages := firstSyncMaxPages
 	// Iterate rooms in a stable order so output is deterministic.
-	roomIDs := map[string]bool{}
-	for room := range resp.Rooms.Join {
-		roomIDs[room] = true
-	}
 	for _, entry := range held.Entries {
-		roomIDs[entry.Room] = true
+		rooms[entry.Room] = true
 	}
-	for _, roomID := range sortedKeys(roomIDs) {
+	for _, roomID := range sortedKeys(rooms) {
 		if s.adminRoomExcluded(roomID) {
 			continue
 		}
@@ -239,6 +264,12 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 			}
 			if ev.Type != "m.room.message" {
 				return false
+			}
+			// Excluded mail still crosses the durable cursor boundary. Retain
+			// it without granting any subscription or notification side effect.
+			e := audience.Parse(ev, roomID, me, s.name, s.app.Now())
+			if !e.Allows(slices.Contains(configured, ev.Sender)) {
+				return true
 			}
 			// Keep plain replies before chronological classification, even when
 			// their targets will only be learned on an older backfill page.
@@ -276,7 +307,12 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 				events = append(events, ev)
 			}
 		}
+		events = append(events, deferred[roomID]...)
+		audiences.Add(roomID, events)
 		for _, ev := range events {
+			evidence := audiences.Resolve(roomID, ev)
+			s.addressDiagnostic(evidence.Diagnostic())
+			allowed := evidence.Allows(slices.Contains(configured, ev.Sender))
 			decision := gate.decision(ev, roomID, me, configured)
 			if decision != "allow" {
 				if decision == "hold" && ev.Type == "m.room.message" && !ev.IsRedacted() {
@@ -310,18 +346,18 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 					}
 				}
 			}
-			rel, root, matched := classifyWithPrincipals(ev, roomID, me, s.name, st, active, configured)
+			rel, root, matched := audienceClassify(ev, roomID, me, s.name, st, active, configured, evidence)
 			if root != "" {
 				b.learned = append(b.learned, root)
 				st.AddThread(root)
 			}
-			if rel == "" && all[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
+			if allowed && rel == "" && all[roomID] && ev.Type == "m.room.message" && ev.Sender != me {
 				rel = relAll
 			}
-			if rel == "" && ev.Type == "m.room.message" && ev.IsRedacted() && ev.Sender != me {
+			if allowed && rel == "" && ev.Type == "m.room.message" && ev.IsRedacted() && ev.Sender != me {
 				rel = relevance("redacted")
 			}
-			if rel == "" || seen[ev.EventID] {
+			if (rel == "" && (allowed || ev.Type != "m.room.message" || ev.Sender == me)) || seen[ev.EventID] {
 				continue
 			}
 			seen[ev.EventID] = true
@@ -336,12 +372,45 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 			if rel == relSub && len(matched) > 0 && !mandatoryPrincipal(ev, configured) {
 				subID = matched[0]
 			}
+			if allowed && rel != "" && mailbox.Has(ev.EventID) {
+				b.selections = append(b.selections, config.MailSelection{Room: roomID, EventID: ev.EventID, Rel: string(rel), Sub: subID})
+			}
 			raw, err := json.Marshal(ev)
 			if err != nil {
 				return b, err
 			}
 			b.entries = append(b.entries, config.MailEntry{ID: ev.EventID, Kind: config.MailEvent, Room: roomID,
 				Label: s.roomLabel(ctx, roomID, labels), Rel: string(rel), Sub: subID, Sender: ev.Sender, TS: ev.OriginServerTS, Event: raw})
+		}
+	}
+	// Persist evidence for retained mail and its target chain, not an extra
+	// metadata log for unrelated general traffic that has no mailbox record.
+	resolved := map[audience.Key]audience.Evidence{}
+	for _, e := range audiences.Resolved() {
+		resolved[audience.Key{Room: e.Room, EventID: e.EventID}] = e
+	}
+	var roots []audience.Key
+	for _, e := range b.entries {
+		if e.Kind == config.MailEvent {
+			roots = append(roots, audience.Key{Room: e.Room, EventID: e.ID})
+		}
+	}
+	for _, r := range b.redactions {
+		roots = append(roots, audience.Key{Room: r.Room, EventID: r.EventID})
+	}
+	kept := map[audience.Key]bool{}
+	for len(roots) > 0 {
+		key := roots[len(roots)-1]
+		roots = roots[:len(roots)-1]
+		if kept[key] {
+			continue
+		}
+		kept[key] = true
+		if e, ok := resolved[key]; ok {
+			b.audiences = append(b.audiences, e)
+			if e.Target != "" {
+				roots = append(roots, audience.Key{Room: e.Room, EventID: e.Target})
+			}
 		}
 	}
 	return b, nil
@@ -377,6 +446,13 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 			}
 		}
 		s.agentMailboxView(mb)
+		view := s.installAudienceView(mb)
+		// Resolve lazy retained entries before persisting metadata. The view
+		// never performs network I/O under the reservation/state lock.
+		_ = mb.Pending()
+		if err := mb.SaveAudiences(view.Resolved()); err != nil {
+			return nil, err
+		}
 		return fn(cur, mb)
 	}
 	if !withSubs {
@@ -432,7 +508,13 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 				return nil, err
 			}
 		}
-		if err := mb.Redact(b.redactions); err != nil {
+		if err := mb.SaveAudiences(b.audiences); err != nil {
+			return nil, err
+		}
+		if err := mb.ResolveSelections(b.selections); err != nil {
+			return nil, err
+		}
+		if err := mb.RedactAt(b.redactions, a.Now()); err != nil {
 			return nil, err
 		}
 		if err := s.appendAdmitted(ctx, mb, b.entries); err != nil {

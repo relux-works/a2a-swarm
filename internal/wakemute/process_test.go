@@ -55,7 +55,7 @@ func TestScopeMuteProcessCrashAndSerialization(t *testing.T) {
 		}
 		return
 	}
-	root := filepath.Join(t.TempDir(), "root")
+	root := filepath.Join(canonicalTempDir(t), "root")
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
