@@ -263,6 +263,7 @@ func TestMuseBindAuthority(t *testing.T) {
 		"unrelated owner":          {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime", true},
 		"owner is not muse":        {own, true, "/bin/sleep", "not a muse process", true},
 		"missing Muse session env": {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session", false},
+		"claude env only":          {map[string]string{"CLAUDE_CODE_SESSION_ID": "claude-1"}, true, "muse-bin-1.4.24", "requires this Muse session", false},
 		"foreign session id":       {map[string]string{"MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin-1.4.24", "another live", false},
 	} {
 		t.Run(name, func(t *testing.T) {
