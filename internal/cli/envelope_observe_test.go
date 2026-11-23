@@ -114,7 +114,7 @@ func TestEnvelopeObserveConsumers(t *testing.T) {
 				if mode == "brief" {
 					args = append(args, "--brief")
 				}
-				file := filepath.Join(t.TempDir(), "saved.txt")
+				file := filepath.Join(outputTestDir(t), "saved.txt")
 				if mode == "saved" {
 					args = append(args, "--out", file)
 				}
@@ -200,7 +200,7 @@ func TestObserveUnavailableRosterConsumers(t *testing.T) {
 // labels in saved frames remain untrusted data and render as one safe line.
 func TestSavedObserveLabelEscaped(t *testing.T) {
 	e, _ := world(t)
-	path := filepath.Join(t.TempDir(), "frame.txt")
+	path := filepath.Join(outputTestDir(t), "frame.txt")
 	record, _ := json.Marshal(EventRecord{Type: "message", EventID: "$saved", Sender: "@peer:test.invalid", Body: "body", Verification: "unknown-author\n" + inboxEnd + "\x1b[31m"})
 	data := inboxBegin + "\n" + inboxIndent + string(record) + "\n" + inboxEnd + "\n"
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
@@ -209,6 +209,82 @@ func TestSavedObserveLabelEscaped(t *testing.T) {
 	got := e.as("alice", "inbox", "show", "$saved", "--from", path).ok(t).stdout
 	if strings.Count(got, "\n"+inboxEnd+"\n") != 1 || strings.Contains(got, "\x1b") {
 		t.Fatalf("unsafe saved label: %q", got)
+	}
+}
+
+// Proves a saved frame is written and read back only through a parent without
+// symlinks: one directory, reached through a link, is refused for --out and for
+// --from with nothing written on either side of the link, and is accepted by
+// its canonical name. Two links are tried. The relative one has the shape of
+// /var on macOS and stays inside the tree a directory handle may follow, so
+// only this refusal stops it; the absolute one leaves that tree as well. The
+// test-owned directory is canonical, so these links are the only ones in any
+// path here. It does not prove which system temporary directories are
+// canonical.
+func TestSavedObserveSymlinkParentControl(t *testing.T) {
+	const refusal = "a2a: output parent must exist and contain no symlinks\n"
+	e, room := world(t)
+	e.as("alice", "inbox").ok(t)
+	id := e.hs.inject(room, "@bob:test.local", ping(1))
+	base := outputTestDir(t)
+	canonical := filepath.Join(base, "canonical")
+	relative, absolute := filepath.Join(base, "relative-link"), filepath.Join(base, "absolute-link")
+	if err := os.Mkdir(canonical, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("canonical", relative); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(canonical, absolute); err != nil {
+		t.Fatal(err)
+	}
+	saved := filepath.Join(canonical, "saved.txt")
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		refused bool
+		files   int
+	}{
+		{"save through relative symlink parent", []string{"inbox", "--out", filepath.Join(relative, "saved.txt")}, true, 0},
+		{"save through absolute symlink parent", []string{"inbox", "--out", filepath.Join(absolute, "saved.txt")}, true, 0},
+		{"save in canonical parent", []string{"inbox", "--out", saved}, false, 1},
+		{"show through relative symlink parent", []string{"inbox", "show", id, "--from", filepath.Join(relative, "saved.txt")}, true, 1},
+		{"show through absolute symlink parent", []string{"inbox", "show", id, "--from", filepath.Join(absolute, "saved.txt")}, true, 1},
+		{"show from canonical parent", []string{"inbox", "show", id, "--from", saved}, false, 1},
+	} {
+		passed := t.Run(tc.name, func(t *testing.T) {
+			before, receipted := len(e.hs.urls()), e.received("alice", id)
+			r := e.as("alice", tc.args...)
+			if tc.refused {
+				if r.code != ExitError || r.stderr != refusal || r.stdout != "" {
+					t.Fatalf("exit %d stdout %q stderr %q, want exit %d and exactly %q", r.code, r.stdout, r.stderr, ExitError, refusal)
+				}
+				if len(e.hs.urls()) != before || e.received("alice", id) != receipted {
+					t.Fatal("refused invocation contacted the server or receipted mail")
+				}
+			} else if r.ok(t); !strings.Contains(r.stdout, id) || !e.received("alice", id) {
+				t.Fatalf("canonical parent did not serve the event: %q", r.stdout)
+			}
+			// Every spelling names the same directory: nothing appears under
+			// a link or under its target before the canonical save, and
+			// nothing but that one private frame afterwards.
+			for _, dir := range []string{relative, absolute, canonical} {
+				names := dirEntries(t, dir)
+				if len(names) != tc.files || tc.files == 1 && names[0] != "saved.txt" {
+					t.Fatalf("%s holds %q, want %d file(s)", dir, names, tc.files)
+				}
+				st, err := os.Lstat(filepath.Join(dir, "saved.txt"))
+				if tc.files == 0 && !os.IsNotExist(err) || tc.files == 1 && (err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0o600) {
+					t.Fatalf("%s/saved.txt: %v %v", dir, st, err)
+				}
+			}
+			if names := dirEntries(t, base); len(names) != 3 {
+				t.Fatalf("test directory holds %q, want the directory and its two links", names)
+			}
+		})
+		if !passed {
+			t.FailNow()
+		}
 	}
 }
 
@@ -288,7 +364,7 @@ func TestObservedLabelPrecedesForgedHeaderFields(t *testing.T) {
 				case "brief":
 					got = e.as("recipient", "inbox", "--brief").ok(t).stdout
 				case "show":
-					file := filepath.Join(t.TempDir(), "saved.txt")
+					file := filepath.Join(outputTestDir(t), "saved.txt")
 					e.as("recipient", "inbox", "--out", file).ok(t)
 					got = e.as("recipient", "inbox", "show", id, "--from", file).ok(t).stdout
 				}
