@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -295,6 +296,8 @@ func (g *MonitorGeneration) guardedStatus(generation string, stop, renew, status
 		return ErrMonitorGeneration
 	}
 	deadline := time.Now().Add(time.Second)
+	renewBindPartLease := false
+	var renewAt time.Time
 	err := WithRuntimeLock(g.paths, g.name, "control", deadline, func() error {
 		_, err := withMonitorStateLock(g.paths, g.name, deadline, func(old State) (State, error) {
 			if !validWriterSeal(old) || !old.Writer.ForeignSeen.IsZero() {
@@ -318,6 +321,14 @@ func (g *MonitorGeneration) guardedStatus(generation string, stop, renew, status
 				if l == nil || l.Holder != g.record.SessionID || l.Host != g.record.Host || !now.Before(l.Expires) {
 					return old, ErrMonitorLease
 				}
+				if BindPartMarked(old) {
+					if !BindPartActive(old) {
+						return old, ErrBindPartOperation
+					}
+					renewBindPartLease = true
+					renewAt = now
+					return old, nil
+				}
 				next := old
 				lease := *l
 				if expiry := now.Add(LeaseTTL).UTC(); lease.Expires.Before(expiry) {
@@ -331,7 +342,16 @@ func (g *MonitorGeneration) guardedStatus(generation string, stop, renew, status
 			next.Monitor.Phase = "stopped"
 			return saveStateLocked(g.paths, g.name, old, next, time.Time{}, true, false)
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if renewBindPartLease {
+			// The same second bounds this wait as bounds the two before it.
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			return RenewBindMonitorLeaseContext(ctx, g.paths, g.name, g.record, g.owner, renewAt)
+		}
+		return nil
 	})
 	if err != nil {
 		// Observation cannot revoke a healthy handle merely because a lock is busy.

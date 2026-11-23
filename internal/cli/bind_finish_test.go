@@ -216,7 +216,7 @@ func TestTerminalSessionHandover(t *testing.T) {
 				target.SocketID = "foreign-socket"
 			}
 			before, _ := json.Marshal(e.state("alice"))
-			_, err = a.handoverTerminalSession(s, &b, target, "new")
+			_, err = a.handoverTerminalSession(context.Background(), s, &b, target, "new")
 			st := e.state("alice")
 			if name == "valid" || name == "stopped" {
 				// A session's provider root and qualification never cross handover.

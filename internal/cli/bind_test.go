@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -423,17 +424,22 @@ func TestBindDetachedLifecycle(t *testing.T) {
 		b.AttemptIDs = nil
 		b.Notice = ""
 	})
-	// A transient foreign lease is never stolen or used to deliver. Restoring
-	// this fake authority lets the same daemon deliver the next event.
-	update(func(st *config.State) {
+	// The generic State path cannot overwrite the provider-owned lease. Its
+	// refusal leaves the active lease intact so the same daemon remains usable.
+	leaseBefore := e.state("alice").Lease
+	_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 		st.Lease.Holder = "synthetic-other"
 		st.Lease.Expires = time.Now().Add(time.Minute)
+		return nil
 	})
-	awaitBinding(t, e.paths(), func(st config.State) bool {
-		return st.Terminal.Outcome == "consumer unavailable; retrying" && retryLogged("lease")
-	})
+	if !errors.Is(err, config.ErrBindPartOwned) {
+		t.Fatalf("generic State lease replacement=%v, want provider refusal", err)
+	}
+	if after := e.state("alice").Lease; after == nil || leaseBefore == nil || after.Holder != leaseBefore.Holder || !after.Expires.Equal(leaseBefore.Expires) {
+		t.Fatal("provider lease changed after refused generic update")
+	}
 	if processGone(pid) {
-		t.Fatal("lease error killed persistent consumer")
+		t.Fatal("refused lease overwrite killed persistent consumer")
 	}
 	id5 := runtimeMail(e, room, "AFTER_LOCAL_LEASE_ERROR")
 	update(func(st *config.State) { st.Lease.Holder = "bind-fixture" })

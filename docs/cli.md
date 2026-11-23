@@ -3106,6 +3106,132 @@ own publication/readback failures, receipt/restart/unknown neighbors, interval/g
 tmux and python3 are required for terminal fixtures (absence is a skip, not passing evidence). Private handled exits remain in
 `state/NAME.binding.log`; screens and peer bodies are not persisted there. No shared guidance is installed by these commands.
 
+#### Bind state sidecar: `state/NAME.bind.json`
+
+The first `a2a bind` of an identity moves the fields its consumer owns out of the State document into a small
+sidecar next to it, `state/NAME.bind.json`, and marks State with the permanent top-level key `"bind_part": true`.
+An idle consumer then renews its lease, moves the sync cursor and records its own-notice observation without
+decoding, cloning, encoding, sealing or writing the State document, whose size no longer sets the cost of an
+idle bind. An identity that never binds keeps its State as it is.
+
+| In the sidecar | Still in State |
+| --- | --- |
+| lease; sync cursor (`next_batch`); terminal generation, session and stopped flag; own-notice observation and its publication result | everything else, including the rest of the terminal binding (target, owner, interval, outcome, rung and attempt ids, notice text) |
+
+The sidecar is a strict format-1 JSON document of mode 0600, with a revision, a seal and records of a cursor,
+status or control operation in progress. Its size limit is derived in the code, not chosen: the largest document
+that holds no cursor, every field as long as the validator admits, plus two sync cursors of the budget in their
+longest JSON form. The cursor budget is 8 KiB, as State stores it; the document holds a cursor twice, as the
+cursor and as State's copy of it at migration, and a reservation records the SHA-256 of the cursor it expects,
+not the cursor. On a 64-bit platform the limit is 126,229 bytes. An ordinary document is about one kilobyte.
+A writer checks the cursor budget and the document's size, and decodes the exact bytes with the reader's own
+decoder, before it replaces the file. Readers merge it into the State they return, so
+`a2a bind status` and every command see one consistent view. State keeps a copy of the moved fields as they
+were at migration; that copy is not current and is never read as authority while the marker is present.
+
+Refusals, all without changing either file:
+
+| Condition | Error |
+| --- | --- |
+| Marked State, sidecar missing | `marked bind state sidecar is missing` |
+| Sidecar present, State not marked | `bind state sidecar exists without its permanent State marker` |
+| Sidecar malformed: duplicate or unknown key, key in another case, mode other than 0600, symlink, bad seal, values that disagree with State's copy | `bind state sidecar is invalid` |
+| A generic State write that changes a field the sidecar owns, or that would replace a marked State by one without the marker | `provider-owned State fields require a typed bind-state operation` |
+| Another live owner still holds the cursor, or a status publication, when the caller's deadline passes | `bind-state operation is held by another owner` |
+| A sync cursor over 8 KiB, or a document over the size limit | `bind state sidecar would exceed its size limit; nothing was written` |
+| An operation presented with an outdated revision or token | `stale bind-state revision or operation token` |
+
+A consumer's cache reuses a decoded State only while the file's stamp and its exact bytes are unchanged; the
+bytes are compared on every use, for a marked State as for an unmarked one.
+
+**A write whose outcome is uncertain.** A sidecar write replaces the file and then syncs its directory. When that
+sync fails, or the file does not read back as written, the command fails with
+`bind state sidecar write outcome is uncertain`. It is never reported as done. After a failed directory sync the
+new document is in place and is what every later command reads; it may not survive a crash, after which the
+previous document is back. Both are complete, valid documents. Three things are taken back at once, because
+nothing would end them later: a reservation of the cursor that was only begun, a status publication that was only
+begun, and the sidecar of a first migration, whose marker is then not written, so the identity stays as it was.
+When the write that takes a cursor reservation back cannot replace the file either, the reservation stays with
+the process that made it. That process releases it before it reserves the cursor again, as it does for a
+reservation whose release failed; when the process has exited, the next consumer discards it. Until then
+another command is refused as by any held reservation.
+A consumer that gets this answer for a move of its cursor stops with it and does not poll on. The mail of that
+step is in the mailbox already, and the next run reads from wherever the cursor stands.
+
+**Several commands on one marked identity.** The marker is permanent, so `wait`, `watch`, `inbox`, the hooks and
+`status` of an identity that has bound once use the sidecar whether or not a binding is active. They work side
+by side as they do on an unmarked identity:
+
+- No consumer holds the cursor while it waits for the homeserver. The cursor is reserved immediately before the
+  mailbox write and released with the cursor's move, so another command waits for it no longer than for one
+  write. `a2a project` reserves and moves its cursor in one step after its posts.
+- A consumer that finds the cursor moved since its sync leaves that range to the consumer that moved it, reloads
+  the State and goes on from the new cursor. No event is lost and none is received twice: the mailbox is written
+  before the cursor moves, and it holds each event once.
+- Every wait of a sidecar operation for the State lock ends at the caller's deadline, and when the command is
+  interrupted. A hook that cannot get the lock within its budget exits 0 with
+  `the state file is locked by another a2a process`, as on an unmarked identity. A command without a deadline
+  waits, and waits at most ten seconds for a cursor that another live owner holds. The State write of a command
+  keeps the rule it has on an unmarked identity: a hook's is bounded by its budget, and a command's waits for the
+  lock.
+- The step that ends an operation (the cursor's move or its release, and the record of a status publication) is
+  tried once at a free lock even when the deadline has passed or the command was interrupted. It never waits past
+  either. A reservation that could not be released then is released by the same process before its next one, or
+  discarded by the next consumer once that process is gone.
+- An own-status publication in flight holds neither the lease nor the cursor. Mail is delivered while it runs.
+  Only a second status publication, and the start, stop or handover of a binding, wait for it. A status write
+  that another command's cursor move or lease renewal overtakes before its request starts again within its
+  deadline; one whose binding was replaced or stopped meanwhile is refused as stale.
+- A read of the sidecar takes no lock. When a writer replaces the file during the read, the read starts again
+  on the new file; it does not report the sidecar as invalid.
+- The start, stop or handover of a binding is recorded and applied under one hold of the State lock. If its
+  second write fails, or its process dies between the two, the binding stays as it was and the command reports
+  the failure. The record it left is discarded by the next operation on the identity, whatever that is: the same
+  change is then performed afresh from what a new invocation reads, and any other command is admitted.
+- A status publication whose writer lives on but could neither finish nor abort is held until the deadline it
+  was begun with, as the reservation of an unmarked State is. After that the next operation clears it and
+  records the publication as failed and uncertain, never as published.
+
+`BIND_FIXTURES_MARKED=1 go test -v ./internal/cli` runs the command tests with every fixture identity marked from
+the start. That lane is not expected to pass: fixtures that write a binding's fields straight into State are
+refused by a marked State, by design. `go run ./tools/markedlane FILE...` reads the lane's output, counts those
+fixture refusals and names every other failure and every test that was running at a timeout.
+
+**Older images.** An image that does not know the sidecar must not write the lease or the sync cursor of a
+marked identity. Two kinds exist:
+
+- An image built before unknown top-level State keys were preserved (before `5f2b843`) drops the marker whenever
+  it writes State. This version then refuses the identity's State with `bind state sidecar exists without its
+  permanent State marker`.
+- A later image that keeps unknown keys leaves the marker in place. Its writes of ordinary fields (for example
+  the threads a post learns) are harmless. A write of the lease or the cursor, which every delivery command and
+  hook makes, leaves State's copy at odds with the sidecar, and this version refuses the identity with `bind
+  state sidecar is invalid`.
+
+Before an identity binds with this version, replace every older image that can write its State: stop its
+consumer and check that the process has exited, reinstall the hooks of its session from the new image, restart
+the session, and replace any older command-line image it uses. `a2a bind status` names images of the first kind
+(`libexec image predates 5f2b843`).
+
+**Going back, and repair.** There is no command that hands a marked identity back to an older image; export and
+import of the moved fields exist in the State library only. Going back is therefore forward-only with a repair:
+
+1. Stop the identity's session and check that its consumer has exited.
+2. Put the older image back. It reads State's own copy of the moved fields, which is as old as the migration, so
+   it fetches again the mail that arrived since; mail already received is not delivered a second time.
+3. Before this version is used for the identity again, remove `state/NAME.bind.json`. If the older image kept the
+   marker (the second kind above), also delete the `"bind_part"` key from `state/NAME.json`.
+4. The next bind of this version migrates afresh from State, which now carries the older image's lease and
+   cursor.
+
+The same steps 3 and 4 repair an identity that an older image wrote by mistake. The cost of the repair is the
+sidecar's own cursor and lease, which are discarded in favour of State's.
+
+The idle cost is measured by `go test -tags phase1measure -run '^TestPhase1IdleBindCPUWorkload$' ./internal/cli`
+(darwin/arm64, ten minutes, a private tmux and homeserver fixture): it reports the consumer's own and helper CPU
+and the State read, decode, clone, encode, seal and write counters, and fails if steady idle decodes, clones,
+encodes, seals or writes State.
+
 ### `a2a mute <room> --topic X` / `a2a follow <room> --topic X`
 `wait` rings on every reply in a thread the agent created or posted in. `mute` suppresses those replies and ordinary room-scoped subscription matches in that canonical thread root, including kind and topic filters when there is no `--from` sender filter. Suppressed matches do not close `--until-kind` subscriptions, even when the event separately delivers by address or mention.
 

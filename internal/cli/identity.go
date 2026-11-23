@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -294,11 +295,20 @@ func cmdIdentityRelease(a *App, args []string) error {
 	}
 	cleared := false
 	a.leaseReuse = nil
-	if _, err := a.updateState(p, name, func(cur *config.State) error {
-		var err error
-		cleared, err = cur.Release(name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
+	cur, err := config.LoadState(p, name)
+	if err != nil {
 		return err
-	}); err != nil {
+	}
+	if config.BindPartMarked(cur) {
+		cleared, err = config.ReleaseBindLeaseContext(a.commandContext(), p, name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
+	} else {
+		_, err = a.updateState(p, name, func(cur *config.State) error {
+			var releaseErr error
+			cleared, releaseErr = cur.Release(name, a.leaseHolder(p, "", time.Time{}), *force, a.Now(), a.leaseDead(p))
+			return releaseErr
+		})
+	}
+	if err != nil {
 		return err
 	}
 	if cleared && a.leaseReuse != nil {
@@ -345,10 +355,39 @@ func (a *App) leaseHolderFor(p config.Paths, sessionID string, deadline time.Tim
 	// recognised. Without a readable start time it stays in the legacy form.
 	ctx, cancel := probeContext(deadline)
 	defer cancel()
-	if birth, err := a.pidBirth(ctx, pid); err == nil {
+	if birth, err := a.ownBirth(ctx); err == nil {
 		holder += "#" + strconv.FormatInt(birth, 10)
 	}
 	return holder
+}
+
+// ownProcessBirth holds this process's own start time once pidBirth has read
+// it. The value cannot change while the process lives.
+var ownProcessBirth struct {
+	sync.Mutex
+	pid   int
+	birth int64
+}
+
+// ownBirth returns the start time of this process as pidBirth reports it. One
+// successful read serves the whole process lifetime, so a long-lived consumer
+// does not start one `ps` for every lease holder and cursor owner it names. A
+// failed read is not remembered, and a test seam is asked every time.
+func (a *App) ownBirth(ctx context.Context) (int64, error) {
+	pid := os.Getpid()
+	if a.leaseBirth != nil || a.leaseGOOS != "" {
+		return a.pidBirth(ctx, pid)
+	}
+	ownProcessBirth.Lock()
+	defer ownProcessBirth.Unlock()
+	if ownProcessBirth.pid == pid {
+		return ownProcessBirth.birth, nil
+	}
+	birth, err := a.pidBirth(ctx, pid)
+	if err == nil {
+		ownProcessBirth.pid, ownProcessBirth.birth = pid, birth
+	}
+	return birth, err
 }
 
 // pidBirthTimeout caps one start-time read; callers may shorten it further.
@@ -507,22 +546,144 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 		ttl = a.leaseTTL
 	}
 	a.leaseReuse = nil
-	_, err := config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
+	cur, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if config.BindPartMarked(cur) {
+		if !config.BindPartActive(cur) {
+			return config.ErrBindPartOperation
+		}
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		if check != nil {
-			if err := check(cur); err != nil {
+		// An App without a context waits as the unmarked path does, which
+		// defaults the same nil context inside UpdateStateContext.
+		leaseCtx := a.ctx
+		if leaseCtx == nil {
+			leaseCtx = context.Background()
+		}
+		cancel := func() {}
+		if !deadline.IsZero() {
+			leaseCtx, cancel = context.WithDeadline(leaseCtx, deadline)
+		}
+		defer cancel()
+		// Every lock wait below is bounded by the caller's deadline, as the
+		// unmarked branch's is. An operation of another live owner is not this
+		// caller's to recover and does not stand in the way of the lease. What
+		// is waited for here is a status reservation that names another token
+		// than the sidecar's, until its deadline.
+		err = heldRetry(leaseCtx, func() error {
+			if err := config.RecoverBindCursorContext(leaseCtx, s.paths, s.name, a.bindOperationOwnerDead(leaseCtx)); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
 				return err
 			}
+			if err := config.RecoverBindOwnStatusContext(leaseCtx, s.paths, s.name, a.bindOperationOwnerDead(leaseCtx), a.Now()); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
+				return err
+			}
+			_, err := config.AcquireOrRenewBindLeaseCheckedContext(leaseCtx, s.paths, s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, ttl/2, a.leaseDeadBy(s.paths, deadline), check)
+			return err
+		})
+		if errors.Is(err, context.DeadlineExceeded) && !deadline.IsZero() && !time.Now().Before(deadline) {
+			err = config.ErrLockTimeout
 		}
-		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
-	})
+	} else {
+		_, err = config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
+			if err := s.checkConnection(); err != nil {
+				return err
+			}
+			if config.BindPartMarked(*cur) {
+				return config.ErrBindPartOperation
+			}
+			if check != nil {
+				if err := check(cur); err != nil {
+					return err
+				}
+			}
+			return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
+		})
+	}
 	if err == nil && a.leaseReuse != nil {
 		// stderr only: hook stdout carries the doorbell and must stay unchanged.
 		fmt.Fprintf(a.Stderr, "a2a: lease of %s taken over: %s\n", s.name, a.leaseReuse.note())
 	}
 	return err
+}
+
+// heldPoll is the pause between two attempts of an operation that another
+// live owner holds, and heldLimit the longest a caller without a deadline
+// waits for one. A holder releases within one mailbox write; heldLimit is
+// the budget of the one request a bound consumer can make while it holds a
+// reservation.
+const (
+	heldPoll  = 10 * time.Millisecond
+	heldLimit = nativeRPCTimeout
+)
+
+// heldRetry runs attempt until it no longer answers that another owner holds
+// a bind-state operation, until ctx ends, or until heldLimit has passed. The
+// attempts hold no lock between them. What it returns at the end is the last
+// answer, so a holder that never releases is still reported as one.
+func heldRetry(ctx context.Context, attempt func() error) error {
+	limit := time.NewTimer(heldLimit)
+	defer limit.Stop()
+	for {
+		err := attempt()
+		if !errors.Is(err, config.ErrBindPartOperation) {
+			return err
+		}
+		pause := time.NewTimer(heldPoll)
+		select {
+		case <-ctx.Done():
+			pause.Stop()
+			return err
+		case <-limit.C:
+			pause.Stop()
+			return err
+		case <-pause.C:
+		}
+	}
+}
+
+// operationOwnerStart returns the start token that tells one process from a
+// later one with the same PID, for the owner of a cursor or status
+// reservation. It is the native token processStart reads without a helper
+// process, on macOS and on Linux; the `ps` start time that names a lease
+// holder is not available on Linux and would leave a marked identity without
+// any reservation there. An App whose start-time reader a test replaced
+// answers through that reader, so fixtures can model a reused PID.
+func (a *App) operationOwnerStart(ctx context.Context, pid int) (string, error) {
+	if a.leaseBirth != nil {
+		birth, err := a.pidBirth(ctx, pid)
+		if err != nil {
+			return "", err
+		}
+		return strconv.FormatInt(birth, 10), nil
+	}
+	return processStart(pid)
+}
+
+func (a *App) bindOperationOwner(ctx context.Context, s *session, deadline time.Time) (config.BindOperationOwner, error) {
+	pid := os.Getpid()
+	start, err := a.operationOwnerStart(ctx, pid)
+	if err != nil {
+		return config.BindOperationOwner{}, err
+	}
+	return config.BindOperationOwner{Holder: a.leaseHolderFor(s.paths, "", deadline, s.longConsumer), Host: machineLabel(), PID: pid, Birth: start}, nil
+}
+
+func (a *App) bindOperationOwnerDead(ctx context.Context) func(config.BindOperationOwner) bool {
+	return func(owner config.BindOperationOwner) bool {
+		if owner.Host != machineLabel() || owner.PID <= 1 {
+			return false
+		}
+		if processGone(owner.PID) {
+			return true
+		}
+		// A live PID is another process only when its start token is known and
+		// differs from the recorded one. An unreadable token proves nothing.
+		got, err := a.operationOwnerStart(ctx, owner.PID)
+		return err == nil && got != owner.Birth
+	}
 }
 
 var claudeSessionRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)

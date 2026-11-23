@@ -179,7 +179,7 @@ func TestWakeDiagnosticTerminalHandover(t *testing.T) {
 	f.dispatch()
 	b := f.binding()
 	requireWakeDiagnostic(t, b.WakeDiagnostic, wakediag.TerminalLayoutRefused)
-	st, err := f.a.handoverTerminalSession(f.s, b, b.Target, "next-owned-thread")
+	st, err := f.a.handoverTerminalSession(context.Background(), f.s, b, b.Target, "next-owned-thread")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -390,10 +390,17 @@ func cmdRuntimeBind(ctx context.Context, a *App, args []string) error {
 }
 
 func manualWakeGate(st config.State) string {
-	if st.Liveness == nil || st.LivenessSource == "runtime" || st.LivenessSource == "hook" || st.LivenessSource == "wait" {
+	if st.Liveness == nil {
 		return ""
 	}
-	switch st.Liveness.State {
+	return manualWakeGateValues(st.Liveness.State, st.LivenessSource, true)
+}
+
+func manualWakeGateValues(state, source string, hasLiveness bool) string {
+	if !hasLiveness || source == "runtime" || source == "hook" || source == "wait" {
+		return ""
+	}
+	switch state {
 	case "waiting-human":
 		return "wake suppressed: human"
 	case "blocked":
@@ -731,7 +738,7 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 		return err
 	}
 	if st.NextBatch == "" {
-		st, err = s.takePosition(ctx, time.Now().Add(nativeRPCTimeout))
+		st, err = s.takePositionAllKind(ctx, time.Now().Add(nativeRPCTimeout), nil, "runtime")
 		if err != nil {
 			return err
 		}
@@ -842,8 +849,12 @@ func (a *App) runNative(ctx context.Context, s *session, generation string) erro
 		if err != nil {
 			return err
 		}
-		_, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, nil, time.Now().Add(nativeRPCTimeout))
-		if err != nil {
+		// The cursor of a marked identity is reserved inside ingest, around
+		// the mailbox write, and not while this loop is parked in its poll. A
+		// cursor another consumer moved meanwhile is read again at the top of
+		// the loop.
+		s.cursorKind = "runtime"
+		if _, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, nil, time.Now().Add(nativeRPCTimeout)); err != nil && !cursorTakenElsewhere(err) {
 			return err
 		}
 	}

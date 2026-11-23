@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"reflect"
+	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
 )
@@ -22,8 +25,52 @@ func carryTerminalNoticeEpisode(old, next *config.TerminalBinding, automatic boo
 // The report writer runs outside the control lock. Carry its latest committed
 // pin and ACK under the same state lock that installs the replacement, never
 // from bind's earlier journal snapshot. Identity/connection scope is s.paths/name.
-func persistTerminalReplacement(s *session, next *config.TerminalBinding, automatic bool) error {
-	_, err := s.app.updateState(s.paths, s.name, func(st *config.State) error {
+func persistTerminalReplacement(ctx context.Context, s *session, next *config.TerminalBinding, automatic bool) error {
+	state, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if config.BindPartMarked(state) && !config.BindPartActive(state) {
+		return config.ErrBindPartOperation
+	}
+	if !config.BindPartMarked(state) {
+		deadline := time.Now().Add(nativeRPCTimeout)
+		holder := s.app.leaseHolderFor(s.paths, next.SessionID, deadline, s.longConsumer)
+		state, err = config.EnsureBindPartContext(ctx, s.paths, s.name, config.BindPartOpenOptions{Holder: holder, Now: s.app.Now(), Dead: s.app.leaseDeadBy(s.paths, deadline)})
+		if err != nil {
+			return err
+		}
+	}
+	view, err := config.ReadBindPartView(s.paths, s.name, state)
+	if err != nil {
+		return err
+	}
+	prepared := *next
+	carryTerminalNoticeEpisode(state.Terminal, &prepared, automatic)
+	if !reflect.DeepEqual(prepared.OwnNotice, view.OwnNotice) || prepared.NoticePublication != view.NoticePublication {
+		if prepared.NoticePublication == "published" && !reflect.DeepEqual(prepared.OwnNotice, view.OwnNotice) {
+			prepared.NoticePublication = "unavailable: own notice changed"
+		}
+	}
+	proof := config.BindControlProof{TargetVerified: true, OwnerPID: prepared.OwnerPID, OwnerBirth: prepared.OwnerBirth, Target: prepared.Target}
+	if state.Terminal != nil {
+		proof.OwnerPID = state.Terminal.OwnerPID
+		proof.OwnerBirth = state.Terminal.OwnerBirth
+		proof.Target = state.Terminal.Target
+	}
+	view, err = config.SetBindControlContext(ctx, s.paths, s.name,
+		config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
+		config.BindControlTarget{Generation: next.Generation, SessionID: next.SessionID, Stopped: next.Stopped, Kind: "create"}, proof)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(prepared.OwnNotice, view.OwnNotice) || prepared.NoticePublication != view.NoticePublication {
+		view, err = config.RecordBindNoticeContext(ctx, s.paths, s.name, view.Revision, next.Generation, prepared.OwnNotice, prepared.NoticePublication)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = s.app.updateState(s.paths, s.name, func(st *config.State) error {
 		carryTerminalNoticeEpisode(st.Terminal, next, automatic)
 		st.Terminal = next
 		return nil

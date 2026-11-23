@@ -8,6 +8,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/audience"
@@ -456,7 +457,7 @@ func (s *session) lockedDeliver(ctx context.Context, deadline time.Time, withSub
 		return fn(cur, mb)
 	}
 	if !withSubs {
-		return config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(cur *config.State) error {
+		return config.UpdateStateContextIfChanged(ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 			_, err := run(cur)
 			return err
 		})
@@ -486,12 +487,288 @@ func migrateLegacyDelivery(cur *config.State, mb *config.Mailbox) error {
 
 var errDeliveryMutesChanged = errors.New("topic mutes changed during delivery; retry sync")
 
+func (s *session) beginBindCursor(ctx context.Context, state config.State, kind string, deadline time.Time) (string, error) {
+	return s.beginBindCursorView(ctx, config.BindIdleDeliveryStateFromState(state), kind, deadline)
+}
+
+func (s *session) beginBindCursorView(ctx context.Context, state config.BindIdleDeliveryState, kind string, deadline time.Time) (string, error) {
+	if !state.Marked {
+		return "", nil
+	}
+	if !state.Active {
+		return "", config.ErrBindPartOperation
+	}
+	owner, err := s.app.bindOperationOwner(ctx, s, deadline)
+	if err != nil {
+		return "", err
+	}
+	token, err := config.NewBindToken()
+	if err != nil {
+		return "", err
+	}
+	generation := ""
+	if state.Generation != "" && !state.Stopped {
+		generation = state.Generation
+		kind = "bind"
+	}
+	lockCtx, cancel := boundedBy(ctx, deadline)
+	defer cancel()
+	if err := s.abortLeftoverCursor(lockCtx); err != nil {
+		return "", err
+	}
+	reservation, err := config.BeginBindCursorContext(lockCtx, s.paths, s.name, token, kind, state.NextBatch, generation, owner, s.app.bindOperationOwnerDead(ctx))
+	if err != nil {
+		// A reservation named beside the error may be in place: its write and
+		// the take-back both failed. This caller will not end it, and nothing
+		// else clears a reservation of a process that lives on.
+		if reservation.Token != "" {
+			leftoverCursors.keep(s.paths.StateFile(s.name), reservation.Token)
+		}
+		return "", err
+	}
+	s.holdCursor(ctx, token, deadline)
+	return token, nil
+}
+
+// boundedBy is ctx with deadline, or ctx itself for the zero deadline. A nil
+// ctx counts as one that never ends.
+func boundedBy(ctx context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if deadline.IsZero() {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, deadline)
+}
+
+// leftoverCursors remembers, per State file, every reservation of this
+// process that may still be in place and that no step will end: one whose
+// release failed for any reason other than the reservation being gone, and
+// one the config layer named beside the error of the call that made it. A
+// reservation left behind by a process that exits is discarded by the next
+// consumer, which sees its owner gone. One left behind by a process that
+// lives on would refuse that same process for good, so its next reservation,
+// from any session of the process, aborts the leftovers first.
+//
+// A token is kept on doubt and dropped on proof: it leaves the set only when
+// an abort by it succeeded or found no such reservation.
+var leftoverCursors leftoverCursorSet
+
+type leftoverCursorSet struct {
+	mu     sync.Mutex
+	tokens map[string][]string // State file path -> tokens, oldest first
+}
+
+func (l *leftoverCursorSet) keep(stateFile, token string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if slices.Contains(l.tokens[stateFile], token) {
+		return
+	}
+	if l.tokens == nil {
+		l.tokens = map[string][]string{}
+	}
+	l.tokens[stateFile] = append(l.tokens[stateFile], token)
+}
+
+func (l *leftoverCursorSet) of(stateFile string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.tokens[stateFile])
+}
+
+func (l *leftoverCursorSet) drop(stateFile, token string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	kept := slices.DeleteFunc(l.tokens[stateFile], func(t string) bool { return t == token })
+	if len(kept) == 0 {
+		delete(l.tokens, stateFile)
+		return
+	}
+	l.tokens[stateFile] = kept
+}
+
+// cursorHold is what a reservation was taken with: the context and the
+// deadline of the step that took it.
+type cursorHold struct {
+	ctx      context.Context
+	deadline time.Time
+}
+
+func (s *session) holdCursor(ctx context.Context, token string, deadline time.Time) {
+	if s.cursorHolds == nil {
+		s.cursorHolds = map[string]cursorHold{}
+	}
+	s.cursorHolds[token] = cursorHold{ctx: ctx, deadline: deadline}
+}
+
+// cursorReleaseContext bounds the lock wait of a commit or abort by exactly
+// what its reservation was taken with: it ends when the caller's context ends
+// and at the caller's deadline, never later. The release still gets one
+// attempt at the lock after that (config: bindOperationEndLock), so a
+// reservation taken at the very end of a budget is released when the lock is
+// free. One that is not released is remembered in leftoverCursors, or is
+// discarded by the next consumer once this process is gone.
+func (s *session) cursorReleaseContext(token string) (context.Context, context.CancelFunc) {
+	hold := s.cursorHolds[token]
+	return boundedBy(hold.ctx, hold.deadline)
+}
+
+func (s *session) abortLeftoverCursor(ctx context.Context) error {
+	key := s.paths.StateFile(s.name)
+	for _, token := range leftoverCursors.of(key) {
+		err := config.AbortBindCursorContext(ctx, s.paths, s.name, token)
+		// Stale: the reservation is gone already, or is another one by now.
+		if err != nil && !errors.Is(err, config.ErrBindPartStale) {
+			return err
+		}
+		leftoverCursors.drop(key, token)
+	}
+	return nil
+}
+
+// reserveControlledCursor is the write-time reservation of a consumer whose
+// contract requires consumer -> control -> state: under the control lock it
+// checks the consumer's own standing against the State as it is now, and then
+// reserves the cursor of a marked identity. Its lock waits end at deadline.
+func (s *session) reserveControlledCursor(ctx context.Context, kind string, deadline time.Time, check func(config.State) error) (string, error) {
+	var token string
+	err := s.app.withRuntimeLock(s.paths, s.name, "control", deadline, func() error {
+		current, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		if check != nil {
+			if err := check(current); err != nil {
+				return err
+			}
+		}
+		if !config.BindPartMarked(current) {
+			return nil
+		}
+		token, err = s.beginBindCursor(ctx, current, kind, deadline)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *session) abortBindCursor(token string) error {
+	if token == "" {
+		return nil
+	}
+	ctx, cancel := s.cursorReleaseContext(token)
+	defer cancel()
+	err := config.AbortBindCursorContext(ctx, s.paths, s.name, token)
+	// Every failure but "stale" leaves the reservation in place or in doubt:
+	// the lock was not had in time, the document could not be read, or its
+	// write failed. "Stale" says that this reservation is not there.
+	if err != nil && !errors.Is(err, config.ErrBindPartStale) {
+		leftoverCursors.keep(s.paths.StateFile(s.name), token)
+	}
+	if err == nil {
+		delete(s.cursorHolds, token)
+	}
+	return err
+}
+
+// abandonBindCursor is for a step that stops with err while it holds a
+// reservation it will not use: it releases the reservation and returns err,
+// joined with the release's own failure. A release that finds the reservation
+// gone has nothing to add; its "stale" would read as a cursor that another
+// consumer moved.
+func (s *session) abandonBindCursor(token string, err error) error {
+	if abortErr := s.abortBindCursor(token); abortErr != nil && !errors.Is(abortErr, config.ErrBindPartStale) {
+		return errors.Join(err, abortErr)
+	}
+	return err
+}
+
+func (s *session) commitBindCursor(token, next string) (config.State, error) {
+	if token == "" {
+		return config.State{}, config.ErrBindPartOperation
+	}
+	if s.app.beforeBindCursorCommit != nil {
+		s.app.beforeBindCursorCommit()
+	}
+	ctx, cancel := s.cursorReleaseContext(token)
+	defer cancel()
+	if _, err := config.CommitBindCursorContext(ctx, s.paths, s.name, token, next); err != nil {
+		return config.State{}, err
+	}
+	delete(s.cursorHolds, token)
+	return config.LoadState(s.paths, s.name)
+}
+
+// reserveCursorAtWrite reserves the cursor of a marked identity for a consumer
+// that came without a reservation: every consumer except the bound one. It is
+// called with the batch already collected, immediately before the mailbox
+// write, so the reservation is never held across a request and another
+// consumer of the identity waits for it no longer than for one write.
+//
+// A reservation of another live owner is waited for within the caller's
+// deadline. ErrBindPartStale means the cursor
+// is no longer the one this batch was read from: another consumer delivered
+// that range, and the caller reloads the State and goes on from its cursor.
+func (s *session) reserveCursorAtWrite(ctx context.Context, state config.State, deadline time.Time) (string, error) {
+	waitCtx, cancel := boundedBy(ctx, deadline)
+	defer cancel()
+	var token string
+	err := heldRetry(waitCtx, func() error {
+		var err error
+		if s.reserveCursor != nil {
+			token, err = s.reserveCursor(ctx, state, deadline)
+		} else {
+			token, err = s.beginBindCursor(ctx, state, s.cursorKindOrDelivery(), deadline)
+		}
+		return err
+	})
+	return token, err
+}
+
+func (s *session) cursorKindOrDelivery() string {
+	if s.cursorKind != "" {
+		return s.cursorKind
+	}
+	return "delivery"
+}
+
 // persist appends a collected batch to the mailbox (fsynced) and only then
 // moves the cursor from since to next; a cursor another consumer moved
 // meanwhile is left alone (its batch is in the mailbox too).
 func (s *session) persist(ctx context.Context, b batch, since, next string, deadline time.Time) (config.State, error) {
+	return s.persistReserved(ctx, b, since, next, deadline, "")
+}
+
+func (s *session) persistReserved(ctx context.Context, b batch, since, next string, deadline time.Time, cursorToken string) (config.State, error) {
 	a := s.app
-	return s.lockedDeliver(ctx, deadline, len(b.close) > 0, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
+	state, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return config.State{}, s.abandonBindCursor(cursorToken, err)
+	}
+	marked := config.BindPartMarked(state)
+	if marked && !config.BindPartActive(state) {
+		return state, s.abandonBindCursor(cursorToken, config.ErrBindPartOperation)
+	}
+	if marked && state.NextBatch != since {
+		if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+			return state, errors.Join(config.ErrBindPartStale, abortErr)
+		}
+		return state, config.ErrBindPartStale
+	}
+	ownReservation := false
+	if marked && cursorToken == "" {
+		if cursorToken, err = s.reserveCursorAtWrite(ctx, state, deadline); err != nil {
+			return state, err
+		}
+		ownReservation = true
+	}
+	deferBindCursor := false
+	saved, err := s.lockedDeliver(ctx, deadline, len(b.close) > 0, func(cur *config.State, mb *config.Mailbox) ([]string, error) {
+		deferBindCursor = false
 		// Mute and admission share the state lock. A policy change invalidates
 		// the whole batch, including one-shot closures and learned threads.
 		if !slices.Equal(b.muted, cur.Muted) {
@@ -526,6 +803,7 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 		}
 		s.agentReplayDeferred = heldErr != nil
 		if heldErr != nil {
+			deferBindCursor = true
 			s.warnAgentDelivery()
 		}
 		if a.afterAppend != nil {
@@ -539,48 +817,90 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 		for _, r := range b.learned {
 			cur.AddThread(r)
 		}
+		if marked && cur.NextBatch != since {
+			return nil, config.ErrBindPartStale
+		}
 		// Capacity defers cursor advancement so held peer mail can be replayed,
 		// while already appended principal/ordinary mail remains deliverable.
-		if heldErr == nil && cur.NextBatch == since {
+		if heldErr == nil && cur.NextBatch == since && !marked {
 			cur.NextBatch = next
 		}
 		return b.close, nil
 	})
+	if err != nil {
+		// A reservation the caller brought survives a changed mute policy: the
+		// caller collects again and comes back with it. One taken above does
+		// not: collecting again may send requests, and it is taken anew.
+		if marked && (ownReservation || !errors.Is(err, errDeliveryMutesChanged)) {
+			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+				return saved, errors.Join(err, abortErr)
+			}
+		}
+		return saved, err
+	}
+	if marked {
+		if deferBindCursor {
+			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+				return saved, abortErr
+			}
+			return saved, nil
+		}
+		committed, err := s.commitBindCursor(cursorToken, next)
+		if err != nil {
+			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+				return saved, errors.Join(err, abortErr)
+			}
+		}
+		return committed, err
+	}
+	return saved, nil
 }
 
 // ingest classifies one sync response from since and persists it.
 func (s *session) ingest(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time) (config.State, error) {
+	return s.ingestReserved(ctx, resp, since, subs, all, deadline, "")
+}
+
+func (s *session) ingestReserved(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, deadline time.Time, cursorToken string) (config.State, error) {
 	if since == "" {
-		return s.savePositionAll(ctx, resp, deadline, all)
+		return s.savePositionAllReserved(ctx, resp, deadline, all, cursorToken)
 	}
-	return s.ingestWithRedactions(ctx, resp, since, subs, all, nil, deadline)
+	return s.ingestWithRedactions(ctx, resp, since, subs, all, nil, deadline, cursorToken)
 }
 
 // Recollect outside the state lock when a concurrent mute/follow invalidates
 // admission. Bound contention; refusal leaves the cursor and mailbox untouched
 // so the consumer's next cycle can retry. Already pending mail is preserved.
-func (s *session) ingestWithRedactions(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, redactions []config.Redaction, deadline time.Time) (config.State, error) {
+func (s *session) ingestWithRedactions(ctx context.Context, resp matrix.SyncResponse, since string, subs []Sub, all map[string]bool, redactions []config.Redaction, deadline time.Time, cursorToken string) (config.State, error) {
+	abort := func(state config.State, err error) (config.State, error) {
+		if cursorToken != "" {
+			if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+				return state, errors.Join(err, abortErr)
+			}
+		}
+		return state, err
+	}
 	var st config.State
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return st, err
+			return abort(st, err)
 		}
 		snap, err := config.LoadState(s.paths, s.name)
 		if err != nil {
-			return snap, err
+			return abort(snap, err)
 		}
 		b, err := s.collectBatch(ctx, resp, since, snap, subs, all, map[string]string{})
 		if err != nil {
-			return snap, err
+			return abort(snap, err)
 		}
 		if err := ctx.Err(); err != nil {
-			return snap, err
+			return abort(snap, err)
 		}
 		b.redactions = append(b.redactions, redactions...)
 		if s.app.beforeDeliver != nil {
 			s.app.beforeDeliver()
 		}
-		st, err = s.persist(ctx, b, since, resp.NextBatch, deadline)
+		st, err = s.persistReserved(ctx, b, since, resp.NextBatch, deadline, cursorToken)
 		if !errors.Is(err, errDeliveryMutesChanged) {
 			return st, err
 		}
@@ -588,6 +908,11 @@ func (s *session) ingestWithRedactions(ctx context.Context, resp matrix.SyncResp
 	// Deferral is a normal cycle outcome, including during first sync. Return
 	// fresh persisted state: never the zero State returned by a refused update.
 	// Consumers keep their cursor and ownership and poll again normally.
+	if cursorToken != "" {
+		if abortErr := s.abortBindCursor(cursorToken); abortErr != nil {
+			return config.State{}, abortErr
+		}
+	}
 	return config.LoadState(s.paths, s.name)
 }
 
@@ -606,13 +931,29 @@ func (s *session) takePosition(ctx context.Context, deadline time.Time) (config.
 }
 
 func (s *session) takePositionAll(ctx context.Context, deadline time.Time, all map[string]bool) (config.State, error) {
+	return s.takePositionAllKind(ctx, deadline, all, "delivery")
+}
+
+func (s *session) takePositionAllKind(ctx context.Context, deadline time.Time, all map[string]bool, kind string) (config.State, error) {
+	snap, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return config.State{}, err
+	}
+	if config.BindPartMarked(snap) && !config.BindPartActive(snap) {
+		return snap, config.ErrBindPartOperation
+	}
+	if kind != "" && kind != s.cursorKindOrDelivery() {
+		prior := s.cursorKind
+		s.cursorKind = kind
+		defer func() { s.cursorKind = prior }()
+	}
 	ctx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
 	defer cancel()
 	resp, err := s.client.Sync(ctx, "", 0, firstDeliveryFilter)
 	if err != nil {
 		return config.State{}, err
 	}
-	return s.savePositionAll(ctx, resp, deadline, all)
+	return s.savePositionAllReserved(ctx, resp, deadline, all, "")
 }
 
 func (s *session) savePosition(ctx context.Context, resp matrix.SyncResponse, deadline time.Time) (config.State, error) {
@@ -620,11 +961,22 @@ func (s *session) savePosition(ctx context.Context, resp matrix.SyncResponse, de
 }
 
 func (s *session) savePositionAll(ctx context.Context, resp matrix.SyncResponse, deadline time.Time, all map[string]bool) (config.State, error) {
+	return s.savePositionAllReserved(ctx, resp, deadline, all, "")
+}
+
+func (s *session) savePositionAllReserved(ctx context.Context, resp matrix.SyncResponse, deadline time.Time, all map[string]bool, cursorToken string) (config.State, error) {
 	ctx, cancel := context.WithTimeout(ctx, firstSyncTimeout)
 	defer cancel()
 	snap, err := config.LoadState(s.paths, s.name)
 	if err != nil || snap.NextBatch != "" {
+		if cursorToken != "" {
+			_ = s.abortBindCursor(cursorToken)
+		}
 		return snap, err // Another consumer already established this identity's cursor.
+	}
+	marked := config.BindPartMarked(snap)
+	if marked && !config.BindPartActive(snap) {
+		return snap, s.abandonBindCursor(cursorToken, config.ErrBindPartOperation)
 	}
 	// Preserve initial redaction learning, including for already retained mail,
 	// without treating pre-join messages as delivery candidates.
@@ -648,6 +1000,9 @@ func (s *session) savePositionAll(ctx context.Context, resp matrix.SyncResponse,
 		if s.client.FilterEvents != nil {
 			jr.Timeline.Events, err = s.client.FilterEvents(roomID, jr.Timeline.Events)
 			if err != nil {
+				if cursorToken != "" {
+					_ = s.abortBindCursor(cursorToken)
+				}
 				return snap, err
 			}
 			resp.Rooms.Join[roomID] = jr
@@ -657,6 +1012,9 @@ func (s *session) savePositionAll(ctx context.Context, resp matrix.SyncResponse,
 	s.principals = s.readDeliveryPrincipals()
 	list, err := s.getSubs(ctx)
 	if err != nil {
+		if cursorToken != "" {
+			_ = s.abortBindCursor(cursorToken)
+		}
 		return snap, err
 	}
 	var subs []Sub
@@ -665,7 +1023,13 @@ func (s *session) savePositionAll(ctx context.Context, resp matrix.SyncResponse,
 			subs = append(subs, sub)
 		}
 	}
-	return s.ingestWithRedactions(ctx, resp, "", subs, all, redactions, deadline)
+	saved, err := s.ingestWithRedactions(ctx, resp, "", subs, all, redactions, deadline, cursorToken)
+	if cursorToken == "" && errors.Is(err, config.ErrBindPartStale) {
+		// Another consumer established the cursor between the check above and
+		// this write. Its position stands, as it does for an unmarked State.
+		return config.LoadState(s.paths, s.name)
+	}
+	return saved, err
 }
 
 // syncNow is the "bring the mailbox up to date" step of inbox and the hooks:
@@ -676,11 +1040,102 @@ func (s *session) syncNow(ctx context.Context, st config.State, subs []Sub, dead
 	if st.NextBatch == "" {
 		return s.takePosition(ctx, deadline)
 	}
-	resp, err := s.client.Sync(ctx, st.NextBatch, 0, syncFilter)
-	if err != nil {
-		return st, err
+	// On a marked identity another consumer can move the cursor between this
+	// sync and its write. That consumer then delivered the range, and this one
+	// goes on from the cursor it left. After syncNowAttempts such rounds the
+	// mailbox is as current as the other consumers keep it, and the caller
+	// reads it as it is.
+	for attempt := 1; ; attempt++ {
+		resp, err := s.client.Sync(ctx, st.NextBatch, 0, syncFilter)
+		if err != nil {
+			return st, err
+		}
+		saved, err := s.ingestReserved(ctx, resp, st.NextBatch, subs, nil, deadline, "")
+		if !errors.Is(err, config.ErrBindPartStale) {
+			return saved, err
+		}
+		if st, err = config.LoadState(s.paths, s.name); err != nil || attempt == syncNowAttempts || st.NextBatch == "" {
+			return st, err
+		}
 	}
-	return s.ingest(ctx, resp, st.NextBatch, subs, nil, deadline)
+}
+
+// syncNowAttempts bounds how often one syncNow starts again from a cursor
+// that another consumer moved under it.
+const syncNowAttempts = 3
+
+// cursorTakenElsewhere reports the outcomes of a marked identity's mailbox
+// write that a consumer loop answers by reloading the State and polling again
+// from its cursor: another consumer delivered the range this batch was read
+// from, or still held the cursor when this consumer's patience ran out.
+// Neither loses an event: the cursor did not move for this consumer, and the
+// next sync reads from wherever it stands.
+//
+// A write whose outcome is uncertain is neither, whatever follows it: the
+// abort after an uncertain commit finds no reservation and answers "stale",
+// and that must not turn a failed write into a reason to poll on in silence.
+func cursorTakenElsewhere(err error) bool {
+	if errors.Is(err, config.ErrBindPartWrite) {
+		return false
+	}
+	return errors.Is(err, config.ErrBindPartStale) || errors.Is(err, config.ErrBindPartHeld)
+}
+
+type bindIdleSyncResult struct {
+	mailboxProvenEmpty bool
+}
+
+func (s *session) syncIdleBindNow(ctx context.Context, state config.BindIdleDeliveryState, subs []Sub, deadline time.Time) (bindIdleSyncResult, error) {
+	s.principals = s.readDeliveryPrincipals()
+	if !state.Marked || !state.Active {
+		return bindIdleSyncResult{}, config.ErrBindPartOperation
+	}
+	if state.NextBatch == "" {
+		return bindIdleSyncResult{}, errors.New("idle bind cursor is empty; ordinary position initialization required")
+	}
+	resp, err := s.client.Sync(ctx, state.NextBatch, 0, syncFilter)
+	if err != nil {
+		return bindIdleSyncResult{}, err
+	}
+	// As in the long poll of the quiescent consumer: the cursor is reserved
+	// only now, with the response in hand, so that a hook of the session is
+	// not kept waiting for this request. The reservation refuses a cursor
+	// that a hook moved meanwhile.
+	token, err := s.beginBindCursorView(ctx, state, "delivery", deadline)
+	if err != nil {
+		return bindIdleSyncResult{}, err
+	}
+	return s.finishIdleBindSync(ctx, state, token, resp, subs, deadline)
+}
+
+// finishIdleBindSync persists one sync response of a marked binding under the
+// cursor reservation token, which the caller took for state.NextBatch. A
+// response without events advances the sidecar cursor alone when the mailbox
+// and the legacy delivery fields are empty; everything else goes through the
+// ordinary delivery persistence, which commits the cursor through the same
+// reservation. The reservation is released on every refusal.
+func (s *session) finishIdleBindSync(ctx context.Context, state config.BindIdleDeliveryState, token string, resp matrix.SyncResponse, subs []Sub, deadline time.Time) (bindIdleSyncResult, error) {
+	if resp.NextBatch != "" && len(resp.Rooms.Join) == 0 && len(resp.Rooms.Invite) == 0 {
+		if _, err := s.principalLiveSubscriptions(subs); err != nil {
+			if abortErr := s.abortBindCursor(token); abortErr != nil {
+				return bindIdleSyncResult{}, errors.Join(err, abortErr)
+			}
+			return bindIdleSyncResult{}, err
+		}
+		lockCtx, cancel := boundedBy(ctx, deadline)
+		_, committed, err := config.TryCommitEmptyBindCursorContext(lockCtx, s.paths, s.name, token, resp.NextBatch, state)
+		cancel()
+		if err != nil {
+			if abortErr := s.abortBindCursor(token); abortErr != nil {
+				return bindIdleSyncResult{}, errors.Join(err, abortErr)
+			}
+			return bindIdleSyncResult{}, err
+		} else if committed {
+			return bindIdleSyncResult{mailboxProvenEmpty: true}, nil
+		}
+	}
+	_, err := s.ingestReserved(ctx, resp, state.NextBatch, subs, nil, deadline, token)
+	return bindIdleSyncResult{}, err
 }
 
 // startDelivery removes expired subscriptions and returns the state to
@@ -689,6 +1144,50 @@ func (s *session) startDelivery(ctx context.Context, now time.Time) (config.Stat
 	return s.updateSubs(ctx, func(st *config.State, list *SubList) (bool, error) {
 		return len(list.pruneExpired(now)) > 0, nil
 	})
+}
+
+// startBindDelivery avoids opening a no-op State writer on a stable marked
+// bind. Legacy subscription migration and expiry pruning still use the normal
+// locked writer path whenever the cached provider view cannot prove they are
+// unnecessary.
+type bindDeliveryStart struct {
+	state  config.State
+	view   config.BindIdleDeliveryState
+	cached bool
+}
+
+func (s *session) startBindDelivery(ctx context.Context, now time.Time) (bindDeliveryStart, SubList, error) {
+	if view, hit, err := config.TryLoadCachedBindIdleDeliveryState(s.paths, s.name); hit {
+		if err != nil {
+			return bindDeliveryStart{}, SubList{}, err
+		}
+		if !view.Active {
+			return bindDeliveryStart{}, SubList{}, config.ErrBindPartOperation
+		}
+		if view.Stopped || view.Generation == "" {
+			return bindDeliveryStart{}, SubList{}, errors.New("binding retired")
+		}
+		if view.SealValid && !view.HasMigration && !view.HasLegacySubscriptions {
+			if err := s.checkConnection(); err != nil {
+				return bindDeliveryStart{}, SubList{}, err
+			}
+			list, err := s.getSubs(ctx)
+			if err != nil {
+				return bindDeliveryStart{}, SubList{}, err
+			}
+			if len(list.pruneExpired(now)) == 0 {
+				if err := s.checkConnection(); err != nil {
+					return bindDeliveryStart{}, SubList{}, err
+				}
+				return bindDeliveryStart{view: view, cached: true}, list, nil
+			}
+		}
+	}
+	state, list, err := s.startDelivery(ctx, now)
+	if err != nil {
+		return bindDeliveryStart{}, SubList{}, err
+	}
+	return bindDeliveryStart{state: state}, list, nil
 }
 
 // shownHint tells a wait/watch consumer how its entries leave the mailbox.
@@ -918,9 +1417,17 @@ func cmdWait(ctx context.Context, a *App, args []string) (result error) {
 		if err != nil {
 			return err
 		}
-		if st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}); err != nil {
+		// The cursor of a marked identity is reserved inside ingest, around
+		// the mailbox write, and nothing is held while this wait is parked.
+		saved, err := s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{})
+		if cursorTakenElsewhere(err) {
+			if saved, err = config.LoadState(s.paths, s.name); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
 		}
+		st = saved
 	}
 }
 
@@ -1029,9 +1536,6 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		return err
 	}
 	s.longConsumer = deliverypolicy.LongConsumer("watch", 0)
-	if err := a.acquireLease(s, "", time.Time{}); err != nil {
-		return err
-	}
 	stopped := func(err error) error {
 		if ctx.Err() != nil {
 			return nil
@@ -1090,8 +1594,16 @@ func cmdWatch(ctx context.Context, a *App, args []string) error {
 		if err != nil {
 			return stopped(err)
 		}
-		if st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{}); err != nil {
+		// As in wait: the cursor of a marked identity is reserved inside
+		// ingest, around the mailbox write, and not while this watch is parked.
+		saved, err := s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{})
+		if cursorTakenElsewhere(err) {
+			if saved, err = config.LoadState(s.paths, s.name); err != nil {
+				return stopped(err)
+			}
+		} else if err != nil {
 			return stopped(err)
 		}
+		st = saved
 	}
 }

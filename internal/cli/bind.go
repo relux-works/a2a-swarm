@@ -1,15 +1,18 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +42,14 @@ func descendant(ctx context.Context, pid, ancestor int) bool {
 		pid = next
 	}
 	return false
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 // consumerProtocol must be bumped by anyone changing the inherited-FD launch
@@ -199,7 +210,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 			return ownTerminalTarget(b, target)
 		}
 		if b := st.Terminal; mode == bindingSessionStart && b != nil && b.SessionID != *sessionID && sameTarget(b) {
-			st, err = a.handoverTerminalSession(s, b, target, *sessionID)
+			st, err = a.handoverTerminalSession(ctx, s, b, target, *sessionID)
 			if err != nil {
 				return err
 			}
@@ -281,7 +292,7 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				b.Typed = old.Typed && ownTerminalTarget(old, target)
 			}
 		}
-		if err = persistTerminalReplacement(s, b, automatic); err != nil {
+		if err = persistTerminalReplacement(ctx, s, b, automatic); err != nil {
 			return err
 		}
 		exe, err := os.Executable()
@@ -454,9 +465,47 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 	var pid int
 	var birth string
 	err = a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
-		_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
+		current, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		if config.BindPartMarked(current) && !config.BindPartActive(current) {
+			return config.ErrBindPartOperation
+		}
+		marked := config.BindPartMarked(current)
+		if config.BindPartMarked(current) && current.Terminal != nil && !current.Terminal.Stopped {
+			if current.Terminal.SessionID != a.terminalSessionID(current.Terminal.Target.Runtime) || current.Terminal.Host != machineLabel() {
+				return errors.New("unbind refuses another session's binding")
+			}
+			pid, birth = current.Terminal.DaemonPID, current.Terminal.DaemonBirth
+			view, err := config.ReadBindPartView(s.paths, s.name, current)
+			if err != nil {
+				return err
+			}
+			_, err = config.SetBindControlContext(ctx, s.paths, s.name,
+				config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
+				config.BindControlTarget{Generation: view.Generation, SessionID: view.SessionID, Stopped: true, Kind: "stop"}, config.BindControlProof{})
+			if err != nil {
+				return err
+			}
+		}
+		if marked && (current.Terminal == nil || current.Terminal.Stopped) {
+			return nil
+		}
+		_, err = a.updateState(s.paths, s.name, func(st *config.State) error {
 			b := st.Terminal
-			if b == nil || b.Stopped {
+			if b == nil {
+				return nil
+			}
+			if marked {
+				if !b.Stopped {
+					return config.ErrBindPartStale
+				}
+				b.Idle = nil
+				b.Outcome = "unbound"
+				return nil
+			}
+			if b.Stopped {
 				return nil
 			}
 			sessionID := a.terminalSessionID(b.Target.Runtime)
@@ -506,10 +555,124 @@ func cmdUnbind(ctx context.Context, a *App, args []string) error {
 var errTerminalBindingRetired = errors.New("binding retired")
 
 func (a *App) terminalUpdate(s *session, generation string, fn func(*config.TerminalBinding)) error {
+	return a.terminalUpdateBy(s, generation, time.Time{}, fn)
+}
+
+// terminalUpdateBy is terminalUpdate with a bound on every wait for the State
+// lock: with a set deadline a stop and the State write give up when another
+// writer still holds the lock at that time. With a zero deadline the sidecar's
+// operations wait as the State write beside them does: see stateLockContext.
+func (a *App) terminalUpdateBy(s *session, generation string, deadline time.Time, fn func(*config.TerminalBinding)) error {
+	update := func(fn func(*config.State) error) (config.State, error) {
+		if deadline.IsZero() {
+			return a.updateState(s.paths, s.name, fn)
+		}
+		return a.updateStateBy(s.paths, s.name, deadline, fn)
+	}
+	sidecarContext := func() (context.Context, context.CancelFunc) {
+		if deadline.IsZero() {
+			return a.stateLockContext(), func() {}
+		}
+		return context.WithDeadline(context.Background(), deadline)
+	}
+	setControl := func(expected config.BindControlExpectation, target config.BindControlTarget) (config.BindPartView, error) {
+		ctx, cancel := sidecarContext()
+		defer cancel()
+		return config.SetBindControlContext(ctx, s.paths, s.name, expected, target, config.BindControlProof{})
+	}
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
-	_, err := a.updateState(s.paths, s.name, func(st *config.State) error {
+	state, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return err
+	}
+	if config.BindPartMarked(state) {
+		if !config.BindPartActive(state) {
+			return config.ErrBindPartOperation
+		}
+		if state.Terminal == nil || state.Terminal.Generation != generation || state.Terminal.Stopped {
+			return errors.New("binding retired")
+		}
+		before := *state.Terminal
+		before.OwnNotice.PossiblyOrphaned = cloneBool(before.OwnNotice.PossiblyOrphaned)
+		beforeJSON, err := json.Marshal(before)
+		if err != nil {
+			return err
+		}
+		after := before
+		after.OwnNotice.PossiblyOrphaned = cloneBool(before.OwnNotice.PossiblyOrphaned)
+		fn(&after)
+		view, err := config.ReadBindPartView(s.paths, s.name, state)
+		if err != nil {
+			return err
+		}
+		if view.Generation != generation || view.SessionID != before.SessionID || view.Stopped != before.Stopped {
+			return errors.New("binding retired")
+		}
+		if after.Generation != before.Generation || after.SessionID != before.SessionID {
+			return config.ErrBindPartOwned
+		}
+		afterJSON, err := json.Marshal(after)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(beforeJSON, afterJSON) {
+			return nil
+		}
+		if after.Stopped != before.Stopped {
+			if !after.Stopped {
+				return config.ErrBindPartOwned
+			}
+			view, err = setControl(
+				config.BindControlExpectation{Revision: view.Revision, Generation: view.Generation, SessionID: view.SessionID},
+				config.BindControlTarget{Generation: view.Generation, SessionID: view.SessionID, Stopped: true, Kind: "stop"})
+			if err != nil {
+				return err
+			}
+		}
+		if !reflect.DeepEqual(after.OwnNotice, before.OwnNotice) || after.NoticePublication != before.NoticePublication {
+			ctx, cancel := sidecarContext()
+			view, err = config.RecordBindNoticeContext(ctx, s.paths, s.name, view.Revision, view.Generation, after.OwnNotice, after.NoticePublication)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+		// OwnNotice and its publication fence are authoritative in the marked
+		// provider sidecar. When they are the only changed terminal fields, the
+		// legacy State writer would clone and seal the large image just to write
+		// the same bytes. Keep the normal alarm cleanup when it can remove work.
+		stateAfter := after
+		stateAfter.OwnNotice = before.OwnNotice
+		stateAfter.NoticePublication = before.NoticePublication
+		stateAfterJSON, err := json.Marshal(stateAfter)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(beforeJSON, stateAfterJSON) && !hasRetiredIncidentAlarms(&state) {
+			return s.checkConnection()
+		}
+		_, err = update(func(st *config.State) error {
+			if err := s.checkConnection(); err != nil {
+				return err
+			}
+			if st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.SessionID != before.SessionID || st.Terminal.Stopped != view.Stopped || view.Generation != generation || view.SessionID != before.SessionID {
+				return errors.New("binding retired")
+			}
+			fn(st.Terminal)
+			st.Terminal.Generation = view.Generation
+			st.Terminal.SessionID = view.SessionID
+			st.Terminal.Stopped = view.Stopped
+			st.Terminal.OwnNotice = view.OwnNotice
+			st.Terminal.NoticePublication = view.NoticePublication
+			st.Terminal.OwnNotice.PossiblyOrphaned = cloneBool(view.OwnNotice.PossiblyOrphaned)
+			dropRetiredStrandedAlarms(st)
+			return nil
+		})
+		return err
+	}
+	_, err = update(func(st *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -590,7 +753,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 	alarmWake := make(chan struct{}, 1)
 	go a.runMailAlarm(alarmCtx, s, generation, alarmWake)
 	delay := policy.Interval
-	availability := &bindingAvailability{}
+	availability := &bindingAvailability{reported: initial.ConsumerReport != nil}
 	qualificationInterrupted := true
 	var quietSince time.Time
 	var backoff stuckBackoff
@@ -618,9 +781,8 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 			return "selected connection unavailable", err
 		}
 		stage := "state"
-		st, err := config.LoadState(s.paths, s.name)
+		b, err := config.LoadBindTerminal(s.paths, s.name)
 		if err == nil {
-			b := st.Terminal
 			if b == nil {
 				return "binding vanished", nil
 			}
@@ -656,17 +818,37 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 				err = a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout))
 			}
 		}
+		var mailboxProvenEmpty bool
+		var start bindDeliveryStart
 		if err == nil {
 			syncCtx, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 			var subs SubList
 			stage = "state"
-			st, subs, err = s.startDelivery(syncCtx, a.Now())
+			start, subs, err = s.startBindDelivery(syncCtx, a.Now())
 			if err == nil {
 				stage = "sync"
-				if st.NextBatch == "" {
-					_, err = s.takePosition(syncCtx, time.Now().Add(nativeRPCTimeout))
+				if start.cached {
+					if start.view.NextBatch == "" {
+						_, err = s.takePosition(syncCtx, time.Now().Add(nativeRPCTimeout))
+					} else {
+						var result bindIdleSyncResult
+						result, err = s.syncIdleBindNow(syncCtx, start.view, subs.Subs, time.Now().Add(nativeRPCTimeout))
+						mailboxProvenEmpty = result.mailboxProvenEmpty
+					}
 				} else {
-					_, err = s.syncNow(syncCtx, st, subs.Subs, time.Now().Add(nativeRPCTimeout))
+					if start.state.NextBatch == "" {
+						_, err = s.takePosition(syncCtx, time.Now().Add(nativeRPCTimeout))
+					} else {
+						_, err = s.syncNow(syncCtx, start.state, subs.Subs, time.Now().Add(nativeRPCTimeout))
+					}
+				}
+				if cursorTakenElsewhere(err) {
+					// A hook or command of this session delivered the range, or
+					// was writing it at that moment. The mail is in the mailbox
+					// or will be read by the next cycle from the cursor as it
+					// stands. That is no failed cycle: it must not back the
+					// consumer off or mark its notice unknown.
+					err, mailboxProvenEmpty = nil, false
 				}
 			}
 			cancel()
@@ -683,12 +865,16 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 		}
 		if err == nil {
 			stage = "dispatch"
+			s.mailboxProvenEmpty = mailboxProvenEmpty
 			err = a.dispatchTerminal(ctx, s, generation, alarmWake)
 		}
 		if ctx.Err() != nil {
 			return "cancelled", nil
 		}
 		if err != nil {
+			if a.afterBindingCycleError != nil {
+				a.afterBindingCycleError(stage, err)
+			}
 			if guardErr := s.checkConnection(); guardErr != nil && !errors.Is(guardErr, config.ErrMigrationStateUnavailable) {
 				return "selected connection unavailable", guardErr
 			}
@@ -721,8 +907,7 @@ func (a *App) runTerminalLoop(ctx context.Context, s *session, generation string
 				backoff.reset()
 			}
 		}
-		// Dispatch (including Send, finish and all notice publication) returned;
-		// no control/state lock or synchronous effect is in flight. Sync errors
+		// No control/state lock or synchronous effect is in flight. Sync errors
 		// alone must not strand an old image: refresh obtains fresh authority
 		// and independently refuses any outstanding attempt or reservation.
 		if refresh != nil {
@@ -914,7 +1099,14 @@ func (a *App) waitActive(ctx context.Context, delay time.Duration, policy config
 	}
 }
 
+// dispatchTerminal keeps terminal readiness and own-notice observation on
+// every successful bind cycle. When the consumer loop's sync has just
+// committed a cursor with an empty-mailbox proof (session.mailboxProvenEmpty,
+// consumed here), it avoids reopening and rewriting the unchanged delivery
+// State merely to discover that the mailbox is empty.
 func (a *App) dispatchTerminal(ctx context.Context, s *session, generation string, alarmWakes ...chan<- struct{}) error {
+	mailboxProvenEmpty := s.mailboxProvenEmpty
+	s.mailboxProvenEmpty = false
 	// State/control waits inside and after root admission share one finite cycle
 	// budget. Copy only the App; preserve the shared monotonic spacing clock.
 	ctx, cancelCycle := context.WithTimeout(ctx, nativeRPCTimeout)
@@ -923,7 +1115,6 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 	scoped := *a
 	scoped.wakeContext = ctx
 	a = &scoped
-
 	// Only the consumer supplies a wake channel for alarm observation.
 	var alarmWake chan<- struct{}
 	if len(alarmWakes) > 0 {
@@ -973,18 +1164,20 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		var ids []string
 		var pendingIDs []string
 		alarm := alarmSample{At: a.Now()}
-		_, err = s.lockedDeliver(ctx, time.Now().Add(nativeRPCTimeout), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
-			for _, entry := range mb.Pending() {
-				alarm.add(entry)
-				pendingIDs = append(pendingIDs, entry.ID)
-				if !slices.Contains(b.Rung, entry.ID) {
-					ids = append(ids, entry.ID)
+		if !mailboxProvenEmpty {
+			_, err = s.lockedDeliver(ctx, time.Now().Add(nativeRPCTimeout), false, func(_ *config.State, mb *config.Mailbox) ([]string, error) {
+				for _, entry := range mb.Pending() {
+					alarm.add(entry)
+					pendingIDs = append(pendingIDs, entry.ID)
+					if !slices.Contains(b.Rung, entry.ID) {
+						ids = append(ids, entry.ID)
+					}
 				}
+				return nil, nil
+			})
+			if err != nil {
+				return err
 			}
-			return nil, nil
-		})
-		if err != nil {
-			return err
 		}
 		s.terminalUndelivered = len(ids)
 		attemptIDs := slices.DeleteFunc(slices.Clone(b.AttemptIDs), func(id string) bool { return !slices.Contains(pendingIDs, id) })
@@ -1192,6 +1385,7 @@ func (a *App) terminalPreSendSuppressed(s *session, generation string, expected 
 
 func (a *App) finishTerminal(s *session, generation string, result tmuxwake.SendResult, sendErr error, recovering bool, expected config.TerminalBinding) error {
 	var refusal *config.TerminalSendRefusal
+	var clearOwnNotice, markedState bool
 	token := expected.NotificationToken
 	if err := s.checkConnection(); err != nil {
 		return err
@@ -1260,7 +1454,12 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 		b.NoticePosition = nil
 		b.TypingStarted = false
 		clear := false
-		b.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
+		notice := config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
+		markedState = config.BindPartMarked(*st)
+		if !markedState {
+			b.OwnNotice = notice
+		}
+		clearOwnNotice = true
 		b.NoticeReport = nil
 		dropRetiredStrandedAlarms(st)
 		if recovering && expected.NoticeOrigin != nil && expected.TypingStarted {
@@ -1268,6 +1467,17 @@ func (a *App) finishTerminal(s *session, generation string, result tmuxwake.Send
 		}
 		return a.completeNotification(s, st, token)
 	})
+	if err == nil && clearOwnNotice && markedState {
+		clear := false
+		notice := config.OwnNoticeObservation{PossiblyOrphaned: &clear, ObservedAt: a.Now().UTC().Format(time.RFC3339Nano)}
+		err = a.terminalUpdate(s, generation, func(b *config.TerminalBinding) {
+			if !reflect.DeepEqual(b.OwnNotice, notice) && b.NoticePublication == "published" {
+				b.NoticePublication = "unavailable: own notice changed"
+			}
+			b.OwnNotice = notice
+			b.NoticeReport = nil
+		})
+	}
 	if err == nil && refusal != nil {
 		// The journal already committed delivery effects; diagnostics cannot
 		// turn this poll into a failure or mark its notice unknown.

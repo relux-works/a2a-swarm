@@ -590,9 +590,28 @@ func TestHookNeverRingsUnrelatedOrOwn(t *testing.T) {
 // "inbox prints nothing after a wait printed": that was defect 1 of
 // research/waking-sessions-converged.md, a wait consuming for the model), and
 // a later inbox and hook find nothing.
+//
+// The marked row runs the same races on an identity that has bound before and
+// has no binding now. Its sync cursor is in the sidecar, and it is reserved
+// only around the mailbox write: the consumer that loses a race finds the
+// cursor moved, reloads the State and goes on, and the outcome is the unmarked
+// one. Regression witness: a wait used to reserve the cursor before its poll,
+// and the inbox inside its delivery was refused with "bind-state operation is
+// held by another owner".
 func TestInboxAndWaitNeverDuplicate(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		t.Run(markedRow(marked), func(t *testing.T) { inboxAndWaitNeverDuplicate(t, marked) })
+	}
+}
+
+func inboxAndWaitNeverDuplicate(t *testing.T, marked bool) {
 	e, room := world(t)
 	e.as("alice", "wait", "--timeout", "10ms").ok(t)
+	if marked {
+		markFixtureIdentity(t, e, "alice")
+	}
+	// In the all-marked lane the harness has marked the identity already.
+	startedMarked := config.BindPartMarked(e.state("alice"))
 	var fired atomic.Bool
 	var inner result
 	innerDone := make(chan struct{})
@@ -625,13 +644,19 @@ func TestInboxAndWaitNeverDuplicate(t *testing.T) {
 	case <-time.After(testDeadline):
 		t.Fatal("the wait never reached delivery")
 	}
-	e.syncedParked(t, alice, calls+2, done, "after the inbox took the event")
+	// Three syncs: the wait's, the inbox's inside it, and the wait's next
+	// poll. The third shows that the wait went on after it had lost the race,
+	// and did not end with a refusal.
+	e.syncedParked(t, alice, calls+3, done, "after the inbox took the event")
 	cancel()
 	w := recv(t, done)
 	e.configure = nil
 	tuitestkit.ContainsStr(t, inner.stdout, "id="+first)
 	if strings.Contains(w.stdout, first) {
 		t.Fatalf("wait printed what inbox received: %q", w.stdout)
+	}
+	if strings.Contains(w.stderr, "bind-state") {
+		t.Fatalf("the wait that lost the race ended with a sidecar refusal: %q", w.stderr)
 	}
 
 	fired.Store(false)
@@ -649,6 +674,9 @@ func TestInboxAndWaitNeverDuplicate(t *testing.T) {
 	}
 	if r := e.hook("alice", "stop", `{}`).ok(t); r.stdout != "" {
 		t.Fatalf("rang for received events: %q", r.stdout)
+	}
+	if startedMarked != config.BindPartMarked(e.state("alice")) {
+		t.Fatalf("the identity's marker changed during the races: marked=%t", !startedMarked)
 	}
 }
 

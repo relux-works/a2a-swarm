@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -276,78 +277,152 @@ func cmdProject(ctx context.Context, a *App, args []string) error {
 	}
 	if st.NextBatch == "" {
 		// First run: take a position; history before the projector started is not replayed.
-		resp, err := s.client.Sync(ctx, "", 0, initialFilter)
+		st, err = s.withProjectCursor(a, func(cur config.State) (config.State, error) {
+			// Another projector may have taken its position after the outer
+			// read. Use the state observed under the control lock.
+			if cur.NextBatch != "" {
+				return cur, nil
+			}
+			resp, err := s.client.Sync(ctx, "", 0, initialFilter)
+			if err != nil {
+				return config.State{}, err
+			}
+			if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
+				return config.State{}, err
+			}
+			next, err := s.commitProjectCursor(ctx, a, "", resp.NextBatch)
+			if err == nil {
+				a.printf("projector %s -> %s: position taken\n", s.name, systemLabel)
+			}
+			return next, err
+		})
 		if err != nil {
 			return err
 		}
-		if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
-			return err
-		}
-		if st, err = a.updateState(s.paths, s.name, func(cur *config.State) error {
-			cur.NextBatch = resp.NextBatch
-			return nil
-		}); err != nil {
-			return err
-		}
-		a.printf("projector %s -> %s: position taken\n", s.name, systemLabel)
 	}
 	for {
-		resp, err := s.client.Sync(ctx, st.NextBatch, *poll, projectFilter)
+		st, err = s.withProjectCursor(a, func(cur config.State) (config.State, error) {
+			return s.projectBatch(ctx, a, cur, *poll, systemRoom, allowed, me, labels, productCache, kinds)
+		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
-		if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
-			return err
-		}
-		for _, roomID := range sortedKeys(resp.Rooms.Join) {
-			if !allowed[roomID] || roomID == systemRoom || s.adminRoomExcluded(roomID) {
-				continue
-			}
-			tl := resp.Rooms.Join[roomID].Timeline
-			events, gap, err := s.timelineEvents(ctx, roomID, st.NextBatch, tl.Events, tl.Limited, tl.PrevBatch, func(ev matrix.Event) bool {
-				_, ok := projectable(ev, roomID, systemRoom, me, kinds)
-				return ok
-			})
-			if err != nil {
-				// Keep the position: the next run retries the whole batch.
-				return fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
-			}
-			if gap != nil {
-				fmt.Fprintf(a.Stderr, "a2a: projector: %s: gap: events between %s and %s could not be checked; they were not projected\n", s.roomLabel(ctx, roomID, labels), sanitizeLine(gap.From), sanitizeLine(gap.To))
-			}
-			for _, ev := range events {
-				h, _ := projectable(ev, roomID, systemRoom, me, kinds)
-				label := s.roomLabel(ctx, roomID, labels)
-				product, productAlias := s.productForOrigin(ctx, roomID, productCache, a.Now())
-				content, err := projection(ev, h, roomID, label, s.server, product, productAlias)
-				if err != nil {
-					return err
-				}
-				receipt, err := s.client.SendMessageTxnReceipt(ctx, systemRoom, projectionTxn(systemRoom, roomID, ev.EventID), content)
-				if err != nil {
-					// Keep the position: the next run retries with the same txn id.
-					if isAdmissionRefusal(err) {
-						return err
-					}
-					return fmt.Errorf("project %s from %s: %w", sanitizeLine(ev.EventID), label, err)
-				}
-				a.printf("projected %s %s %s -> %s\n", label, ev.EventID, h.Kind, receipt.EventID())
-			}
-		}
-		// Save the position only after every projection of the batch was sent.
-		if st, err = a.updateState(s.paths, s.name, func(cur *config.State) error {
-			cur.NextBatch = resp.NextBatch
-			return nil
-		}); err != nil {
-			return fmt.Errorf("save projector state: %w", err)
-		}
 		if *once {
 			return nil
 		}
 	}
+}
+
+// withProjectCursor reads the State under the control lock and runs one
+// projector step from it. The step holds no lock and no reservation while it
+// syncs and posts: a competing projector is kept out by the consumer lease, as
+// it is for an unmarked identity.
+func (s *session) withProjectCursor(a *App, run func(config.State) (config.State, error)) (config.State, error) {
+	var state config.State
+	err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+		current, err := config.LoadState(s.paths, s.name)
+		if err != nil {
+			return err
+		}
+		if config.BindPartMarked(current) && !config.BindPartActive(current) {
+			return config.ErrBindPartOperation
+		}
+		state = current
+		return nil
+	})
+	if err != nil {
+		return config.State{}, err
+	}
+	return run(state)
+}
+
+// commitProjectCursor moves the projector's cursor from since to cursor once
+// a step is done. The cursor of a marked identity is in its sidecar: it is
+// reserved and committed here in one go, with no request in between, so that
+// no other consumer of the identity waits for a projector's sync or posts. A
+// cursor that another consumer moved meanwhile stands as that consumer left it.
+func (s *session) commitProjectCursor(ctx context.Context, a *App, since, cursor string) (config.State, error) {
+	state, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return config.State{}, err
+	}
+	if !config.BindPartMarked(state) {
+		return a.updateState(s.paths, s.name, func(state *config.State) error {
+			state.NextBatch = cursor
+			return nil
+		})
+	}
+	if !config.BindPartActive(state) {
+		return config.State{}, config.ErrBindPartOperation
+	}
+	if state.NextBatch != since {
+		return state, nil
+	}
+	s.cursorKind = "projector"
+	token, err := s.reserveCursorAtWrite(ctx, state, time.Now().Add(nativeRPCTimeout))
+	if errors.Is(err, config.ErrBindPartStale) {
+		return config.LoadState(s.paths, s.name)
+	}
+	if err != nil {
+		return config.State{}, err
+	}
+	next, err := s.commitBindCursor(token, cursor)
+	if err != nil {
+		if abortErr := s.abortBindCursor(token); abortErr != nil {
+			err = errors.Join(err, abortErr)
+		}
+		return config.State{}, err
+	}
+	return next, nil
+}
+
+func (s *session) projectBatch(ctx context.Context, a *App, state config.State, poll time.Duration, systemRoom string, allowed map[string]bool, me string, labels map[string]string, productCache map[string]productMembership, kinds map[string]bool) (config.State, error) {
+	resp, err := s.client.Sync(ctx, state.NextBatch, poll, projectFilter)
+	if err != nil {
+		return config.State{}, err
+	}
+	if err := s.acceptInvites(ctx, a, resp, allowed); err != nil {
+		return config.State{}, err
+	}
+	for _, roomID := range sortedKeys(resp.Rooms.Join) {
+		if !allowed[roomID] || roomID == systemRoom || s.adminRoomExcluded(roomID) {
+			continue
+		}
+		tl := resp.Rooms.Join[roomID].Timeline
+		events, gap, err := s.timelineEvents(ctx, roomID, state.NextBatch, tl.Events, tl.Limited, tl.PrevBatch, func(ev matrix.Event) bool {
+			_, ok := projectable(ev, roomID, systemRoom, me, kinds)
+			return ok
+		})
+		if err != nil {
+			return config.State{}, fmt.Errorf("backfill %s: %w", s.roomLabel(ctx, roomID, labels), err)
+		}
+		if gap != nil {
+			fmt.Fprintf(a.Stderr, "a2a: projector: %s: gap: events between %s and %s could not be checked; they were not projected\n", s.roomLabel(ctx, roomID, labels), sanitizeLine(gap.From), sanitizeLine(gap.To))
+		}
+		for _, ev := range events {
+			h, _ := projectable(ev, roomID, systemRoom, me, kinds)
+			label := s.roomLabel(ctx, roomID, labels)
+			product, productAlias := s.productForOrigin(ctx, roomID, productCache, a.Now())
+			content, err := projection(ev, h, roomID, label, s.server, product, productAlias)
+			if err != nil {
+				return config.State{}, err
+			}
+			receipt, err := s.client.SendMessageTxnReceipt(ctx, systemRoom, projectionTxn(systemRoom, roomID, ev.EventID), content)
+			if err != nil {
+				if isAdmissionRefusal(err) {
+					return config.State{}, err
+				}
+				return config.State{}, fmt.Errorf("project %s from %s: %w", sanitizeLine(ev.EventID), label, err)
+			}
+			a.printf("projected %s %s %s -> %s\n", label, ev.EventID, h.Kind, receipt.EventID())
+		}
+	}
+	// Keep receipt-before-cursor ordering. Deterministic transaction IDs make a
+	// retry safe if the cursor commit encounters a storage failure.
+	return s.commitProjectCursor(ctx, a, state.NextBatch, resp.NextBatch)
 }
 
 // acceptInvites admits only the actual room IDs pinned by project config.

@@ -40,6 +40,25 @@ func CheckIdentityMigration(p Paths, name string) error {
 			return err
 		}
 	}
+	if p.readCache != nil {
+		path := p.StateFile(name)
+		// A missing or otherwise unreadable path uses LoadState's full error
+		// path. On a valid cached State, reuse only the migration field while
+		// checking the current provider sidecar and host-notification invariants.
+		if checkSecretFile(path) == nil {
+			stamp := StampFile(path)
+			migration, hit, err := p.readCache.identityMigrationHit(p, name, stamp)
+			if hit {
+				if err != nil {
+					return fmt.Errorf("%w: %w", ErrMigrationStateUnavailable, err)
+				}
+				if migration != nil {
+					return ErrIdentityMigrated
+				}
+				return nil
+			}
+		}
+	}
 	s, err := LoadState(p, name)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrMigrationStateUnavailable, err)

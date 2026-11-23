@@ -24,9 +24,13 @@ type bindingAvailability struct {
 	failed      bool
 	readyLogged bool
 	alarmLogged bool
+	reported    bool
 }
 
 func (a *App) observeBindingConsumer(s *session, generation string, episode *bindingAvailability, ready bool) {
+	if ready && !episode.failed && !episode.reported {
+		return
+	}
 	if !ready && !episode.failed {
 		episode.since = a.Now()
 		episode.failed, episode.readyLogged, episode.alarmLogged = true, false, false
@@ -80,8 +84,14 @@ func (a *App) observeBindingConsumer(s *session, generation string, episode *bin
 		if recovered && !episode.readyLogged {
 			fmt.Fprintln(a.Stderr, "binding consumer ready")
 		}
+		if err == nil || errors.Is(err, errIncidentUnchanged) {
+			episode.reported = false
+		}
 		episode.failed, episode.readyLogged = false, true
 		return
+	}
+	if err == nil {
+		episode.reported = true
 	}
 	if err == nil && outcome != "" {
 		fmt.Fprintf(a.Stderr, "binding incident report: %s\n", outcome)
@@ -109,6 +119,18 @@ func (a *App) reportStrandedTerminalNoticeMode(ctx context.Context, s *session, 
 	}
 	reportCtx, cancel := context.WithTimeout(ctx, nativeRPCTimeout)
 	defer cancel()
+	// Most bind observations have no aged orphan to report. On a marked
+	// identity, use its validated terminal projection to skip a full State
+	// clone on that steady path. A due report still rechecks under the ordinary
+	// writer lock before changing the report or alarm ledger.
+	if cached, hit, err := config.TryLoadCachedBindTerminal(s.paths, s.name); hit {
+		if err != nil {
+			return err
+		}
+		if !strandedTerminalReportDue(cached, generation, a.Now()) {
+			return nil
+		}
+	}
 	deadline, _ := reportCtx.Deadline()
 	var pending *config.NoticeReport
 	var reportErr error
@@ -121,14 +143,7 @@ func (a *App) reportStrandedTerminalNoticeMode(ctx context.Context, s *session, 
 			return errIncidentUnchanged
 		}
 		n := b.OwnNotice
-		if noticeValid(n) != nil || n.PossiblyOrphaned == nil || !*n.PossiblyOrphaned {
-			return errIncidentUnchanged
-		}
-		since, ok := parseNoticeTimestamp(n.Since)
-		due := since
-		due.second = due.second.Add(strandedNoticeThreshold)
-		now, _ := parseNoticeTimestamp(a.Now().UTC().Format(time.RFC3339Nano))
-		if !ok || now.before(due) {
+		if !strandedTerminalReportDue(b, generation, a.Now()) {
 			return errIncidentUnchanged
 		}
 		if name, ok := doorbellName(s.creds.UserID, s.server); !ok || name != s.name {
@@ -230,6 +245,24 @@ func (a *App) reportStrandedTerminalNoticeMode(ctx context.Context, s *session, 
 	return reportErr
 }
 
+func strandedTerminalReportDue(b *config.TerminalBinding, generation string, now time.Time) bool {
+	if b == nil || b.Stopped || b.Generation != generation {
+		return false
+	}
+	n := b.OwnNotice
+	if noticeValid(n) != nil || n.PossiblyOrphaned == nil || !*n.PossiblyOrphaned {
+		return false
+	}
+	since, ok := parseNoticeTimestamp(n.Since)
+	if !ok {
+		return false
+	}
+	due := since
+	due.second = due.second.Add(strandedNoticeThreshold)
+	current, ok := parseNoticeTimestamp(now.UTC().Format(time.RFC3339Nano))
+	return ok && !current.before(due)
+}
+
 func terminalNoticeReportStatus(b *config.TerminalBinding) string {
 	if b == nil || b.NoticeReport == nil || b.NoticeReport.Since != b.OwnNotice.Since {
 		return "not due"
@@ -321,12 +354,12 @@ func (s *session) strandedOwnRoom(ctx context.Context, pinned string) (string, e
 // not fill the binding log. Only closed status codes enter the log.
 func (a *App) reportTerminalIncident(ctx context.Context, s *session, generation string) {
 	_ = a.reportStrandedTerminalNotice(ctx, s, generation)
-	st, err := config.LoadState(s.paths, s.name)
-	if err != nil || st.Terminal == nil || st.Terminal.Generation != generation || st.Terminal.NoticeReport == nil {
+	b, err := config.LoadBindTerminal(s.paths, s.name)
+	if err != nil || b == nil || b.Generation != generation || b.NoticeReport == nil {
 		return
 	}
-	status := terminalNoticeReportStatus(st.Terminal)
-	if status == "not due" || status == st.Terminal.NoticeReport.LoggedOutcome {
+	status := terminalNoticeReportStatus(b)
+	if status == "not due" || status == b.NoticeReport.LoggedOutcome {
 		return
 	}
 	outcome := ""

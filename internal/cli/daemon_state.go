@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"time"
 
 	"github.com/relux-works/a2a-swarm/internal/config"
@@ -17,6 +18,30 @@ func (a *App) updateState(p config.Paths, name string, fn func(*config.State) er
 		return config.UpdateStateContext(a.ctx, p, name, time.Time{}, fn)
 	}
 	return config.UpdateState(p, name, fn)
+}
+
+// stateLockContext is the context a sidecar operation waits for the State
+// lock with when its caller has no deadline of its own. It is the one
+// updateState waits with, so the two writes of one step give up together: the
+// bounded copy of a terminal dispatch or of its cleanup, the engine's context
+// in the daemon, and otherwise one that does not end.
+func (a *App) stateLockContext() context.Context {
+	if a != nil && a.wakeContext != nil {
+		return a.wakeContext
+	}
+	if a != nil && a.daemonEngine && a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
+}
+
+// commandContext is the context of the running command, for a wait of the
+// command's own body. It ends when the command is interrupted.
+func (a *App) commandContext() context.Context {
+	if a != nil && a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 func (a *App) updateStateBy(p config.Paths, name string, deadline time.Time, fn func(*config.State) error) (config.State, error) {

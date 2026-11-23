@@ -67,6 +67,28 @@ func (a *App) watchNotices(ctx context.Context, rooms []string, all, asJSON, lis
 	// runtime, freshness, host and exact existing lease again under its locks.
 	record := config.Monitor{Version: 1, Kind: "monitor", Runtime: "muse", Generation: hex.EncodeToString(id[:]), SessionID: sessionID, Host: machineLabel(), OwnerPID: st.Lease.PID, OwnerBirth: ownerBirth, ConsumerPID: os.Getpid(), ConsumerBirth: consumerBirth, Transport: "stdout", Phase: "streaming", HeartbeatEvery: daemon.KeepaliveInterval, HeartbeatAt: time.Now().UTC()}
 	err = config.WithMonitorGeneration(s.paths, s.name, time.Now().Add(time.Second), config.MonitorAutomatic, record, func(g *config.MonitorGeneration) error {
+		if err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(time.Second), func() error {
+			current, err := config.LoadState(s.paths, s.name)
+			if err != nil || !config.BindPartMarked(current) {
+				return err
+			}
+			if !config.BindPartActive(current) {
+				return config.ErrBindPartOperation
+			}
+			// Leftovers of an owner that is gone are cleared. An operation of a
+			// live owner is its own and does not keep this consumer from starting.
+			lockCtx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second))
+			defer cancel()
+			if err := config.RecoverBindOwnStatusContext(lockCtx, s.paths, s.name, a.bindOperationOwnerDead(ctx), a.Now()); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
+				return err
+			}
+			if err := config.RecoverBindCursorContext(lockCtx, s.paths, s.name, a.bindOperationOwnerDead(ctx)); err != nil && !errors.Is(err, config.ErrBindPartHeld) {
+				return err
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 		if err := g.RenewOwnerLease(record.Generation); err != nil {
 			return err
 		}
@@ -163,18 +185,41 @@ func (a *App) noticeLoop(ctx context.Context, s *session, g *config.MonitorGener
 		if err != nil {
 			return err
 		}
+		// The cursor of a marked identity is reserved at the mailbox write and
+		// not while this loop is parked in its poll. The reservation is taken
+		// under the control lock, after this monitor has been found to be the
+		// recorded one still.
+		s.cursorKind = "monitor"
+		s.reserveCursor = func(ctx context.Context, _ config.State, deadline time.Time) (string, error) {
+			if deadline.IsZero() {
+				deadline = time.Now().Add(time.Second)
+			}
+			return s.reserveControlledCursor(ctx, "monitor", deadline, func(current config.State) error {
+				m := current.Monitor
+				if m == nil || m.Generation != record.Generation || m.SessionID != record.SessionID || m.Host != record.Host || m.OwnerPID != record.OwnerPID || m.OwnerBirth != record.OwnerBirth || m.ConsumerPID != record.ConsumerPID || m.ConsumerBirth != record.ConsumerBirth || m.Phase != "streaming" {
+					return config.ErrMonitorGeneration
+				}
+				return nil
+			})
+		}
+		var saved config.State
 		if st.NextBatch == "" {
-			st, err = s.savePositionAll(ctx, resp, time.Time{}, filter.allRooms())
+			saved, err = s.savePositionAll(ctx, resp, time.Time{}, filter.allRooms())
 		} else {
 			subs, readErr := s.getSubs(ctx)
 			if readErr != nil {
 				return readErr
 			}
-			st, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{})
+			saved, err = s.ingest(ctx, resp, st.NextBatch, subs.Subs, filter.allRooms(), time.Time{})
 		}
-		if err != nil {
+		if cursorTakenElsewhere(err) {
+			if saved, err = config.LoadState(s.paths, s.name); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
 		}
+		st = saved
 	}
 	return nil
 }

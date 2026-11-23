@@ -316,29 +316,37 @@ func advanceAlarm(state *config.MailAlarm, sample alarmSample, c config.MailAlar
 }
 
 // A nonblocking, bounded lock attempt keeps alarm work outside delivery's budget.
-func (a *App) observeMailAlarm(s *session, generation string, sample alarmSample) {
+func (a *App) observeMailAlarm(s *session, generation string, sample alarmSample) bool {
 	st, err := config.LoadState(s.paths, s.name)
 	if err != nil {
-		return
+		return false
 	}
 	c, targets, reason := alarmPolicy(s, st)
 	if reason != "" {
-		targets = nil
-		c.Minutes = defaultAlarmMinutes
+		// A disabled/invalid destination must not create idle credit or write
+		// LastObserved on every bind tick. Existing jobs remain durable and held.
+		return false
 	}
 	next := st.MailAlarm
 	next.Jobs = slices.Clone(next.Jobs)
-	if advanceAlarm(&next, sample, c, targets, s.name, machineLabel()) != nil || reflect.DeepEqual(next, st.MailAlarm) {
-		return
+	if advanceAlarm(&next, sample, c, targets, s.name, machineLabel()) != nil {
+		return false
 	}
-	_, _ = a.updateStateBy(s.paths, s.name, time.Now(), func(current *config.State) error {
-		if current.Terminal == nil || current.Terminal.Stopped || current.Terminal.Generation != generation || !reflect.DeepEqual(current.MailAlarmConfig, st.MailAlarmConfig) {
-			return errors.New("alarm observation changed")
+	if !reflect.DeepEqual(next, st.MailAlarm) {
+		updated, updateErr := a.updateStateBy(s.paths, s.name, time.Now(), func(current *config.State) error {
+			if current.Terminal == nil || current.Terminal.Stopped || current.Terminal.Generation != generation || !reflect.DeepEqual(current.MailAlarmConfig, st.MailAlarmConfig) {
+				return errors.New("alarm observation changed")
+			}
+			// The sender may have acknowledged a job since the snapshot; preserve
+			// its latest outbox while applying this drain/busy observation.
+			return advanceAlarm(&current.MailAlarm, sample, c, targets, s.name, machineLabel())
+		})
+		if updateErr != nil {
+			return false
 		}
-		// The sender may have acknowledged a job since the snapshot; preserve
-		// its latest outbox while applying this drain/busy observation.
-		return advanceAlarm(&current.MailAlarm, sample, c, targets, s.name, machineLabel())
-	})
+		st = updated
+	}
+	return mailAlarmStateHasWork(s, generation, st)
 }
 func alarmBody(j config.MailAlarmJob) string {
 	if incidentAlarmKind(j.Kind) {
@@ -352,6 +360,12 @@ func alarmBody(j config.MailAlarmJob) string {
 }
 
 // One independent worker per consumer. It never opens the mailbox or touches a pane.
+// runMailAlarm is the consumer's alarm worker. It runs one cycle on every
+// notification from dispatch and on every tick, whether or not a job is
+// queued: incidents are also queued by cycles that fail before dispatch and by
+// other processes, and a worker that waited for dispatch alone would leave the
+// consumer-unavailable incident unsent for as long as the consumer stays
+// unavailable. An idle cycle reads the cached State and returns.
 func (a *App) runMailAlarm(ctx context.Context, s *session, generation string, wake <-chan struct{}) {
 	ticker := time.NewTicker(alarmWorkerInterval)
 	defer ticker.Stop()
@@ -367,6 +381,30 @@ func (a *App) runMailAlarm(ctx context.Context, s *session, generation string, w
 		}
 		a.mailAlarmCycle(ctx, s, generation)
 	}
+}
+
+func (a *App) mailAlarmHasWork(s *session, generation string) bool {
+	st, err := config.LoadState(s.paths, s.name)
+	if err != nil {
+		return false
+	}
+	return mailAlarmStateHasWork(s, generation, st)
+}
+
+func mailAlarmStateHasWork(s *session, generation string, st config.State) bool {
+	if st.Terminal == nil || st.Terminal.Stopped || st.Terminal.Generation != generation || len(st.MailAlarm.Jobs) == 0 {
+		return false
+	}
+	_, targets, reason := alarmPolicy(s, st)
+	if reason != "" || len(targets) == 0 {
+		return false
+	}
+	for _, job := range st.MailAlarm.Jobs {
+		if alarmJobEnabled(s, st, job) && validAlarmJob(job, s.name) && (incidentAlarmKind(job.Kind) || job.Uncertain < 2) {
+			return true
+		}
+	}
+	return false
 }
 
 // A peer-influenced resolution panic must never escape the optional worker.

@@ -109,6 +109,9 @@ type App struct {
 	// afterOwnStatusPending observes local contention after releasing the state
 	// lock (tests only), so fixtures can clear a seeded fence deterministically.
 	afterOwnStatusPending func()
+	// afterMarkedOwnStatusNoticeRecord interrupts the marked provider path after
+	// its notice CAS, so tests can exercise a concurrent control handover.
+	afterMarkedOwnStatusNoticeRecord func()
 	// runtimeBindStatusBudget shortens only the one-shot bind publication in tests.
 	runtimeBindStatusBudget time.Duration
 	// beforeDeliver, when set (tests only), runs after a consumer synced and
@@ -120,6 +123,11 @@ type App struct {
 	// quiescentExchangeHook, when set by a test, runs before each quiescent
 	// exchange (foreign-writer fixtures).
 	quiescentExchangeHook func()
+	// beforeBindCursorCommit interrupts a marked cursor write after mailbox and
+	// thread persistence, so retry/dedup behavior can be checked.
+	beforeBindCursorCommit func()
+	// afterBindingCycleError observes a private fixture's failed consumer cycle.
+	afterBindingCycleError func(string, error)
 	// inspectTerminalTarget is package-test-only. Production leaves it nil and
 	// uses the pinned OS-backed owner/pane checks.
 	inspectTerminalTarget func(context.Context, config.TerminalBinding) (string, error, error)
@@ -607,6 +615,10 @@ type session struct {
 	// generation-consistent delivery view: un-rung pending entries, or -1
 	// when that dispatch did not compute the view.
 	terminalUndelivered int
+	// mailboxProvenEmpty is the consumer loop's one-cycle hint to the next
+	// dispatch: its sync just committed a cursor with proof that the mailbox
+	// is empty. Dispatch consumes and clears it.
+	mailboxProvenEmpty  bool
 	agentDelivery       *agentDMDelivery
 	agentDeliveryWarned bool
 	agentReplayDeferred bool
@@ -623,6 +635,15 @@ type session struct {
 	principalWarning    bool         // Emit malformed/unreadable metadata warning once per session.
 	addressWarnings     uint32       // Bounded fixed audience diagnostics, once per session.
 	longConsumer        bool         // Process-owned watch/unbounded wait; ignore ambient runtime session IDs.
+	// cursorKind names this consumer in the cursor reservation it takes at the
+	// mailbox write of a marked identity; empty is "delivery". reserveCursor,
+	// when set, replaces that reservation for a consumer that must check its
+	// own standing under its own lock first. cursorHolds keeps the
+	// context and deadline each reservation was taken with, which bound its
+	// commit or abort.
+	cursorKind    string
+	reserveCursor func(ctx context.Context, state config.State, deadline time.Time) (string, error)
+	cursorHolds   map[string]cursorHold
 }
 
 func (a *App) paths() (config.Paths, error) {

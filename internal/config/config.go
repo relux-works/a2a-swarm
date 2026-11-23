@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -397,6 +398,11 @@ func WriteCredentials(f *CredentialFile, c Credentials) error {
 // State is the per-agent delivery state. The events themselves live in the
 // durable mailbox (MailboxFile), which is written before NextBatch moves.
 type State struct {
+	// bindPartStamp and bindPartShadow are read evidence for the marked
+	// provider. Neither is serialized into the legacy State document.
+	bindPartStamp    FileStamp
+	bindPartShadow   *bindPartProjection
+	bindPartRollback string
 	// opaque retains unknown top-level values as data, never as authority.
 	// It is immutable after loading; saving a State copy must not mutate it.
 	opaque map[string]json.RawMessage
@@ -656,19 +662,39 @@ func LoadState(p Paths, name string) (State, error) {
 	path := p.StateFile(name)
 	if err := checkSecretFile(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			if _, sidecarErr := os.Lstat(p.BindPartFile(name)); sidecarErr == nil {
+				return State{}, ErrBindPartUnmarked
+			} else if !errors.Is(sidecarErr, fs.ErrNotExist) {
+				return State{}, sidecarErr
+			}
 			return State{}, nil
 		}
 		return State{}, err
 	}
 	var stamp FileStamp
+	partStamp := StampFile(p.BindPartFile(name))
 	if p.readCache != nil {
 		stamp = StampFile(path)
-	}
-	if cached, ok := p.readCache.stateHit(name, path, stamp); ok {
-		if err := cached.validateHostNotifications(); err != nil {
-			return State{}, err
+		if cached, ok := p.readCache.stateHit(name, path, stamp, partStamp); ok {
+			if bindPartMarker(cached) {
+				part, sidecarStamp, err := readBindPart(p, name)
+				if err != nil {
+					return State{}, err
+				}
+				base, err := verifiedBindPartBase(cached, part, sidecarStamp)
+				if err != nil {
+					return State{}, err
+				}
+				if !reflect.DeepEqual(cached.bindPartShadow, base.bindPartShadow) || cached.bindPartRollback != base.bindPartRollback {
+					p.readCache.rememberState(name, path, stamp, base, false)
+				}
+				cached = mergeBindPartView(base, part)
+			}
+			if err := cached.validateHostNotifications(); err != nil {
+				return State{}, err
+			}
+			return cached, nil
 		}
-		return cached, nil
 	}
 	data, err := readStateFile(path)
 	if err != nil {
@@ -693,8 +719,111 @@ func LoadState(p Paths, name string) (State, error) {
 	if err := s.validateHostNotifications(); err != nil {
 		return State{}, err
 	}
-	p.readCache.rememberState(name, path, stamp, s, false)
+	marked, err := bindPartMarkerInInput(data)
+	if err != nil {
+		return State{}, fmt.Errorf("%s has an invalid bind_part marker: %w", path, err)
+	}
+	if marked {
+		part, sidecarStamp, err := readBindPart(p, name)
+		if err != nil {
+			return State{}, err
+		}
+		base, err := verifiedBindPartBase(s, part, sidecarStamp)
+		if err != nil {
+			return State{}, err
+		}
+		p.readCache.rememberState(name, path, stamp, base, false)
+		s = mergeBindPartView(base, part)
+	} else {
+		if partStamp.Present {
+			return State{}, ErrBindPartUnmarked
+		}
+		if !partStamp.Known {
+			if _, err := os.Lstat(p.BindPartFile(name)); err == nil {
+				return State{}, ErrBindPartUnmarked
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return State{}, err
+			}
+		}
+		p.readCache.rememberState(name, path, stamp, s, false)
+	}
 	return s, nil
+}
+
+// LoadBindTerminal returns an owned terminal binding for the idle bind loop.
+// A marked cached State can supply this small projection while LoadState
+// retains its full-copy contract for ordinary callers.
+func LoadBindTerminal(p Paths, name string) (*TerminalBinding, error) {
+	if err := ValidateName(name); err != nil {
+		return nil, err
+	}
+	if terminal, hit, err := TryLoadCachedBindTerminal(p, name); hit {
+		return terminal, err
+	}
+	state, err := LoadState(p, name)
+	if err != nil {
+		return nil, err
+	}
+	return state.Terminal, nil
+}
+
+// TryLoadCachedBindTerminal returns an owned terminal projection only when the
+// attached cache proves an unchanged marked State stamp and validates the
+// current sidecar. A miss asks the caller to use its ordinary State path.
+func TryLoadCachedBindTerminal(p Paths, name string) (*TerminalBinding, bool, error) {
+	if p.readCache == nil || ValidateName(name) != nil {
+		return nil, false, nil
+	}
+	path := p.StateFile(name)
+	if checkSecretFile(path) != nil {
+		return nil, false, nil
+	}
+	return p.readCache.terminalBindingHit(p, name, StampFile(path))
+}
+
+// TryLoadCachedBindIdleDeliveryState returns the small marked provider view
+// needed by the detached bind loop when its validated State stamp is unchanged.
+// A miss requires the caller to use the ordinary State path.
+func TryLoadCachedBindIdleDeliveryState(p Paths, name string) (BindIdleDeliveryState, bool, error) {
+	if p.readCache == nil || ValidateName(name) != nil {
+		return BindIdleDeliveryState{}, false, nil
+	}
+	path := p.StateFile(name)
+	if checkSecretFile(path) != nil {
+		return BindIdleDeliveryState{}, false, nil
+	}
+	return p.readCache.bindIdleDeliveryHit(p, name, StampFile(path))
+}
+
+// verifiedBindPartBase attaches the validated sidecar stamp and compatibility
+// shadow to an unchanged legacy State snapshot. It intentionally leaves the
+// provider projection unapplied so a cache hit can merge the freshly verified
+// sidecar without decoding or rereading the large State body.
+func verifiedBindPartBase(state State, part bindPartDisk, stamp FileStamp) (State, error) {
+	if !bindPartMarker(state) {
+		return State{}, ErrBindPartUnmarked
+	}
+	if part.Rollback == bindPartRollbackPre {
+		return State{}, ErrBindPartOperation
+	}
+	if part.Rollback == bindPartRollbackOK && !reflect.DeepEqual(bindProjectionFromState(state), part.LegacyShadow) {
+		return State{}, fmt.Errorf("%w: legacy provider shadow changed", ErrBindPartInvalid)
+	}
+	shadow := cloneBindPartProjection(part.LegacyShadow)
+	state.bindPartStamp = stamp
+	state.bindPartShadow = &shadow
+	state.bindPartRollback = part.Rollback
+	return state, nil
+}
+
+func mergeBindPartView(base State, part bindPartDisk) State {
+	if part.Rollback == bindPartRollbackOK {
+		applyBindProjection(&base, part.projection())
+		if part.StatusOp != nil {
+			base.NoticeWriteUncertain = true
+		}
+	}
+	return base
 }
 
 // readStateFile counts byte reads, including cache-hit and no-op confirmations.
@@ -754,6 +883,37 @@ func saveStateLocked(p Paths, name string, old, s State, fence time.Time, monito
 // bytes, file content synced, directory entries synced. Any other outcome
 // runs the ordinary replacement or returns its directory sync error taxonomy.
 func persistStateLocked(p Paths, name string, old, s State, fence time.Time, monitor, migration, inputSealed bool) (State, error) {
+	if bindPartMarker(old) {
+		// The marker is permanent. A replacement State that does not carry it
+		// (a value built from scratch instead of the loaded one) would leave the
+		// sidecar without its marker, and every later read and write of the
+		// identity would then be refused.
+		if !bindPartMarker(s) {
+			return old, ErrBindPartOwned
+		}
+		if old.bindPartShadow == nil || old.bindPartRollback == bindPartRollbackPre {
+			return old, ErrBindPartOwned
+		}
+		if old.bindPartRollback == bindPartRollbackOK {
+			if !reflect.DeepEqual(bindProjectionFromState(s), bindProjectionFromState(old)) {
+				return old, ErrBindPartOwned
+			}
+			// Keep the on-disk State fields as the migration-time compatibility
+			// shadow. Provider values are merged only in memory for current readers.
+			// Detach the caller's Terminal pointer before applying the legacy
+			// shadow, so a normal write cannot mutate callback-owned data.
+			if s.Terminal != nil {
+				terminal := *s.Terminal
+				terminal.OwnNotice = cloneOwnNotice(s.Terminal.OwnNotice)
+				s.Terminal = &terminal
+			}
+			applyBindProjection(&s, *old.bindPartShadow)
+			shadow := cloneBindPartProjection(*old.bindPartShadow)
+			s.bindPartShadow = &shadow
+			s.bindPartStamp = old.bindPartStamp
+			s.bindPartRollback = old.bindPartRollback
+		}
+	}
 	if !migration && (old.Migration != nil || s.Migration != nil) {
 		return old, ErrIdentityMigrated
 	}
@@ -815,12 +975,28 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	}
 	// Return only the representation that successfully persisted, including its
 	// fresh seal/input. A failed save makes no durable-fence claim.
-	written := append(data, '\n')
+	written := append(append([]byte(nil), data...), '\n')
 	saved, err := decodeFreshState(p, name, path, data)
 	if err != nil {
 		return old, err
 	}
-	p.readCache.rememberWrittenState(p, name, saved, written, writtenEvidence)
+	cacheState := saved
+	if bindPartMarker(old) && old.bindPartRollback == bindPartRollbackOK {
+		part, sidecarStamp, err := readBindPart(p, name)
+		if err != nil {
+			return old, err
+		}
+		if !reflect.DeepEqual(bindProjectionFromState(saved), part.LegacyShadow) {
+			return old, fmt.Errorf("%w: persisted legacy shadow mismatch", ErrBindPartInvalid)
+		}
+		shadow := cloneBindPartProjection(part.LegacyShadow)
+		saved.bindPartShadow = &shadow
+		saved.bindPartStamp = sidecarStamp
+		saved.bindPartRollback = part.Rollback
+		cacheState = saved
+		applyBindProjection(&saved, part.projection())
+	}
+	p.readCache.rememberWrittenState(p, name, cacheState, written, writtenEvidence)
 	return saved, nil
 }
 
@@ -965,7 +1141,36 @@ func UpdateStateContext(ctx context.Context, p Paths, name string, deadline time
 	return st, err
 }
 
+// UpdateStateContextIfChanged retains the same lock, seal and callback checks
+// as UpdateStateContext but skips persistence when the typed State is exactly
+// unchanged. It is for observation transactions whose no-op path must not
+// rewrite or durability-sync the large State document.
+func UpdateStateContextIfChanged(ctx context.Context, p Paths, name string, deadline time.Time, fn func(*State) error) (State, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	st, err := updateStateMode(p, name, func(path string) (func(), error) { return lockFileContext(ctx, path) }, func(st *State) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fn(st)
+	}, true)
+	if errors.Is(err, context.DeadlineExceeded) && !deadline.IsZero() && !time.Now().Before(deadline) {
+		err = ErrLockTimeout
+	}
+	return st, err
+}
+
 func updateState(p Paths, name string, lock func(string) (func(), error), fn func(*State) error) (State, error) {
+	return updateStateMode(p, name, lock, fn, false)
+}
+
+func updateStateMode(p Paths, name string, lock func(string) (func(), error), fn func(*State) error, skipUnchanged bool) (State, error) {
 	return withStateLock(p, name, lock, func(old State) (State, error) {
 		if old.Migration != nil {
 			return old, ErrIdentityMigrated
@@ -981,9 +1186,26 @@ func updateState(p Paths, name string, lock func(string) (func(), error), fn fun
 				return old, err
 			}
 		}
+		if bindPartMarker(old) {
+			applyBindProjection(&s, bindProjectionFromState(old))
+			shadow := cloneBindPartProjection(*old.bindPartShadow)
+			s.bindPartShadow = &shadow
+			s.bindPartStamp = old.bindPartStamp
+			s.bindPartRollback = old.bindPartRollback
+		}
 		s.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
 		if err := fn(&s); err != nil {
 			return old, err
+		}
+		if skipUnchanged {
+			if old.Writer != nil && s.Writer != nil {
+				writer := *s.Writer
+				writer.Seal = old.Writer.Seal
+				s.Writer = &writer
+			}
+			if reflect.DeepEqual(old, s) {
+				return old, nil
+			}
 		}
 		return persistStateLocked(p, name, old, s, fence, false, false, sealed)
 	})

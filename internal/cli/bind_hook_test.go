@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -203,6 +204,9 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 						}
 						if v.Code != 0 || want == "" && v.Err != "" || want != "" && !strings.Contains(v.Err, want) {
 							observation, _ := os.ReadFile(filepath.Join(home, "hook-observation.json"))
+							if strings.Contains(v.Err, "bind state sidecar") || strings.Contains(v.Err, "bind-state") {
+								t.Log(bindPartDiagnosis(e.paths(), "alice", e.dir))
+							}
 							t.Fatalf("hook %d: code%d %s %s; observation: %s", id, v.Code, v.Out, v.Err, observation)
 						}
 						return
@@ -227,6 +231,7 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 			}
 			gone.Wait()
 			priorDone := map[int]chan struct{}{}
+			priorGenerations := map[int]string{}
 			prior := func(duration string) *exec.Cmd {
 				t.Helper()
 				p := exec.Command("sleep", duration)
@@ -241,10 +246,45 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
-					st.Terminal = &config.TerminalBinding{Generation: "prior-fixture", SessionID: "auto-fixture", Host: machineLabel(), OwnerPID: gone.Process.Pid, OwnerBirth: goneBirth, DaemonPID: p.Process.Pid, DaemonBirth: birth, Interval: time.Second}
-					return nil
-				})
+				generation, err := config.NewBindToken()
+				if err != nil {
+					t.Fatal(err)
+				}
+				priorGenerations[p.Process.Pid] = generation
+				state, err := config.LoadState(e.paths(), "alice")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if config.BindPartMarked(state) {
+					view, err := config.ReadBindPartView(e.paths(), "alice", state)
+					if err != nil {
+						t.Fatal(err)
+					}
+					proof := config.BindControlProof{}
+					if state.Terminal != nil && view.Generation != "" {
+						proof = config.BindControlProof{TargetVerified: true, OwnerPID: state.Terminal.OwnerPID, OwnerBirth: state.Terminal.OwnerBirth, Target: state.Terminal.Target}
+					}
+					testSetBindControl(t, e.paths(), "alice", config.BindControlTarget{Generation: generation, SessionID: "auto-fixture", Kind: "create"}, proof)
+					testRecordBindNotice(t, e.paths(), "alice", config.OwnNoticeObservation{}, "")
+					_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+						b := st.Terminal
+						if b == nil {
+							return errors.New("marked bind fixture lost its terminal projection")
+						}
+						b.Host = machineLabel()
+						b.OwnerPID, b.OwnerBirth = gone.Process.Pid, goneBirth
+						b.DaemonPID, b.DaemonBirth = p.Process.Pid, birth
+						b.Target = tmuxwake.Target{}
+						b.Interval = time.Second
+						b.NoticeReport = nil
+						return nil
+					})
+				} else {
+					_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+						st.Terminal = &config.TerminalBinding{Generation: generation, SessionID: "auto-fixture", Host: machineLabel(), OwnerPID: gone.Process.Pid, OwnerBirth: goneBirth, DaemonPID: p.Process.Pid, DaemonBirth: birth, Interval: time.Second}
+						return nil
+					})
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -283,15 +323,14 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 					t.Fatalf("synthetic notice: %v %s", err, out)
 				}
 				since := time.Now().Add(-11 * time.Minute).UTC().Format(time.RFC3339Nano)
+				yes := true
+				testRecordBindNotice(t, e.paths(), "alice", config.OwnNoticeObservation{PossiblyOrphaned: &yes, Since: since, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Reason: orphanReason}, e.state("alice").Terminal.NoticePublication)
 				_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error {
-					yes := true
-					st.Terminal.Stopped = false
 					st.Terminal.Typed = true
 					st.Terminal.Notice = tmuxwake.Notice(1)
 					st.Terminal.NoticeCount = 1
 					// Keep the real binding policy valid while bounding this retry control.
 					st.Terminal.RetryMax = st.Terminal.Interval
-					st.Terminal.OwnNotice = config.OwnNoticeObservation{PossiblyOrphaned: &yes, Since: since, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Reason: orphanReason}
 					return nil
 				})
 				if err != nil {
@@ -380,9 +419,12 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 			})
 			generation, pid = recovered.Terminal.Generation, recovered.Terminal.DaemonPID
 			_, err = config.UpdateState(e.paths(), "alice", func(st *config.State) error { st.Terminal = nil; return nil })
-			if err != nil {
-				t.Fatal(err)
+			if !errors.Is(err, config.ErrBindPartOwned) {
+				t.Fatalf("generic State update erased provider-owned binding: %v", err)
 			}
+			current := e.state("alice").Terminal
+			proof := config.BindControlProof{TargetVerified: true, OwnerPID: current.OwnerPID, OwnerBirth: current.OwnerBirth, Target: current.Target}
+			testSetBindControl(t, e.paths(), "alice", config.BindControlTarget{Stopped: true, Kind: "stop"}, proof)
 			until = time.Now().Add(5 * time.Second)
 			for !processGone(pid) && time.Now().Before(until) {
 				time.Sleep(10 * time.Millisecond)
@@ -404,7 +446,7 @@ func testHookAutomaticBindingLifecycle(t *testing.T, incidentMode string) {
 			}
 			stuck := prior("30")
 			request(11)
-			if b := e.state("alice").Terminal; b.Generation != "prior-fixture" || b.DaemonPID != stuck.Process.Pid || processGone(stuck.Process.Pid) {
+			if b := e.state("alice").Terminal; b.Generation != priorGenerations[stuck.Process.Pid] || b.DaemonPID != stuck.Process.Pid || processGone(stuck.Process.Pid) {
 				t.Fatal("bounded refusal changed or signalled prior consumer")
 			}
 			stuck.Process.Kill()

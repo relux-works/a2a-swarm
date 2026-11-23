@@ -202,6 +202,15 @@ one metadata-only incident per configured owner/lead destination through
 in-place executable refresh; recovery rearms the next episode. See the
 [terminal binding reference](docs/cli.md).
 
+The first `a2a bind` of an identity moves the fields its consumer owns (lease, sync
+cursor, terminal generation, own-notice observation) from `state/NAME.json` into a
+small sidecar, `state/NAME.bind.json`, and marks State with `"bind_part": true`, so
+an idle consumer no longer rewrites the whole State document. From then on an older
+`a2a` image must not write that identity's lease or cursor: replace the consumer,
+the session's hooks and any older command-line image before the identity binds with
+this version. The refusals, the older-image cases and the repair steps are in the
+[bind state sidecar reference](docs/cli.md#bind-state-sidecar-statenamebindjson).
+
 Strict consumers can use `a2a --as <own-identity> read '!room-id' --event '$event-id' --verification-input --json`
 for one bounded original-endpoint observation with full identity spelling and
 lossless base64url content. This is separate from safe display JSON and does not

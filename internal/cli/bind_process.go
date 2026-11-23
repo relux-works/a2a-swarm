@@ -14,6 +14,7 @@ import (
 
 var ErrBindingOldImage = errors.New("binding refused: same identity has a different executable image; stop own old process first")
 var ErrBindingParallelWait = errors.New("binding refused: same identity has a live wait/watch; stop own waiter first")
+var ErrBindingParallelProject = errors.New("binding refused: same identity has a live projector; stop own projector first")
 var ErrWaitWhileBound = errors.New("wait/watch refused: same identity has a live binding; inspect own binding with a2a bind status; read messages with a2a inbox")
 var ErrBindingProcessUnknown = errors.New("binding refused: process inspection unavailable")
 
@@ -223,6 +224,9 @@ func runtimeOwnerPID(rows []bindingProcess, pid int, runtime string, uid int) (i
 func bindingProcessConflict(own, image, command string, pid int) error {
 	if image != own {
 		return fmt.Errorf("%w (pid %d)", ErrBindingOldImage, pid)
+	}
+	if command == "project" {
+		return fmt.Errorf("%w (pid %d)", ErrBindingParallelProject, pid)
 	}
 	if command == "wait" || command == "watch" {
 		return fmt.Errorf("%w (pid %d)", ErrBindingParallelWait, pid)

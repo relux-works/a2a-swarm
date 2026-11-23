@@ -29,6 +29,23 @@ func incidentAlarmReport(st *config.State, kind string) *config.NoticeReport {
 	return nil
 }
 
+func retiredIncidentAlarm(st *config.State, job config.MailAlarmJob) bool {
+	if !incidentAlarmKind(job.Kind) {
+		return false
+	}
+	r := incidentAlarmReport(st, job.Kind)
+	if r == nil {
+		return true
+	}
+	return !r.Alarm || r.Since != job.Since || job.ID != r.AlarmOwner && job.ID != r.AlarmLead
+}
+
+func hasRetiredIncidentAlarms(st *config.State) bool {
+	return slices.ContainsFunc(st.MailAlarm.Jobs, func(job config.MailAlarmJob) bool {
+		return retiredIncidentAlarm(st, job)
+	})
+}
+
 // Called under the state lock: enqueue and the episode fence commit together.
 // Each audience is pinned once. A missing owner route does not hide the lead
 // alert, and can become available later without repeating the lead alert.
@@ -147,13 +164,6 @@ func acknowledgeStrandedAlarm(st *config.State, job config.MailAlarmJob) {
 // in-flight Matrix transaction may still complete; it cannot be recalled.
 func dropRetiredStrandedAlarms(st *config.State) {
 	st.MailAlarm.Jobs = slices.DeleteFunc(st.MailAlarm.Jobs, func(job config.MailAlarmJob) bool {
-		if !incidentAlarmKind(job.Kind) {
-			return false
-		}
-		r := incidentAlarmReport(st, job.Kind)
-		if r == nil {
-			return true
-		}
-		return !r.Alarm || r.Since != job.Since || job.ID != r.AlarmOwner && job.ID != r.AlarmLead
+		return retiredIncidentAlarm(st, job)
 	})
 }
