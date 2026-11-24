@@ -2672,10 +2672,13 @@ in Muse tool shells, not a qualified Muse contract) must be present and name the
 `MUSE_SESSION_ID` and `MUSE_THREAD_ID` must agree when both are set. The bind invocation must descend from the `--owner-pid`
 process, and that owner must be a `muse`/`muse-bin*` process. Remaining trust: the selector is read from the invocation's own
 environment and is not verified by Muse, and `muse sessions --json` lists no owner process, so a2a cannot tie the session id to
-`--owner-pid`. The gate stops a stale or foreign `A2A_SESSION_ID`; it does not stop a deliberate same-UID override of
-`MUSE_SESSION_ID`. A Muse session started from a shell that exported `A2A_SESSION_ID` must unset it or set it to `MUSE_SESSION_ID`.
-**Contract: the muse carrier guards against accidental misbinding only.** Its checks refuse a stale or foreign `A2A_SESSION_ID`,
-disagreeing Muse selectors, an owner that is not this invocation's ancestor, and an owner of another runtime. They are not a
+`--owner-pid`. The gate refuses an `A2A_SESSION_ID` that stands alone or conflicts with the Muse selector. It cannot tell a
+stale `A2A_SESSION_ID` that matches an inherited Muse selector from a correct one, and it does not stop a deliberate same-UID
+override of `MUSE_SESSION_ID`. A Muse session started from a shell that exported `A2A_SESSION_ID` must unset it or set it to `MUSE_SESSION_ID`.
+**Contract: the muse carrier checks selector consistency and owner shape; it does not authenticate the session.** Its checks refuse missing or conflicting session
+selectors (no Muse selector, an `A2A_SESSION_ID` or `--session-id` that differs from it, or disagreeing Muse selectors), an
+owner that is not this invocation's ancestor, and an owner of another runtime. Matching inherited selectors are not verified:
+an inherited Muse selector that names another live session, repeated by a stale `A2A_SESSION_ID`, passes. The checks are not a
 boundary against a deliberate same-UID caller: such a caller can already message any Muse session with
 `muse session-message send`. Isolation between lanes comes from separate OS users and homes. When Muse lists the hosting process
 per session, the bind will also require `--owner-pid` to be that process.

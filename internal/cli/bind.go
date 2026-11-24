@@ -224,10 +224,11 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		// Remaining trust, stated plainly: the selector is read from this
 		// invocation's own environment and Muse does not verify it, and
 		// muse sessions --json lists no process, so a2a cannot tie the id
-		// to --owner-pid. This gate stops a stale or foreign
-		// A2A_SESSION_ID; it does not stop a deliberate same-UID override
-		// of MUSE_SESSION_ID, or a foreign value inherited into a shell
-		// under a muse owner.
+		// to --owner-pid. This gate refuses missing or conflicting
+		// selectors (an A2A_SESSION_ID alone or differing from the Muse
+		// selector); matching inherited selectors are not verified, so it
+		// does not stop a foreign Muse selector inherited into a shell
+		// under a muse owner, or a deliberate same-UID override.
 		return usagef("bind --runtime muse requires this Muse session: run it inside the session being bound (MUSE_SESSION_ID or MUSE_THREAD_ID; A2A_SESSION_ID alone does not name a Muse session)")
 	}
 	if !isMuse && (*pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "") {
