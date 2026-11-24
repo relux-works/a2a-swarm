@@ -70,6 +70,9 @@ type App struct {
 	// keychain is a package-test-only factory. Production stays pinned to security.
 	keychain              func(config.Paths) *keychainStore
 	bindStartupWait       func(context.Context, time.Duration) error // deterministic startup retry seam
+	bindStartupArmHook    func()                                     // deterministic point before the final arm fence; tests only
+	bindStartupArmedHook  func()                                     // deterministic point after inherited startup arms; tests only
+	bindStartupOwnerBirth func(context.Context, int) (string, error) // process identity seam; tests only
 	beforeCredentialScrub func() error
 	ctx                   context.Context
 

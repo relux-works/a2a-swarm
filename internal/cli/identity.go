@@ -490,6 +490,12 @@ func processGone(pid int) bool {
 // acquireLease takes or refreshes the lease of the session's identity for
 // this session (sessionID: the hook's session id, "" elsewhere).
 func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) error {
+	return a.acquireLeaseCheckedContext(a.ctx, s, sessionID, deadline, nil)
+}
+
+// acquireLeaseCheckedContext keeps startup's final owner and cancellation
+// checks in the same state transaction as its lease mutation.
+func (a *App) acquireLeaseCheckedContext(ctx context.Context, s *session, sessionID string, deadline time.Time, check func(*config.State) error) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -499,11 +505,22 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 		ttl = a.leaseTTL
 	}
 	a.leaseReuse = nil
-	_, err := config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
+	_, err := config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
-		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
+		if check != nil {
+			if err := check(cur); err != nil {
+				return err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline)); err != nil {
+			return err
+		}
+		return ctx.Err()
 	})
 	if err == nil && a.leaseReuse != nil {
 		// stderr only: hook stdout carries the doorbell and must stay unchanged.

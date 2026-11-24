@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,6 +21,15 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 	"golang.org/x/sys/unix"
 )
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 // Use the real inherited-flock adoption and startup continuation, without exec,
 // pane access or the delivery loop. Each continuation stands for one armed run.
@@ -55,6 +66,61 @@ func startupFixture(t *testing.T) (*App, *session, *env, string, *time.Time, *ke
 		t.Fatal(err)
 	}
 	return a, s, e, dir, &now, k
+}
+
+func TestBoundStartupOwnerFixture(t *testing.T) {
+	if os.Getenv("A2A_TEST_BOUND_STARTUP_OWNER") != "1" {
+		return
+	}
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatalf("owner fixture input: %v", err)
+	}
+}
+
+func startBoundStartupOwner(t *testing.T) (int, string, func()) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestBoundStartupOwnerFixture$")
+	cmd.Dir = canonicalTempDir(t)
+	cmd.Env = append(os.Environ(), "A2A_TEST_BOUND_STARTUP_OWNER=1")
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	stopped := false
+	stop := func() {
+		if !stopped {
+			stopped = true
+			_ = cmd.Process.Kill()
+			_ = input.Close()
+		}
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			t.Errorf("owner fixture pid %d did not exit", cmd.Process.Pid)
+		}
+	}
+	t.Cleanup(stop)
+	birth, err := bindingProcessBirth(context.Background(), cmd.Process.Pid)
+	if err != nil {
+		stop()
+		t.Fatalf("owner fixture birth: %v", err)
+	}
+	return cmd.Process.Pid, birth, stop
 }
 
 // A resumed image keeps the real lock and generation through cooldown, locked
@@ -119,7 +185,7 @@ func TestBoundReexecCredentialRecovery(t *testing.T) {
 			armed := 0
 			err := startupWithLock(t, a, s, func(fresh *session, initial config.TerminalBinding, lock *os.File) error {
 				armed++
-				if fresh.creds.AccessToken != e.tokens["alice"] || initial.Generation != "refresh-gen" || e.state("alice").Terminal.RefreshStatus != "startup_ready" {
+				if fresh.creds.AccessToken != e.tokens["alice"] || initial.Generation != "refresh-gen" {
 					t.Fatal("recovery did not arm the same binding")
 				}
 				flags, err := unix.FcntlInt(lock.Fd(), unix.F_GETFD, 0)
@@ -238,8 +304,8 @@ func TestBoundStartupCredentialRetryDegradedThreshold(t *testing.T) {
 		t.Fatalf("startup retry diagnostics changed: waits=%d log=%q", len(delays), log.String())
 	}
 	after := e.state("alice")
-	if after.Terminal.RefreshStatus != "startup_ready" {
-		t.Fatalf("recovery status=%s", after.Terminal.RefreshStatus)
+	if after.Terminal.RefreshStatus != "startup_credentials_unavailable" {
+		t.Fatalf("the fake continuation changed degraded status before the arm fence: %s", after.Terminal.RefreshStatus)
 	}
 	r := after.Terminal.ConsumerReport
 	if r == nil || r.Since != firstRefusal.UTC().Format(time.RFC3339Nano) || r.Outcome != "unavailable: alarm destination missing" || r.Alarm || strings.Count(log.String(), "binding incident report: unavailable: alarm destination missing\n") != 1 || strings.Contains(log.String(), "binding consumer ready\n") {
@@ -372,6 +438,150 @@ func TestBoundStartupStopsWhenOwnerGoneOrReplaced(t *testing.T) {
 			}
 			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
 				t.Fatalf("owner %s refusal retained lock: %v", mode, err)
+			}
+		})
+	}
+}
+
+var errStartupOwnerWaitNotInterrupted = errors.New("startup wait did not observe owner exit")
+
+// This proves that an owner exit interrupts the pending retry wait, preserves
+// the binding and lease, refuses arming, and releases the consumer lock.
+func TestBoundStartupOwnerExitInterruptsBackoff(t *testing.T) {
+	a, s, e, dir, _, k := startupFixture(t)
+	k.probeCommand = probeFixture(t, "missing", dir)
+	ownerPID, ownerBirth, stopOwner := startBoundStartupOwner(t)
+	_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+		st.Terminal.OwnerPID, st.Terminal.OwnerBirth = ownerPID, ownerBirth
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected config.State
+	waited := false
+	a.bindStartupWait = func(waitCtx context.Context, _ time.Duration) error {
+		waited = true
+		if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); !errors.Is(err, config.ErrLockTimeout) {
+			t.Fatalf("consumer lock was not retained during the wait: %v", err)
+		}
+		expected = e.state("alice")
+		stopOwner()
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-waitCtx.Done():
+			return waitCtx.Err()
+		case <-timer.C:
+			return errStartupOwnerWaitNotInterrupted
+		}
+	}
+	armed := 0
+	err = startupWithLock(t, a, s, func(*session, config.TerminalBinding, *os.File) error {
+		armed++
+		return nil
+	})
+	if !waited || !errors.Is(err, errBindingStaleConsumer) || armed != 0 {
+		t.Fatalf("owner exit during wait: waited=%v err=%v arms=%d", waited, err, armed)
+	}
+	if after := e.state("alice"); !reflect.DeepEqual(expected, after) {
+		t.Fatalf("owner exit changed the binding or lease: before=%+v after=%+v", expected.Terminal, after.Terminal)
+	}
+	if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+		t.Fatalf("owner exit retained consumer lock: %v", err)
+	}
+}
+
+func runBoundStartupWithLock(t *testing.T, a *App, s *session, ctx context.Context) error {
+	t.Helper()
+	return config.WithConsumerLock(s.paths, s.name, time.Now().Add(time.Second), 0, func(lock *os.File) error {
+		fd, err := unix.Dup(int(lock.Fd()))
+		if err != nil {
+			return err
+		}
+		return runBoundChild(ctx, a, "refresh-gen", fd)
+	})
+}
+
+// This proves the final control-lock and lease transaction refuses owner exit,
+// PID reuse, or cancellation after the last connection check, without changing
+// the lease or publishing startup_ready. The live-owner case is the positive
+// control and proves readiness is committed with successful arming. It cancels
+// after that commit so the test does not enter the delivery loop.
+func TestBoundStartupFinalArmFence(t *testing.T) {
+	for _, mode := range []string{"live-owner", "owner-exit", "owner-replaced", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			a, s, e, _, _, _ := startupFixture(t)
+			a.ctx = context.Background() // Keep the old acquireLease path runnable after ctx cancellation.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var ownerPID int
+			var ownerBirth string
+			var stopOwner func()
+			if mode == "owner-exit" || mode == "owner-replaced" {
+				ownerPID, ownerBirth, stopOwner = startBoundStartupOwner(t)
+				_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+					st.Terminal.OwnerPID, st.Terminal.OwnerBirth = ownerPID, ownerBirth
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := e.state("alice")
+			replaced := false
+			if mode == "owner-replaced" {
+				a.bindStartupOwnerBirth = func(probeCtx context.Context, pid int) (string, error) {
+					if pid == ownerPID && replaced {
+						return ownerBirth + "-reused", nil
+					}
+					return bindingProcessBirth(probeCtx, pid)
+				}
+			}
+			armHook := false
+			armCommitted := false
+			a.bindStartupArmHook = func() {
+				armHook = true
+				switch mode {
+				case "owner-exit":
+					stopOwner()
+				case "owner-replaced":
+					replaced = true
+				case "canceled":
+					cancel()
+				}
+			}
+			a.bindStartupArmedHook = func() {
+				armCommitted = true
+				if mode == "live-owner" {
+					cancel()
+				}
+			}
+
+			err := runBoundStartupWithLock(t, a, s, ctx)
+			after := e.state("alice")
+			if !armHook {
+				t.Fatal("final arm hook was not reached")
+			}
+			switch mode {
+			case "live-owner":
+				if err != nil && !errors.Is(err, context.Canceled) || !armCommitted {
+					t.Fatalf("live owner did not arm: err=%v armed=%v", err, armCommitted)
+				}
+				if after.Terminal.RefreshStatus != "startup_ready" || reflect.DeepEqual(before.Lease, after.Lease) {
+					t.Fatalf("live owner did not commit readiness with its lease: before=%+v after=%+v", before.Terminal, after.Terminal)
+				}
+			case "canceled":
+				if !errors.Is(err, context.Canceled) || armCommitted || !reflect.DeepEqual(before, after) {
+					t.Fatalf("canceled arm had side effects: err=%v armed=%v status=%s leaseChanged=%v", err, armCommitted, after.Terminal.RefreshStatus, !reflect.DeepEqual(before.Lease, after.Lease))
+				}
+			case "owner-exit", "owner-replaced":
+				if !errors.Is(err, errBindingStaleConsumer) || armCommitted || !reflect.DeepEqual(before.Lease, after.Lease) || after.Terminal.RefreshStatus == "startup_ready" {
+					t.Fatalf("owner fence failed: err=%v armed=%v status=%s leaseChanged=%v", err, armCommitted, after.Terminal.RefreshStatus, !reflect.DeepEqual(before.Lease, after.Lease))
+				}
+			}
+			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+				t.Fatalf("%s arm retained consumer lock: %v", mode, err)
 			}
 		})
 	}

@@ -384,9 +384,13 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 			defer ready.Close()
 		}
 		refresh := newTerminalRefresh(ctx)
+		startupOwnerPID, startupOwnerBirth := initial.OwnerPID, initial.OwnerBirth
 		// Retain the original control transaction around final authority, lease
 		// acquisition and readiness. Credentials may have taken minutes to recover.
 		err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err := s.checkConnection(); err != nil {
 				return err
 			}
@@ -402,8 +406,48 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 				reason = "stale consumer"
 				return errBindingStaleConsumer
 			}
+			if b.OwnerPID != startupOwnerPID || b.OwnerBirth != startupOwnerBirth {
+				reason = "stale consumer"
+				return errBindingStaleConsumer
+			}
+			if a.bindStartupArmHook != nil {
+				a.bindStartupArmHook()
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := a.checkBoundStartupOwner(ctx, *b); err != nil {
+				if errors.Is(err, errBindingStaleConsumer) {
+					reason = "stale consumer"
+				}
+				return err
+			}
 			initial = *b
-			if err := a.acquireLease(s, b.SessionID, time.Now().Add(nativeRPCTimeout)); err != nil {
+			if err := a.acquireLeaseCheckedContext(ctx, s, b.SessionID, time.Now().Add(nativeRPCTimeout), func(cur *config.State) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := cur.RefuseMonitorConsumer(); err != nil {
+					return err
+				}
+				current := cur.Terminal
+				if cur.HostEnrollment != nil || current == nil || current.Stopped || current.Generation != generation || current.SessionID != initial.SessionID || current.DaemonPID != os.Getpid() || current.DaemonBirth != initial.DaemonBirth || current.Host != machineLabel() || current.OwnerPID != startupOwnerPID || current.OwnerBirth != startupOwnerBirth {
+					reason = "stale consumer"
+					return errBindingStaleConsumer
+				}
+				if err := a.checkBoundStartupOwner(ctx, *current); err != nil {
+					if errors.Is(err, errBindingStaleConsumer) {
+						reason = "stale consumer"
+					}
+					return err
+				}
+				if inherited != 0 && current.RefreshStatus != "startup_ready" {
+					if !recordTerminalRefreshStatus(cur, generation, machineLabel(), os.Getpid(), "startup_ready") {
+						return errBindingStaleConsumer
+					}
+				}
+				return nil
+			}); err != nil {
 				return err
 			}
 			if ready != nil {
@@ -416,6 +460,9 @@ func runBoundChild(ctx context.Context, a *App, generation string, inherited int
 		})
 		if err != nil {
 			return err
+		}
+		if inherited != 0 && a.bindStartupArmedHook != nil {
+			a.bindStartupArmedHook()
 		}
 		if inherited != 0 {
 			fmt.Fprintln(a.Stderr, "binding re-exec: executable changed")

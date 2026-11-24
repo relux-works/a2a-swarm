@@ -14,6 +14,8 @@ import (
 // Preserve the historical mark after 30 minutes, but keep retrying afterwards.
 const startupCredentialRetryLimit = 30 * time.Minute
 
+const startupOwnerPollInterval = 250 * time.Millisecond
+
 var (
 	errBindingStaleConsumer          = errors.New("binding stale consumer")
 	errStartupCredentialsUnavailable = errors.New("startup credentials unavailable")
@@ -82,20 +84,7 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 			return initial, err
 		}
 		checkOwner := func(b config.TerminalBinding) error {
-			if b.OwnerPID <= 1 || b.OwnerBirth == "" {
-				return errBindingStaleConsumer
-			}
-			ownerBirth, err := bindingProcessBirth(ctx, b.OwnerPID)
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if (err == nil && ownerBirth != b.OwnerBirth) || processGone(b.OwnerPID) {
-				return errBindingStaleConsumer
-			}
-			if err != nil {
-				return err
-			}
-			return nil
+			return a.checkBoundStartupOwner(ctx, b)
 		}
 		for {
 			if err := ctx.Err(); err != nil {
@@ -126,7 +115,12 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 				if err := s.checkConnection(); err != nil {
 					return err
 				}
-				diagnostic.recordStatus(fresh, generation, "startup_ready")
+				// Cancellation after credential and connection validation must not
+				// publish readiness. The arm transaction records startup_ready with
+				// its lease update only after its own final fences pass.
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				// Credential readiness alone is not a successful delivery cycle.
 				// runTerminal clears/logs the episode after fresh target and sync checks.
 				return run(fresh, initial, lock)
@@ -165,19 +159,80 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 			fmt.Fprintf(a.Stderr, "binding consumer unavailable; bounded retry cause=%s\n", reason)
 			a.observeBindingConsumer(s, generation, availability, false)
 			wait := delay
-			if a.bindStartupWait != nil {
-				if err := a.bindStartupWait(ctx, wait); err != nil {
-					return err
+			if err := waitBoundStartupOwner(ctx, wait, func(waitCtx context.Context, delay time.Duration) error {
+				if a.bindStartupWait != nil {
+					return a.bindStartupWait(waitCtx, delay)
 				}
-			} else {
-				timer := time.NewTimer(wait)
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
 				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return ctx.Err()
+				case <-waitCtx.Done():
+					return waitCtx.Err()
 				case <-timer.C:
+					return nil
 				}
+			}, func(ownerCtx context.Context) error { return a.checkBoundStartupOwner(ownerCtx, initial) }); err != nil {
+				return err
 			}
 		}
 	})
+}
+
+func waitBoundStartupOwner(ctx context.Context, delay time.Duration, wait func(context.Context, time.Duration) error, checkOwner func(context.Context) error) error {
+	waitCtx, cancel := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		ticker := time.NewTicker(startupOwnerPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-waitCtx.Done():
+				return
+			case <-ticker.C:
+				if checkOwner(waitCtx) != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	waitErr := wait(waitCtx, delay)
+	cancel()
+	<-watchDone
+	if err := checkOwner(ctx); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return waitErr
+}
+
+func (a *App) startupOwnerBirth(ctx context.Context, pid int) (string, error) {
+	if a.bindStartupOwnerBirth != nil {
+		return a.bindStartupOwnerBirth(ctx, pid)
+	}
+	return bindingProcessBirth(ctx, pid)
+}
+
+func (a *App) checkBoundStartupOwner(ctx context.Context, b config.TerminalBinding) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.OwnerPID <= 1 || b.OwnerBirth == "" || processGone(b.OwnerPID) {
+		return errBindingStaleConsumer
+	}
+	ownerBirth, err := a.startupOwnerBirth(ctx, b.OwnerPID)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil && ownerBirth != b.OwnerBirth || processGone(b.OwnerPID) {
+		return errBindingStaleConsumer
+	}
+	if err != nil {
+		return err
+	}
+	return nil
 }
