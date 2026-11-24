@@ -490,7 +490,7 @@ func processGone(pid int) bool {
 // acquireLease takes or refreshes the lease of the session's identity for
 // this session (sessionID: the hook's session id, "" elsewhere).
 func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) error {
-	return a.acquireLeaseCheckedContext(a.ctx, s, sessionID, deadline, nil)
+	return a.acquireLeaseCheckedContext(a.context(), s, sessionID, deadline, nil)
 }
 
 // acquireLeaseCheckedContext keeps startup's final owner and cancellation

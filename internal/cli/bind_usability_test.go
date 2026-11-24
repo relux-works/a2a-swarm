@@ -277,8 +277,8 @@ func TestBindUsabilityUnbind(t *testing.T) {
 	}
 }
 
-// Native CLI commands refresh the same Claude lease as hooks. Other holders
-// are refused by the real Acquire path; failed acquisition leaves disk intact.
+// Native CLI lease fallback works before Run initializes App.ctx, refreshes the
+// same Claude lease as hooks, and refuses other holders without changing disk.
 func TestBindUsabilityLeaseFallback(t *testing.T) {
 	e := newEnv(t)
 	e.agent("alice")
@@ -292,6 +292,9 @@ func TestBindUsabilityLeaseFallback(t *testing.T) {
 	s, err := a.session()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if a.ctx != nil {
+		t.Fatal("fixture unexpectedly initialized the App context")
 	}
 	if err = a.acquireLease(s, "own", time.Time{}); err != nil {
 		t.Fatal(err)
