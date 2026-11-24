@@ -63,6 +63,7 @@ func TestMuseBindAuthorityProductionProbes(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "manual gate") {
 			t.Fatalf("bind under a real muse-bin parent did not pass authority: err = %v", err)
 		}
+		fmt.Println("A2A-MUSE-CTL-INNER-RAN")
 		return
 	}
 	sleepBin, err := exec.LookPath("sleep")
@@ -123,10 +124,17 @@ func TestMuseBindAuthorityProductionProbes(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, fake, "-c", `"$0" -test.run='^TestMuseBindAuthorityProductionProbes$' -test.count=1; exit $?`, self)
+		cmd := exec.CommandContext(ctx, fake, "-c", `"$0" -test.v -test.run='^TestMuseBindAuthorityProductionProbes$' -test.count=1; exit $?`, self)
 		cmd.Env = append(os.Environ(), "A2A_MUSE_BIND_INNER=1")
-		if out, err := cmd.CombinedOutput(); err != nil {
+		cmd.WaitDelay = 10 * time.Second
+		out, err := cmd.CombinedOutput()
+		if err != nil {
 			t.Fatalf("inner control under muse-bin parent failed: %v\n%s", err, out)
+		}
+		// Exit status alone would also pass if the -test.run filter
+		// matched nothing; require the inner marker and PASS line.
+		if !strings.Contains(string(out), "A2A-MUSE-CTL-INNER-RAN") || !strings.Contains(string(out), "--- PASS: TestMuseBindAuthorityProductionProbes") {
+			t.Fatalf("inner control under muse-bin parent did not execute:\n%s", out)
 		}
 	})
 }
@@ -203,7 +211,12 @@ func TestMuseBindAuthorityToolShellShape(t *testing.T) {
 	toolSh := museBindCopyBinary(t, "/bin/sh", "toolsh")
 	// The sibling stand-in is a dash copy, not a sleep copy: on hosts
 	// where sleep is a multicall binary (uutils coreutils), a copy
-	// invoked under a muse-bin-* name dies on argv0 dispatch.
+	// invoked under a muse-bin-* name dies on argv0 dispatch. It runs a
+	// loop, not a lone "sleep N": shells that exec the last simple
+	// command of -c in place (bash, some dash builds) would turn the
+	// sibling's image into "sleep" before the inner run reads it. Its
+	// stdio is /dev/null so that a "sleep 1" child left behind by
+	// "kill $SIB" cannot hold the CombinedOutput pipe open.
 	siblingBin := museBindCopyBinary(t, "/bin/sh", "muse-bin-sib")
 	self, err := os.Executable()
 	if err != nil {
@@ -211,9 +224,10 @@ func TestMuseBindAuthorityToolShellShape(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	outer := `A2A_MUSE_BIND_OWNER=$$ "$1" -c '"$1" -c "sleep 120" & SIB=$!; A2A_MUSE_BIND_SIBLING=$SIB "$0" -test.v -test.run="^TestMuseBindAuthorityToolShellShape$" -test.count=1; st=$?; kill $SIB 2>/dev/null; wait $SIB 2>/dev/null; exit $st' "$0" "$2"; exit $?`
+	outer := `A2A_MUSE_BIND_OWNER=$$ "$1" -c '"$1" -c "while :; do sleep 1; done" </dev/null >/dev/null 2>&1 & SIB=$!; A2A_MUSE_BIND_SIBLING=$SIB "$0" -test.v -test.run="^TestMuseBindAuthorityToolShellShape$" -test.count=1; st=$?; kill $SIB 2>/dev/null; wait $SIB 2>/dev/null; exit $st' "$0" "$2"; exit $?`
 	cmd := exec.CommandContext(ctx, museSh, "-c", outer, self, toolSh, siblingBin)
 	cmd.Env = append(os.Environ(), "A2A_MUSE_BIND_TOOLSHELL_INNER=1")
+	cmd.WaitDelay = 10 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("tool-shell shape failed: %v\n%s", err, out)
@@ -259,6 +273,7 @@ func TestMuseBindAuthorityNonMuseGrandparentOwner(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, museSh, "-c", `"$0" -test.v -test.run='^TestMuseBindAuthorityNonMuseGrandparentOwner$' -test.count=1; exit $?`, self)
 	cmd.Env = append(os.Environ(), "A2A_MUSE_BIND_GP_INNER=1", "A2A_MUSE_BIND_OUTER="+strconv.Itoa(os.Getpid()))
+	cmd.WaitDelay = 10 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("non-muse grandparent inner failed: %v\n%s", err, out)
