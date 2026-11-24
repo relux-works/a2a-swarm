@@ -11,6 +11,7 @@ import (
 	"github.com/relux-works/a2a-swarm/internal/tmuxwake"
 )
 
+// Preserve the historical mark after 30 minutes, but keep retrying afterwards.
 const startupCredentialRetryLimit = 30 * time.Minute
 
 var (
@@ -47,23 +48,18 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 			return errBindingStaleConsumer
 		}
 		delay := time.Duration(0)
-		var retryDeadline time.Time
+		var firstRefusal time.Time
+		degraded := false
 		diagnostic := &terminalRefresh{}
 		availability := &bindingAvailability{}
-		expired := func() bool {
-			if retryDeadline.IsZero() || a.Now().Before(retryDeadline) {
-				return false
+		markDegraded := func() {
+			if firstRefusal.IsZero() || a.Now().Before(firstRefusal.Add(startupCredentialRetryLimit)) {
+				return
 			}
 			diagnostic.recordStatus(s, generation, "startup_credentials_unavailable")
-			return true
+			degraded = diagnostic.lastStatus == "startup_credentials_unavailable"
 		}
-		for {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if expired() {
-				return errStartupCredentialsUnavailable
-			}
+		readBinding := func() (config.TerminalBinding, error) {
 			var initial config.TerminalBinding
 			err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
 				if err := s.checkConnection(); err != nil {
@@ -83,17 +79,50 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 				initial = *b
 				return nil
 			})
+			return initial, err
+		}
+		checkOwner := func(b config.TerminalBinding) error {
+			if b.OwnerPID <= 1 || b.OwnerBirth == "" {
+				return errBindingStaleConsumer
+			}
+			ownerBirth, err := bindingProcessBirth(ctx, b.OwnerPID)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if (err == nil && ownerBirth != b.OwnerBirth) || processGone(b.OwnerPID) {
+				return errBindingStaleConsumer
+			}
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			markDegraded()
+			initial, err := readBinding()
 			if err != nil {
 				return err
 			}
 			if inherited == 0 {
 				return run(s, initial, lock)
 			}
-			fresh, err := a.session()
-			if expired() {
-				return errStartupCredentialsUnavailable
+			if err := checkOwner(initial); err != nil {
+				return err
 			}
+			fresh, err := a.session()
 			if err == nil {
+				// Credential loading can take time. Recheck both the binding and its
+				// owner before allowing this resumed image to arm.
+				initial, err = readBinding()
+				if err != nil {
+					return err
+				}
+				if err := checkOwner(initial); err != nil {
+					return err
+				}
 				if err := s.checkConnection(); err != nil {
 					return err
 				}
@@ -106,8 +135,18 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 			if reason == "" {
 				return err
 			}
-			if retryDeadline.IsZero() {
-				retryDeadline = a.Now().Add(startupCredentialRetryLimit)
+			if firstRefusal.IsZero() {
+				firstRefusal = a.Now()
+			}
+			markDegraded()
+			// Do not begin another potentially long retry wait after the bound
+			// runtime has stopped or the binding has been replaced.
+			initial, err = readBinding()
+			if err != nil {
+				return err
+			}
+			if err := checkOwner(initial); err != nil {
+				return err
 			}
 			// Use the same per-binding exponential policy as consumer sync errors.
 			// A corrupt policy cannot turn a refusal into a busy loop.
@@ -115,7 +154,9 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 				return errors.New("binding retry policy invalid")
 			}
 			delay = min(initial.RetryMax, max(initial.Interval, delay*2))
-			diagnostic.recordStatus(s, generation, "startup_"+reason)
+			if !degraded {
+				diagnostic.recordStatus(s, generation, "startup_"+reason)
+			}
 			// No pane or network access without credentials. Retained notice evidence
 			// can still age into suspicion and queue the ordinary stranded alarm.
 			if a.observeTerminalNotice(s, generation, initial, "unknown") == nil {
@@ -123,10 +164,7 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 			}
 			fmt.Fprintf(a.Stderr, "binding consumer unavailable; bounded retry cause=%s\n", reason)
 			a.observeBindingConsumer(s, generation, availability, false)
-			if expired() {
-				return errStartupCredentialsUnavailable
-			}
-			wait := min(delay, retryDeadline.Sub(a.Now()))
+			wait := delay
 			if a.bindStartupWait != nil {
 				if err := a.bindStartupWait(ctx, wait); err != nil {
 					return err
