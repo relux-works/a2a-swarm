@@ -146,6 +146,35 @@ func TestWakeClassBatchTimerAndCapDelivery(t *testing.T) {
 	}
 }
 
+// Proves an unrecognized class cannot be treated as a due batch wake after
+// the batch timer expires.
+func TestReviewUnknownWakeClassNeverTriggers(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := wakePolicy(start)
+	now := start.Add(defaultBatchInterval)
+	d := decideWakeClasses(p, []wakeClass{wakeClass(99)}, now)
+	if d.Due || d.Suppressed != "suppressed: invalid wake class" || d.Trigger.String() != "invalid" {
+		t.Errorf("unknown class decision = %+v, want fail-closed invalid suppression", d)
+	}
+	lastBatch := p.LastBatchWake
+	applyWakeClassReservation(p, wakeClass(99), now)
+	if !p.LastBatchWake.Equal(lastBatch) || len(p.OwnerReservations) != 0 || len(p.PeerReservations) != 0 {
+		t.Errorf("unknown class changed wake reservations: %+v", p)
+	}
+}
+
+// Proves validation happens before an otherwise due owner decision too; an
+// unknown class cannot ride along with a valid high-priority class.
+func TestReviewUnknownWakeClassNeverWakes(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := wakePolicy(start)
+	now := start.Add(defaultBatchInterval)
+	d := decideWakeClasses(p, []wakeClass{wakeOwner, wakeClass(99)}, now)
+	if d.Due || d.Suppressed != "suppressed: invalid wake class" || d.Trigger.String() != "invalid" {
+		t.Fatalf("mixed known/unknown class decision = %+v, want fail-closed invalid suppression", d)
+	}
+}
+
 // Proves mode selection: the explicit bind path without a flag keeps the
 // recorded (or absent legacy) policy, --economy records economy, and
 // SessionStart for a brand-new binding is the one default that adds it.

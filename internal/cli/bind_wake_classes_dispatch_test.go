@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,5 +160,70 @@ func TestWakeClassDispatchTimeline(t *testing.T) {
 	cycle()
 	if fake.types != 4 || fake.enters != 4 {
 		t.Fatalf("duplicate delivery after capped entry woke: types=%d enters=%d", fake.types, fake.enters)
+	}
+}
+
+// Proves a persisted unrecognized policy mode neither falls through to the
+// legacy send path nor appears as standard in bind status.
+func TestReviewUnknownWakePolicyFailsClosed(t *testing.T) {
+	e, a, s, fake, now, room := quiescentMuteWorld(t, false)
+	if _, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+		st.WakeClasses = &config.WakeClassPolicy{Mode: "future-mode", StartedAt: *now}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := runtimeMail(e, room, "ordinary pending mail")
+	for i := 0; i < 25 && fake.types == 0; i++ {
+		if err := a.dispatchTerminal(context.Background(), s, "scope-terminal"); err != nil {
+			t.Fatal(err)
+		}
+		if fake.types == 0 {
+			*now = now.Add(2 * time.Second)
+		}
+	}
+	st := e.state("alice")
+	status := wakeClassStatusOf(s, st, *now)
+	statusOutput := e.as("alice", "bind", "status").ok(t).stdout
+	if fake.types != 0 || slices.Contains(st.Terminal.Rung, id) || len(st.Terminal.Reservations) != 0 || st.Terminal.Outcome != "suppressed: invalid wake mode" || status.Mode != "invalid" || !strings.Contains(statusOutput, "mode=invalid") {
+		t.Fatalf("unknown policy was not held and reported invalid: types=%d rung=%v reservations=%v outcome=%q status=%+v output=%q", fake.types, st.Terminal.Rung, st.Terminal.Reservations, st.Terminal.Outcome, status, statusOutput)
+	}
+}
+
+// Proves the allowlist retains existing economy behavior when owner,
+// addressed peer, and timer-due batch entries are pending together.
+func TestReviewEconomyOwnerPeerAndDueBatchStillWake(t *testing.T) {
+	e, a, s, fake, now, room := quiescentMuteWorld(t, false)
+	e.as("alice", "host", "principals", "set", wakeTestPrincipal).ok(t)
+	policy := wakePolicy(*now)
+	policy.StartedAt = now.Add(-defaultBatchInterval)
+	if !nextBatchDue(policy).Equal(*now) {
+		t.Fatalf("positive-control batch timer is not due: %s", nextBatchDue(policy))
+	}
+	if _, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
+		st.WakeClasses = policy
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	batchID := runtimeMail(e, room, "ordinary batch mail")
+	peerID := wakeClassMail(e, room, "@bob:test.local", toMsg("bob", "question", "addressed peer mail"))
+	ownerID := wakeClassMail(e, room, wakeTestPrincipal, msg("owner mail", nil))
+	for i := 0; i < 25 && fake.types == 0; i++ {
+		if err := a.dispatchTerminal(context.Background(), s, "scope-terminal"); err != nil {
+			t.Fatal(err)
+		}
+		if fake.types == 0 {
+			*now = now.Add(2 * time.Second)
+		}
+	}
+	st := e.state("alice")
+	for _, id := range []string{batchID, peerID, ownerID} {
+		if !slices.Contains(st.Terminal.Rung, id) {
+			t.Errorf("eligible mail %s was not delivered; rung=%v", id, st.Terminal.Rung)
+		}
+	}
+	if fake.types != 1 || len(st.WakeClasses.OwnerReservations) != 1 || len(st.WakeClasses.PeerReservations) != 0 || !st.WakeClasses.LastBatchWake.Equal(*now) {
+		t.Fatalf("valid economy classes changed: types=%d policy=%+v", fake.types, st.WakeClasses)
 	}
 }

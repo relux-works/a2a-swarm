@@ -27,8 +27,19 @@ func (c wakeClass) String() string {
 		return "owner"
 	case wakePeer:
 		return "peer"
-	default:
+	case wakeBatch:
 		return "batch"
+	default:
+		return "invalid"
+	}
+}
+
+func validWakeClass(c wakeClass) bool {
+	switch c {
+	case wakeBatch, wakePeer, wakeOwner:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -80,7 +91,7 @@ func wakeClassCounts(entries []config.MailEntry, principals []string, name, me s
 			owner++
 		case wakePeer:
 			peer++
-		default:
+		case wakeBatch:
 			batch++
 		}
 	}
@@ -90,7 +101,16 @@ func wakeClassCounts(entries []config.MailEntry, principals []string, name, me s
 // wakeClassesEnabled reports whether the recorded policy selects economy.
 // An absent policy is the legacy single-cap behaviour.
 func wakeClassesEnabled(p *config.WakeClassPolicy) bool {
-	return p != nil && p.Mode == config.WakeClassEconomy
+	return p != nil && validWakeClassMode(p.Mode) && p.Mode == config.WakeClassEconomy
+}
+
+func validWakeClassMode(mode string) bool {
+	switch mode {
+	case config.WakeClassStandard, config.WakeClassEconomy:
+		return true
+	default:
+		return false
+	}
 }
 
 func wakeClassCaps(p *config.WakeClassPolicy) (owner, peer int, batch time.Duration) {
@@ -144,6 +164,11 @@ func decideWakeClasses(p *config.WakeClassPolicy, classes []wakeClass, now time.
 	if len(classes) == 0 {
 		return wakeClassDecision{}
 	}
+	for _, class := range classes {
+		if !validWakeClass(class) {
+			return wakeClassDecision{Trigger: class, Suppressed: "suppressed: invalid wake class"}
+		}
+	}
 	ownerCap, peerCap, _ := wakeClassCaps(p)
 	hasOwner, hasPeer := slices.Contains(classes, wakeOwner), slices.Contains(classes, wakePeer)
 	ownerUsed := len(pruneWakeHour(p.OwnerReservations, now))
@@ -170,6 +195,9 @@ func decideWakeClasses(p *config.WakeClassPolicy, classes []wakeClass, now time.
 // this wake as the last one that carried batch mail. Call under the state
 // lock, in the same transaction as the legacy hourly reservation.
 func applyWakeClassReservation(p *config.WakeClassPolicy, trigger wakeClass, now time.Time) {
+	if !validWakeClass(trigger) {
+		return
+	}
 	p.OwnerReservations = pruneWakeHour(p.OwnerReservations, now)
 	p.PeerReservations = pruneWakeHour(p.PeerReservations, now)
 	switch trigger {
@@ -200,8 +228,10 @@ type wakeClassStatus struct {
 func wakeClassStatusOf(s *session, st config.State, now time.Time) wakeClassStatus {
 	out := wakeClassStatus{Mode: config.WakeClassStandard}
 	if p := st.WakeClasses; p != nil {
-		if p.Mode == config.WakeClassEconomy {
-			out.Mode = config.WakeClassEconomy
+		if validWakeClassMode(p.Mode) {
+			out.Mode = p.Mode
+		} else {
+			out.Mode = "invalid"
 		}
 		out.Reason = p.Reason
 		out.OwnerUsed = len(pruneWakeHour(p.OwnerReservations, now))

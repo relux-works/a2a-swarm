@@ -1161,6 +1161,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		// Mail remains available to inbox. Attempt and rung IDs prevent normal
 		// duplicates; an uncertain attempt has a separate bounded recovery path.
 		wakePolicy := st.WakeClasses
+		if wakePolicy != nil && !validWakeClassMode(wakePolicy.Mode) {
+			return heldObservation("suppressed: invalid wake mode")
+		}
 		economyOn := wakeClassesEnabled(wakePolicy)
 		var wakePrincipals []string
 		if economyOn {
@@ -1292,6 +1295,11 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				current := st.Terminal
 				if current == nil || current.Stopped || current.Generation != generation || current.SessionID != b.SessionID || !ownTerminalTarget(current, b.Target) || !sameTerminalScope(*current, *b) || !sameTerminalIdle(current.Idle, b.Idle) {
 					return false, errors.New("binding retired")
+				}
+				if st.WakeClasses != nil && !validWakeClassMode(st.WakeClasses.Mode) {
+					current.Idle = nil
+					current.Outcome = "suppressed: invalid wake mode"
+					return false, nil
 				}
 				if st.HooksPaused || manualWakeGate(*st) != "" {
 					current.Outcome = "suppressed: manual gate"
