@@ -242,9 +242,10 @@ func museBindAttempt(t *testing.T, env map[string]string, ancestorOK bool, owner
 	return err, ancestorCalls, nameCalls
 }
 
-// A manual muse bind binds only its own session: a present Muse session
-// selector naming the bound session, invocation ancestry from the owner,
-// and a muse/muse-bin* owner image are each required.
+// A manual muse bind binds only its own session: Muse's own session
+// selector (MUSE_SESSION_ID or MUSE_THREAD_ID) naming the bound session,
+// invocation ancestry from the owner, and a muse/muse-bin* owner image
+// are each required; A2A_SESSION_ID may agree but never stands alone.
 func TestMuseBindAuthority(t *testing.T) {
 	own := map[string]string{"MUSE_SESSION_ID": "muse-session-1"}
 	for name, tc := range map[string]struct {
@@ -257,9 +258,16 @@ func TestMuseBindAuthority(t *testing.T) {
 		// reach neither guard.
 		authority bool
 	}{
-		"own session":              {own, true, "muse-bin-1.4.24", "manual gate", true},
-		"own session via thread":   {map[string]string{"MUSE_THREAD_ID": "muse-session-1"}, true, "/usr/local/bin/muse", "manual gate", true},
-		"own session via a2a":      {map[string]string{EnvSessionID: "muse-session-1"}, true, "muse-bin", "manual gate", true},
+		"own session":            {own, true, "muse-bin-1.4.24", "manual gate", true},
+		"own session via thread": {map[string]string{"MUSE_THREAD_ID": "muse-session-1"}, true, "/usr/local/bin/muse", "manual gate", true},
+		"own session via a2a":    {map[string]string{EnvSessionID: "muse-session-1", "MUSE_SESSION_ID": "muse-session-1"}, true, "muse-bin", "manual gate", true},
+		// A live session named only by A2A_SESSION_ID (stale, exported
+		// by another lane, or another session's id) must not bind: the
+		// selected session is live in the fake registry and the owner
+		// passes every process guard, so only the missing Muse selector
+		// refuses. Before the fix this row reached the manual gate.
+		"live a2a-only selector":   {map[string]string{EnvSessionID: "muse-session-1"}, true, "muse-bin", "requires this Muse session", false},
+		"a2a over foreign muse":    {map[string]string{EnvSessionID: "muse-session-1", "MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin", "another live Muse session", false},
 		"unrelated owner":          {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime", true},
 		"owner is not muse":        {own, true, "/bin/sleep", "not a muse process", true},
 		"missing Muse session env": {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session", false},

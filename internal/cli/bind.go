@@ -202,12 +202,16 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		return usagef("bind refuses another live Muse session")
 	}
 	isMuse := *runtime == "muse"
-	if isMuse && mode == bindingManual && current == "" {
-		// A manual muse bind must run inside the Muse session it binds:
-		// a session selector (A2A_SESSION_ID, then MUSE_SESSION_ID or
-		// MUSE_THREAD_ID) must be present, and the checks above already
-		// refused any present value that names another session.
-		return usagef("bind --runtime muse requires this Muse session: run it inside the session being bound (MUSE_SESSION_ID, MUSE_THREAD_ID or A2A_SESSION_ID)")
+	if isMuse && mode == bindingManual && a.museSessionID() == "" {
+		// A manual muse bind must run inside the Muse session it binds.
+		// Only Muse's own selector (MUSE_SESSION_ID or MUSE_THREAD_ID,
+		// which Muse sets in its tool shells) names that session:
+		// A2A_SESSION_ID is caller-exported and may be stale or name
+		// another live session, and muse sessions --json carries no
+		// owner process to tie an id to --owner-pid. The checks above
+		// already refused an A2A_SESSION_ID or --session-id that differs
+		// from the Muse selector.
+		return usagef("bind --runtime muse requires this Muse session: run it inside the session being bound (MUSE_SESSION_ID or MUSE_THREAD_ID; A2A_SESSION_ID alone does not name a Muse session)")
 	}
 	if !isMuse && (*pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "") {
 		return usagef("bind requires this invocation's own tmux pane/socket")

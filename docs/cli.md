@@ -2666,8 +2666,10 @@ Trusted `a2a hook session-start --runtime claude|codex` automatically binds **th
 A muse session binds with `--runtime muse` instead: no tmux target or composer observation exists on that carrier.
 Its session id resolves from `--session-id`, then `A2A_SESSION_ID`, then `MUSE_SESSION_ID` (or `MUSE_THREAD_ID`); the exact session
 must be live in `muse sessions --json` and `--owner-pid` names the live muse process (birth-pinned like the tmux carrier's owner).
-A manual muse bind must run inside the session it binds: one of those session selectors must be present and name the bound
-session, the bind invocation must descend from the `--owner-pid` process, and that owner must be a `muse`/`muse-bin*` process.
+A manual muse bind must run inside the session it binds: Muse's own selector (`MUSE_SESSION_ID` or `MUSE_THREAD_ID`, set by
+Muse in its tool shells) must be present and name the bound session; `A2A_SESSION_ID` and `--session-id` may only repeat it, and
+`A2A_SESSION_ID` alone is refused because it can be stale or name another live session. The bind invocation must descend from the
+`--owner-pid` process, and that owner must be a `muse`/`muse-bin*` process.
 The detached consumer keeps the bind-time `XDG_DATA_HOME`/`XDG_RUNTIME_DIR`, so it reads the same Muse session registry the
 bind admitted, and every Muse invocation runs with `MUSE_NO_AUTO_UPDATE=1`.
 Prerequisite on the Muse side: the bound session must accept external session messages (Muse's external-agent ingress,
