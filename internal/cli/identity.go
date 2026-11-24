@@ -114,6 +114,18 @@ func cmdIdentity(ctx context.Context, a *App, args []string) error {
 	return usagef("%s", identityUsage)
 }
 
+// recordNewIdentityEconomy selects the economy wake mode for a newly
+// registered identity. An identity that already recorded a mode keeps it.
+func (a *App) recordNewIdentityEconomy(p config.Paths, name string) error {
+	_, err := a.updateState(p, name, func(st *config.State) error {
+		if st.WakeClasses == nil {
+			st.WakeClasses = newEconomyPolicy(0, 0, 0, a.Now())
+		}
+		return nil
+	})
+	return err
+}
+
 // cmdIdentityEnsure: a2a identity ensure --role R [--project P] [--dir D]
 // [--runtime claude|codex|muse|none] [--keeper]. After the identity it
 // onboards the session (onboard.go): rooms, subscriptions, hooks, summary.
@@ -232,6 +244,9 @@ func cmdIdentityEnsure(ctx context.Context, a *App, args []string) error {
 		}
 		a.printf("registered %s (device %s)\ncredentials: %s (0600)\n", creds.UserID, creds.DeviceID, path)
 		if s, err = a.sessionAs(name); err != nil {
+			return err
+		}
+		if err := a.recordNewIdentityEconomy(p, name); err != nil {
 			return err
 		}
 	}

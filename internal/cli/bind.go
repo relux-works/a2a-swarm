@@ -158,6 +158,12 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	interval := fs.Duration("interval", defaultBindInterval, "idle observation and sync interval (1s..60s)")
 	retryMax := fs.Duration("retry-max", defaultBindRetryMax, "maximum sync-error backoff (at most 5m)")
 	rate := fs.Int("max-wakes-per-hour", defaultBindMaxWakes, "maximum wake attempts per hour")
+	economy := fs.Bool("economy", false, "priority wake classes: principal and addressed peer mail wake at once, the rest is batched")
+	noEconomy := fs.Bool("no-economy", false, "single-cap wake policy (requires --reason)")
+	reason := fs.String("reason", "", "opt-out reason recorded with --no-economy (1..200 printable bytes)")
+	ownerRate := fs.Int("owner-wakes-per-hour", defaultOwnerWakesPerHour, "maximum principal-mail wake attempts per hour (economy)")
+	peerRate := fs.Int("peer-wakes-per-hour", defaultPeerWakesPerHour, "maximum addressed peer-mail wake attempts per hour (economy)")
+	batchInterval := fs.Duration("batch-interval", defaultBatchInterval, "minimum interval between batch wakes (economy, 1m..6h)")
 	run := fs.String("run-generation", "", "internal detached consumer generation")
 	lockFD := fs.Int("consumer-lock-fd", 0, "internal inherited consumer lock")
 	pos, err := parseInterspersed(fs, args)
@@ -188,6 +194,23 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 	if *owner <= 1 || *interval < time.Second || *interval > maxPoll || *retryMax < *interval || *retryMax > 5*time.Minute || *rate < 1 || *rate > 3600 || !claudeSessionRE.MatchString(*sessionID) {
 		return usagef("bind requires --runtime, own --owner-pid, --session-id (or session env), --interval 1s..60s, --retry-max interval..5m and --max-wakes-per-hour 1..3600")
 	}
+	classFlags := flagPresent(fs, "owner-wakes-per-hour") || flagPresent(fs, "peer-wakes-per-hour") || flagPresent(fs, "batch-interval")
+	if *economy && *noEconomy {
+		return usagef("bind takes only one of --economy and --no-economy")
+	}
+	if *noEconomy && !validWakeClassReason(*reason) {
+		return usagef("--no-economy requires --reason TEXT (1..200 printable bytes)")
+	}
+	if !*noEconomy && *reason != "" {
+		return usagef("--reason requires --no-economy")
+	}
+	if *noEconomy && classFlags {
+		return usagef("--owner-wakes-per-hour, --peer-wakes-per-hour and --batch-interval require economy, not --no-economy")
+	}
+	if *ownerRate < 1 || *ownerRate > 3600 || *peerRate < 1 || *peerRate > 3600 || *batchInterval < minBatchInterval || *batchInterval > maxBatchInterval {
+		return usagef("bind economy requires --owner-wakes-per-hour 1..3600, --peer-wakes-per-hour 1..3600 and --batch-interval 1m..6h")
+	}
+	wakeSel := wakeClassSelection{economy: *economy || classFlags, noEconomy: *noEconomy, reason: *reason, owner: *ownerRate, peer: *peerRate, batch: *batchInterval}
 	current := a.Getenv(EnvSessionID)
 	if current == "" && *runtime == "claude" && a.Getenv("CODEX_THREAD_ID") == "" {
 		current = a.Getenv("CLAUDE_CODE_SESSION_ID")
@@ -376,6 +399,28 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 				b.AttemptAt = old.AttemptAt
 				b.Retried = old.Retried
 				b.Typed = old.Typed && ownTerminalTarget(old, target)
+			}
+		}
+		if pol := resolveWakeClassPolicy(st.WakeClasses, wakeSel, a.Now()); pol != nil {
+			if pol.StartedAt.IsZero() {
+				pol.StartedAt = a.Now().UTC()
+			}
+			if _, err = a.updateState(s.paths, s.name, func(cur *config.State) error {
+				cur.WakeClasses = pol
+				return nil
+			}); err != nil {
+				return err
+			}
+		} else if st.Terminal == nil && wakeClassesEnabled(st.WakeClasses) && st.WakeClasses.LastBatchWake.IsZero() && len(st.WakeClasses.OwnerReservations) == 0 && len(st.WakeClasses.PeerReservations) == 0 {
+			// A policy recorded before the first binding (new identity)
+			// starts its batch clock at this binding, not at registration.
+			if _, err = a.updateState(s.paths, s.name, func(cur *config.State) error {
+				if cur.WakeClasses != nil {
+					cur.WakeClasses.StartedAt = a.Now().UTC()
+				}
+				return nil
+			}); err != nil {
+				return err
 			}
 		}
 		if err = persistTerminalReplacement(s, b, automatic); err != nil {
@@ -1115,6 +1160,13 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 		}
 		// Mail remains available to inbox. Attempt and rung IDs prevent normal
 		// duplicates; an uncertain attempt has a separate bounded recovery path.
+		wakePolicy := st.WakeClasses
+		economyOn := wakeClassesEnabled(wakePolicy)
+		var wakePrincipals []string
+		if economyOn {
+			wakePrincipals = s.readDeliveryPrincipals()
+		}
+		classByID := map[string]wakeClass{}
 		var ids []string
 		var pendingIDs []string
 		alarm := alarmSample{At: a.Now()}
@@ -1122,6 +1174,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 			for _, entry := range mb.Pending() {
 				alarm.add(entry)
 				pendingIDs = append(pendingIDs, entry.ID)
+				if economyOn {
+					classByID[entry.ID] = classifyWakeEntry(entry, wakePrincipals, s.name, s.creds.UserID)
+				}
 				if !slices.Contains(b.Rung, entry.ID) {
 					ids = append(ids, entry.ID)
 				}
@@ -1210,11 +1265,26 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				return a.terminalPreSendSuppressed(s, generation, *b, readiness)
 			}
 			now := a.Now()
+			wakeTrigger := wakeBatch
+			if economyOn {
+				// The class decision replaces the single hourly cap; the
+				// gates above (and spacing and idle below) still apply to
+				// every class. A not-due class spends no idle sample.
+				classes := make([]wakeClass, 0, len(ids))
+				for _, id := range ids {
+					classes = append(classes, classByID[id])
+				}
+				decision := decideWakeClasses(wakePolicy, classes, now)
+				if !decision.Due {
+					return a.recordWakeClassSuppression(s, generation, decision)
+				}
+				wakeTrigger = decision.Trigger
+			}
 			if qualified, err := a.qualifyTerminalIdle(s, generation, *b, readiness); err != nil || !qualified {
 				return err
 			}
 			reservations := slices.DeleteFunc(slices.Clone(b.Reservations), func(t time.Time) bool { return now.Sub(t) >= time.Hour })
-			if len(reservations) >= b.MaxWakes {
+			if !economyOn && len(reservations) >= b.MaxWakes {
 				return a.terminalUpdate(s, generation, func(b *config.TerminalBinding) { b.Idle = nil; b.Outcome = "suppressed: hourly rate" })
 			}
 			var reservedAttempt config.TerminalBinding
@@ -1242,6 +1312,32 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 					current.Outcome = "armed: no new mail"
 					return false, nil
 				}
+				if wakeClassesEnabled(st.WakeClasses) {
+					// Re-decide under the state lock over the final ID set;
+					// a not-due result spends no class or legacy reservation.
+					classes := make([]wakeClass, 0, len(ids))
+					for _, id := range ids {
+						classes = append(classes, classByID[id])
+					}
+					decision := decideWakeClasses(st.WakeClasses, classes, now)
+					if !decision.Due {
+						current.Idle = nil
+						if decision.CapBlocked {
+							flag := &st.WakeClasses.PeerSuppressed
+							if decision.CapClass == wakeOwner {
+								flag = &st.WakeClasses.OwnerSuppressed
+							}
+							if !*flag {
+								*flag = true
+								current.Outcome = decision.Suppressed
+							}
+						} else {
+							current.Outcome = decision.Suppressed
+						}
+						return false, nil
+					}
+					wakeTrigger = decision.Trigger
+				}
 				current.NoticeOrigin = current.Idle
 				current.NoticePosition = nil
 				current.TypingStarted = false
@@ -1253,6 +1349,9 @@ func (a *App) dispatchTerminal(ctx context.Context, s *session, generation strin
 				current.Retried = false
 				current.Typed = false
 				current.Reservations = append(reservations, now)
+				if wakeClassesEnabled(st.WakeClasses) {
+					applyWakeClassReservation(st.WakeClasses, wakeTrigger, now)
+				}
 				current.NotificationToken = token
 				current.Outcome = "attempt reserved"
 				reservedAttempt = *current

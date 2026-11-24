@@ -106,6 +106,8 @@ reactions do not notify. Malformed recipient data from a configured principal
 uses the owner route with a fixed diagnostic; malformed peer metadata and
 unresolved targets do not notify. Existing pause, ownership, and rate gates
 still apply.
+New bindings default to economy. Owner/principal mail, addressed peer questions, requests, decisions, and
+owner-needed messages wake immediately under hourly caps; other mail batches every 30m; opt out with `a2a bind --no-economy --reason TEXT`.
 
 ## Liveness
 

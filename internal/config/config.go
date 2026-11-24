@@ -422,6 +422,9 @@ type State struct {
 	HostEnrollment *HostEnrollment `json:"host_enrollment,omitempty"`
 	// Notification spaces fixed doorbells; it never receipts or owns channel safety.
 	Notification Notification `json:"notification,omitempty"`
+	// WakeClasses is the optional priority-class policy of the terminal
+	// binding; absent is the legacy single-cap behaviour.
+	WakeClasses *WakeClassPolicy `json:"wake_classes,omitempty"`
 	// NextBatch is the sync cursor: every relevant event before it is in the
 	// mailbox (appended and fsynced before the cursor was saved).
 	NextBatch string `json:"next_batch,omitempty"`

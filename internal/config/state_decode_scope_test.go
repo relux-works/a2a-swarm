@@ -1064,6 +1064,7 @@ func stateCloneContractViolation(got, want State) error {
 // the same independent-value oracle as a clone with a planted omitted field.
 func TestStateCloneOmittedFieldDetectorControl(t *testing.T) {
 	source, expected := populatedState(41), populatedState(41)
+	source.Threads, expected.Threads = []string{"$root"}, []string{"$root"}
 	clone, ok := cloneState(&source)
 	if !ok {
 		t.Fatal("production clone rejected supported fixture")
@@ -1072,7 +1073,7 @@ func TestStateCloneOmittedFieldDetectorControl(t *testing.T) {
 		t.Fatalf("production clone failed independent oracle: %v", err)
 	}
 	planted := source
-	planted.legacyThreadEvents = nil // bounded omitted-field plant
+	planted.Threads = nil // bounded omitted-field plant
 	if err := stateCloneContractViolation(planted, expected); err == nil || !strings.Contains(err.Error(), "differs") {
 		t.Fatalf("omitted-field plant escaped intended clone assertion: %v", err)
 	}

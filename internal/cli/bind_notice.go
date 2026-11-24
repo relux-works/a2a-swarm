@@ -242,6 +242,7 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	}
 	stateWriters := s.stateWriterWarnings(ctx, st)
 	audienceError := s.audienceStatus()
+	wakeStatus := wakeClassStatusOf(s, st, a.Now())
 	if *asJSON {
 		return a.printJSON(struct {
 			config.OwnNoticeObservation
@@ -260,7 +261,8 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 			PrincipalError      string                      `json:"principal_error,omitempty"`
 			AudienceError       string                      `json:"audience_error,omitempty"`
 			StateWriterWarnings []stateWriterWarning        `json:"state_writer_warnings,omitempty"`
-		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, wakeDiagnostic, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, audienceError, stateWriters})
+			WakeClasses         wakeClassStatus             `json:"wake_classes"`
+		}{n, publication, terminalNoticeReportStatus(st.Terminal), noticeError, notificationDiagnostic(st.Notification, a.Now()), readiness, input, matchLocation, sendRefusal, wakeDiagnostic, recovery, alarmStatus(s, st), terminalRefreshStatus(st.Terminal), principalError, audienceError, stateWriters, wakeStatus})
 	}
 	for _, warning := range stateWriters {
 		a.printf("warning: %s: %s\n", warning.Source, warning.Detail)
@@ -281,6 +283,12 @@ func (a *App) terminalStatus(ctx context.Context, args []string) error {
 	a.printAlarmStatus(alarmStatus(s, st))
 	a.printf("refresh=%s\n", terminalRefreshStatus(st.Terminal))
 	a.printf("notification=%s\n", notificationDiagnostic(st.Notification, a.Now()).State)
+	if wakeStatus.Reason != "" {
+		a.printf("mode=%s reason=%s\n", wakeStatus.Mode, sanitizeLine(wakeStatus.Reason))
+	} else {
+		a.printf("mode=%s\n", wakeStatus.Mode)
+	}
+	a.printf("wake_classes owner_used=%d peer_used=%d batch_last=%s batch_next=%s pending_owner=%d pending_peer=%d pending_batch=%d\n", wakeStatus.OwnerUsed, wakeStatus.PeerUsed, wakeClassTime(wakeStatus.LastBatch), wakeClassTime(wakeStatus.NextBatch), wakeStatus.PendingOwner, wakeStatus.PendingPeer, wakeStatus.PendingBatch)
 	if readiness != nil {
 		a.printf("readiness=%s reason=%s version=%s since=%s unknown_keys=%s\n", readiness.State, readiness.Reason, readiness.Version, readiness.Since.Format(time.RFC3339Nano), readiness.UnknownKeys)
 	}

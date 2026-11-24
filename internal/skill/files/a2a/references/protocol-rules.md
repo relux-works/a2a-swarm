@@ -89,6 +89,8 @@ idempotent `a2a subs sync` to repair missing defaults. Record deliberate
 narrowing with `a2a subs trim --room <room> --drop <kinds> --reason <text>`;
 trims are separate from delivery state and survive onboarding and sync.
 
+Each wake carries the full pending inbox; `a2a bind status` shows the mode and reason.
+
 ### Selector and request rules
 
 Every supplied selector must match. Require at least one selector besides the
