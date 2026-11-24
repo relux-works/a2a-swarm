@@ -239,6 +239,7 @@ Source: #lobby topic `swarm-merge` and #a2a-swarm topic `governance`.
 
 ## Blocking and non-blocking asks (owner vision, 2026-09-30)
 32. **Blocking marks the item, not the agent.** Every `question` (rules 6 and 30) and every advice-process opener (rule 27) is explicitly either blocking or non-blocking. The asker keeps working on everything else either way.
+    The structured fields and keeper query below describe the protocol contract. The current CLI does not implement them. Send the question with an explicit `--reply-by` and state the blocked item or the fallback assumption in the message body.
     1. **Mark.** Structured header fields, required, with no default:
        - `--blocking --blocks <item or goal id>`: blocking without naming what it blocks is refused;
        - or `--non-blocking --assume "<what I proceed on>"`;
