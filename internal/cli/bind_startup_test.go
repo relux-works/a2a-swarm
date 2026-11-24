@@ -583,14 +583,12 @@ func TestBoundStartupPinsFirstOwnerAcrossRetry(t *testing.T) {
 
 // This proves the final control-lock and lease transaction refuses owner exit,
 // PID reuse, or cancellation after the last connection check, without changing
-// the lease or publishing startup_ready. The live-owner case is the positive
-// control and proves readiness is committed with successful arming. It cancels
-// after that commit so the test does not enter the delivery loop.
+// the lease or publishing startup_ready. The live-owner case also proves that
+// startup reaches the first delivery cycle after committing readiness.
 func TestBoundStartupFinalArmFence(t *testing.T) {
 	for _, mode := range []string{"live-owner", "owner-exit", "owner-replaced", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			a, s, e, _, _, _ := startupFixture(t)
-			a.ctx = context.Background() // Keep the old acquireLease path runnable after ctx cancellation.
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			var ownerPID int
@@ -618,6 +616,7 @@ func TestBoundStartupFinalArmFence(t *testing.T) {
 			}
 			armHook := false
 			armCommitted := false
+			cycleReached := false
 			a.bindStartupArmHook = func() {
 				armHook = true
 				switch mode {
@@ -631,6 +630,9 @@ func TestBoundStartupFinalArmFence(t *testing.T) {
 			}
 			a.bindStartupArmedHook = func() {
 				armCommitted = true
+			}
+			a.bindStartupCycleHook = func() {
+				cycleReached = true
 				if mode == "live-owner" {
 					cancel()
 				}
@@ -643,19 +645,19 @@ func TestBoundStartupFinalArmFence(t *testing.T) {
 			}
 			switch mode {
 			case "live-owner":
-				if err != nil && !errors.Is(err, context.Canceled) || !armCommitted {
-					t.Fatalf("live owner did not arm: err=%v armed=%v", err, armCommitted)
+				if err != nil && !errors.Is(err, context.Canceled) || !armCommitted || !cycleReached {
+					t.Fatalf("live owner did not enter first cycle: err=%v armed=%v cycle=%v", err, armCommitted, cycleReached)
 				}
 				if after.Terminal.RefreshStatus != "startup_ready" || reflect.DeepEqual(before.Lease, after.Lease) {
 					t.Fatalf("live owner did not commit readiness with its lease: before=%+v after=%+v", before.Terminal, after.Terminal)
 				}
 			case "canceled":
-				if !errors.Is(err, context.Canceled) || armCommitted || !reflect.DeepEqual(before, after) {
-					t.Fatalf("canceled arm had side effects: err=%v armed=%v status=%s leaseChanged=%v", err, armCommitted, after.Terminal.RefreshStatus, !reflect.DeepEqual(before.Lease, after.Lease))
+				if !errors.Is(err, context.Canceled) || armCommitted || cycleReached || !reflect.DeepEqual(before, after) {
+					t.Fatalf("canceled arm had side effects: err=%v armed=%v cycle=%v status=%s leaseChanged=%v", err, armCommitted, cycleReached, after.Terminal.RefreshStatus, !reflect.DeepEqual(before.Lease, after.Lease))
 				}
 			case "owner-exit", "owner-replaced":
-				if !errors.Is(err, errBindingStaleConsumer) || armCommitted || !reflect.DeepEqual(before.Lease, after.Lease) || after.Terminal.RefreshStatus == "startup_ready" {
-					t.Fatalf("owner fence failed: err=%v armed=%v status=%s leaseChanged=%v", err, armCommitted, after.Terminal.RefreshStatus, !reflect.DeepEqual(before.Lease, after.Lease))
+				if !errors.Is(err, errBindingStaleConsumer) || armCommitted || cycleReached || !reflect.DeepEqual(before.Lease, after.Lease) || after.Terminal.RefreshStatus == "startup_ready" {
+					t.Fatalf("owner fence failed: err=%v armed=%v cycle=%v status=%s leaseChanged=%v", err, armCommitted, cycleReached, after.Terminal.RefreshStatus, !reflect.DeepEqual(before.Lease, after.Lease))
 				}
 			}
 			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {

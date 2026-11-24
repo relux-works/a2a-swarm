@@ -72,6 +72,7 @@ type App struct {
 	bindStartupWait       func(context.Context, time.Duration) error // deterministic startup retry seam
 	bindStartupArmHook    func()                                     // deterministic point before the final arm fence; tests only
 	bindStartupArmedHook  func()                                     // deterministic point after inherited startup arms; tests only
+	bindStartupCycleHook  func()                                     // deterministic point at first delivery-cycle entry; tests only
 	bindStartupOwnerBirth func(context.Context, int) (string, error) // process identity seam; tests only
 	beforeCredentialScrub func() error
 	ctx                   context.Context

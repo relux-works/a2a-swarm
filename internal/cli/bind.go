@@ -606,7 +606,17 @@ func (a *App) runTerminalWithRefresh(ctx context.Context, s *session, generation
 	delay := policy.Interval
 	availability := &bindingAvailability{}
 	qualificationInterrupted := true
+	firstCycle := true
 	for ctx.Err() == nil {
+		if firstCycle {
+			firstCycle = false
+			if a.bindStartupCycleHook != nil {
+				a.bindStartupCycleHook()
+				if ctx.Err() != nil {
+					return "cancelled", nil
+				}
+			}
+		}
 		scope.Open()
 		if err := s.checkConnection(); err != nil && !errors.Is(err, config.ErrMigrationStateUnavailable) {
 			scope.Close()
