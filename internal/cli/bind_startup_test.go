@@ -503,6 +503,84 @@ func runBoundStartupWithLock(t *testing.T, a *App, s *session, ctx context.Conte
 	})
 }
 
+// A resumed binding stays pinned to the owner from its first snapshot through
+// credential recovery. A changed live owner cannot arm or mutate the lease;
+// an unchanged owner remains a positive recovery control.
+func TestBoundStartupPinsFirstOwnerAcrossRetry(t *testing.T) {
+	for _, mode := range []string{"unchanged-owner", "swapped-owner"} {
+		t.Run(mode, func(t *testing.T) {
+			a, s, e, dir, _, k := startupFixture(t)
+			k.probeCommand = probeFixture(t, "missing", dir)
+			before := e.state("alice")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var replacementPID int
+			var replacementBirth string
+			var stopReplacement func()
+			if mode == "swapped-owner" {
+				replacementPID, replacementBirth, stopReplacement = startBoundStartupOwner(t)
+				defer stopReplacement()
+			}
+			var expected config.State
+			waits := 0
+			a.bindStartupWait = func(context.Context, time.Duration) error {
+				waits++
+				if waits != 1 {
+					t.Fatalf("unexpected retry count: %d", waits)
+				}
+				if mode == "swapped-owner" {
+					_, err := config.UpdateState(s.paths, s.name, func(st *config.State) error {
+						st.Terminal.OwnerPID = replacementPID
+						st.Terminal.OwnerBirth = replacementBirth
+						st.Terminal.Target.OwnerPID = replacementPID
+						st.Terminal.Target.OwnerBirth = replacementBirth
+						return nil
+					})
+					if err != nil {
+						return err
+					}
+					expected = e.state("alice")
+				}
+				k.probeCommand = unlockedProbe
+				return nil
+			}
+			armCommitted := false
+			a.bindStartupArmedHook = func() {
+				armCommitted = true
+				cancel()
+			}
+
+			err := runBoundStartupWithLock(t, a, s, ctx)
+			after := e.state("alice")
+			if waits != 1 {
+				t.Fatalf("waits=%d, want one credential retry", waits)
+			}
+			if after.Terminal.Generation != before.Terminal.Generation || after.Terminal.SessionID != before.Terminal.SessionID {
+				t.Fatalf("test changed binding generation/consumer: before=%+v after=%+v", before.Terminal, after.Terminal)
+			}
+			if err := config.WithRuntimeLock(s.paths, s.name, "consumer", time.Now(), func() error { return nil }); err != nil {
+				t.Fatalf("%s retained consumer lock: %v", mode, err)
+			}
+			switch mode {
+			case "unchanged-owner":
+				if err != nil && !errors.Is(err, context.Canceled) || !armCommitted {
+					t.Fatalf("unchanged owner did not arm: err=%v armed=%v", err, armCommitted)
+				}
+				if after.Terminal.OwnerPID != before.Terminal.OwnerPID || after.Terminal.OwnerBirth != before.Terminal.OwnerBirth || after.Terminal.RefreshStatus != "startup_ready" || reflect.DeepEqual(before.Lease, after.Lease) {
+					t.Fatalf("unchanged owner failed positive recovery control: before=%+v after=%+v", before.Terminal, after.Terminal)
+				}
+			case "swapped-owner":
+				if !errors.Is(err, errBindingStaleConsumer) || armCommitted {
+					t.Fatalf("changed live owner was accepted: err=%v armed=%v", err, armCommitted)
+				}
+				if !reflect.DeepEqual(expected, after) || !reflect.DeepEqual(before.Lease, after.Lease) || after.Terminal.RefreshStatus == "startup_ready" {
+					t.Fatalf("owner swap changed state after refusal: beforeSwap=%+v after=%+v", expected.Terminal, after.Terminal)
+				}
+			}
+		})
+	}
+}
+
 // This proves the final control-lock and lease transaction refuses owner exit,
 // PID reuse, or cancellation after the last connection check, without changing
 // the lease or publishing startup_ready. The live-owner case is the positive
