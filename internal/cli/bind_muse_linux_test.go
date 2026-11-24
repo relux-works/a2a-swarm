@@ -216,7 +216,9 @@ func TestMuseBindAuthorityToolShellShape(t *testing.T) {
 	// command of -c in place (bash, some dash builds) would turn the
 	// sibling's image into "sleep" before the inner run reads it. Its
 	// stdio is /dev/null so that a "sleep 1" child left behind by
-	// "kill $SIB" cannot hold the CombinedOutput pipe open.
+	// "kill $SIB" cannot hold the CombinedOutput pipe open. The loop
+	// ends by itself after 90 s (longer than the 1-minute context), so
+	// a tool shell that dies before "kill $SIB" leaves no endless orphan.
 	siblingBin := museBindCopyBinary(t, "/bin/sh", "muse-bin-sib")
 	self, err := os.Executable()
 	if err != nil {
@@ -224,7 +226,7 @@ func TestMuseBindAuthorityToolShellShape(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	outer := `A2A_MUSE_BIND_OWNER=$$ "$1" -c '"$1" -c "while :; do sleep 1; done" </dev/null >/dev/null 2>&1 & SIB=$!; A2A_MUSE_BIND_SIBLING=$SIB "$0" -test.v -test.run="^TestMuseBindAuthorityToolShellShape$" -test.count=1; st=$?; kill $SIB 2>/dev/null; wait $SIB 2>/dev/null; exit $st' "$0" "$2"; exit $?`
+	outer := `A2A_MUSE_BIND_OWNER=$$ "$1" -c '"$1" -c "i=0; while [ \$i -lt 90 ]; do sleep 1; i=\$((i+1)); done" </dev/null >/dev/null 2>&1 & SIB=$!; A2A_MUSE_BIND_SIBLING=$SIB "$0" -test.v -test.run="^TestMuseBindAuthorityToolShellShape$" -test.count=1; st=$?; kill $SIB 2>/dev/null; wait $SIB 2>/dev/null; exit $st' "$0" "$2"; exit $?`
 	cmd := exec.CommandContext(ctx, museSh, "-c", outer, self, toolSh, siblingBin)
 	cmd.Env = append(os.Environ(), "A2A_MUSE_BIND_TOOLSHELL_INNER=1")
 	cmd.WaitDelay = 10 * time.Second
