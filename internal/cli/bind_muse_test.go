@@ -207,7 +207,15 @@ func museBindSetup(t *testing.T, env map[string]string) (*env, *App) {
 
 func museBindRun(t *testing.T, e *env, a *App, owner int) error {
 	t.Helper()
-	err := a.bindTerminal(context.Background(), []string{"--runtime", "muse", "--owner-pid", strconv.Itoa(owner), "--session-id", "muse-session-1"}, bindingManual)
+	return museBindRunArgs(t, e, a, owner, "--session-id", "muse-session-1")
+}
+
+// museBindRunArgs runs one manual muse bind with the given session flags;
+// none means the session id resolves from the environment, the documented
+// form (docs/cli.md, onboard guidance).
+func museBindRunArgs(t *testing.T, e *env, a *App, owner int, flags ...string) error {
+	t.Helper()
+	err := a.bindTerminal(context.Background(), append([]string{"--runtime", "muse", "--owner-pid", strconv.Itoa(owner)}, flags...), bindingManual)
 	if st := e.state("alice"); st.Terminal != nil {
 		t.Fatalf("bind persisted a terminal past the gate: %+v", st.Terminal)
 	}
@@ -220,7 +228,7 @@ func museBindRun(t *testing.T, e *env, a *App, owner int) error {
 // the image lookup must be asked for the owner, so a production call that
 // asks about the wrong process (for example the owner against itself)
 // fails here. The returned counts pin whether each guard ran at all.
-func museBindAttempt(t *testing.T, env map[string]string, ancestorOK bool, ownerName string) (err error, ancestorCalls, nameCalls int) {
+func museBindAttempt(t *testing.T, env map[string]string, ancestorOK bool, ownerName string, flagless bool) (err error, ancestorCalls, nameCalls int) {
 	t.Helper()
 	e, a := museBindSetup(t, env)
 	owner := os.Getpid()
@@ -238,7 +246,11 @@ func museBindAttempt(t *testing.T, env map[string]string, ancestorOK bool, owner
 		}
 		return ownerName, nil
 	}
-	err = museBindRun(t, e, a, owner)
+	if flagless {
+		err = museBindRunArgs(t, e, a, owner)
+	} else {
+		err = museBindRun(t, e, a, owner)
+	}
 	return err, ancestorCalls, nameCalls
 }
 
@@ -257,25 +269,38 @@ func TestMuseBindAuthority(t *testing.T) {
 		// guard runs only after ancestry passes. Selector refusals must
 		// reach neither guard.
 		authority bool
+		// flagless rows pass no --session-id: the id resolves from the
+		// environment, as in the documented command.
+		flagless bool
 	}{
-		"own session":            {own, true, "muse-bin-1.4.24", "manual gate", true},
-		"own session via thread": {map[string]string{"MUSE_THREAD_ID": "muse-session-1"}, true, "/usr/local/bin/muse", "manual gate", true},
-		"own session via a2a":    {map[string]string{EnvSessionID: "muse-session-1", "MUSE_SESSION_ID": "muse-session-1"}, true, "muse-bin", "manual gate", true},
+		"own session":            {own, true, "muse-bin-1.4.24", "manual gate", true, false},
+		"own session via thread": {map[string]string{"MUSE_THREAD_ID": "muse-session-1"}, true, "/usr/local/bin/muse", "manual gate", true, false},
+		"own session via a2a":    {map[string]string{EnvSessionID: "muse-session-1", "MUSE_SESSION_ID": "muse-session-1"}, true, "muse-bin", "manual gate", true, false},
 		// A live session named only by A2A_SESSION_ID (stale, exported
 		// by another lane, or another session's id) must not bind: the
 		// selected session is live in the fake registry and the owner
 		// passes every process guard, so only the missing Muse selector
 		// refuses. Before the fix this row reached the manual gate.
-		"live a2a-only selector":   {map[string]string{EnvSessionID: "muse-session-1"}, true, "muse-bin", "requires this Muse session", false},
-		"a2a over foreign muse":    {map[string]string{EnvSessionID: "muse-session-1", "MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin", "another live Muse session", false},
-		"unrelated owner":          {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime", true},
-		"owner is not muse":        {own, true, "/bin/sleep", "not a muse process", true},
-		"missing Muse session env": {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session", false},
-		"claude env only":          {map[string]string{"CLAUDE_CODE_SESSION_ID": "claude-1"}, true, "muse-bin-1.4.24", "requires this Muse session", false},
-		"foreign session id":       {map[string]string{"MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin-1.4.24", "another live", false},
+		"live a2a-only selector": {map[string]string{EnvSessionID: "muse-session-1"}, true, "muse-bin", "requires this Muse session", false, false},
+		"a2a over foreign muse":  {map[string]string{EnvSessionID: "muse-session-1", "MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin", "another live Muse session", false, false},
+		// The same selector rules without --session-id (B1 in its
+		// natural form), and with the older MUSE_THREAD_ID spelling.
+		"flagless own session":     {own, true, "muse-bin-1.4.24", "manual gate", true, true},
+		"flagless live a2a-only":   {map[string]string{EnvSessionID: "muse-session-1"}, true, "muse-bin", "requires this Muse session", false, true},
+		"flagless a2a with thread": {map[string]string{EnvSessionID: "muse-session-1", "MUSE_THREAD_ID": "muse-session-1"}, true, "muse-bin", "manual gate", true, true},
+		"flagless a2a over thread": {map[string]string{EnvSessionID: "muse-session-1", "MUSE_THREAD_ID": "muse-session-9"}, true, "muse-bin", "another live Muse session", false, true},
+		// Disagreeing native spellings refuse instead of resolving to
+		// MUSE_SESSION_ID, with or without the flag.
+		"disagreeing native selectors": {map[string]string{"MUSE_SESSION_ID": "muse-session-1", "MUSE_THREAD_ID": "muse-session-9"}, true, "muse-bin", "disagreeing Muse session selectors", false, false},
+		"flagless disagreeing native":  {map[string]string{"MUSE_SESSION_ID": "muse-session-1", "MUSE_THREAD_ID": "muse-session-9"}, true, "muse-bin", "disagreeing Muse session selectors", false, true},
+		"unrelated owner":              {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime", true, false},
+		"owner is not muse":            {own, true, "/bin/sleep", "not a muse process", true, false},
+		"missing Muse session env":     {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session", false, false},
+		"claude env only":              {map[string]string{"CLAUDE_CODE_SESSION_ID": "claude-1"}, true, "muse-bin-1.4.24", "requires this Muse session", false, false},
+		"foreign session id":           {map[string]string{"MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin-1.4.24", "another live", false, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err, ancestorCalls, nameCalls := museBindAttempt(t, tc.env, tc.ancestor, tc.ownerName)
+			err, ancestorCalls, nameCalls := museBindAttempt(t, tc.env, tc.ancestor, tc.ownerName, tc.flagless)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("bind err = %v, want it to contain %q", err, tc.want)
 			}

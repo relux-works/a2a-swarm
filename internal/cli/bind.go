@@ -93,6 +93,9 @@ func (a *App) museOwnerProcessName(ctx context.Context, pid int) (string, error)
 
 // Native session metadata is a selector, never binding/lease authority. Keep
 // explicit A2A and Codex precedence, and never fall through a malformed value.
+// The one exception is a manual muse bind: with no pane, Muse's own selector
+// is the only link between the invocation and its session (see the muse gate
+// in bindTerminal).
 func (a *App) terminalSessionID(runtime string) string {
 	if id := a.Getenv(EnvSessionID); id != "" {
 		return id
@@ -202,6 +205,12 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		return usagef("bind refuses another live Muse session")
 	}
 	isMuse := *runtime == "muse"
+	if s, th := a.Getenv("MUSE_SESSION_ID"), a.Getenv("MUSE_THREAD_ID"); isMuse && s != "" && th != "" && s != th {
+		// The two spellings name one session; a disagreement (for example
+		// a nested Muse that sets only one of them and inherits the other)
+		// must not silently resolve to the outer session.
+		return usagef("bind refuses disagreeing Muse session selectors: MUSE_SESSION_ID and MUSE_THREAD_ID name different sessions")
+	}
 	if isMuse && mode == bindingManual && a.museSessionID() == "" {
 		// A manual muse bind must run inside the Muse session it binds.
 		// Only Muse's own selector (MUSE_SESSION_ID or MUSE_THREAD_ID,
@@ -211,6 +220,14 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		// owner process to tie an id to --owner-pid. The checks above
 		// already refused an A2A_SESSION_ID or --session-id that differs
 		// from the Muse selector.
+		//
+		// Remaining trust, stated plainly: the selector is read from this
+		// invocation's own environment and Muse does not verify it, and
+		// muse sessions --json lists no process, so a2a cannot tie the id
+		// to --owner-pid. This gate stops a stale or foreign
+		// A2A_SESSION_ID; it does not stop a deliberate same-UID override
+		// of MUSE_SESSION_ID, or a foreign value inherited into a shell
+		// under a muse owner.
 		return usagef("bind --runtime muse requires this Muse session: run it inside the session being bound (MUSE_SESSION_ID or MUSE_THREAD_ID; A2A_SESSION_ID alone does not name a Muse session)")
 	}
 	if !isMuse && (*pane != a.Getenv("TMUX_PANE") || *socket != strings.Split(a.Getenv("TMUX"), ",")[0] || *pane == "" || *socket == "") {
@@ -231,8 +248,9 @@ func (a *App) bindTerminal(ctx context.Context, args []string, mode bindingMode)
 		// The muse carrier has no pane, so its authority is invocation
 		// ancestry plus the owner image: this bind must descend from the
 		// owner process (a Muse tool shell descends from muse-bin), and
-		// that owner must be a muse/muse-bin* process. The exact live
-		// session (PinMuse) and the owner birth checked below complete it.
+		// that owner must be a muse/muse-bin* process. PinMuse proves only
+		// that the selected session is live and the owner birth pins the
+		// owner process; neither proves that the session belongs to it.
 		if !a.museAncestor(probe, os.Getppid(), *owner) {
 			return errors.New("bind owner is not this invocation's muse runtime")
 		}
