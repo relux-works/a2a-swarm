@@ -292,12 +292,17 @@ func TestMuseBindAuthority(t *testing.T) {
 		// Disagreeing native spellings refuse instead of resolving to
 		// MUSE_SESSION_ID, with or without the flag.
 		"disagreeing native selectors": {map[string]string{"MUSE_SESSION_ID": "muse-session-1", "MUSE_THREAD_ID": "muse-session-9"}, true, "muse-bin", "disagreeing Muse session selectors", false, false},
-		"flagless disagreeing native":  {map[string]string{"MUSE_SESSION_ID": "muse-session-1", "MUSE_THREAD_ID": "muse-session-9"}, true, "muse-bin", "disagreeing Muse session selectors", false, true},
-		"unrelated owner":              {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime", true, false},
-		"owner is not muse":            {own, true, "/bin/sleep", "not a muse process", true, false},
-		"missing Muse session env":     {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session", false, false},
-		"claude env only":              {map[string]string{"CLAUDE_CODE_SESSION_ID": "claude-1"}, true, "muse-bin-1.4.24", "requires this Muse session", false, false},
-		"foreign session id":           {map[string]string{"MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin-1.4.24", "another live", false, false},
+		// Positive control for the disagreement check: both spellings
+		// set and equal must still bind, so a check that refuses every
+		// both-set environment fails here.
+		"agreeing native selectors":   {map[string]string{"MUSE_SESSION_ID": "muse-session-1", "MUSE_THREAD_ID": "muse-session-1"}, true, "muse-bin", "manual gate", true, false},
+		"flagless agreeing native":    {map[string]string{"MUSE_SESSION_ID": "muse-session-1", "MUSE_THREAD_ID": "muse-session-1"}, true, "muse-bin", "manual gate", true, true},
+		"flagless disagreeing native": {map[string]string{"MUSE_SESSION_ID": "muse-session-1", "MUSE_THREAD_ID": "muse-session-9"}, true, "muse-bin", "disagreeing Muse session selectors", false, true},
+		"unrelated owner":             {own, false, "muse-bin-1.4.24", "not this invocation's muse runtime", true, false},
+		"owner is not muse":           {own, true, "/bin/sleep", "not a muse process", true, false},
+		"missing Muse session env":    {map[string]string{}, true, "muse-bin-1.4.24", "requires this Muse session", false, false},
+		"claude env only":             {map[string]string{"CLAUDE_CODE_SESSION_ID": "claude-1"}, true, "muse-bin-1.4.24", "requires this Muse session", false, false},
+		"foreign session id":          {map[string]string{"MUSE_SESSION_ID": "muse-session-9"}, true, "muse-bin-1.4.24", "another live", false, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err, ancestorCalls, nameCalls := museBindAttempt(t, tc.env, tc.ancestor, tc.ownerName, tc.flagless)
