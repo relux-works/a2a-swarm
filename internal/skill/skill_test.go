@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/relux-works/a2a-swarm/internal/config"
 )
 
 // Proves the embedded skill has valid frontmatter (first line ---, name a2a,
@@ -79,9 +82,9 @@ func TestInstall(t *testing.T) {
 	}
 }
 
-// The installed package declares only current instructed contacts: Matrix,
-// the public GitHub skill/build source, and the gh api documentation fetch.
-// This checks declarations, not permission to provision accounts or run hooks.
+// The installed package declares a host glob so the selected operator profile
+// can point at any Matrix endpoint. This checks representative endpoint forms
+// and the manifest declaration, not runtime network filtering.
 func TestInstallNetworkCapabilities(t *testing.T) {
 	r, err := Install(t.TempDir(), false)
 	if err != nil {
@@ -103,20 +106,46 @@ func TestInstallNetworkCapabilities(t *testing.T) {
 	if manifest.SchemaVersion != 3 {
 		t.Fatalf("schema = %d, want narrow capability schema 3", manifest.SchemaVersion)
 	}
-	want := []string{"matrix.relux.works", "github.com", "api.github.com"}
-	if len(manifest.Capabilities.Network) != len(want) {
-		t.Errorf("network = %v, want exactly %v", manifest.Capabilities.Network, want)
+	if len(manifest.Capabilities.Network) != 1 || manifest.Capabilities.Network[0] != "*" {
+		t.Fatalf("network = %v, want only the any-host glob", manifest.Capabilities.Network)
 	}
-	for _, host := range want {
-		t.Run(host, func(t *testing.T) {
-			count := 0
-			for _, declared := range manifest.Capabilities.Network {
-				if declared == host {
-					count++
+	tests := []struct {
+		name       string
+		url        string
+		serverName string
+		valid      bool
+	}{
+		{"https-domain", "https://matrix.example.org", "identity.example.org", true},
+		{"https-custom-port-and-root", "https://chat.example.net:8448/", "identity.example.org:8448", true},
+		{"https-ipv4", "https://203.0.113.10", "example.org", true},
+		{"https-ipv6", "https://[2001:db8::10]:8448", "[2001:db8::20]", true},
+		{"loopback-http-localhost", "http://localhost:8008", "example.org", true},
+		{"loopback-http-ipv4", "http://127.0.0.1:8008", "example.org", true},
+		{"loopback-http-ipv6", "http://[::1]:8008", "example.org", true},
+		{"reject-remote-http", "http://matrix.example.org", "example.org", false},
+		{"reject-path", "https://matrix.example.org/matrix", "example.org", false},
+		{"reject-userinfo", "https://user@matrix.example.org", "example.org", false},
+		{"reject-query", "https://matrix.example.org?mode=test", "example.org", false},
+		{"reject-fragment", "https://matrix.example.org#fragment", "example.org", false},
+		{"reject-invalid-server-name", "https://matrix.example.org", "bad/name", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := config.ValidateMatrixRouting(tc.url, tc.serverName)
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("valid configured route rejected: %v", err)
 				}
-			}
-			if count != 1 {
-				t.Fatalf("%s declared %d times, want once", host, count)
+				u, err := url.Parse(tc.url)
+				if err != nil {
+					t.Fatal(err)
+				}
+				matched, err := filepath.Match(manifest.Capabilities.Network[0], u.Hostname())
+				if err != nil || !matched {
+					t.Fatalf("network glob does not cover endpoint host %q: match=%v err=%v", u.Hostname(), matched, err)
+				}
+			} else if err == nil {
+				t.Fatalf("invalid configured route admitted: %s / %s", tc.url, tc.serverName)
 			}
 		})
 	}
