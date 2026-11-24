@@ -61,6 +61,9 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 			diagnostic.recordStatus(s, generation, "startup_credentials_unavailable")
 			degraded = diagnostic.lastStatus == "startup_credentials_unavailable"
 		}
+		var pinnedOwnerPID int
+		var pinnedOwnerBirth string
+		ownerPinned := false
 		readBinding := func() (config.TerminalBinding, error) {
 			var initial config.TerminalBinding
 			err := a.withRuntimeLock(s.paths, s.name, "control", time.Now().Add(nativeRPCTimeout), func() error {
@@ -77,6 +80,14 @@ func (a *App) withBoundChildStartup(ctx context.Context, s *session, generation 
 				b := st.Terminal
 				if st.HostEnrollment != nil || b == nil || b.Stopped || b.Generation != generation || b.DaemonPID != os.Getpid() || b.DaemonBirth != birth || b.Host != machineLabel() {
 					return errBindingStaleConsumer
+				}
+				if inherited != 0 {
+					if !ownerPinned {
+						pinnedOwnerPID, pinnedOwnerBirth = b.OwnerPID, b.OwnerBirth
+						ownerPinned = true
+					} else if b.OwnerPID != pinnedOwnerPID || b.OwnerBirth != pinnedOwnerBirth {
+						return errBindingStaleConsumer
+					}
 				}
 				initial = *b
 				return nil
