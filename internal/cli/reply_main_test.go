@@ -178,31 +178,32 @@ func TestPostReplyMainDelivery(t *testing.T) {
 	for _, knownRoom := range []string{"", "!other:test.local", room} {
 		t.Run("known-room="+knownRoom, func(t *testing.T) {
 			st := config.State{Threads: []string{"$unrelated", plain}}
+			win := config.NewThreadEventWindow()
 			if knownRoom != "" {
-				st.RememberThreadEvent(config.ThreadEvent{Room: knownRoom, EventID: plain, Root: "$unrelated"})
+				win.RememberThreadEvent(config.ThreadEvent{Room: knownRoom, EventID: plain, Root: "$unrelated"})
 			}
 			wantRoot := ""
 			wantRel := relevance("")
 			if knownRoom == room {
 				wantRoot, wantRel = "$unrelated", relThread
 			}
-			if root := deliveryTopicRoot(ev, room, st); root != wantRoot {
+			if root := deliveryTopicRoot(ev, room, win); root != wantRoot {
 				t.Fatalf("delivery root=%q, want %q", root, wantRoot)
 			}
-			rel, learned, matched := classify(ev, room, "@alice:test.local", "alice", st, nil)
+			rel, learned, matched := classify(ev, room, "@alice:test.local", "alice", st, win, nil)
 			if rel != wantRel || learned != "" || len(matched) != 0 {
 				t.Fatalf("thread delivery = %q, %q, %v", rel, learned, matched)
 			}
 			if knownRoom != room {
 				// A room subscription still delivers ordinary main-timeline mail.
 				subs := []Sub{{ID: "room", SubSelector: SubSelector{Room: room, AllEvents: true}}}
-				rel, learned, matched = classify(ev, room, "@alice:test.local", "alice", st, subs)
+				rel, learned, matched = classify(ev, room, "@alice:test.local", "alice", st, win, subs)
 				if rel != relSub || learned != "" || !reflect.DeepEqual(matched, []string{"room"}) {
 					t.Fatal("ordinary room subscription did not deliver main reply")
 				}
 				// Topic subscriptions cannot manufacture membership either.
 				subs = []Sub{{ID: "topic", SubSelector: SubSelector{Room: room, Topic: "$unrelated"}}}
-				rel, _, matched = classify(ev, room, "@alice:test.local", "alice", st, subs)
+				rel, _, matched = classify(ev, room, "@alice:test.local", "alice", st, win, subs)
 				if rel != "" || len(matched) != 0 {
 					t.Fatal("main reply matched an unrelated topic subscription")
 				}
@@ -308,7 +309,7 @@ func TestPostReplyMainMutedLearnedMemberWait(t *testing.T) {
 			if out := e.as("alice", "wait", "--timeout", "2s").ok(t).stdout; !strings.Contains(out, member) {
 				t.Fatalf("unmuted member did not ring: %q", out)
 			}
-			if st := e.state("alice"); st.ThreadEventRoot(room, member) != root {
+			if win := e.threadWindow("alice"); win.ThreadEventRoot(room, member) != root {
 				t.Fatal("wait did not persist same-room membership")
 			}
 			e.as("alice", "mute", room, "--topic", root).ok(t)

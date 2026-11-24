@@ -101,8 +101,8 @@ func TestPrincipalNoConfigDeliveryEquality(t *testing.T) {
 			events := []matrix.Event{principalFixtureEvent("@peer:fixture.invalid"), principalFixtureEvent(fixturePrincipal), principalFixtureEvent("@other:fixture.invalid"), mention}
 			for i := range events {
 				events[i].EventID = fmt.Sprintf("$event%d", i)
-				want, root, ids := classify(events[i], "!room:fixture.invalid", s.creds.UserID, s.name, config.State{}, subs)
-				got, gotRoot, gotIDs := classifyWithPrincipals(events[i], "!room:fixture.invalid", s.creds.UserID, s.name, config.State{}, subs, s.principals)
+				want, root, ids := classify(events[i], "!room:fixture.invalid", s.creds.UserID, s.name, config.State{}, nil, subs)
+				got, gotRoot, gotIDs := classifyWithPrincipals(events[i], "!room:fixture.invalid", s.creds.UserID, s.name, config.State{}, nil, subs, s.principals)
 				if configured && i == 1 {
 					if got != relSub || len(gotIDs) != 0 {
 						t.Fatal("configured neighbor not covered independently")

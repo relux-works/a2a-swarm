@@ -1,8 +1,8 @@
 package config
 
 // This file deliberately uses only APIs that already exist before the
-// unchanged-transaction elision, so an authorized seat can copy it onto the
-// base commit for a before/after work and benchmark comparison. On the base,
+// unchanged-transaction elision, so it can be copied onto the base commit
+// for a before/after work and benchmark comparison. On the base,
 // TestUpdateStateUnchangedWorkCount is the expected-red regression witness.
 
 import (
@@ -33,17 +33,21 @@ func syntheticID(sigil, kind string, n int) string {
 	return id + strings.Repeat("x", syntheticIDBytes-len(id))
 }
 
+// syntheticThreadEntry is one retained bulk record of the busy fixture. The
+// retained thread window itself lives in its own file now, so the fixture's
+// bulk rides in Threads, the retained State list of comparable shape.
+func syntheticThreadEntry(i int) string {
+	return fmt.Sprintf("$synthetic-thread-%06d-", i) + strings.Repeat("x", 150)
+}
+
 // syntheticBusyState is an ordinary consumer state whose size is dominated by
-// 2,000 retained thread records, like the observed busy consumer. It holds no
-// live room, event, host, session or credential value.
+// 2,000 retained bulk records, sized like the observed busy consumer State.
+// It holds no live room, event, host, session or credential value.
 func syntheticBusyState() State {
 	s := State{NextBatch: "s-synthetic-batch"}
-	s.ThreadEvents = make([]ThreadEvent, 0, syntheticThreadRecords)
+	s.Threads = make([]string, 0, syntheticThreadRecords)
 	for i := 0; i < syntheticThreadRecords; i++ {
-		s.ThreadEvents = append(s.ThreadEvents, ThreadEvent{Room: syntheticID("!", "room", i%16), EventID: syntheticID("$", "event", i), Root: syntheticID("$", "root", i%64)})
-	}
-	for i := 0; i < 14; i++ {
-		s.Threads = append(s.Threads, syntheticID("$", "thread", i))
+		s.Threads = append(s.Threads, syntheticThreadEntry(i))
 	}
 	s.Terminal = &TerminalBinding{Generation: strings.Repeat("0", 32), SessionID: "synthetic-session", Host: "synthetic-host", OwnerPID: 2, OwnerBirth: "synthetic-owner-birth", DaemonPID: 3, DaemonBirth: "synthetic-daemon-birth", NoticePublication: "unavailable: synthetic", Interval: 2 * time.Second, RetryMax: 30 * time.Second, MaxWakes: 6, Outcome: syntheticBusyOutcome}
 	return s
@@ -155,7 +159,7 @@ func updateRoutes(p Paths, name string) map[string]func(func(*State) error) (Sta
 }
 
 // Proves the synthetic fixture is comparable to the observed state: exactly
-// 2,000 thread records and a total size within 300-600KB. It does not prove
+// 2,000 bulk records and a total size within 300-600KB. It does not prove
 // that the fixture reproduces the live consumer's CPU profile.
 func TestSyntheticBusyStateSize(t *testing.T) {
 	p, raw := seedSyntheticBusyState(t)
@@ -163,8 +167,8 @@ func TestSyntheticBusyStateSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.ThreadEvents) != syntheticThreadRecords || len(raw) < syntheticStateMinBytes || len(raw) > syntheticStateMaxBytes {
-		t.Fatalf("fixture has %d records and %d bytes", len(st.ThreadEvents), len(raw))
+	if len(st.Threads) != syntheticThreadRecords || len(raw) < syntheticStateMinBytes || len(raw) > syntheticStateMaxBytes {
+		t.Fatalf("fixture has %d records and %d bytes", len(st.Threads), len(raw))
 	}
 	if !validWriterSeal(st) || !st.Writer.ForeignSeen.IsZero() {
 		t.Fatal("fixture is not a compatible sealed input")
@@ -205,7 +209,7 @@ func TestUpdateStateUnchangedWorkCount(t *testing.T) {
 			if n := countStateRewrites(t, p, busyStateName, changed); n != 1 {
 				t.Fatalf("changed outcome replaced the state %d times, want 1", n)
 			}
-			if st, err := LoadState(p, busyStateName); err != nil || st.Terminal.Outcome != syntheticIdleOutcome || !validWriterSeal(st) || len(st.ThreadEvents) != syntheticThreadRecords {
+			if st, err := LoadState(p, busyStateName); err != nil || st.Terminal.Outcome != syntheticIdleOutcome || !validWriterSeal(st) || len(st.Threads) != syntheticThreadRecords {
 				t.Fatal("changed outcome was not persisted as a sealed state", err)
 			}
 		})

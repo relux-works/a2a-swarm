@@ -612,7 +612,7 @@ func TestAgentDMCollectorAllAndOrdinaryControls(t *testing.T) {
 	if err = json.Unmarshal(raw, &resp); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := s.collectBatch(context.Background(), resp, "s0", config.State{}, []Sub{{ID: "broad", SubSelector: SubSelector{From: a, AllEvents: true}}}, map[string]bool{room: true, "!ordinary": true}, map[string]string{})
+	batch, err := s.collectBatch(context.Background(), resp, "s0", config.State{}, nil, []Sub{{ID: "broad", SubSelector: SubSelector{From: a, AllEvents: true}}}, map[string]bool{room: true, "!ordinary": true}, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}

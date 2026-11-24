@@ -218,17 +218,17 @@ func TestElementMediaExistingGatesAndNoFetchReceipt(t *testing.T) {
 	// or same-localpart authentication assertion. No encrypted relevance added.
 	ev := matrix.Event{Type: "m.room.message", EventID: "$gate", Sender: "@bob:remote.invalid", OriginServerTS: time.Now().UnixMilli(), Content: mustJSON(t, irrelevant)}
 	sub := Sub{ID: "exact", CreatedAt: legacyCreatedAt, SubSelector: SubSelector{Room: room, From: "@bob:" + testServer, AllEvents: true}}
-	rel, _, _ := classify(ev, room, "@alice:"+testServer, "alice", config.State{}, []Sub{sub})
+	rel, _, _ := classify(ev, room, "@alice:"+testServer, "alice", config.State{}, nil, []Sub{sub})
 	if rel != "" {
 		t.Fatal("same-localpart From widened")
 	}
 	ev.Sender = "@bob:" + testServer
-	rel, _, _ = classify(ev, room, "@alice:"+testServer, "alice", config.State{}, []Sub{sub})
+	rel, _, _ = classify(ev, room, "@alice:"+testServer, "alice", config.State{}, nil, []Sub{sub})
 	if rel != relSub {
 		t.Fatal("valid exact From neighbour failed")
 	}
 	ev.Type = "m.room.encrypted"
-	rel, _, _ = classify(ev, room, "@alice:"+testServer, "alice", config.State{}, []Sub{sub})
+	rel, _, _ = classify(ev, room, "@alice:"+testServer, "alice", config.State{}, nil, []Sub{sub})
 	if rel != "" {
 		t.Fatal("encrypted relevance invented")
 	}

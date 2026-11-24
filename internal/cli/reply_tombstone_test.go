@@ -165,8 +165,11 @@ func TestPostReplyPrejoinChildSlug(t *testing.T) {
 				// An unscoped follow and a foreign-room membership cannot establish
 				// either slug agreement or membership of the selected target.
 				if err := config.SaveState(f.paths("alpha", false), "alice", config.State{
-					Threads: []string{"$root"}, ThreadEvents: []config.ThreadEvent{{Room: "!other:fixture", EventID: "$target", Root: "$foreign"}},
+					Threads: []string{"$root"},
 				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := config.AppendThreadEvents(f.paths("alpha", false), "alice", []config.ThreadEvent{{Room: "!other:fixture", EventID: "$target", Root: "$foreign"}}); err != nil {
 					t.Fatal(err)
 				}
 				a := f.app()

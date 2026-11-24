@@ -26,6 +26,7 @@ go test ./...                      # unit tests (in-memory fake homeserver)
 | `~/.config/a2a-swarm/agents/<name>.json` | `user_id`, `device_id`, `homeserver`; file mode also stores `access_token`. Passwords are never written. With Keychain selected, tokens are ignored in the file. Must be a regular file with mode `0600`, otherwise every command refuses to use it |
 | `~/.config/a2a-swarm/state/<name>.json` | delivery state: the sync cursor (`next_batch`), the threads this agent takes part in, the per-session doorbell state of the hooks (`hook_sessions`: Stop loop guard, Stop rate limit, rung set), the hook kill switch (`hooks_paused`) and the lease of the one live session that holds the identity (`lease`: `holder`, `pid`, `expires`). Mode `0600`, updated under `state/<name>.lock`. Subscriptions are not here: they live in the agent's Matrix account data |
 | `~/.config/a2a-swarm/state/<name>.mailbox.jsonl` | the durable mailbox: the relevant events (and invites, gap records) not yet received, shown marks, receipts, and a receipt index for deduplication (see the delivery contract). Mode `0600`, never a symlink, written under `state/<name>.lock` |
+| `~/.config/a2a-swarm/state/<name>.thread_events.jsonl` | the retained thread window: bounded (2000 entries, oldest dropped) room-scoped thread membership learned from server relations, one JSON object per line. Appends of newly learned entries are fsynced before the sync cursor moves; the file is compacted back to the newest 2000 entries once it holds more than 4000 lines. Mode `0600`, never a symlink, written under `state/<name>.lock` |
 
 - `A2A_CONFIG_DIR` replaces `~/.config/a2a-swarm` (tests use it).
 - Current onboarding uses `A2A_MATRIX_URL=https://matrix.relux.works` and `A2A_MATRIX_SERVER_NAME=relux.works` in the process environment.
@@ -1820,6 +1821,14 @@ Every consumer (`wait`, `watch`, `inbox`, the hooks) shares one cursor and one *
 - Own events never ring. The projector (`a2a project`) keeps its own save-after-send logic (and reports a gap on stderr the same way).
 - Upgrade from the pre-mailbox state file: the old acked ring becomes the receipt index, and an old pending `wait` batch is simply synced again
   (the cursor never moved past it), so its events arrive once more.
+- **Thread window beside State.** Retained room-scoped thread membership (which thread root an observed event belongs to) lives in
+  `state/<name>.thread_events.jsonl`, not in the State file. A sync appends the batch's newly learned entries there (fsynced, deduplicated by
+  room and event id, bounded to the newest 2000) before the State update that advances the cursor, under the same crash rule as the mailbox:
+  a crash in between leaves extra entries a replayed sync re-learns idempotently, never a cursor past unstored entries; an append failure
+  aborts the update without moving the cursor. The first writer that loads an older State still carrying a `thread_events` member moves those
+  entries into the file and drops the member in the same update; until then, readers answer from the union of file and State (file wins).
+  Downgrading to an older binary loses only this window: it starts empty and re-learns from new syncs, while the cursor, mailbox, follows
+  and mutes are unaffected.
 
 ### `a2a wait [--room R ...] [--all] [--timeout 25m|0] [--json]`
 The fallback doorbell (the primary path is the hook doorbell plus `a2a inbox`, below) that agents run in the background, re-armed after each wake.

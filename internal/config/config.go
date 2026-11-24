@@ -8,6 +8,7 @@
 //	agents/<name>.json      credentials, mode 0600
 //	state/<name>.json       delivery state (cursor, threads, hook sessions), mode 0600
 //	state/<name>.mailbox.jsonl  durable mailbox of relevant events and receipts, mode 0600
+//	state/<name>.thread_events.jsonl  bounded room-scoped thread membership window, mode 0600
 package config
 
 import (
@@ -395,19 +396,25 @@ func WriteCredentials(f *CredentialFile, c Credentials) error {
 }
 
 // State is the per-agent delivery state. The events themselves live in the
-// durable mailbox (MailboxFile), which is written before NextBatch moves.
+// durable mailbox (MailboxFile) and retained thread membership in the
+// thread-event file (ThreadEventsFile), both written before NextBatch moves.
 type State struct {
 	// opaque retains unknown top-level values as data, never as authority.
 	// It is immutable after loading; saving a State copy must not mutate it.
 	opaque map[string]json.RawMessage
 	// rawState is the immutable disk input, not a serialization of edited fields.
 	// The writer seal must be checked against this input before callbacks/effects.
-	rawState      []byte
-	Migration     *IdentityMigration `json:"migration,omitempty"`
-	Writer        *StateWriter       `json:"writer,omitempty"`
-	Monitor       *Monitor           `json:"monitor,omitempty"`
-	MonitorOwner  *MonitorOwner      `json:"monitor_owner,omitempty"`
-	MonitorConfig *MonitorConfig     `json:"monitor_config,omitempty"`
+	rawState []byte
+	// legacyThreadEvents holds the retained membership an old-format State
+	// file still carried in its thread_events member, decoded for migration
+	// and union reads only. It is never written back: the first writer moves
+	// it to the thread-event file and drops the member in the same update.
+	legacyThreadEvents []ThreadEvent
+	Migration          *IdentityMigration `json:"migration,omitempty"`
+	Writer             *StateWriter       `json:"writer,omitempty"`
+	Monitor            *Monitor           `json:"monitor,omitempty"`
+	MonitorOwner       *MonitorOwner      `json:"monitor_owner,omitempty"`
+	MonitorConfig      *MonitorConfig     `json:"monitor_config,omitempty"`
 
 	MailAlarmConfig *MailAlarmConfig `json:"mail_alarm_config,omitempty"`
 	MailAlarm       MailAlarm        `json:"mail_alarm,omitempty"`
@@ -432,10 +439,9 @@ type State struct {
 	// it into the mailbox receipt index and drops it.
 	LegacyAcked []string `json:"acked,omitempty"`
 	// Threads holds thread root event ids where this agent posted or which it created.
+	// Bounded room-scoped membership learned from server relations is not
+	// here: it lives in the thread-event file (ThreadEventsFile).
 	Threads []string `json:"threads,omitempty"`
-	// ThreadEvents retains bounded room-scoped membership learned from server relations.
-	// It grants no follow status and is independent of mute/follow changes.
-	ThreadEvents []ThreadEvent `json:"thread_events,omitempty"`
 	// Muted holds thread roots the agent muted explicitly; posting in them or
 	// seeing its own events there never re-follows them (only Follow does).
 	Muted []string `json:"muted,omitempty"`
@@ -544,34 +550,12 @@ func (s *State) SetHookBlocks(id string, n int) {
 // LegacyAllRooms is the LegacySubscriptions key that matched every joined room.
 const LegacyAllRooms = "*"
 
-// ThreadEvent identifies an observed event's thread in one room.
-type ThreadEvent struct {
-	Room    string `json:"room"`
-	EventID string `json:"event_id"`
-	Root    string `json:"root"`
-}
-
-// ThreadEventRoot never infers membership from the unscoped follow/mute lists.
-func (s State) ThreadEventRoot(room, id string) string {
-	for i := len(s.ThreadEvents) - 1; i >= 0; i-- {
-		e := s.ThreadEvents[i]
-		if e.Room == room && e.EventID == id {
-			return e.Root
-		}
-	}
-	return ""
-}
-
-// RememberThreadEvent retains server-derived membership without following it.
-func (s *State) RememberThreadEvent(e ThreadEvent) {
-	if e.Room == "" || e.EventID == "" || e.Root == "" || s.ThreadEventRoot(e.Room, e.EventID) != "" {
-		return
-	}
-	s.ThreadEvents = append(s.ThreadEvents, e)
-	const max = 2000
-	if len(s.ThreadEvents) > max {
-		s.ThreadEvents = s.ThreadEvents[len(s.ThreadEvents)-max:]
-	}
+// LegacyThreadEvents returns the retained membership this State was loaded
+// from an old-format file still carrying a thread_events member, or nil for
+// a current-format or freshly built State. The first writer migrates it to
+// the thread-event file; readers union it through LoadThreadEventWindow.
+func (s State) LegacyThreadEvents() []ThreadEvent {
+	return cloneValues(s.legacyThreadEvents)
 }
 
 // HasThread reports whether root is a thread this agent participates in.
@@ -776,6 +760,20 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	if !monitor && old.RefuseMonitorConsumer() != nil && !sameMonitorCompanions(old, s) {
 		return old, ErrMonitorConflict
 	}
+	// First-writer migration of the retained thread window: an old-format
+	// disk input still carries it in State. Append it to the thread-event
+	// file (deduplicated, capped) and only then write State without the
+	// member, in this same update. A crash between the append and the State
+	// write leaves both copies; readers union them and the next writer
+	// deduplicates. An append failure refuses the State write, so the
+	// member is never dropped before its entries are durable elsewhere.
+	migrating := len(old.legacyThreadEvents) > 0
+	if migrating {
+		if err := migrateLegacyThreadEvents(p, name, old.legacyThreadEvents); err != nil {
+			return old, err
+		}
+		s.legacyThreadEvents = nil
+	}
 	path := p.StateFile(name)
 	strict := s.HostEnrollment != nil && s.HostEnrollment.Version == 2
 	if !strict {
@@ -785,10 +783,10 @@ func persistStateLocked(p Paths, name string, old, s State, fence time.Time, mon
 	}
 	// Caller-supplied writer metadata never erases an observed fence.
 	s.Writer = &StateWriter{Protocol: stateProtocol, ForeignSeen: fence}
-	if inputSealed && !strict && p.readCache.unchangedDurable(name, path, old, s) {
+	if inputSealed && !strict && !migrating && p.readCache.unchangedDurable(name, path, old, s) {
 		return old, nil
 	}
-	if inputSealed && !strict && unchangedSealedState(old, s) {
+	if inputSealed && !strict && !migrating && unchangedSealedState(old, s) {
 		evidence, elided, err := elideUnchangedOrdinaryStateWithEvidence(path, old.rawState, ordinaryStateSync)
 		if err != nil {
 			return old, err

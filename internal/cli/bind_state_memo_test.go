@@ -104,11 +104,15 @@ func runFixtureCycles(t *testing.T, memo bool, n int) cycleCounts {
 	if _, err := config.UpdateState(e.paths(), "alice", func(st *config.State) error {
 		st.Terminal = &initial
 		st.NextBatch = "s0"
-		for i := 0; i < 191; i++ {
-			st.RememberThreadEvent(config.ThreadEvent{Room: fmt.Sprintf("!room%02d:fixture.invalid", i%16), EventID: fmt.Sprintf("$event%039d", i), Root: fmt.Sprintf("$root%040d", i%64)})
-		}
 		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+	window := make([]config.ThreadEvent, 0, 191)
+	for i := 0; i < 191; i++ {
+		window = append(window, config.ThreadEvent{Room: fmt.Sprintf("!room%02d:fixture.invalid", i%16), EventID: fmt.Sprintf("$event%039d", i), Root: fmt.Sprintf("$root%040d", i%64)})
+	}
+	if _, err := config.AppendThreadEvents(e.paths(), "alice", window); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -152,7 +156,8 @@ func runFixtureCycles(t *testing.T, memo bool, n int) cycleCounts {
 // Claim: on the same terminal fixture cycle, the memo leaves logical
 // LoadState calls, fresh file reads and writer seal/digest/seal-write work per
 // cycle unchanged while performing fewer actual typed State parses. Limits:
-// one synthetic idle fixture (~40 KB State, no mail), in-process fake server;
+// one synthetic idle fixture (small State plus a 191-entry retained thread
+// window file, no mail), in-process fake server;
 // counters include the concurrent alarm worker. Not a CPU measurement.
 func TestTerminalStateMemoFixtureCycleCounters(t *testing.T) {
 	const n = 6

@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -66,6 +68,38 @@ func unmarshalState(data []byte, s *State) error {
 	if err := json.Unmarshal(data, &members); err != nil {
 		return err
 	}
+	// An old-format file still carries the retained thread window in a
+	// thread_events member. Decode it (with the typed decoder's former
+	// validation and case-fold acceptance) into the legacy slot for
+	// migration and union reads, and keep it out of the opaque members so
+	// no save ever writes it back.
+	s.legacyThreadEvents = nil
+	var legacyKeys []string
+	for name := range members {
+		if strings.EqualFold(name, "thread_events") {
+			legacyKeys = append(legacyKeys, name)
+		}
+	}
+	if len(legacyKeys) > 0 {
+		sort.Strings(legacyKeys)
+		key := legacyKeys[0]
+		for _, k := range legacyKeys {
+			if k == "thread_events" {
+				key = k
+			}
+		}
+		raw := members[key]
+		for _, k := range legacyKeys {
+			delete(members, k)
+		}
+		if len(bytes.TrimSpace(raw)) > 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			var legacy []ThreadEvent
+			if err := json.Unmarshal(raw, &legacy); err != nil {
+				return err
+			}
+			s.legacyThreadEvents = legacy
+		}
+	}
 	for name := range members {
 		if knownStateJSONField(name) {
 			delete(members, name)
@@ -96,7 +130,9 @@ func marshalState(s State) ([]byte, error) {
 	// Merge into a fresh map, never into the map shared by State value copies.
 	// Check against the entire schema, not only the non-omitted emitted fields.
 	for name, value := range s.opaque {
-		if !knownStateJSONField(name) {
+		// The retired thread_events member is never written back, however
+		// it reached opaque storage; its entries live in the thread file.
+		if !knownStateJSONField(name) && !strings.EqualFold(name, "thread_events") {
 			members[name] = value
 		}
 	}

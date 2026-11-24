@@ -23,9 +23,10 @@ import (
 //   - Persist before advance. Every consumer (wait, watch, inbox, the hooks)
 //     syncs from the one cursor, classifies the batch (backfill pages drop
 //     irrelevant events as they arrive), appends the relevant events, invites
-//     and gap records to the mailbox, fsyncs it, and only then saves the
-//     cursor. A crash in between re-syncs the batch; the mailbox deduplicates
-//     it by event id.
+//     and gap records to the mailbox and the batch's learned thread
+//     membership to the thread-event file, fsyncs them, and only then saves
+//     the cursor. A crash in between re-syncs the batch; the mailbox
+//     deduplicates it by event id and the thread window by room and event id.
 //   - Receipts on pull. An entry leaves the mailbox only by a receipt: `a2a
 //     inbox` records one for exactly the entries it printed, after the write;
 //     `a2a ack <id...>|all-shown` records one explicitly. wait and watch mark
@@ -183,11 +184,14 @@ func inviteEntry(roomID, since string, state []matrix.Event, me, server string) 
 // keeps only candidates (my own events, thread replies, and what classify or
 // --all accepts) while it pages; they are classified oldest first. all is the
 // set of rooms whose every message counts (wait/watch --all).
-func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string) (batch, error) {
-	return s.collectBatchWithPrincipals(ctx, resp, since, st, subs, all, labels, s.principals)
+func (s *session) collectBatch(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, win *config.ThreadEventWindow, subs []Sub, all map[string]bool, labels map[string]string) (batch, error) {
+	return s.collectBatchWithPrincipals(ctx, resp, since, st, win, subs, all, labels, s.principals)
 }
 
-func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
+func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.SyncResponse, since string, st config.State, win *config.ThreadEventWindow, subs []Sub, all map[string]bool, labels map[string]string, configured []string) (batch, error) {
+	if win == nil {
+		win = config.NewThreadEventWindow()
+	}
 	gate, err := s.refreshAgentGate(ctx)
 	if err != nil {
 		return batch{}, err
@@ -205,7 +209,6 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 		return batch{}, err
 	}
 	b := batch{muted: slices.Clone(st.Muted), agentStamp: gate.Stamp}
-	st.ThreadEvents = slices.Clone(st.ThreadEvents)
 	me := s.creds.UserID
 	mailbox, err := config.OpenMailbox(s.paths, s.name)
 	if err != nil {
@@ -276,7 +279,7 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 			if ev.Sender == me || ev.Message().RelatesTo != nil || all[roomID] {
 				return true
 			}
-			rel, _, _ := classifyWithPrincipals(ev, roomID, me, s.name, st, subs, configured)
+			rel, _, _ := classifyWithPrincipals(ev, roomID, me, s.name, st, win, subs, configured)
 			return rel != ""
 		}
 		var events []matrix.Event
@@ -328,11 +331,11 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 				continue
 			}
 			if ev.Type == "m.room.message" && !ev.IsRedacted() {
-				root := deliveryTopicRoot(ev, roomID, st)
+				root := deliveryTopicRoot(ev, roomID, win)
 				if root != "" {
 					for _, id := range []string{root, ev.EventID} {
 						membership := config.ThreadEvent{Room: roomID, EventID: id, Root: root}
-						st.RememberThreadEvent(membership)
+						win.RememberThreadEvent(membership)
 						b.threadEvents = append(b.threadEvents, membership)
 					}
 				}
@@ -346,7 +349,7 @@ func (s *session) collectBatchWithPrincipals(ctx context.Context, resp matrix.Sy
 					}
 				}
 			}
-			rel, root, matched := audienceClassify(ev, roomID, me, s.name, st, active, configured, evidence)
+			rel, root, matched := audienceClassifyWithWindow(ev, roomID, me, s.name, st, win, active, configured, evidence)
 			if root != "" {
 				b.learned = append(b.learned, root)
 				st.AddThread(root)
@@ -503,6 +506,14 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 		if err := migrateLegacyDelivery(cur, mb); err != nil {
 			return nil, err
 		}
+		// The batch's learned thread membership is durable before the State
+		// update below advances the cursor: a crash in between replays the
+		// sync and re-learns these entries idempotently, never a cursor past
+		// entries that were not stored. An append failure aborts the whole
+		// update, so the cursor does not move.
+		if _, err := config.AppendThreadEvents(s.paths, s.name, b.threadEvents); err != nil {
+			return nil, err
+		}
 		if a.beforeAppend != nil {
 			if err := a.beforeAppend(); err != nil {
 				return nil, err
@@ -532,9 +543,6 @@ func (s *session) persist(ctx context.Context, b batch, since, next string, dead
 			if err := a.afterAppend(); err != nil {
 				return nil, err
 			}
-		}
-		for _, e := range b.threadEvents {
-			cur.RememberThreadEvent(e)
 		}
 		for _, r := range b.learned {
 			cur.AddThread(r)
@@ -569,7 +577,11 @@ func (s *session) ingestWithRedactions(ctx context.Context, resp matrix.SyncResp
 		if err != nil {
 			return snap, err
 		}
-		b, err := s.collectBatch(ctx, resp, since, snap, subs, all, map[string]string{})
+		win, err := config.LoadThreadEventWindow(s.paths, s.name, snap)
+		if err != nil {
+			return snap, err
+		}
+		b, err := s.collectBatch(ctx, resp, since, snap, win, subs, all, map[string]string{})
 		if err != nil {
 			return snap, err
 		}

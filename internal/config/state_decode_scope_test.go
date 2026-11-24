@@ -45,7 +45,8 @@ func writeStateBytes(t *testing.T, p Paths, name string, data []byte) {
 }
 
 // richState persists a realistic State with nested terminal, alert content,
-// wake ledger, subscriptions, hook sessions, thread events and opaque members.
+// wake ledger, subscriptions, hook sessions, a retained legacy thread
+// window member and opaque members.
 func richState(t *testing.T, p Paths) []byte {
 	t.Helper()
 	orphaned := true
@@ -56,9 +57,7 @@ func richState(t *testing.T, p Paths) []byte {
 		s.LegacyAcked = []string{"$a1"}
 		s.LegacySubscriptions = map[string][]string{"!room": {"msg", "decision"}}
 		s.HookSessions = []HookSession{{ID: "h1", Blocks: 1, Rung: []string{"$e1", "$e2"}}}
-		for i := 0; i < 3; i++ {
-			s.RememberThreadEvent(ThreadEvent{Room: "!room", EventID: fmt.Sprintf("$e%d", i), Root: "$r1"})
-		}
+		s.AgentDMContexts = json.RawMessage(`{"!dm":{"kind":"agent","n":1.000000000000000000001}}`)
 		s.Lease = &Lease{Holder: "sess", Host: "h", PID: 7, Expires: time.Unix(2000000000, 0).UTC()}
 		s.Terminal = &TerminalBinding{Generation: "g1", SessionID: "sess", Host: "h", Rung: []string{"$e1"}, AttemptIDs: []string{"$e1"},
 			Reservations: []time.Time{time.Unix(1900000000, 0).UTC()}, OwnNotice: OwnNoticeObservation{PossiblyOrphaned: &orphaned, Reason: "r"},
@@ -78,8 +77,9 @@ func richState(t *testing.T, p Paths) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Add an unknown top-level member with exact numeric precision.
-	data = bytes.Replace(data, []byte("{\n"), []byte("{\n  \"zz_opaque\": {\"n\": 1.000000000000000000001, \"l\": [1e0, -0]},\n"), 1)
+	// Add an unknown top-level member with exact numeric precision, plus an
+	// old-format retained thread window member for legacy decode coverage.
+	data = bytes.Replace(data, []byte("{\n"), []byte("{\n  \"zz_opaque\": {\"n\": 1.000000000000000000001, \"l\": [1e0, -0]},\n  \"thread_events\": [{\"room\": \"!room\", \"event_id\": \"$e0\", \"root\": \"$r1\"}, {\"room\": \"!room\", \"event_id\": \"$e1\", \"root\": \"$r1\"}, {\"room\": \"!room\", \"event_id\": \"$e2\", \"root\": \"$r1\"}],\n"), 1)
 	writeStateBytes(t, p, "alice", data)
 	return data
 }
@@ -1072,7 +1072,7 @@ func TestStateCloneOmittedFieldDetectorControl(t *testing.T) {
 		t.Fatalf("production clone failed independent oracle: %v", err)
 	}
 	planted := source
-	planted.ThreadEvents = nil // bounded omitted-field plant
+	planted.legacyThreadEvents = nil // bounded omitted-field plant
 	if err := stateCloneContractViolation(planted, expected); err == nil || !strings.Contains(err.Error(), "differs") {
 		t.Fatalf("omitted-field plant escaped intended clone assertion: %v", err)
 	}
@@ -1085,10 +1085,10 @@ func TestStateClonePreservesNilAndEmpty(t *testing.T) {
 		t.Fatal("zero state")
 	}
 	e := populatedState(2)
-	e.Threads, e.ThreadEvents, e.opaque, e.LivenessAlerts = []string{}, []ThreadEvent{}, map[string]json.RawMessage{}, map[string]LivenessAlert{}
-	e.Terminal.Rung, e.rawState = []string{}, []byte{}
+	e.Threads, e.legacyThreadEvents, e.opaque, e.LivenessAlerts = []string{}, []ThreadEvent{}, map[string]json.RawMessage{}, map[string]LivenessAlert{}
+	e.Terminal.Rung, e.rawState, e.AgentDMContexts = []string{}, []byte{}, json.RawMessage{}
 	c, _ := cloneState(&e)
-	if !reflect.DeepEqual(c, e) || c.Threads == nil || c.opaque == nil || c.Terminal.Rung == nil || c.rawState == nil {
+	if !reflect.DeepEqual(c, e) || c.Threads == nil || c.legacyThreadEvents == nil || c.opaque == nil || c.Terminal.Rung == nil || c.rawState == nil || c.AgentDMContexts == nil {
 		t.Fatal("empty containers became nil")
 	}
 }
@@ -1344,10 +1344,12 @@ func TestStateMemoHitMatchesOrdinary(t *testing.T) {
 	}
 }
 
-// Claim: a bulk State beyond the 2000-record retention cap (2500 thread
-// events written directly) loads through the memo exactly as ordinarily: no
-// new loader rejection, retention cap or truncation; a write keeps the
-// existing RememberThreadEvent semantics only for new records.
+// Claim: a bulk old-format State beyond the 2000-record retention cap (2500
+// thread events written directly) loads through the memo exactly as
+// ordinarily, with no loader rejection or truncation of the legacy member;
+// the first write then migrates the newest 2000 entries (deduplicated,
+// capped) to the thread-event file and drops the member, while the
+// requested change persists beside it.
 func TestStateMemoBulkBeyondRetentionCap(t *testing.T) {
 	plain, scoped, sc := memoFixture(t)
 	events := make([]ThreadEvent, 2500)
@@ -1359,8 +1361,8 @@ func TestStateMemoBulkBeyondRetentionCap(t *testing.T) {
 	want := ordinaryState(t, plain)
 	for i := 0; i < 2; i++ {
 		got, err := LoadState(scoped, "alice")
-		if err != nil || len(got.ThreadEvents) != 2500 || !reflect.DeepEqual(got, want) {
-			t.Fatalf("read %d: %v len=%d", i, err, len(got.ThreadEvents))
+		if err != nil || len(got.LegacyThreadEvents()) != 2500 || !reflect.DeepEqual(got, want) {
+			t.Fatalf("read %d: %v len=%d", i, err, len(got.LegacyThreadEvents()))
 		}
 	}
 	if st := sc.Stats(); st.Hits != 1 || st.Parses != 1 {
@@ -1369,7 +1371,16 @@ func TestStateMemoBulkBeyondRetentionCap(t *testing.T) {
 	if _, err := UpdateState(scoped, "alice", func(s *State) error { s.LastInbox = "x"; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if got := ordinaryState(t, plain); len(got.ThreadEvents) != 2500 || got.LastInbox != "x" {
-		t.Fatalf("update changed bulk records: %d", len(got.ThreadEvents))
+	got := ordinaryState(t, plain)
+	if len(got.LegacyThreadEvents()) != 0 || got.LastInbox != "x" || bytes.Contains(got.rawState, []byte("thread_events")) {
+		t.Fatalf("update did not drop the migrated member: legacy=%d last_inbox=%q", len(got.LegacyThreadEvents()), got.LastInbox)
+	}
+	win, err := OpenThreadEvents(plain, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest, dropped := events[2499], events[0]
+	if win.Len() != ThreadEventsMax || win.ThreadEventRoot(newest.Room, newest.EventID) != newest.Root || win.ThreadEventRoot(dropped.Room, dropped.EventID) != "" {
+		t.Fatalf("migrated window len=%d newest=%q dropped=%q", win.Len(), win.ThreadEventRoot(newest.Room, newest.EventID), win.ThreadEventRoot(dropped.Room, dropped.EventID))
 	}
 }

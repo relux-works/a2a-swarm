@@ -57,8 +57,9 @@ func newTerminalWorkFixture(tb testing.TB) *terminalWorkFixture {
 	a.terminalFixture = func(b config.TerminalBinding) terminalEffects { fake.b = b; return fake }
 	initial := config.TerminalBinding{Generation: "fixture", SessionID: "fixture", Host: machineLabel(), OwnerPID: target.OwnerPID, OwnerBirth: target.OwnerBirth, DaemonPID: os.Getpid(), DaemonBirth: target.OwnerBirth, Target: target, Interval: time.Second, RetryMax: time.Second, MaxWakes: 6}
 	st := config.State{NextBatch: "s0", Terminal: &initial}
+	window := make([]config.ThreadEvent, 0, 2000)
 	for i := 0; i < 2000; i++ {
-		st.ThreadEvents = append(st.ThreadEvents, config.ThreadEvent{Room: fmt.Sprintf("!%043d", i%16), EventID: fmt.Sprintf("$%043d", i), Root: fmt.Sprintf("$%043d", i%64)})
+		window = append(window, config.ThreadEvent{Room: fmt.Sprintf("!%043d", i%16), EventID: fmt.Sprintf("$%043d", i), Root: fmt.Sprintf("$%043d", i%64)})
 	}
 	for i := 0; i < 500; i++ {
 		st.Threads = append(st.Threads, fmt.Sprintf("$%063d", i))
@@ -67,12 +68,24 @@ func newTerminalWorkFixture(tb testing.TB) *terminalWorkFixture {
 	if err := config.SaveState(p, s.name, st); err != nil {
 		tb.Fatal(err)
 	}
+	if _, err := config.AppendThreadEvents(p, s.name, window); err != nil {
+		tb.Fatal(err)
+	}
 	raw, err := os.ReadFile(p.StateFile(s.name))
 	if err != nil {
 		tb.Fatal(err)
 	}
-	if len(raw) < 400000 || len(raw) > 580000 {
-		tb.Fatalf("State fixture size %d", len(raw))
+	// The retained window's 2000 entries live in the thread-event file, so
+	// the State fixture is far below its former 400-580 KB range.
+	if len(raw) >= 200000 {
+		tb.Fatalf("State fixture size %d still carries the retained window", len(raw))
+	}
+	threadRaw, err := os.ReadFile(p.ThreadEventsFile(s.name))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if got := bytes.Count(threadRaw, []byte("\n")); got != 2000 {
+		tb.Fatalf("thread-event fixture lines %d", got)
 	}
 	var mail bytes.Buffer
 	ids := []string{}
@@ -95,7 +108,7 @@ func newTerminalWorkFixture(tb testing.TB) *terminalWorkFixture {
 	if err := os.WriteFile(p.MailboxFile(s.name), mail.Bytes(), 0600); err != nil {
 		tb.Fatal(err)
 	}
-	tb.Logf("synthetic fixture: State=%d bytes, thread_events=2000, mailbox=%d bytes", len(raw), mail.Len())
+	tb.Logf("synthetic fixture: State=%d bytes, thread-event file=%d bytes (2000 entries), mailbox=%d bytes", len(raw), len(threadRaw), mail.Len())
 	return &terminalWorkFixture{a, s, initial, errLog}
 }
 

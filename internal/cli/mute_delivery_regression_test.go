@@ -62,7 +62,7 @@ func TestMuteDeliveryIgnoresHeaderClaims(t *testing.T) {
 						want = relThread
 					}
 				}
-				rel, learned, ids := classify(ev, room, "@alice:test.local", "alice", st, rows)
+				rel, learned, ids := classify(ev, room, "@alice:test.local", "alice", st, nil, rows)
 				var wantIDs []string
 				if want == relSub {
 					wantIDs = []string{rows[0].ID}
@@ -98,8 +98,9 @@ func TestMuteKnownReplyMembership(t *testing.T) {
 						ev.Content, _ = json.Marshal(c)
 					}
 					st := config.State{Threads: []string{"$topic"}}
+					win := config.NewThreadEventWindow()
 					if knownRoom != "" {
-						st.RememberThreadEvent(config.ThreadEvent{Room: knownRoom, EventID: "$child", Root: "$topic"})
+						win.RememberThreadEvent(config.ThreadEvent{Room: knownRoom, EventID: "$child", Root: "$topic"})
 					}
 					if muted {
 						st.Muted = []string{"$topic"}
@@ -123,7 +124,7 @@ func TestMuteKnownReplyMembership(t *testing.T) {
 							want = relThread
 						}
 					}
-					rel, _, _ := classify(ev, room, "@alice:test.local", "alice", st, rows)
+					rel, _, _ := classify(ev, room, "@alice:test.local", "alice", st, win, rows)
 					if rel != want {
 						t.Fatalf("knownRoom=%q muted=%t route=%s header=%t: got %q want %q", knownRoom, muted, route, header, rel, want)
 					}
@@ -176,8 +177,9 @@ func TestMuteThreadExemptions(t *testing.T) {
 						principals = []string{ev.Sender}
 					}
 					st := config.State{}
+					win := config.NewThreadEventWindow()
 					if relation == "reply" {
-						st.RememberThreadEvent(config.ThreadEvent{Room: room, EventID: "$child", Root: "$topic"})
+						win.RememberThreadEvent(config.ThreadEvent{Room: room, EventID: "$child", Root: "$topic"})
 					}
 					if muted {
 						st.Muted = []string{"$topic"}
@@ -185,7 +187,7 @@ func TestMuteThreadExemptions(t *testing.T) {
 							want = ""
 						}
 					}
-					rel, _, ids := classifyWithPrincipals(ev, room, "@alice:test.local", "alice", st, []Sub{row}, principals)
+					rel, _, ids := classifyWithPrincipals(ev, room, "@alice:test.local", "alice", st, win, []Sub{row}, principals)
 					if rel != want {
 						t.Fatalf("muted=%v: got %q, want %q", muted, rel, want)
 					}
@@ -393,7 +395,7 @@ func TestMuteDirectRootReplyNeedsLearnedMembership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(e.state("alice").ThreadEvents) != 0 || len(e.mailbox("alice").Pending()) != 0 {
+			if e.threadWindow("alice").Len() != 0 || len(e.mailbox("alice").Pending()) != 0 {
 				t.Fatal("observing the muted root learned membership or admitted mail")
 			}
 			if learned {
@@ -402,8 +404,8 @@ func TestMuteDirectRootReplyNeedsLearnedMembership(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				current := e.state("alice")
-				if current.ThreadEventRoot(room, root) != root || current.ThreadEventRoot(room, child) != root || len(e.mailbox("alice").Pending()) != 0 {
+				win := e.threadWindow("alice")
+				if win.ThreadEventRoot(room, root) != root || win.ThreadEventRoot(room, child) != root || len(e.mailbox("alice").Pending()) != 0 {
 					t.Fatal("suppressed m.thread child did not establish same-room root membership")
 				}
 			}
@@ -414,10 +416,10 @@ func TestMuteDirectRootReplyNeedsLearnedMembership(t *testing.T) {
 			entries := e.mailbox("alice").Pending()
 			bell := doorbellOf(itemsOf(entries, s.server), s.server, nil)
 			if learned {
-				if len(entries) != 0 || bell.total != 0 || e.state("alice").ThreadEventRoot(room, reply) != root {
+				if len(entries) != 0 || bell.total != 0 || e.threadWindow("alice").ThreadEventRoot(room, reply) != root {
 					t.Fatalf("learned root reply was not suppressed/learned: %+v %+v", entries, bell)
 				}
-			} else if len(entries) != 1 || entries[0].ID != reply || entries[0].Sub != "room" || bell.total != 1 || bell.types["sub"] != 1 || len(e.state("alice").ThreadEvents) != 0 {
+			} else if len(entries) != 1 || entries[0].ID != reply || entries[0].Sub != "room" || bell.total != 1 || bell.types["sub"] != 1 || e.threadWindow("alice").Len() != 0 {
 				t.Fatalf("unknown root reply must ring without learning membership: %+v %+v", entries, bell)
 			}
 			if e.received("alice", root) || e.received("alice", reply) {
@@ -467,15 +469,15 @@ func TestMuteHeaderClaimCannotPoisonPersistedMembership(t *testing.T) {
 					t.Fatalf("wrong subscription ring: %+v", bell)
 				}
 			}
-			current := e.state("alice")
+			win := e.threadWindow("alice")
 			if relation == "" {
 				check(claim)
-				if len(current.ThreadEvents) != 0 {
-					t.Fatalf("header claim persisted membership: %+v", current.ThreadEvents)
+				if win.Len() != 0 {
+					t.Fatalf("header claim persisted membership: %+v", win.Entries())
 				}
 			} else {
 				check()
-				if current.ThreadEventRoot(room, claim) != "$muted" || current.ThreadEventRoot(room, "$muted") != "$muted" {
+				if win.ThreadEventRoot(room, claim) != "$muted" || win.ThreadEventRoot(room, "$muted") != "$muted" {
 					t.Fatal("real server relation did not persist membership")
 				}
 			}
@@ -483,15 +485,15 @@ func TestMuteHeaderClaimCannotPoisonPersistedMembership(t *testing.T) {
 			if _, err := s.syncNow(ctx, st, rows, time.Time{}); err != nil {
 				t.Fatal(err)
 			}
-			current = e.state("alice")
+			win = e.threadWindow("alice")
 			if relation == "" {
 				check(claim, reply)
-				if len(current.ThreadEvents) != 0 {
-					t.Fatalf("reply to header-only claim persisted membership: %+v", current.ThreadEvents)
+				if win.Len() != 0 {
+					t.Fatalf("reply to header-only claim persisted membership: %+v", win.Entries())
 				}
 			} else {
 				check()
-				if current.ThreadEventRoot(room, reply) != "$muted" {
+				if win.ThreadEventRoot(room, reply) != "$muted" {
 					t.Fatal("plain reply did not inherit persisted server membership")
 				}
 			}
@@ -528,7 +530,7 @@ func TestMuteLearnedReplyWaitWatchAll(t *testing.T) {
 				if _, err := s.syncNow(ctx, st, e.serverSubs("alice").Subs, time.Time{}); err != nil {
 					t.Fatal(err)
 				}
-				if e.state("alice").ThreadEventRoot(room, child) != "$muted" || len(e.mailbox("alice").Pending()) != 0 {
+				if e.threadWindow("alice").ThreadEventRoot(room, child) != "$muted" || len(e.mailbox("alice").Pending()) != 0 {
 					t.Fatal("fixture did not learn suppressed child membership")
 				}
 				reply := e.hs.inject(room, "@bob:test.local", plainReplyDecision(child))
@@ -653,7 +655,7 @@ func TestMuteLearnsReplyMembershipAcrossCycles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.ThreadEventRoot(room, child) != "$muted" || st.HasThread("$muted") || len(e.mailbox("alice").Pending()) != 0 {
+	if e.threadWindow("alice").ThreadEventRoot(room, child) != "$muted" || st.HasThread("$muted") || len(e.mailbox("alice").Pending()) != 0 {
 		t.Fatal("unmatched server thread membership was lost or granted delivery/follow")
 	}
 	reply := func(target string) map[string]any {
@@ -662,9 +664,7 @@ func TestMuteLearnsReplyMembershipAcrossCycles(t *testing.T) {
 		return c
 	}
 	// Another room's observation is not proof about a target in this room.
-	notificationState(t, e, func(cur *config.State) {
-		cur.RememberThreadEvent(config.ThreadEvent{Room: "!other:test.local", EventID: "$foreign", Root: "$muted"})
-	})
+	e.seedThreadEvents("alice", config.ThreadEvent{Room: "!other:test.local", EventID: "$foreign", Root: "$muted"})
 	suppressed := e.hs.inject(room, "@bob:test.local", reply(child))
 	chain := e.hs.inject(room, "@bob:test.local", reply(suppressed))
 	unknown := e.hs.inject(room, "@bob:test.local", reply("$unknown"))
@@ -675,8 +675,8 @@ func TestMuteLearnsReplyMembershipAcrossCycles(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries := e.mailbox("alice").Pending()
-	if len(entries) != 2 || entries[0].ID != unknown || entries[1].ID != foreign || st.ThreadEventRoot(room, chain) != "$muted" {
-		t.Fatalf("wrong membership or delivery: %+v %+v", st.ThreadEvents, entries)
+	if win := e.threadWindow("alice"); len(entries) != 2 || entries[0].ID != unknown || entries[1].ID != foreign || win.ThreadEventRoot(room, chain) != "$muted" {
+		t.Fatalf("wrong membership or delivery: %+v %+v", win.Entries(), entries)
 	}
 	if e.received("alice", suppressed) || e.received("alice", chain) {
 		t.Fatal("suppression wrote receipts")
@@ -712,6 +712,7 @@ func TestMuteContentionConsumersContinue(t *testing.T) {
 			row, _ := e.subscribe("alice", "--room", "proj", "--kind", "decision", "--until-kind", "decision")
 			muted := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, "$muted", "$muted")))
 			neighbor := e.hs.inject(room, "@bob:test.local", eventContent(t, headerTopicDecision(t, "$neighbor", "$neighbor")))
+			winBefore := e.threadWindow("alice").Entries()
 			attempts, polls := 0, 0
 			var output bytes.Buffer
 			a.Stdout = &output
@@ -730,7 +731,7 @@ func TestMuteContentionConsumersContinue(t *testing.T) {
 					polls++
 					if polls == 2 {
 						current := e.state("alice")
-						if attempts != 3 || r.URL.Query().Get("since") != st.NextBatch || current.NextBatch != st.NextBatch || len(current.ThreadEvents) != len(st.ThreadEvents) || len(e.mailbox("alice").Pending()) != 0 || e.serverSubs("alice").find(row) < 0 {
+						if attempts != 3 || r.URL.Query().Get("since") != st.NextBatch || current.NextBatch != st.NextBatch || !reflect.DeepEqual(e.threadWindow("alice").Entries(), winBefore) || len(e.mailbox("alice").Pending()) != 0 || e.serverSubs("alice").find(row) < 0 {
 							t.Fatal("contention did not defer atomically to the next normal poll")
 						}
 					}
@@ -796,7 +797,7 @@ func TestMuteContentionFirstSyncRetries(t *testing.T) {
 	}
 	before := firstSyncMessage("$before", "@bob:test.local", msg("@alice:test.local pre-join control", nil))
 	firstSyncFixture(t, e, room, false, "", before, firstSyncJoin("@alice:test.local", "$join"), mutedEvent, ev)
-	if st := e.state("alice"); st.NextBatch != "" || len(st.ThreadEvents) != 0 {
+	if st := e.state("alice"); st.NextBatch != "" || e.threadWindow("alice").Len() != 0 {
 		t.Fatal("fixture already has a cursor or learned membership")
 	}
 	attempts, polls := 0, 0
@@ -821,7 +822,7 @@ func TestMuteContentionFirstSyncRetries(t *testing.T) {
 			}
 			if polls == 2 {
 				current := e.state("alice")
-				if attempts != 3 || current.NextBatch != "" || len(current.ThreadEvents) != 0 || len(e.mailbox("alice").Pending()) != 0 || e.serverSubs("alice").find(row) < 0 {
+				if attempts != 3 || current.NextBatch != "" || e.threadWindow("alice").Len() != 0 || len(e.mailbox("alice").Pending()) != 0 || e.serverSubs("alice").find(row) < 0 {
 					t.Fatal("first-sync contention did not defer atomically to the next poll")
 				}
 			}

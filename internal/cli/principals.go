@@ -242,9 +242,9 @@ func removeAllSubscriptions(list *SubList, configured []string) (removed []strin
 
 // Host coverage has no subscription ID: it is a local delivery policy, not an
 // account-data row. Manual selectors keep their existing projection semantics.
-func classifyWithPrincipals(ev matrix.Event, room, me, name string, st config.State, subs []Sub, configured []string) (relevance, string, []string) {
+func classifyWithPrincipals(ev matrix.Event, room, me, name string, st config.State, win *config.ThreadEventWindow, subs []Sub, configured []string) (relevance, string, []string) {
 	c := audience.NewCycle(me, name, time.Time{}, nil, nil)
-	return audienceClassify(ev, room, me, name, st, subs, configured, c.Resolve(room, ev))
+	return audienceClassifyWithWindow(ev, room, me, name, st, win, subs, configured, c.Resolve(room, ev))
 }
 
 func mandatoryPrincipal(ev matrix.Event, configured []string) bool {

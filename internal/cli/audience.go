@@ -141,10 +141,14 @@ func (s *session) requireAudienceIDs(ids []string) error {
 // audienceClassify places the hard boundary before all positive selectors.
 // Related events keep today's selectors: inherited self is never a new one.
 func audienceClassify(ev matrix.Event, room, me, name string, st config.State, subs []Sub, principals []string, e audience.Evidence) (relevance, string, []string) {
+	return audienceClassifyWithWindow(ev, room, me, name, st, nil, subs, principals, e)
+}
+
+func audienceClassifyWithWindow(ev matrix.Event, room, me, name string, st config.State, win *config.ThreadEventWindow, subs []Sub, principals []string, e audience.Evidence) (relevance, string, []string) {
 	if ev.Sender != me && !e.Allows(slices.Contains(principals, ev.Sender)) {
 		return "", "", nil
 	}
-	rel, root, matched := classifyEligible(ev, room, me, name, st, subs)
+	rel, root, matched := classifyEligibleWithWindow(ev, room, me, name, st, win, subs)
 	if rel == "" && ev.Sender != me && mandatoryPrincipal(ev, principals) {
 		return relSub, "", nil
 	}

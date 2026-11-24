@@ -815,14 +815,14 @@ func TestAdmin198RelevanceAndOwnerDMExclusions(t *testing.T) {
 			t.Fatal("sender fixture lacks its protected/ordinary event")
 		}
 		ev := roomEvents[0]
-		if rel, _, _ := classify(ev, room, admin198User, "admin", config.State{}, nil); rel != "" {
+		if rel, _, _ := classify(ev, room, admin198User, "admin", config.State{}, nil, nil); rel != "" {
 			t.Fatal("sender fixture acquired implicit address/mention relevance")
 		}
-		if rel, _, matched := classify(ev, room, admin198User, "admin", config.State{}, list.Subs); rel != relSub || len(matched) != 1 {
+		if rel, _, matched := classify(ev, room, admin198User, "admin", config.State{}, nil, list.Subs); rel != relSub || len(matched) != 1 {
 			t.Fatal("protected/ordinary event did not match the real sender selector")
 		}
 	}
-	batch, e := s.collectBatch(context.Background(), response, "baseline", config.State{}, list.Subs, map[string]bool{}, map[string]string{})
+	batch, e := s.collectBatch(context.Background(), response, "baseline", config.State{}, nil, list.Subs, map[string]bool{}, map[string]string{})
 	if e != nil {
 		t.Fatal("batch exclusion failed")
 	}

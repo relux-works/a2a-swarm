@@ -303,7 +303,7 @@ func TestClassify(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rel, learned, _ := classify(tc.ev, "!r", me, "alice", st, nil)
+			rel, learned, _ := classify(tc.ev, "!r", me, "alice", st, nil, nil)
 			if rel != tc.rel || learned != tc.learned {
 				t.Fatalf("classify = (%q, %q), want (%q, %q)", rel, learned, tc.rel, tc.learned)
 			}
