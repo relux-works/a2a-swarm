@@ -498,6 +498,10 @@ func (a *App) acquireLease(s *session, sessionID string, deadline time.Time) err
 }
 
 func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Time, check func(*config.State) error) error {
+	return a.acquireLeaseCheckedContext(a.context(), s, sessionID, deadline, check)
+}
+
+func (a *App) acquireLeaseCheckedContext(ctx context.Context, s *session, sessionID string, deadline time.Time, check func(*config.State) error) error {
 	if err := s.checkConnection(); err != nil {
 		return err
 	}
@@ -507,7 +511,7 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 		ttl = a.leaseTTL
 	}
 	a.leaseReuse = nil
-	_, err := config.UpdateStateContext(a.ctx, s.paths, s.name, deadline, func(cur *config.State) error {
+	_, err := config.UpdateStateContext(ctx, s.paths, s.name, deadline, func(cur *config.State) error {
 		if err := s.checkConnection(); err != nil {
 			return err
 		}
@@ -516,7 +520,13 @@ func (a *App) acquireLeaseChecked(s *session, sessionID string, deadline time.Ti
 				return err
 			}
 		}
-		return cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := cur.Acquire(s.name, holder, machineLabel(), os.Getpid(), a.Now(), ttl, a.leaseDeadBy(s.paths, deadline)); err != nil {
+			return err
+		}
+		return ctx.Err()
 	})
 	if err == nil && a.leaseReuse != nil {
 		// stderr only: hook stdout carries the doorbell and must stay unchanged.
