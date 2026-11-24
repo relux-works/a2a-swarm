@@ -2674,6 +2674,11 @@ process, and that owner must be a `muse`/`muse-bin*` process. Remaining trust: t
 environment and is not verified by Muse, and `muse sessions --json` lists no owner process, so a2a cannot tie the session id to
 `--owner-pid`. The gate stops a stale or foreign `A2A_SESSION_ID`; it does not stop a deliberate same-UID override of
 `MUSE_SESSION_ID`. A Muse session started from a shell that exported `A2A_SESSION_ID` must unset it or set it to `MUSE_SESSION_ID`.
+**Contract: the muse carrier guards against accidental misbinding only.** Its checks refuse a stale or foreign `A2A_SESSION_ID`,
+disagreeing Muse selectors, an owner that is not this invocation's ancestor, and an owner of another runtime. They are not a
+boundary against a deliberate same-UID caller: such a caller can already message any Muse session with
+`muse session-message send`. Isolation between lanes comes from separate OS users and homes. When Muse lists the hosting process
+per session, the bind will also require `--owner-pid` to be that process.
 The detached consumer keeps the bind-time `XDG_DATA_HOME`/`XDG_RUNTIME_DIR`, so it reads the same Muse session registry the
 bind admitted, and every Muse invocation runs with `MUSE_NO_AUTO_UPDATE=1`.
 Prerequisite on the Muse side: the bound session must accept external session messages (Muse's external-agent ingress,
