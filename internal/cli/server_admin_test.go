@@ -45,25 +45,17 @@ func TestServerAdminProfileSelection(t *testing.T) {
 }
 
 func runServerAdminFixture(f *admin198Fixture, stdin io.Reader, args ...string) (int, string, string) {
-	return runServerAdminFixtureAs(f, stdin, "admin", args...)
-}
-
-func runServerAdminFixtureAs(f *admin198Fixture, stdin io.Reader, identity string, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	code := runServerAdminFixtureAsWithWriters(f, stdin, &stdout, &stderr, identity, args...)
+	code := runServerAdminFixtureWithWriters(f, stdin, &stdout, &stderr, args...)
 	return code, stdout.String(), stderr.String()
 }
 
 func runServerAdminFixtureWithWriters(f *admin198Fixture, stdin io.Reader, stdout, stderr io.Writer, args ...string) int {
-	return runServerAdminFixtureAsWithWriters(f, stdin, stdout, stderr, "admin", args...)
-}
-
-func runServerAdminFixtureAsWithWriters(f *admin198Fixture, stdin io.Reader, stdout, stderr io.Writer, identity string, args ...string) int {
 	a := f.app(stdout, stderr)
 	if stdin != nil {
 		a.Stdin = stdin
 	}
-	all := append([]string{"--as", identity}, args...)
+	all := append([]string{"--as", "admin"}, args...)
 	return a.Run(context.Background(), all)
 }
 
@@ -320,27 +312,32 @@ func TestServerAdminStdoutFailureRemovesReply(t *testing.T) {
 	}
 }
 
-// A selected identity or Whoami mismatch refuses before any message send.
+// A configured admin identity or Whoami mismatch refuses before any message send.
 func TestServerAdminIdentityMismatchesStopSend(t *testing.T) {
 	tests := []struct {
-		name     string
-		mode     string
-		identity string
-		stage    string
+		name            string
+		mode            string
+		configuredAdmin string
+		stage           string
 	}{
-		{name: "selected identity mismatch", mode: "server-admin", identity: "other", stage: "identity"},
-		{name: "Whoami mismatch", mode: "server-admin-whoami-mismatch", identity: "admin", stage: "session_identity"},
+		{name: "configured admin identity mismatch", mode: "server-admin", configuredAdmin: "@other:test.invalid", stage: "identity"},
+		{name: "Whoami mismatch", mode: "server-admin-whoami-mismatch", stage: "session_identity"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newAdmin198Backend(t, tt.mode, "file")
+			if tt.configuredAdmin != "" {
+				f.c.AdminRegistration.AdminUserID = tt.configuredAdmin
+				f.c.AdminRegistration.ExpectedMembers = append(f.c.AdminRegistration.ExpectedMembers, tt.configuredAdmin)
+				f.save()
+			}
 			outPath := serverAdminOutPath(t)
 			f.mu.Lock()
 			f.serverAdminOutputPath = outPath
 			f.mu.Unlock()
-			code, stdout, stderr := runServerAdminFixtureAs(f, nil, tt.identity, serverAdminRunArgs(outPath, "!admin status")...)
+			code, stdout, stderr := runServerAdminFixture(f, nil, serverAdminRunArgs(outPath, "!admin status")...)
 			if code == ExitOK || stdout != "" || !strings.Contains(stderr, "server-admin stage="+tt.stage) {
-				t.Fatal("identity mismatch did not return its staged refusal")
+				t.Fatalf("identity mismatch did not return its staged refusal: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			f.mu.Lock()
 			sends := f.sends
