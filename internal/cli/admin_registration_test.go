@@ -43,6 +43,15 @@ type admin198Fixture struct {
 	mode                                                     string
 	mu                                                       sync.Mutex
 	issues, auths, registrations, redactions, sends, history int
+	httpRequests                                             int
+	serverAdminSent                                          bool
+	serverAdminPayload                                       []byte
+	serverAdminOutputPath                                    string
+	serverAdminOutputCreateFlags                             int
+	serverAdminOutputCreateMode                              os.FileMode
+	serverAdminOutputMode                                    os.FileMode
+	serverAdminSyncSince                                     []string
+	serverAdminSyncAfterSend                                 int
 	issued                                                   bool
 	wire                                                     []byte
 	logs                                                     bytes.Buffer
@@ -95,6 +104,13 @@ func (f *admin198Fixture) app(out, err io.Writer) *App {
 	a.HTTP = f.server.Client()
 	a.Now = func() time.Time { return f.now }
 	a.connectionSecretStore = f.store
+	a.serverAdminOutputOpen = func(path string, flags int, mode os.FileMode) (*os.File, error) {
+		f.mu.Lock()
+		f.serverAdminOutputCreateFlags = flags
+		f.serverAdminOutputCreateMode = mode.Perm()
+		f.mu.Unlock()
+		return os.OpenFile(path, flags, mode)
+	}
 	a.Getenv = func(k string) string {
 		if k == config.EnvConfigDir {
 			return f.root
@@ -191,6 +207,31 @@ func (f *admin198Fixture) reply() matrix.Event {
 	e.Content, _ = json.Marshal(content)
 	return e
 }
+
+func (f *admin198Fixture) serverAdminReply(eventID, sender, relationID, body string, thread bool) matrix.Event {
+	relation := map[string]any{"m.in_reply_to": map[string]any{"event_id": relationID}}
+	if thread {
+		relation = map[string]any{"rel_type": "m.thread", "event_id": relationID}
+	}
+	content := map[string]any{"msgtype": "m.text", "body": body, "m.relates_to": relation}
+	raw, _ := json.Marshal(content)
+	return matrix.Event{EventID: eventID, Type: "m.room.message", RoomID: admin198Room, Sender: sender, OriginServerTS: f.now.UnixMilli(), Content: raw}
+}
+
+func (f *admin198Fixture) serverAdminReplyBatch() []matrix.Event {
+	if f.mode == "server-admin-wrong-sender" {
+		return []matrix.Event{f.serverAdminReply("$admin-reply", "@other:test.invalid", "$admin-sent", admin198Secret, false)}
+	}
+	if f.mode == "server-admin-unrelated" {
+		return []matrix.Event{f.serverAdminReply("$admin-reply", admin198Bot, "$other", admin198Secret, false)}
+	}
+	thread := f.mode == "server-admin-thread"
+	first := f.serverAdminReply("$admin-reply", admin198Bot, "$admin-sent", admin198Secret, thread)
+	if f.mode == "server-admin-multiple" {
+		return []matrix.Event{first, f.serverAdminReply("$admin-reply-2", admin198Bot, "$admin-sent", "ignored second reply", false)}
+	}
+	return []matrix.Event{first}
+}
 func (f *admin198Fixture) eventForDelivery(room string) matrix.Event {
 	content := map[string]any{"msgtype": "m.notice", "body": admin198Secret, "m.mentions": map[string]any{"user_ids": []string{admin198User}}, ContentKey: Header{V: 1, Type: "message", From: "server", To: []string{"admin"}, Kind: "question", Slug: "alpha"}}
 	e := matrix.Event{EventID: "$protected", Type: "m.room.message", RoomID: room, Sender: admin198Bot, OriginServerTS: f.now.UnixMilli()}
@@ -210,6 +251,7 @@ func (f *admin198Fixture) eventForDelivery(room string) matrix.Event {
 func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.httpRequests++
 	w.Header().Set("Content-Type", "application/json")
 	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	f.wire = append(f.wire, []byte(r.URL.String())...)
@@ -225,6 +267,9 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 		create, _ := json.Marshal(map[string]any{"m.federate": f.mode == "federated", "room_version": "11"})
 		bot := f.c.AdminRegistration.ServerBotUserID
 		events := []matrix.Event{{Type: "m.room.create", RoomID: admin198Room, Sender: bot, StateKey: &empty, Content: create}}
+		if f.mode == "wrong-bot" {
+			events[0].Sender = "@other:test.invalid"
+		}
 		members := []string{admin198User, bot}
 		if f.mode == "extra-member" {
 			members = append(members, "@extra:test.invalid")
@@ -286,9 +331,41 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			f.issued = true
 			respond(map[string]string{"event_id": "$command"})
 		} else {
-			respond(map[string]string{"event_id": "$sent"})
+			if strings.HasPrefix(f.mode, "server-admin") {
+				f.serverAdminSent = true
+				f.serverAdminPayload = append([]byte(nil), raw...)
+				if f.serverAdminOutputPath != "" {
+					if info, err := os.Stat(f.serverAdminOutputPath); err == nil {
+						f.serverAdminOutputMode = info.Mode().Perm()
+					}
+				}
+				respond(map[string]string{"event_id": "$admin-sent"})
+			} else {
+				respond(map[string]string{"event_id": "$sent"})
+			}
 		}
 	case strings.HasSuffix(path, "/sync"):
+		if strings.HasPrefix(f.mode, "server-admin") {
+			since := r.URL.Query().Get("since")
+			f.serverAdminSyncSince = append(f.serverAdminSyncSince, since)
+			if !f.serverAdminSent {
+				events := []matrix.Event{}
+				if f.mode == "server-admin-stale-history" {
+					events = []matrix.Event{f.serverAdminReply("$stale-admin-reply", admin198Bot, "$admin-sent", admin198Secret, false)}
+				}
+				respond(map[string]any{"next_batch": "baseline", "rooms": map[string]any{"join": map[string]any{admin198Room: map[string]any{"timeline": map[string]any{"events": events}}}}})
+				return
+			}
+			f.serverAdminSyncAfterSend++
+			if f.mode == "server-admin-stale-history" || f.mode == "server-admin-no-reply" || f.serverAdminSyncAfterSend > 1 && (f.mode == "server-admin-wrong-sender" || f.mode == "server-admin-unrelated") {
+				f.mu.Unlock()
+				<-r.Context().Done()
+				f.mu.Lock()
+				return
+			}
+			respond(map[string]any{"next_batch": fmt.Sprintf("after-%d", f.serverAdminSyncAfterSend), "rooms": map[string]any{"join": map[string]any{admin198Room: map[string]any{"timeline": map[string]any{"events": f.serverAdminReplyBatch()}}}}})
+			return
+		}
 		if f.mode == "delivery" || f.mode == "delivery-owner" {
 			respond(map[string]any{"next_batch": "next", "rooms": map[string]any{"join": map[string]any{admin198Room: map[string]any{"timeline": map[string]any{"events": []matrix.Event{f.eventForDelivery(admin198Room)}}}, admin198Normal: map[string]any{"timeline": map[string]any{"events": []matrix.Event{f.eventForDelivery(admin198Normal)}}}}}})
 			return

@@ -4636,6 +4636,38 @@ Protected-room exclusion is independent of sender matches and precedes ordinary
 delivery/history access; a broad sender subscription never makes that room an
 ordinary subscription source.
 
+### `a2a server-admin run --out FILE [--connection NAME] <command text|@file|->`
+
+This sends one plain Matrix message through the selected connection's explicit
+`admin_registration` binding. The selected identity must match the configured
+administrator, and the client verifies the session and runs the same room
+membership and bot check as account registration before sending. `--connection`
+selects a named profile for this command; the global `--profile` form remains
+available when selecting the profile for the whole invocation.
+
+Input must be valid UTF-8, at most 1024 bytes, begin exactly with `!admin `,
+and contain no newline or other control character. Supply the text as one shell
+argument, `@FILE`, or `-` for stdin. Use a file or stdin when command text should
+not appear in the process argument list. The event contains only `msgtype` set
+to `m.text` and the exact command body; it does not use the a2a envelope or the
+ordinary post path.
+
+The client establishes a sync baseline before sending, then accepts the first
+`m.room.message` from the configured server bot in the configured room that
+directly replies to the sent event or uses the supported `m.thread` relation to
+it. Other senders and unrelated messages are ignored. Waiting is bounded by the
+connection's `reply_deadline_seconds`; no automatic resend occurs.
+
+`--out` is reserved exclusively with mode `0600` before network activity, so an
+existing path refuses without contacting the server. On success the reply body
+is written byte-for-byte to that file. Stdout contains only the sent and reply
+event IDs, reply byte count, reply SHA-256, and output path. The body is not
+printed or added to the post journal or inbox. If there is no related bot reply
+by the deadline, the command exits nonzero with `server-admin stage=no_reply`
+and removes its reserved output file. Invalid input, a missing or invalid
+binding, failed room checks, send failures and malformed replies also refuse;
+diagnostics name a stage and never include server response text or reply body.
+
 ### Internal notice projection
 
 The inert notice serializer defines a closed seven-field summary: `total`,

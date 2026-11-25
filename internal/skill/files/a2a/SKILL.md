@@ -136,8 +136,8 @@ a2a post <room> --topic <slug> --kind question --to <identity> --reply-by <time>
 a2a post <room> --topic <slug> --kind answer --re '$event' @answer.md
 a2a read <room> --topic <slug> --last 20
 a2a attach <room> --topic <slug> file.pdf
+a2a server-admin run --out FILE [--connection NAME] <command text|@file|->
 ```
-
 Reply to a plain message in the room's main timeline, not an unrelated thread.
 Supported kinds include proposal, question, answer, decision, ack, notice,
 offer, request, accept, decline, handover, subscribe, unsubscribe, owner-needed,

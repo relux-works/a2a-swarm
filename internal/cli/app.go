@@ -95,6 +95,8 @@ type App struct {
 
 	// Test-only interruption between preflight and the first property guard.
 	beforeAdminPropertyRequest func()
+	// serverAdminOutputOpen observes the output creation boundary in tests; nil uses os.OpenFile.
+	serverAdminOutputOpen func(string, int, os.FileMode) (*os.File, error)
 	// human selects a human operator's own account (humans/<name>.json); never
 	// set by agents. It needs --as and ignores A2A_AGENT.
 	human   bool
@@ -211,6 +213,7 @@ func commands() []command {
 	return []command{
 		{"daemon", "daemon serve|register-station|unregister-station|enroll|status | migrate <identity> --to <daemon-base> [--resume|--rollback]   local a2a daemon (a2ad), station enrollment and file-backed identity migration (Keychain deferred; #460)", cmdDaemon},
 		{"connection", "connection list|show NAME|add NAME --file FILE|use NAME|register NAME --via-admin-room [--into /fresh/member-root]   named Matrix routing", cmdConnection},
+		{"server-admin", "server-admin run --out FILE [--connection NAME] <command text|@file|->   send one configured server-admin command and save its related reply", cmdServerAdmin},
 		{"voice", "voice status [--json] | voice config --enable | voice install   optional local voice replies (180s cap)", cmdVoice},
 		{"mail-alarm", "mail-alarm set|unset|status   per-identity stale addressed mailbox alarm", cmdMailAlarm},
 		{"owner-dm", "owner-dm bind|unbind --event ROOM EVENT | ensure|set|unset|status   per-identity owner channel (default off)", cmdOwnerDM},
@@ -330,6 +333,13 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if err != nil {
 		return globalFailure(err)
 	}
+	if len(rest) > 0 && rest[0] == "server-admin" {
+		profile, err := serverAdminProfile(a.profile, rest[1:])
+		if err != nil {
+			return a.fail(err)
+		}
+		a.profile = profile
+	}
 	if len(rest) > 0 && rest[0] == "fetch" {
 		// Fetch help and flag errors have always been environment-free. Parse
 		// them before discovery; an executable fetch still reaches Daemon's
@@ -384,6 +394,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 				if err := a.connectionPreflight(c.name, rest[1:]); err != nil {
 					if c.name == "connection" && len(rest) > 1 && rest[1] == "register" {
 						return a.fail(adminRegistrationError("configuration", err))
+					}
+					if c.name == "server-admin" {
+						return a.fail(serverAdminError("configuration"))
 					}
 					return a.fail(err)
 				}
