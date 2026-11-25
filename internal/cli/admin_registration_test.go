@@ -46,6 +46,7 @@ type admin198Fixture struct {
 	httpRequests                                             int
 	serverAdminSent                                          bool
 	serverAdminPayload                                       []byte
+	serverAdminPayloadCount                                  int
 	serverAdminOutputPath                                    string
 	serverAdminOutputCreateFlags                             int
 	serverAdminOutputCreateMode                              os.FileMode
@@ -233,7 +234,11 @@ func (f *admin198Fixture) serverAdminReply(eventID, sender, relationID, body str
 	}
 	content := map[string]any{"msgtype": "m.text", "body": body, "m.relates_to": relation}
 	raw, _ := json.Marshal(content)
-	return matrix.Event{EventID: eventID, Type: "m.room.message", RoomID: f.adminRegistrationRoomID(), Sender: sender, OriginServerTS: f.now.UnixMilli(), Content: raw}
+	event := matrix.Event{EventID: eventID, Type: "m.room.message", RoomID: f.adminRegistrationRoomID(), Sender: sender, OriginServerTS: f.now.UnixMilli(), Content: raw}
+	if f.mode == "server-admin-late-reply" {
+		event.OriginServerTS = f.now.Add(2 * time.Second).UnixMilli()
+	}
+	return event
 }
 
 func (f *admin198Fixture) serverAdminReplyBatch() []matrix.Event {
@@ -357,6 +362,7 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(f.mode, "server-admin") {
 				f.serverAdminSent = true
 				f.serverAdminPayload = append([]byte(nil), raw...)
+				f.serverAdminPayloadCount++
 				f.serverAdminSendRoom = serverAdminRoomFromSendPath(r.URL.EscapedPath())
 				if f.serverAdminOutputPath != "" {
 					if info, err := os.Stat(f.serverAdminOutputPath); err == nil {

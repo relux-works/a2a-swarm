@@ -45,17 +45,25 @@ func TestServerAdminProfileSelection(t *testing.T) {
 }
 
 func runServerAdminFixture(f *admin198Fixture, stdin io.Reader, args ...string) (int, string, string) {
+	return runServerAdminFixtureAs(f, stdin, "admin", args...)
+}
+
+func runServerAdminFixtureAs(f *admin198Fixture, stdin io.Reader, identity string, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	code := runServerAdminFixtureWithWriters(f, stdin, &stdout, &stderr, args...)
+	code := runServerAdminFixtureAsWithWriters(f, stdin, &stdout, &stderr, identity, args...)
 	return code, stdout.String(), stderr.String()
 }
 
 func runServerAdminFixtureWithWriters(f *admin198Fixture, stdin io.Reader, stdout, stderr io.Writer, args ...string) int {
+	return runServerAdminFixtureAsWithWriters(f, stdin, stdout, stderr, "admin", args...)
+}
+
+func runServerAdminFixtureAsWithWriters(f *admin198Fixture, stdin io.Reader, stdout, stderr io.Writer, identity string, args ...string) int {
 	a := f.app(stdout, stderr)
 	if stdin != nil {
 		a.Stdin = stdin
 	}
-	all := append([]string{"--as", "admin"}, args...)
+	all := append([]string{"--as", identity}, args...)
 	return a.Run(context.Background(), all)
 }
 
@@ -245,6 +253,8 @@ func TestServerAdminReplySavedPrivately(t *testing.T) {
 			createMode := f.serverAdminOutputCreateMode
 			createActualMode := f.serverAdminOutputCreateActualMode
 			sendRoom := f.serverAdminSendRoom
+			sends := f.sends
+			payloadCount := f.serverAdminPayloadCount
 			registrationEffects := f.issues + f.auths + f.registrations + f.redactions
 			subscriptionWrites := f.subscriptionWrites
 			f.mu.Unlock()
@@ -264,6 +274,9 @@ func TestServerAdminReplySavedPrivately(t *testing.T) {
 			assertServerAdminPayload(t, payload, wantCommand)
 			if requests == 0 || len(since) < 2 || since[0] != "" || since[1] != "baseline" {
 				t.Fatal("send did not follow a pre-send sync baseline and its cursor")
+			}
+			if sends != 1 || payloadCount != 1 {
+				t.Fatal("valid server-admin command did not send exactly one event payload")
 			}
 			if fields := strings.Fields(stdout); len(fields) != 5 {
 				t.Fatal("success stdout did not contain exactly five fields")
@@ -307,26 +320,62 @@ func TestServerAdminStdoutFailureRemovesReply(t *testing.T) {
 	}
 }
 
-// A selected identity whose homeserver Whoami differs from the binding cannot send.
-func TestServerAdminWhoamiMismatchStopsSend(t *testing.T) {
-	f := newAdmin198Backend(t, "server-admin-whoami-mismatch", "file")
+// A selected identity or Whoami mismatch refuses before any message send.
+func TestServerAdminIdentityMismatchesStopSend(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     string
+		identity string
+		stage    string
+	}{
+		{name: "selected identity mismatch", mode: "server-admin", identity: "other", stage: "identity"},
+		{name: "Whoami mismatch", mode: "server-admin-whoami-mismatch", identity: "admin", stage: "session_identity"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newAdmin198Backend(t, tt.mode, "file")
+			outPath := serverAdminOutPath(t)
+			f.mu.Lock()
+			f.serverAdminOutputPath = outPath
+			f.mu.Unlock()
+			code, stdout, stderr := runServerAdminFixtureAs(f, nil, tt.identity, serverAdminRunArgs(outPath, "!admin status")...)
+			if code == ExitOK || stdout != "" || !strings.Contains(stderr, "server-admin stage="+tt.stage) {
+				t.Fatal("identity mismatch did not return its staged refusal")
+			}
+			f.mu.Lock()
+			sends := f.sends
+			f.mu.Unlock()
+			if sends != 0 {
+				t.Fatal("identity mismatch reached the message send endpoint")
+			}
+			if _, err := os.Lstat(outPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("identity mismatch left an output file")
+			}
+		})
+	}
+}
+
+// A related bot reply timestamped beyond the configured deadline is rejected without output.
+func TestServerAdminLateRelatedReplyLeavesNoOutput(t *testing.T) {
+	f := newAdmin198Backend(t, "server-admin-late-reply", "file")
 	outPath := serverAdminOutPath(t)
 	f.mu.Lock()
 	f.serverAdminOutputPath = outPath
 	f.mu.Unlock()
 	code, stdout, stderr := runServerAdminFixture(f, nil, serverAdminRunArgs(outPath, "!admin status")...)
-	if code == ExitOK || stdout != "" || !strings.Contains(stderr, "server-admin stage=session_identity") {
-		t.Fatal("Whoami mismatch did not refuse the bound admin identity")
-	}
-	f.mu.Lock()
-	sends := f.sends
-	f.mu.Unlock()
-	if sends != 0 {
-		t.Fatal("Whoami mismatch reached the message send endpoint")
+	if code == ExitOK || stdout != "" || !strings.Contains(stderr, "server-admin stage=no_reply") {
+		t.Fatal("late related reply did not reach the no_reply refusal")
 	}
 	if _, err := os.Lstat(outPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("Whoami mismatch left an output file")
+		t.Fatal("late related reply left an output file")
 	}
+	f.mu.Lock()
+	sends, payloadCount := f.sends, f.serverAdminPayloadCount
+	f.mu.Unlock()
+	if sends != 1 || payloadCount != 1 {
+		t.Fatal("late reply fixture did not observe exactly one send payload")
+	}
+	f.assertNoExports([]byte(stdout), []byte(stderr))
 }
 
 // A widened output file supplied at the open boundary is rejected and removed.
