@@ -237,11 +237,11 @@ func cmdServerAdmin(ctx context.Context, a *App, args []string) error {
 	if err := out.Close(); err != nil {
 		return serverAdminError("output_close")
 	}
-	keepOutput = true
 	digest := sha256.Sum256(replyBody)
 	if _, err := fmt.Fprintf(a.Stdout, "sent_event_id=%s reply_event_id=%s reply_bytes=%d reply_sha256=%s out=%q\n", sentID, replyID, len(replyBody), hex.EncodeToString(digest[:]), *outPath); err != nil {
 		return serverAdminError("stdout")
 	}
+	keepOutput = true
 	return nil
 }
 

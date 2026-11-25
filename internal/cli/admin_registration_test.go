@@ -49,7 +49,9 @@ type admin198Fixture struct {
 	serverAdminOutputPath                                    string
 	serverAdminOutputCreateFlags                             int
 	serverAdminOutputCreateMode                              os.FileMode
+	serverAdminOutputCreateActualMode                        os.FileMode
 	serverAdminOutputMode                                    os.FileMode
+	serverAdminSendRoom                                      string
 	serverAdminSyncSince                                     []string
 	serverAdminSyncAfterSend                                 int
 	issued                                                   bool
@@ -97,6 +99,12 @@ func (f *admin198Fixture) save() {
 		f.t.Fatal("fixture configuration setup failed")
 	}
 }
+func (f *admin198Fixture) adminRegistrationRoomID() string {
+	if f.c.AdminRegistration != nil && f.c.AdminRegistration.RoomID != "" {
+		return f.c.AdminRegistration.RoomID
+	}
+	return admin198Room
+}
 func (f *admin198Fixture) app(out, err io.Writer) *App {
 	a := NewApp()
 	a.Stdout = out
@@ -105,11 +113,21 @@ func (f *admin198Fixture) app(out, err io.Writer) *App {
 	a.Now = func() time.Time { return f.now }
 	a.connectionSecretStore = f.store
 	a.serverAdminOutputOpen = func(path string, flags int, mode os.FileMode) (*os.File, error) {
+		file, err := os.OpenFile(path, flags, mode)
+		if err != nil {
+			return nil, err
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return nil, err
+		}
 		f.mu.Lock()
 		f.serverAdminOutputCreateFlags = flags
 		f.serverAdminOutputCreateMode = mode.Perm()
+		f.serverAdminOutputCreateActualMode = info.Mode().Perm()
 		f.mu.Unlock()
-		return os.OpenFile(path, flags, mode)
+		return file, nil
 	}
 	a.Getenv = func(k string) string {
 		if k == config.EnvConfigDir {
@@ -215,7 +233,7 @@ func (f *admin198Fixture) serverAdminReply(eventID, sender, relationID, body str
 	}
 	content := map[string]any{"msgtype": "m.text", "body": body, "m.relates_to": relation}
 	raw, _ := json.Marshal(content)
-	return matrix.Event{EventID: eventID, Type: "m.room.message", RoomID: admin198Room, Sender: sender, OriginServerTS: f.now.UnixMilli(), Content: raw}
+	return matrix.Event{EventID: eventID, Type: "m.room.message", RoomID: f.adminRegistrationRoomID(), Sender: sender, OriginServerTS: f.now.UnixMilli(), Content: raw}
 }
 
 func (f *admin198Fixture) serverAdminReplyBatch() []matrix.Event {
@@ -261,12 +279,17 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	switch {
 	case strings.HasSuffix(path, "/account/whoami"):
-		respond(map[string]string{"user_id": admin198User, "device_id": "test"})
+		userID := admin198User
+		if f.mode == "server-admin-whoami-mismatch" {
+			userID = "@wrong:test.invalid"
+		}
+		respond(map[string]string{"user_id": userID, "device_id": "test"})
 	case strings.HasSuffix(path, "/state"):
 		empty := ""
 		create, _ := json.Marshal(map[string]any{"m.federate": f.mode == "federated", "room_version": "11"})
 		bot := f.c.AdminRegistration.ServerBotUserID
-		events := []matrix.Event{{Type: "m.room.create", RoomID: admin198Room, Sender: bot, StateKey: &empty, Content: create}}
+		roomID := f.adminRegistrationRoomID()
+		events := []matrix.Event{{Type: "m.room.create", RoomID: roomID, Sender: bot, StateKey: &empty, Content: create}}
 		if f.mode == "wrong-bot" {
 			events[0].Sender = "@other:test.invalid"
 		}
@@ -276,7 +299,7 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, m := range members {
 			key := m
-			events = append(events, matrix.Event{Type: "m.room.member", RoomID: admin198Room, Sender: m, StateKey: &key, Content: json.RawMessage(`{"membership":"join"}`)})
+			events = append(events, matrix.Event{Type: "m.room.member", RoomID: roomID, Sender: m, StateKey: &key, Content: json.RawMessage(`{"membership":"join"}`)})
 		}
 		respond(events)
 	case strings.Contains(path, "/account_data/"):
@@ -334,6 +357,7 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(f.mode, "server-admin") {
 				f.serverAdminSent = true
 				f.serverAdminPayload = append([]byte(nil), raw...)
+				f.serverAdminSendRoom = serverAdminRoomFromSendPath(r.URL.EscapedPath())
 				if f.serverAdminOutputPath != "" {
 					if info, err := os.Stat(f.serverAdminOutputPath); err == nil {
 						f.serverAdminOutputMode = info.Mode().Perm()
@@ -353,7 +377,8 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 				if f.mode == "server-admin-stale-history" {
 					events = []matrix.Event{f.serverAdminReply("$stale-admin-reply", admin198Bot, "$admin-sent", admin198Secret, false)}
 				}
-				respond(map[string]any{"next_batch": "baseline", "rooms": map[string]any{"join": map[string]any{admin198Room: map[string]any{"timeline": map[string]any{"events": events}}}}})
+				roomID := f.adminRegistrationRoomID()
+				respond(map[string]any{"next_batch": "baseline", "rooms": map[string]any{"join": map[string]any{roomID: map[string]any{"timeline": map[string]any{"events": events}}}}})
 				return
 			}
 			f.serverAdminSyncAfterSend++
@@ -363,7 +388,8 @@ func (f *admin198Fixture) serve(w http.ResponseWriter, r *http.Request) {
 				f.mu.Lock()
 				return
 			}
-			respond(map[string]any{"next_batch": fmt.Sprintf("after-%d", f.serverAdminSyncAfterSend), "rooms": map[string]any{"join": map[string]any{admin198Room: map[string]any{"timeline": map[string]any{"events": f.serverAdminReplyBatch()}}}}})
+			roomID := f.adminRegistrationRoomID()
+			respond(map[string]any{"next_batch": fmt.Sprintf("after-%d", f.serverAdminSyncAfterSend), "rooms": map[string]any{"join": map[string]any{roomID: map[string]any{"timeline": map[string]any{"events": f.serverAdminReplyBatch()}}}}})
 			return
 		}
 		if f.mode == "delivery" || f.mode == "delivery-owner" {

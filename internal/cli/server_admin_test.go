@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -45,13 +46,42 @@ func TestServerAdminProfileSelection(t *testing.T) {
 
 func runServerAdminFixture(f *admin198Fixture, stdin io.Reader, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	a := f.app(&stdout, &stderr)
+	code := runServerAdminFixtureWithWriters(f, stdin, &stdout, &stderr, args...)
+	return code, stdout.String(), stderr.String()
+}
+
+func runServerAdminFixtureWithWriters(f *admin198Fixture, stdin io.Reader, stdout, stderr io.Writer, args ...string) int {
+	a := f.app(stdout, stderr)
 	if stdin != nil {
 		a.Stdin = stdin
 	}
 	all := append([]string{"--as", "admin"}, args...)
-	code := a.Run(context.Background(), all)
-	return code, stdout.String(), stderr.String()
+	return a.Run(context.Background(), all)
+}
+
+func serverAdminRoomFromSendPath(path string) string {
+	const roomSegment = "/rooms/"
+	index := strings.Index(path, roomSegment)
+	if index < 0 {
+		return ""
+	}
+	rest := path[index+len(roomSegment):]
+	segment, _, ok := strings.Cut(rest, "/")
+	if !ok {
+		return ""
+	}
+	roomID, err := url.PathUnescape(segment)
+	if err != nil {
+		return ""
+	}
+	return roomID
+}
+
+type serverAdminFailWriter struct{ called bool }
+
+func (w *serverAdminFailWriter) Write([]byte) (int, error) {
+	w.called = true
+	return 0, errors.New("injected stdout failure")
 }
 
 func setAdmin198OtherCurrent(t *testing.T, f *admin198Fixture) {
@@ -142,12 +172,14 @@ func TestServerAdminReplySavedPrivately(t *testing.T) {
 		name    string
 		mode    string
 		command string
+		roomID  string
 		source  func(t *testing.T) (string, io.Reader)
 		flags   []string
 		wantID  string
 	}{
 		{
 			name: "text with explicit connection", mode: "server-admin", command: command,
+			roomID: "!server-admin-target:test.invalid",
 			source: func(*testing.T) (string, io.Reader) { return command, nil },
 			flags:  []string{"--connection", "test"}, wantID: "$admin-reply",
 		},
@@ -176,6 +208,10 @@ func TestServerAdminReplySavedPrivately(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newAdmin198Backend(t, tt.mode, "file")
 			outPath := serverAdminOutPath(t)
+			if tt.roomID != "" {
+				f.c.AdminRegistration.RoomID = tt.roomID
+				f.save()
+			}
 			if tt.name == "text with explicit connection" {
 				setAdmin198OtherCurrent(t, f)
 			}
@@ -207,11 +243,16 @@ func TestServerAdminReplySavedPrivately(t *testing.T) {
 			outputMode := f.serverAdminOutputMode
 			createFlags := f.serverAdminOutputCreateFlags
 			createMode := f.serverAdminOutputCreateMode
+			createActualMode := f.serverAdminOutputCreateActualMode
+			sendRoom := f.serverAdminSendRoom
 			registrationEffects := f.issues + f.auths + f.registrations + f.redactions
 			subscriptionWrites := f.subscriptionWrites
 			f.mu.Unlock()
-			if err != nil || info.Mode().Perm() != 0600 || outputMode != 0600 || createMode != 0600 || createFlags&(os.O_CREATE|os.O_EXCL) != os.O_CREATE|os.O_EXCL {
+			if err != nil || info.Mode().Perm() != 0600 || outputMode != 0600 || createActualMode != 0600 || createMode != 0600 || createFlags&(os.O_CREATE|os.O_EXCL) != os.O_CREATE|os.O_EXCL {
 				t.Fatal("reply file was not created exclusively with mode 0600 and private at send")
+			}
+			if tt.roomID != "" && sendRoom != tt.roomID {
+				t.Fatal("server-admin send URL did not use the configured room ID")
 			}
 			if registrationEffects != 0 || subscriptionWrites != 0 || !reflect.DeepEqual(beforeRoot, serverAdminRootSnapshot(t, f.root)) {
 				t.Fatal("command changed registration, binding, hook, mailbox, journal, or consumer state")
@@ -238,6 +279,79 @@ func TestServerAdminReplySavedPrivately(t *testing.T) {
 			}
 			f.assertNoExports([]byte(stdout), []byte(stderr))
 		})
+	}
+}
+
+// A stdout failure after the reply is saved removes the private output file.
+func TestServerAdminStdoutFailureRemovesReply(t *testing.T) {
+	f := newAdmin198Backend(t, "server-admin", "file")
+	outPath := serverAdminOutPath(t)
+	f.mu.Lock()
+	f.serverAdminOutputPath = outPath
+	f.mu.Unlock()
+	writer := &serverAdminFailWriter{}
+	var stderr bytes.Buffer
+	code := runServerAdminFixtureWithWriters(f, nil, writer, &stderr, serverAdminRunArgs(outPath, "!admin status")...)
+	if code == ExitOK || !writer.called || !strings.Contains(stderr.String(), "server-admin stage=stdout") {
+		t.Fatal("stdout write failure did not return the stdout refusal")
+	}
+	f.assertNoExports(nil, stderr.Bytes())
+	if _, err := os.Lstat(outPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stdout write failure left the reply output file")
+	}
+	f.mu.Lock()
+	sent := f.serverAdminSent
+	f.mu.Unlock()
+	if !sent {
+		t.Fatal("stdout failure fixture did not receive the admin command")
+	}
+}
+
+// A selected identity whose homeserver Whoami differs from the binding cannot send.
+func TestServerAdminWhoamiMismatchStopsSend(t *testing.T) {
+	f := newAdmin198Backend(t, "server-admin-whoami-mismatch", "file")
+	outPath := serverAdminOutPath(t)
+	f.mu.Lock()
+	f.serverAdminOutputPath = outPath
+	f.mu.Unlock()
+	code, stdout, stderr := runServerAdminFixture(f, nil, serverAdminRunArgs(outPath, "!admin status")...)
+	if code == ExitOK || stdout != "" || !strings.Contains(stderr, "server-admin stage=session_identity") {
+		t.Fatal("Whoami mismatch did not refuse the bound admin identity")
+	}
+	f.mu.Lock()
+	sends := f.sends
+	f.mu.Unlock()
+	if sends != 0 {
+		t.Fatal("Whoami mismatch reached the message send endpoint")
+	}
+	if _, err := os.Lstat(outPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("Whoami mismatch left an output file")
+	}
+}
+
+// A widened output file supplied at the open boundary is rejected and removed.
+func TestServerAdminRefusesWidenedOutputMode(t *testing.T) {
+	path := serverAdminOutPath(t)
+	openWide := func(path string, flags int, _ os.FileMode) (*os.File, error) {
+		file, err := os.OpenFile(path, flags, 0644)
+		if err != nil {
+			return nil, err
+		}
+		if err := file.Chmod(0644); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		return file, nil
+	}
+	file, err := reserveServerAdminOutput(path, openWide)
+	if file != nil {
+		_ = file.Close()
+	}
+	if err == nil || err.Error() != "server-admin stage=output_mode" {
+		t.Fatal("widened output mode passed the creation boundary")
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("widened output mode refusal left a file")
 	}
 }
 
