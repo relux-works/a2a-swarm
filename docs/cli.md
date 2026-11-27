@@ -2064,10 +2064,35 @@ publish or stdout failure, or a crash before the receipt, leaves entries
 pending. A fully published frame can remain after failure; use another fresh
 path for a subsequent inbox invocation. No partial target is published.
 
+#### Full batch: `--full [--json | --out FILE]`
+
+`--full` saves the complete sanitized batch in a new private frame and prints
+up to 4000 Unicode characters per event, inside the untrusted-data frame. Each
+header includes sender, room, topic/thread, kind, delivery relation, event ID,
+Matrix origin time, and attachment name/declared size when present. Local
+arrival time is `unknown`: the current mailbox does not persist that clock.
+Attachment metadata never triggers a download. Every cut body reports the
+omitted character count and the saved path; use `inbox show` for the full body.
+
+`--full --json` prints one version-1 `a2a-inbox-full` JSON frame, with
+`trust=untrusted-peer-data`, `events`, `saved_file`, frame markers and optional
+`more_pending`. Each cut event includes `body_cut_characters`. `--full --out FILE`
+prints a summary instead of full bodies; `--summary` also selects a summary,
+and `--width N` sets its excerpt length (1..2000, default 160). All full displays
+refuse metadata over 512 characters and total output over 1 MiB before receipt.
+Reduce `--limit` or use a summary if needed.
+
+Full mode uses the same private publication and output-before-receipt boundary
+as saved/brief inbox. It receipts exactly the selected saved entries after
+successful output. Only complete inline message bodies qualify as fully
+delivered for Seen by; truncated bodies and summaries do not. It refuses
+`--brief`; JSON refuses `--out` and `--summary`. It adds no received-history
+archive or retention policy. Saved frames remain until explicitly removed.
+
 #### `a2a inbox show <$event> [--from FILE]`
 
 Prints one saved event's full sanitized body inside an untrusted-data frame.
-Without `--from`, it uses the last successful `inbox --out` or `inbox --brief` path recorded for
+Without `--from`, it uses the last successful `inbox --out`, `inbox --brief` or `inbox --full` path recorded for
 the selected identity/connection. `--from FILE` reads an explicit saved frame.
 If that recorded path is empty, but an identity-prefixed private brief frame
 remains in the selected identity/connection's state directory, the error names
