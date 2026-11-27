@@ -10,3 +10,4 @@ bin/
 /.agents/
 /.claude/skills/
 /.codex/skills/
+.axiloom.json
