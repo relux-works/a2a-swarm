@@ -41,7 +41,7 @@ const (
 	inboxIndent = "  | "
 )
 
-const inboxUsage = "usage: a2a inbox [--limit N] [--json | --out FILE [--summary] | --brief] [--width N]  (N from 1 to 50)"
+const inboxUsage = "usage: a2a inbox [--limit N] [--json | --out FILE [--summary] | --brief | --full [--out FILE | --json]] [--width N]  (N from 1 to 50)"
 
 // cmdInbox: a2a inbox [--limit N] [--json]
 func cmdInbox(ctx context.Context, a *App, args []string) error {
@@ -56,8 +56,9 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	asJSON := fs.Bool("json", false, "one JSON object per event (EventRecord with body) instead of the frame")
 	outPath := fs.String("out", "", "save full bodies in a new private untrusted frame")
 	brief := fs.Bool("brief", false, "save privately and summarize, with full bodies for addressed requests, questions and decisions")
-	summary := fs.Bool("summary", false, "print bounded counts and event excerpts (requires --out or --brief)")
-	width := fs.Int("width", 160, "summary excerpt characters (1..2000; requires --summary or --brief)")
+	full := fs.Bool("full", false, "save the full batch and print bounded full bodies with C1 headers")
+	summary := fs.Bool("summary", false, "print bounded counts and event excerpts (requires --out, --brief, or --full)")
+	width := fs.Int("width", 160, "summary excerpt characters (1..2000; requires --summary, --brief, or --full --out)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -69,17 +70,23 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 		return usagef("--limit must be between 1 and %d; %s", inboxMax, inboxUsage)
 	}
 	explicitOut := flagPresent(fs, "out")
+	if *brief && *full {
+		return usagef("--brief cannot be combined with --full")
+	}
 	if *brief && (*asJSON || explicitOut) {
 		return usagef("--brief cannot be combined with --json or --out")
 	}
-	save := explicitOut || *brief
-	if *summary && !save || flagPresent(fs, "width") && !*summary && !*brief {
-		return usagef("--summary requires --out or --brief; --width requires --summary or --brief")
+	if *full && *asJSON && (explicitOut || *summary) {
+		return usagef("--full --json cannot be combined with --out or --summary")
+	}
+	save := explicitOut || *brief || *full
+	if *summary && !save || flagPresent(fs, "width") && !*summary && !*brief && !(*full && explicitOut) {
+		return usagef("--summary requires --out, --brief, or --full; --width requires --summary, --brief, or --full --out")
 	}
 	if *width < 1 || *width > inboxBodyMax {
 		return usagef("--width must be between 1 and %d", inboxBodyMax)
 	}
-	if save && *asJSON {
+	if save && *asJSON && !(*full && !explicitOut) {
 		return usagef("--out cannot be combined with --json")
 	}
 	var saved *privateOutput
@@ -101,7 +108,7 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 	if err := a.acquireLease(s, "", time.Time{}); err != nil {
 		return err
 	}
-	if *brief {
+	if *brief || *full && !explicitOut {
 		saved, *outPath, err = prepareBriefInbox(s)
 		if err != nil {
 			return err
@@ -132,12 +139,12 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 		}
 		more := len(pending) - len(shown)
 		var out string
-		if *asJSON {
+		if *asJSON && !*full {
 			var err error
 			if out, err = inboxJSON(shown, s.server); err != nil {
 				return nil, err
 			}
-		} else {
+		} else if !*full {
 			out = inboxFrame(shown, s.server, more)
 		}
 		if save {
@@ -146,7 +153,31 @@ func cmdInbox(ctx context.Context, a *App, args []string) error {
 				return nil, fmt.Errorf("save inbox: %w%s", err, lost)
 			}
 			done := map[string]bool{}
-			if *summary || *brief {
+			if *full {
+				projected, err := projectInboxBatch(shown, records, s, *cur)
+				if err != nil {
+					return nil, fmt.Errorf("render full inbox: %w%s", err, lost)
+				}
+				var complete []bool
+				switch {
+				case *asJSON:
+					out, complete, err = renderInboxFullJSON(projected, more, *outPath)
+				case explicitOut || *summary:
+					out, err = renderInboxFullSummary(projected, more, *width, *outPath)
+				default:
+					out, complete, err = renderInboxFull(projected, more, *outPath)
+					if err == nil {
+						out += fmt.Sprintf("saved inbox: %q\n", *outPath)
+					}
+				}
+				if err != nil {
+					return nil, fmt.Errorf("render full inbox: %w%s", err, lost)
+				}
+				for i, it := range shown {
+					done[it.id] = i < len(complete) && complete[i]
+				}
+				out = a.secrets.Scrub(out)
+			} else if *summary || *brief {
 				var inline []bool
 				if *brief {
 					inline = briefInboxInline(shown, s)
